@@ -106,6 +106,19 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         # sorted_by takes a comparator (a, b) -> Int and returns a
         # fresh sorted list. Stable. Does not mutate the receiver.
         ("sorted_by",  fun(fun(T, T, TyInt), lst(T)),                              []),
+        # reverse / enumerate / zip / flat_map each return a FRESH
+        # list and never mutate the receiver. ``enumerate`` pairs each
+        # element with its 0-based index; ``zip`` pairs element-wise up
+        # to the shorter of the two lengths; ``flat_map`` applies ``f``
+        # and concatenates the resulting lists in order. The iteration
+        # order is specified and byte-identical across both backends:
+        # see capa/runtime/_list.py (oracle) and the Wasm emitters
+        # capa/ir/_emit_wasm/_lists.py ($emit_list_reverse / _enumerate
+        # / _zip) and _closures.py (flat_map via the HOF path).
+        ("reverse",    fun(lst(T)),                                                []),
+        ("enumerate",  fun(lst(TyTuple((TyInt, T)))),                              []),
+        ("zip",        fun(lst(U), lst(TyTuple((T, U)))),                          ["U"]),
+        ("flat_map",   fun(fun(T, lst(U)), lst(U)),                                ["U"]),
     ],
     "Range": [
         # Range<T> is a lazy iterable produced by `a..b` and `a..=b`.

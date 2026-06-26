@@ -94,6 +94,32 @@ class CapaList(list):
             def __ne__(self, other): return cmp(self.v, other.v) != 0
         return CapaList(sorted(self, key=_K))
 
+    def reverse(self):
+        """Return a NEW ``CapaList`` with the elements in reverse
+        order. The receiver is not mutated (unlike ``list.reverse``,
+        which is in-place and returns None)."""
+        return CapaList(reversed(self))
+
+    def enumerate(self):
+        """Return a NEW ``CapaList`` of ``(index, element)`` tuples,
+        the index 0-based, in the original order."""
+        return CapaList((i, x) for i, x in enumerate(self))
+
+    def zip(self, other):
+        """Return a NEW ``CapaList`` of ``(self[i], other[i])`` tuples,
+        truncated to the shorter of the two lengths."""
+        return CapaList(zip(self, other))
+
+    def flat_map(self, f):
+        """Apply ``f`` to each element and concatenate the resulting
+        lists, in order. ``f`` returns a ``List<U>`` per element; the
+        result is the in-order concatenation."""
+        out = CapaList()
+        for x in self:
+            for y in f(x):
+                out.append(y)
+        return out
+
 
 class CapaRange:
     """A lazy integer range. Backs the Capa ``Range<T>`` built-in

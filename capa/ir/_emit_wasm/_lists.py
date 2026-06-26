@@ -44,8 +44,17 @@ class _ListEmissionMixin:
         elem_ty = _element_type_of_list(recv_ty)
         elem_size = self._size_of(elem_ty)
 
-        if method in ("map", "filter", "fold"):
+        if method in ("map", "filter", "fold", "flat_map"):
             self._emit_list_hof(instr, elem_ty)
+            return
+        if method == "reverse":
+            self._emit_list_reverse(instr, elem_size, elem_ty)
+            return
+        if method == "enumerate":
+            self._emit_list_enumerate(instr, elem_size, elem_ty)
+            return
+        if method == "zip":
+            self._emit_list_zip(instr, elem_size, elem_ty)
             return
         if method == "length":
             # Result is Int (i64). Capa.List.length returns the
@@ -1148,6 +1157,358 @@ class _ListEmissionMixin:
         self._write("local.set $_srt_arg1_i32")
         self._write("local.get $_srt_arg0_i32")
         self._write("local.get $_srt_arg1_i32")
+
+    def _emit_list_reverse(
+        self, instr: MethodCall, elem_size: int, elem_ty: str,
+    ) -> None:
+        """``xs.reverse() -> List<T>``: a NEW list with the elements in
+        reverse order. The receiver is not mutated. Each element slot
+        is copied verbatim with ``memory.copy`` (shape-agnostic: the
+        raw ``elem_size`` bytes carry whatever encoding the element
+        type uses), so the result is byte-identical to the Python
+        ``CapaList(reversed(self))``.
+
+        Layout: allocate a result header (len = cap = n) + a fresh
+        data array of ``n * elem_size`` bytes, then copy source slot
+        ``n - 1 - i`` into destination slot ``i`` for ``i`` in
+        ``[0, n)``. Reuses ``$_m_scrut`` (receiver pointer) and the
+        ``$_lz_*`` cursor / pointer scratch."""
+        recv = instr.receiver
+        dst = instr.dst
+        if dst is None:
+            return
+        es = elem_size
+        # Stash receiver + its length.
+        self._push_value(recv)
+        self._write("local.set $_m_scrut")
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("local.set $_lz_n")
+        # Allocate result header; len = cap = n.
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_lz_n")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_lz_n")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        # Data array = max(n, 1) slots so $alloc(0) on an empty list
+        # still yields a valid pointer.
+        self._emit_lz_alloc_data(es, "_lz_dst")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_lz_dst")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        # Source data pointer.
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.set $_lz_src")
+        # for (i = 0; i < n; i++): dst[i] = src[n - 1 - i].
+        self._write("i32.const 0")
+        self._write("local.set $_lz_i")
+        self._block_counter += 1
+        loop = f"$Lrev{self._block_counter}_loop"
+        exit_ = f"$Lrev{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        self._write("local.get $_lz_i")
+        self._write("local.get $_lz_n")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # dst address = dst_data + i * es.
+        self._write("local.get $_lz_dst")
+        self._write("local.get $_lz_i")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        # src address = src_data + (n - 1 - i) * es.
+        self._write("local.get $_lz_src")
+        self._write("local.get $_lz_n")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.get $_lz_i")
+        self._write("i32.sub")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        # n bytes = es.
+        self._write(f"i32.const {es}")
+        self._write("memory.copy")
+        # i++.
+        self._write("local.get $_lz_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_lz_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_list_enumerate(
+        self, instr: MethodCall, elem_size: int, elem_ty: str,
+    ) -> None:
+        """``xs.enumerate() -> List<(Int, T)>``: a NEW list pairing
+        each element with its 0-based index, in the original order.
+        Each result element is a 16-byte tuple record (slot 0 = index
+        as i64, slot 8 = the element re-encoded into the uniform
+        8-byte tuple slot). The result list's element stride is 4 (a
+        pointer-shape tuple). Matches the Python ``CapaList((i, x) for
+        i, x in enumerate(self))``."""
+        recv = instr.receiver
+        dst = instr.dst
+        if dst is None:
+            return
+        es = elem_size
+        out_stride = 4  # tuple records are pointer-shape
+        self._push_value(recv)
+        self._write("local.set $_m_scrut")
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("local.set $_lz_n")
+        # Result header.
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_lz_n")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_lz_n")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        self._emit_lz_alloc_data(out_stride, "_lz_dst")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_lz_dst")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        # Source data pointer.
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.set $_lz_src")
+        # for (i = 0; i < n; i++): build tuple (i, src[i]).
+        self._write("i32.const 0")
+        self._write("local.set $_lz_i")
+        self._block_counter += 1
+        loop = f"$Lenum{self._block_counter}_loop"
+        exit_ = f"$Lenum{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        self._write("local.get $_lz_i")
+        self._write("local.get $_lz_n")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # Allocate the 16-byte tuple record.
+        self._write("i32.const 16")
+        self._write("call $alloc")
+        self._write("local.set $_lz_tup")
+        # Slot 0 = index as i64.
+        self._write("local.get $_lz_tup")
+        self._write("local.get $_lz_i")
+        self._write("i64.extend_i32_s")
+        self._write("i64.store offset=0")
+        # Slot 8 = src[i] re-encoded into the tuple slot.
+        self._write("local.get $_lz_tup")
+        self._write("local.get $_lz_src")
+        self._write("local.get $_lz_i")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_copy_list_slot_to_tuple_slot(elem_ty, 8)
+        # Store the tuple pointer into dst[i].
+        self._write("local.get $_lz_dst")
+        self._write("local.get $_lz_i")
+        self._write(f"i32.const {out_stride}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.get $_lz_tup")
+        self._write("i32.store")
+        # i++.
+        self._write("local.get $_lz_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_lz_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_list_zip(
+        self, instr: MethodCall, elem_size: int, elem_ty: str,
+    ) -> None:
+        """``xs.zip(other) -> List<(T, U)>``: a NEW list pairing
+        ``xs[i]`` with ``other[i]`` up to the shorter of the two
+        lengths. Each result element is a 16-byte tuple record (slot 0
+        = xs[i] re-encoded, slot 8 = other[i] re-encoded). Matches the
+        Python ``CapaList(zip(self, other))`` truncation semantics."""
+        recv = instr.receiver
+        other = instr.args[0]
+        dst = instr.dst
+        if dst is None:
+            return
+        es = elem_size
+        other_ty = other.ty or "List<Int>"
+        other_elem_ty = _element_type_of_list(other_ty)
+        es2 = self._size_of(other_elem_ty)
+        out_stride = 4
+        # Stash xs (in $_m_scrut) and other (in $_m_tag holds nothing;
+        # use $_lz_src2 base directly). Compute n = min(len(xs),
+        # len(other)).
+        self._push_value(recv)
+        self._write("local.set $_m_scrut")
+        self._push_value(other)
+        self._write("local.set $_lz_tup")  # temporarily holds other ptr
+        # n = min(len(xs), len(other)).
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("local.get $_lz_tup")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        # min(a, b): a if a < b else b.
+        self._write("local.set $_lz_i")    # b = len(other)
+        self._write("local.set $_lz_n")    # a = len(xs)
+        self._write("local.get $_lz_n")
+        self._write("local.get $_lz_i")
+        self._write("i32.lt_s")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $_lz_n")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_lz_i")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $_lz_n")
+        # Source data pointers.
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.set $_lz_src")
+        self._write("local.get $_lz_tup")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.set $_lz_src2")
+        # Result header.
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_lz_n")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_lz_n")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        self._emit_lz_alloc_data(out_stride, "_lz_dst")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_lz_dst")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        # for (i = 0; i < n; i++): build tuple (xs[i], other[i]).
+        self._write("i32.const 0")
+        self._write("local.set $_lz_i")
+        self._block_counter += 1
+        loop = f"$Lzip{self._block_counter}_loop"
+        exit_ = f"$Lzip{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        self._write("local.get $_lz_i")
+        self._write("local.get $_lz_n")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # Allocate the 16-byte tuple record.
+        self._write("i32.const 16")
+        self._write("call $alloc")
+        self._write("local.set $_lz_tup")
+        # Slot 0 = xs[i].
+        self._write("local.get $_lz_tup")
+        self._write("local.get $_lz_src")
+        self._write("local.get $_lz_i")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_copy_list_slot_to_tuple_slot(elem_ty, 0)
+        # Slot 8 = other[i].
+        self._write("local.get $_lz_tup")
+        self._write("local.get $_lz_src2")
+        self._write("local.get $_lz_i")
+        self._write(f"i32.const {es2}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_copy_list_slot_to_tuple_slot(other_elem_ty, 8)
+        # Store the tuple pointer into dst[i].
+        self._write("local.get $_lz_dst")
+        self._write("local.get $_lz_i")
+        self._write(f"i32.const {out_stride}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.get $_lz_tup")
+        self._write("i32.store")
+        # i++.
+        self._write("local.get $_lz_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_lz_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+    def _emit_lz_alloc_data(self, stride: int, out_local: str) -> None:
+        """Allocate ``max($_lz_n, 1) * stride`` bytes for a result
+        list's data array and bind the pointer to ``$<out_local>``.
+        The ``max(.., 1)`` keeps ``$alloc(0)`` on an empty source from
+        handing back a degenerate pointer (mirrors the sorted_by
+        buffer allocation)."""
+        self._write("local.get $_lz_n")
+        self._write("i32.const 1")
+        self._write("i32.lt_s")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_lz_n")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"i32.const {stride}")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write(f"local.set ${out_local}")
+
+    def _emit_copy_list_slot_to_tuple_slot(
+        self, elem_ty: str, tuple_offset: int,
+    ) -> None:
+        """Operand stack on entry: ``[tuple_ptr, slot_addr]``. Load the
+        list element at ``slot_addr`` and store it into the tuple
+        record's slot at ``tuple_offset``, re-encoding so the tuple
+        slot matches what ``_store_tuple_slot`` / ``_emit_tuple_index``
+        expect (the uniform 8-byte tuple-slot convention):
+
+        - Int / Float / String already occupy an 8-byte list slot with
+          the identical encoding (i64 / f64-bits / packed ptr+len), so
+          a direct ``i64.load`` + ``i64.store`` copies the bytes.
+        - Bool occupies a 4-byte list slot (i32); load it and
+          ``i64.extend_i32_u`` into the tuple's 8-byte slot.
+        - pointer-shape (struct / sum / tuple / nested collection)
+          occupies a 4-byte list slot (i32 pointer); load and
+          ``i64.extend_i32_u`` likewise.
+        """
+        if elem_ty == "Bool" or self._is_pointer_shape_ty(elem_ty):
+            # 4-byte list slot -> i64-extended 8-byte tuple slot.
+            self._write("i32.load")
+            self._write("i64.extend_i32_u")
+            self._write(f"i64.store offset={tuple_offset}")
+            return
+        # Int / Float / String: 8-byte list slot, direct i64 copy.
+        # (Float bits and the packed String (ptr,len) round-trip
+        # losslessly through an integer load/store.)
+        self._write("i64.load")
+        self._write(f"i64.store offset={tuple_offset}")
 
     def _emit_make_list(self, instr: MakeList) -> None:
         """Allocate a List<T> header (16 bytes) + an element data

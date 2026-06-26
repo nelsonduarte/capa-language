@@ -84,6 +84,10 @@ infers the type from the first `push`.
 | `find(p: Fun(T) -> Bool)` | `Option<T>` | First element matching `p` |
 | `find_index(p: Fun(T) -> Bool)` | `Option<Int>` | Index of first element matching `p` |
 | `sorted_by(cmp: Fun(T, T) -> Int)` | `List<T>` | Fresh sorted copy. `cmp(a, b)` returns negative / 0 / positive as in C's `qsort`. Stable. |
+| `reverse()` | `List<T>` | Fresh list with the elements in reverse order. Does not mutate the receiver. |
+| `enumerate()` | `List<(Int, T)>` | Fresh list of `(index, element)` pairs, index 0-based, original order. |
+| `zip<U>(other: List<U>)` | `List<(T, U)>` | Fresh list pairing `self[i]` with `other[i]`, truncated to the shorter length. |
+| `flat_map<U>(f: Fun(T) -> List<U>)` | `List<U>` | Apply `f` to each element and concatenate the resulting lists in order. |
 
 Index access: `xs[i]` (no bounds checking, use `get(i)` for safe access).
 

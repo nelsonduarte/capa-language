@@ -1053,6 +1053,9 @@ class _ClosureEmissionMixin:
         if instr.method == "fold":
             self._emit_list_fold(instr, elem_ty)
             return
+        if instr.method == "flat_map":
+            self._emit_list_flat_map(instr, elem_ty)
+            return
         raise WasmEmissionError(
             f"unhandled List HOF {instr.method!r}"
         )
@@ -1649,6 +1652,146 @@ class _ClosureEmissionMixin:
         self._write("i32.const 1")
         self._write("i32.add")
         self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+
+    # ----- flat_map ---------------------------------------------
+
+    def _emit_list_flat_map(self, instr: MethodCall, elem_ty: str) -> None:
+        """``xs.flat_map(f) -> List<U>``: apply ``f`` to each element
+        (``f`` returns a ``List<U>``) and concatenate the resulting
+        lists in order. Allocate a fresh empty result list, iterate
+        ``xs``, call ``f(xs[i])`` to obtain an inner list pointer, then
+        walk that inner list and append every element to the result.
+        Byte-identical to the Python ``CapaList`` flat_map (in-order
+        concatenation), including empty / interleaved-empty inner
+        lists which contribute nothing."""
+        recv = instr.receiver
+        f_arg = instr.args[0]
+        dst = instr.dst
+        if dst is None:
+            return
+        dst_ty = self._dst_capa_ty(dst) or "List<Int>"
+        if not (dst_ty.startswith("List<") and dst_ty.endswith(">")):
+            raise WasmEmissionError(
+                f"List.flat_map: dst {dst!r} has non-List type {dst_ty!r}"
+            )
+        out_elem_ty = dst_ty[5:-1].strip()
+        out_stride = self._hof_elem_slot_size(out_elem_ty)
+        # The closure returns a List<U>, which is a pointer-shape value
+        # (single i32). The sig is ``(env, <elem args>) -> i32``.
+        sig_key = self._closure_sig_key_for([elem_ty], dst_ty)
+        if sig_key not in self._closure_sig_keys:
+            raise WasmEmissionError(
+                f"List.flat_map: no lambda registered with sig "
+                f"{sig_key!r} (elem={elem_ty!r}, out={dst_ty!r})"
+            )
+        sig_idx = self._closure_sig_keys[sig_key]
+        in_stride = self._hof_elem_slot_size(elem_ty)
+        # Stash xs and the closure.
+        self._push_value(recv)
+        self._write("local.set $_m_scrut")
+        self._push_value(f_arg)
+        self._write("local.set $_lam_fn_tmp")
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("local.set $_m_tag")
+        # Allocate the result list (empty, cap 8).
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"local.get ${dst}")
+        self._write("i32.const 0")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("i32.const 8")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        self._write(f"i32.const {8 * out_stride}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+        # Outer loop: i = 0 .. len(xs).
+        self._write("i32.const 0")
+        self._write("local.set $_lam_idx")
+        self._block_counter += 1
+        oloop = f"$Hfmap{self._block_counter}_oloop"
+        oexit = f"$Hfmap{self._block_counter}_oexit"
+        iloop = f"$Hfmap{self._block_counter}_iloop"
+        iexit = f"$Hfmap{self._block_counter}_iexit"
+        self._write(f"block {oexit}")
+        self._indent += 1
+        self._write(f"loop {oloop}")
+        self._indent += 1
+        self._write("local.get $_lam_idx")
+        self._write("local.get $_m_tag")
+        self._write("i32.ge_s")
+        self._write(f"br_if {oexit}")
+        # Compute xs[i] slot address and decode for the closure call.
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.get $_lam_idx")
+        self._write(f"i32.const {in_stride}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_load_elem_for_call(elem_ty)
+        self._hof_stash_elem(elem_ty, prefix="_str_a")
+        # Closure call frame: env_ptr, decoded element, fn_idx.
+        self._write("local.get $_lam_fn_tmp")
+        self._write("i32.wrap_i64")
+        self._hof_push_stashed_elem(elem_ty, prefix="_str_a")
+        self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
+        # The closure returned an inner List<U> pointer (i32). Stash it.
+        self._write("local.set $_fmap_inner")
+        # Inner loop: j = 0 .. len(inner). Append inner[j] to dst.
+        self._write("local.get $_fmap_inner")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("local.set $_fmap_n")
+        self._write("i32.const 0")
+        self._write("local.set $_fmap_i")
+        self._write(f"block {iexit}")
+        self._indent += 1
+        self._write(f"loop {iloop}")
+        self._indent += 1
+        self._write("local.get $_fmap_i")
+        self._write("local.get $_fmap_n")
+        self._write("i32.ge_s")
+        self._write(f"br_if {iexit}")
+        # Load inner[j] raw slot bits into $_alloc_tmp_i64 (shape-
+        # agnostic: 4-byte slots widen to i64, 8-byte load directly),
+        # then append via the shared grow-push helper.
+        self._write("local.get $_fmap_inner")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.get $_fmap_i")
+        self._write(f"i32.const {out_stride}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        if out_stride == 4:
+            self._write("i32.load")
+            self._write("i64.extend_i32_u")
+        else:
+            self._write("i64.load")
+        self._write("local.set $_alloc_tmp_i64")
+        self._emit_inline_packed_list_push(dst, slot_size=out_stride)
+        # j++.
+        self._write("local.get $_fmap_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_fmap_i")
+        self._write(f"br {iloop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # i++.
+        self._write("local.get $_lam_idx")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_lam_idx")
+        self._write(f"br {oloop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
 
     # ----- fold -------------------------------------------------
 

@@ -81,6 +81,13 @@ class _LocalsCollectionMixin:
         has_optres_method = False
         has_list_method = False
         has_set_method = False
+        # List.reverse / enumerate / zip allocate a fresh list and
+        # copy elements (reverse) or build a per-element tuple record
+        # (enumerate / zip). They share a small block of i32 cursor /
+        # pointer scratch locals ($_lz_*); enumerate / zip additionally
+        # touch the tuple-packing i64 scratch ($_alloc_tmp_i64).
+        has_list_reverse = False
+        has_list_enumerate_zip = False
         # List.sorted_by runs a bottom-up merge sort with comparator
         # callbacks; it needs a block of i32 cursor / boundary scratch
         # locals plus per-element-shape comparator-arg stash slots.
@@ -164,6 +171,7 @@ class _LocalsCollectionMixin:
             nonlocal has_json_method, has_json_parse
             nonlocal has_list_string, has_optres_method
             nonlocal has_list_method, has_set_method
+            nonlocal has_list_reverse, has_list_enumerate_zip
             nonlocal has_list_sorted_by, has_list_sorted_by_i64
             nonlocal has_list_sorted_by_f64, has_list_sorted_by_i32
             nonlocal has_range_method, has_range_to_list
@@ -514,9 +522,27 @@ class _LocalsCollectionMixin:
                             # methods already share.
                             has_string_method = True
                     if recv_ty.startswith("List") and instr.method in (
-                        "map", "filter", "fold",
+                        "map", "filter", "fold", "flat_map",
                     ):
                         has_list_hof = True
+                        if instr.method == "flat_map":
+                            # flat_map concatenates the per-element
+                            # result lists into a growing destination,
+                            # reusing the list grow scratch.
+                            has_list_method = True
+                    if (instr.method == "reverse"
+                            and recv_ty.startswith("List")):
+                        has_list_method = True
+                        has_list_reverse = True
+                        if _element_type_of_list(recv_ty) == "String":
+                            has_list_string = True
+                    if (instr.method in ("enumerate", "zip")
+                            and recv_ty.startswith("List")):
+                        has_list_method = True
+                        has_list_enumerate_zip = True
+                        el = _element_type_of_list(recv_ty)
+                        if el == "String":
+                            has_list_string = True
                     if recv_ty == "JsonValue":
                         has_json_method = True
                     if (recv_ty.startswith("Option")
@@ -950,6 +976,13 @@ class _LocalsCollectionMixin:
             out.setdefault("_alloc_tmp_f64", "f64")
             out.setdefault("_str_a_ptr", "i32")
             out.setdefault("_str_a_len", "i32")
+            # flat_map iterates each per-element result list and copies
+            # its elements into the destination; the inner walk needs
+            # its own pointer / length / index scratch so it does not
+            # clobber the outer $_lam_idx / $_m_scrut / $_m_tag.
+            out.setdefault("_fmap_inner", "i32")
+            out.setdefault("_fmap_n", "i32")
+            out.setdefault("_fmap_i", "i32")
         if has_list_sorted_by:
             # Merge-sort cursors / boundaries (all i32) + the two
             # buffer pointers. $_lam_fn_tmp (closure stash) comes from
@@ -972,6 +1005,24 @@ class _LocalsCollectionMixin:
                 out.setdefault("_srt_arg1_i32", "i32")
             # String comparator args reuse the $_str_a_* / $_str_b_*
             # scratch pairs (declared via has_string_method gate).
+        if has_list_reverse or has_list_enumerate_zip:
+            # reverse / enumerate / zip allocate a fresh result list
+            # and walk the source(s) once. The shared i32 scratch:
+            #   $_lz_n    element count (min of the two for zip)
+            #   $_lz_i    loop index
+            #   $_lz_src  source data pointer (reverse / enumerate)
+            #   $_lz_src2 second source data pointer (zip)
+            #   $_lz_dst  destination data pointer
+            #   $_lz_tup  per-element tuple record pointer (enum / zip)
+            for name in (
+                "_lz_n", "_lz_i", "_lz_src", "_lz_src2",
+                "_lz_dst", "_lz_tup",
+            ):
+                out.setdefault(name, "i32")
+        if has_list_enumerate_zip:
+            # The tuple-packing dance (Bool / String / pointer slot
+            # encodings) routes through the i64 scratch.
+            out.setdefault("_alloc_tmp_i64", "i64")
         if has_range_method:
             out.setdefault("_alloc_tmp", "i32")
             out.setdefault("_alloc_tmp_i64", "i64")

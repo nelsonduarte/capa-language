@@ -804,6 +804,19 @@ _PARITY_PROGRAMS: list[str] = [
     # (5..5), inclusive (a..=b), variable bounds at both ends, the
     # indexed queries, and a filter -> map chain.
     "range_transform_methods.capa",
+    # stdlib List methods slice (2026-06-26): List.reverse / enumerate
+    # / zip / flat_map, each returning a FRESH list (the receiver is
+    # never mutated) with a specified iteration order so both backends
+    # print byte-identically. reverse copies element slots verbatim via
+    # memory.copy (shape-agnostic); enumerate / zip build a per-element
+    # (Int, T) / (T, U) tuple record; flat_map routes through the HOF
+    # closure path and concatenates the per-element result lists in
+    # order. Covers empty lists, reverse non-mutation, 0-based
+    # enumerate indices, flat_map result lists of different sizes
+    # (including an empty one interleaved and an empty receiver), and
+    # zip truncation to the shorter length from either side, over Int
+    # and String element types.
+    "list_reverse_enumerate_zip_flatmap.capa",
 ]
 
 # Programs deliberately excluded from parity and why; documented
@@ -1480,6 +1493,17 @@ class TestPythonWasmParity(unittest.TestCase):
         # (5..5), inclusive (a..=b), variable bounds, indexed queries,
         # and a filter -> map chain.
         self._assert_parity("range_transform_methods.capa")
+
+    def test_list_reverse_enumerate_zip_flatmap(self):
+        # stdlib List methods (2026-06-26): reverse / enumerate / zip /
+        # flat_map, each returning a fresh list (no mutation of the
+        # receiver) with a specified iteration order. reverse copies
+        # element slots verbatim; enumerate / zip build per-element
+        # (Int, T) / (T, U) tuple records; flat_map concatenates the
+        # per-element result lists in order via the HOF closure path.
+        # Covers empty lists, non-mutation, 0-based indices, zip
+        # truncation from either side, and Int / String element types.
+        self._assert_parity("list_reverse_enumerate_zip_flatmap.capa")
 
     def test_net_allows(self):
         # Loud-error stdlib gap (2026-06-10): Net.allows(host) inlined

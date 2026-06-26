@@ -78,6 +78,50 @@ class TestCapaList(unittest.TestCase):
         idx_miss = xs.find_index(lambda x: x > 1000)
         self.assertTrue(idx_miss.is_none())
 
+    def test_reverse(self):
+        xs = CapaList([1, 2, 3])
+        rev = xs.reverse()
+        self.assertEqual(list(rev), [3, 2, 1])
+        self.assertIsInstance(rev, CapaList)
+        # Non-mutation: the receiver keeps its original order.
+        self.assertEqual(list(xs), [1, 2, 3])
+        # Empty list reverses to an empty list.
+        self.assertEqual(list(CapaList([]).reverse()), [])
+
+    def test_enumerate(self):
+        xs = CapaList(["a", "b", "c"])
+        pairs = xs.enumerate()
+        self.assertIsInstance(pairs, CapaList)
+        # 0-based index, original order.
+        self.assertEqual(list(pairs), [(0, "a"), (1, "b"), (2, "c")])
+        # Receiver is not mutated.
+        self.assertEqual(list(xs), ["a", "b", "c"])
+        self.assertEqual(list(CapaList([]).enumerate()), [])
+
+    def test_zip_truncates_to_shorter(self):
+        a = CapaList([1, 2, 3])
+        b = CapaList(["x", "y"])
+        # Truncates to the shorter length, from either side.
+        self.assertEqual(list(a.zip(b)), [(1, "x"), (2, "y")])
+        self.assertEqual(list(b.zip(a)), [("x", 1), ("y", 2)])
+        self.assertIsInstance(a.zip(b), CapaList)
+        # Zip with an empty list yields nothing.
+        self.assertEqual(list(a.zip(CapaList([]))), [])
+
+    def test_flat_map(self):
+        xs = CapaList([1, 2, 3])
+        # Interleaved empty result list (n == 2 -> []) must contribute
+        # nothing; order is preserved across the concatenation.
+        out = xs.flat_map(
+            lambda n: CapaList([]) if n == 2 else CapaList([n, n * 10])
+        )
+        self.assertIsInstance(out, CapaList)
+        self.assertEqual(list(out), [1, 10, 3, 30])
+        # Empty receiver -> empty result.
+        self.assertEqual(
+            list(CapaList([]).flat_map(lambda n: CapaList([n]))), [],
+        )
+
 
 class TestCapaSetEquality(unittest.TestCase):
     """``CapaSet`` mirrors Python's native ``set`` for ``==`` /

@@ -1,0 +1,84 @@
+// List.reverse / enumerate / zip / flat_map parity coverage.
+//
+// Each method returns a FRESH list (the receiver is never mutated)
+// and the iteration order is specified, so the Python reference path
+// and the Wasm backend must print byte-identical output.
+//
+//   - reverse: empty list, and a multi-element list (order flips);
+//     the original is printed afterwards to show non-mutation.
+//   - enumerate: 0-based index pairing, original order; empty list.
+//   - flat_map: per-element result lists of different sizes, including
+//     empty ones interleaved, concatenated in order.
+//   - zip: two lists of different lengths truncate to the shorter.
+
+fun dup_or_empty(n: Int) -> List<Int>
+    if n == 2
+        return []
+    return [n, n * 10]
+
+fun words_for(n: Int) -> List<String>
+    if n == 1
+        return ["one"]
+    return ["a", "b", "c"]
+
+fun single(n: Int) -> List<Int>
+    return [n]
+
+fun main(stdio: Stdio)
+    // --- reverse ---
+    let empty: List<Int> = []
+    let rev_empty = empty.reverse()
+    stdio.println("rev_empty len = ${rev_empty.length()}")
+
+    let nums = [1, 2, 3, 4, 5]
+    let rev = nums.reverse()
+    for x in rev
+        stdio.println("rev: ${x}")
+    // Non-mutation: the original is still in its first order.
+    for x in nums
+        stdio.println("orig: ${x}")
+
+    // reverse over String elements (8-byte packed slots).
+    let words = ["alpha", "beta", "gamma"]
+    for w in words.reverse()
+        stdio.println("word: ${w}")
+
+    // --- enumerate ---
+    for (i, x) in nums.enumerate()
+        stdio.println("enum: ${i} -> ${x}")
+    let enum_empty = empty.enumerate()
+    stdio.println("enum_empty len = ${enum_empty.length()}")
+
+    // enumerate over String elements.
+    for (i, w) in words.enumerate()
+        stdio.println("enumword: ${i} -> ${w}")
+
+    // --- flat_map ---
+    // Different-sized result lists, with an empty one interleaved.
+    let fm = nums.flat_map(dup_or_empty)
+    for x in fm
+        stdio.println("flat: ${x}")
+    stdio.println("flat len = ${fm.length()}")
+
+    // flat_map producing String lists.
+    let fms = [1, 3].flat_map(words_for)
+    for s in fms
+        stdio.println("flats: ${s}")
+
+    // flat_map over an empty receiver.
+    let fm_empty = empty.flat_map(single)
+    stdio.println("flat_empty len = ${fm_empty.length()}")
+
+    // --- zip ---
+    // Different lengths: truncates to the shorter (3).
+    let labels = ["a", "b", "c"]
+    let values = [10, 20, 30, 40, 50]
+    for (lab, v) in labels.zip(values)
+        stdio.println("zip: ${lab} = ${v}")
+    // Symmetric truncation: shorter list on the left.
+    let short = [100, 200]
+    for (v, lab) in short.zip(labels)
+        stdio.println("zip2: ${v} = ${lab}")
+    // Zip with an empty list yields nothing.
+    let z_empty = empty.zip(nums)
+    stdio.println("zip_empty len = ${z_empty.length()}")
