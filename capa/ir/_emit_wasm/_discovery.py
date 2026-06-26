@@ -91,8 +91,12 @@ class _DiscoveryMixin:
                 if recv_ty.startswith("List") and instr.method in ("map", "filter", "fold"):
                     return True
                 # Set.add grows / appends, Set.to_list allocates a
-                # fresh List<T>; both need the heap.
-                if recv_ty.startswith("Set") and instr.method in ("add", "to_list"):
+                # fresh List<T>, and union / intersection / difference
+                # each allocate a fresh result Set<T>; all need the heap.
+                if recv_ty.startswith("Set") and instr.method in (
+                    "add", "to_list",
+                    "union", "intersection", "difference",
+                ):
                     return True
                 # Range.to_list materialises a fresh List<Int>.
                 if recv_ty.startswith("Range") and instr.method == "to_list":

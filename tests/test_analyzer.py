@@ -2732,7 +2732,8 @@ class TestMapBuiltinMethods(unittest.TestCase):
 
 
 class TestSetBuiltinMethods(unittest.TestCase):
-    """Set<T> has methods: length, add, remove, contains, to_list."""
+    """Set<T> has methods: length, add, remove, contains, to_list,
+    plus the algebra union / intersection / difference / is_subset."""
 
     def test_basic_set_usage(self):
         r = check(
@@ -2754,6 +2755,34 @@ class TestSetBuiltinMethods(unittest.TestCase):
         self.assertTrue(
             any("expects Int, got String" in m for m in msgs)
         )
+
+    def test_algebra_returns_set_and_bool(self):
+        # union / intersection / difference yield a Set<Int> (so
+        # chaining a Set method on the result type-checks); is_subset
+        # yields a Bool.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let a: Set<Int> = new_set()\n"
+            "    let b: Set<Int> = new_set()\n"
+            "    let u = a.union(b)\n"
+            "    let n = u.length()\n"
+            "    let i = a.intersection(b)\n"
+            "    let d = a.difference(b)\n"
+            "    let sub = a.is_subset(b)\n"
+            "    let chained = a.union(b).intersection(a)\n"
+            "    stdio.println(\"${n} ${sub}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_union_wrong_element_type_rejected(self):
+        # The argument must be a Set<T> with the SAME element type.
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let a: Set<Int> = new_set()\n"
+            "    let b: Set<String> = new_set()\n"
+            "    let u = a.union(b)\n"
+        )
+        self.assertTrue(msgs, "expected a type error for mismatched element types")
 
 
 # =============================================================

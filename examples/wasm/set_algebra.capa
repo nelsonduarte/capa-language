@@ -1,0 +1,80 @@
+// Set<Int> algebra exercise for the Wasm backend, kept parity-clean
+// against the Python backend (insertion-ordered CapaSet). Covers
+// union / intersection / difference / is_subset over sets with
+// partial overlap, an empty set on both sides, and a non-trivial
+// insertion order so any order divergence between backends shows up
+// in the to_list dumps. Bool results are branched into yes/no
+// strings (bare Bool interpolation diverges); see set_basics.capa.
+
+fun show(stdio: Stdio, tag: String, flag: Bool)
+    if flag
+        stdio.println("${tag}: yes")
+    else
+        stdio.println("${tag}: no")
+
+fun dump(stdio: Stdio, tag: String, s: Set<Int>)
+    stdio.println("${tag} (len ${s.length()}):")
+    let xs = s.to_list()
+    for x in xs
+        stdio.println("  ${x}")
+
+fun main(stdio: Stdio)
+    // a inserted in the order 3, 1, 4, 5 (dedup of a stray repeat).
+    let a: Set<Int> = new_set()
+    a.add(3)
+    a.add(1)
+    a.add(4)
+    a.add(1)
+    a.add(5)
+
+    // b inserted in the order 5, 9, 2, 6, 3 (overlaps a on 3 and 5).
+    let b: Set<Int> = new_set()
+    b.add(5)
+    b.add(9)
+    b.add(2)
+    b.add(6)
+    b.add(5)
+    b.add(3)
+
+    let empty: Set<Int> = new_set()
+
+    dump(stdio, "a", a)
+    dump(stdio, "b", b)
+
+    // union: a's order, then b's new elements in b's order ->
+    // 3, 1, 4, 5, 9, 2, 6.
+    dump(stdio, "a union b", a.union(b))
+    // union is not commutative in ORDER: b first -> 5, 9, 2, 6, 3, 1, 4.
+    dump(stdio, "b union a", b.union(a))
+    // union with empty leaves order untouched.
+    dump(stdio, "a union empty", a.union(empty))
+    dump(stdio, "empty union a", empty.union(a))
+
+    // intersection: a's order, kept when in b -> 3, 5.
+    dump(stdio, "a intersect b", a.intersection(b))
+    dump(stdio, "b intersect a", b.intersection(a))
+    // disjoint intersection is empty.
+    let c: Set<Int> = new_set()
+    c.add(100)
+    c.add(200)
+    dump(stdio, "a intersect c", a.intersection(c))
+    dump(stdio, "a intersect empty", a.intersection(empty))
+
+    // difference: a's order, kept when NOT in b -> 1, 4.
+    dump(stdio, "a minus b", a.difference(b))
+    dump(stdio, "b minus a", b.difference(a))
+    dump(stdio, "a minus empty", a.difference(empty))
+    dump(stdio, "empty minus a", empty.difference(a))
+
+    // is_subset.
+    show(stdio, "a subset of b", a.is_subset(b))
+    show(stdio, "empty subset of a", empty.is_subset(a))
+    show(stdio, "a subset of a", a.is_subset(a))
+
+    // {3, 5} is a subset of a and of b.
+    let d: Set<Int> = new_set()
+    d.add(3)
+    d.add(5)
+    show(stdio, "d subset of a", d.is_subset(a))
+    show(stdio, "d subset of b", d.is_subset(b))
+    show(stdio, "a subset of d", a.is_subset(d))

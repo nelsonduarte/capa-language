@@ -96,6 +96,7 @@ _PARITY_PROGRAMS: list[str] = [
     "list_contains_float.capa",
     "nested_eq.capa",
     "set_basics.capa",
+    "set_algebra.capa",
     "set_string.capa",
     "set_struct.capa",
     "map_eq.capa",
@@ -1056,6 +1057,9 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_set_basics(self):
         self._assert_parity("set_basics.capa")
+
+    def test_set_algebra(self):
+        self._assert_parity("set_algebra.capa")
 
     def test_set_string(self):
         self._assert_parity("set_string.capa")

@@ -117,6 +117,117 @@ class TestCapaSetEquality(unittest.TestCase):
             hash(CapaSet([1]))
 
 
+class TestCapaSetAlgebra(unittest.TestCase):
+    """``CapaSet`` union / intersection / difference / is_subset are
+    the Python-backend oracle for the same-named Capa methods. The
+    Wasm backend's ``$set_<op>_*`` helpers must reproduce both the
+    RESULT and the insertion ORDER exactly, so these tests pin the
+    order (via ``to_list()``) as well as the membership, and the
+    parity harness (``test_ir_wasm_parity.set_algebra``) checks the
+    two backends against each other end to end."""
+
+    def _order(self, s):
+        # The observable iteration order, as a plain list.
+        return list(s.to_list())
+
+    # ----- union -----------------------------------------------------
+
+    def test_union_order_a_then_b_new(self):
+        a = CapaSet([3, 1, 4, 5])
+        b = CapaSet([5, 9, 2, 6, 3])
+        # a's order, then b's elements not already in a, in b's order.
+        self.assertEqual(self._order(a.union(b)), [3, 1, 4, 5, 9, 2, 6])
+
+    def test_union_is_order_asymmetric(self):
+        a = CapaSet([3, 1, 4, 5])
+        b = CapaSet([5, 9, 2, 6, 3])
+        self.assertEqual(self._order(b.union(a)), [5, 9, 2, 6, 3, 1, 4])
+
+    def test_union_with_empty_both_sides(self):
+        a = CapaSet([3, 1, 4])
+        e = CapaSet([])
+        self.assertEqual(self._order(a.union(e)), [3, 1, 4])
+        self.assertEqual(self._order(e.union(a)), [3, 1, 4])
+
+    def test_union_does_not_mutate_operands(self):
+        a = CapaSet([1, 2])
+        b = CapaSet([2, 3])
+        a.union(b)
+        self.assertEqual(self._order(a), [1, 2])
+        self.assertEqual(self._order(b), [2, 3])
+
+    # ----- intersection ---------------------------------------------
+
+    def test_intersection_keeps_a_order(self):
+        a = CapaSet([3, 1, 4, 5])
+        b = CapaSet([5, 9, 2, 6, 3])
+        self.assertEqual(self._order(a.intersection(b)), [3, 5])
+        # Symmetric set, b's order.
+        self.assertEqual(self._order(b.intersection(a)), [5, 3])
+
+    def test_intersection_disjoint_is_empty(self):
+        self.assertEqual(
+            self._order(CapaSet([1, 2]).intersection(CapaSet([3, 4]))),
+            [],
+        )
+
+    def test_intersection_with_empty(self):
+        a = CapaSet([1, 2, 3])
+        e = CapaSet([])
+        self.assertEqual(self._order(a.intersection(e)), [])
+        self.assertEqual(self._order(e.intersection(a)), [])
+
+    # ----- difference -----------------------------------------------
+
+    def test_difference_keeps_a_order(self):
+        a = CapaSet([3, 1, 4, 5])
+        b = CapaSet([5, 9, 2, 6, 3])
+        self.assertEqual(self._order(a.difference(b)), [1, 4])
+        self.assertEqual(self._order(b.difference(a)), [9, 2, 6])
+
+    def test_difference_with_empty(self):
+        a = CapaSet([3, 1, 4])
+        e = CapaSet([])
+        self.assertEqual(self._order(a.difference(e)), [3, 1, 4])
+        self.assertEqual(self._order(e.difference(a)), [])
+
+    def test_difference_self_is_empty(self):
+        a = CapaSet([1, 2, 3])
+        self.assertEqual(self._order(a.difference(a)), [])
+
+    # ----- is_subset -------------------------------------------------
+
+    def test_is_subset_true_and_false(self):
+        a = CapaSet([3, 5])
+        b = CapaSet([5, 9, 2, 6, 3])
+        self.assertTrue(a.is_subset(b))
+        self.assertFalse(b.is_subset(a))
+
+    def test_empty_is_subset_of_anything(self):
+        self.assertTrue(CapaSet([]).is_subset(CapaSet([1, 2])))
+        self.assertTrue(CapaSet([]).is_subset(CapaSet([])))
+
+    def test_set_is_subset_of_itself(self):
+        a = CapaSet([1, 2, 3])
+        self.assertTrue(a.is_subset(a))
+
+    def test_is_subset_order_independent(self):
+        a = CapaSet([2, 1])
+        b = CapaSet([1, 2, 3])
+        self.assertTrue(a.is_subset(b))
+
+    def test_string_elements_algebra(self):
+        # Exercises the String element kind (packed-i64 slot on Wasm),
+        # locking the same order contract for non-Int elements.
+        a = CapaSet(["red", "green", "blue"])
+        b = CapaSet(["blue", "yellow", "red"])
+        self.assertEqual(self._order(a.union(b)),
+                         ["red", "green", "blue", "yellow"])
+        self.assertEqual(self._order(a.intersection(b)), ["red", "blue"])
+        self.assertEqual(self._order(a.difference(b)), ["green"])
+        self.assertFalse(a.is_subset(b))
+
+
 class TestCapaRange(unittest.TestCase):
     def test_length_contains_empty(self):
         r = CapaRange(0, 5)

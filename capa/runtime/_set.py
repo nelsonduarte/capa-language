@@ -64,6 +64,37 @@ class CapaSet:
         # Insertion order falls out of the dict's key order.
         return CapaList(self._d)
 
+    def union(self, other: "CapaSet") -> "CapaSet":
+        # Elements of ``self`` in their insertion order, followed by
+        # the elements of ``other`` (in ``other``'s insertion order)
+        # that ``self`` does not already hold. ``CapaSet(...)`` dedups
+        # while keeping first-seen order, and chaining ``self`` first
+        # guarantees ``self``'s order leads; an ``other`` element equal
+        # to one already in ``self`` is dropped because it is seen
+        # second. This is the order the Wasm ``$set_union_*`` helper
+        # reproduces (copy ``a``, then append each not-yet-present
+        # ``b`` element).
+        result = CapaSet(self._d)
+        for x in other._d:
+            result._d[x] = None
+        return result
+
+    def intersection(self, other: "CapaSet") -> "CapaSet":
+        # Elements of ``self`` (in ``self``'s insertion order) that
+        # also belong to ``other``. Walking ``self`` keeps its order.
+        return CapaSet(x for x in self._d if x in other._d)
+
+    def difference(self, other: "CapaSet") -> "CapaSet":
+        # Elements of ``self`` (in ``self``'s insertion order) that do
+        # NOT belong to ``other``.
+        return CapaSet(x for x in self._d if x not in other._d)
+
+    def is_subset(self, other: "CapaSet") -> bool:
+        # True iff every element of ``self`` belongs to ``other``. The
+        # empty set is a subset of anything (the generator is empty, so
+        # ``all`` is vacuously True). Order-independent.
+        return all(x in other._d for x in self._d)
+
     def __iter__(self):
         return iter(self._d)
 

@@ -69,6 +69,7 @@ from ._strings import _StringEmissionMixin
 from ._maps import _MapEmissionMixin
 from ._lists import _ListEmissionMixin
 from ._sets import _SetEmissionMixin
+from ._set_algebra import _SetAlgebraMixin
 from ._closures import _ClosureEmissionMixin
 from ._json import _JsonEmissionMixin
 from ._option import _OptionEmissionMixin
@@ -175,6 +176,7 @@ class WasmEmitter(
     _MapEmissionMixin,
     _ListEmissionMixin,
     _SetEmissionMixin,
+    _SetAlgebraMixin,
     _ClosureEmissionMixin,
     _CapDispatchMixin,
     _JsonEmissionMixin,
@@ -580,7 +582,8 @@ class WasmEmitter(
             # the old ``$str_starts_with`` / ``$proc_allows`` /
             # ``$str_has_slash`` gate is gone.
             if (self._uses_map_ops(module)
-                    or self._eq_needs_str_eq(module)):
+                    or self._eq_needs_str_eq(module)
+                    or self._set_algebra_needs_str_eq(module)):
                 self._emit_str_eq_function()
             if self._uses_string_concat(module):
                 # String ``+`` lowers to ``call $str_concat`` (see
@@ -649,6 +652,14 @@ class WasmEmitter(
             # module level before user functions, so they can mutually
             # recurse by name.
             self._emit_equality_helpers(module)
+            # Set algebra helpers ($set_union_* / $set_intersection_* /
+            # $set_difference_* / $set_is_subset_*). Emitted after the
+            # $eq_* helpers because a pointer-shape Set element's
+            # membership scan calls the element's $eq_<elem> helper;
+            # WAT resolves calls by name across the module so order is
+            # not strictly required, but keeping them adjacent reads
+            # cleanly.
+            self._emit_set_algebra_helpers(module)
         # Random capability: SplitMix64 helpers + the two
         # ``$rand_state`` / ``$rand_state_inited`` globals. Emitted
         # outside the heap conditional because the PRNG runs in pure

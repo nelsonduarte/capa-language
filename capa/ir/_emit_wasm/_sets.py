@@ -114,6 +114,11 @@ class _SetEmissionMixin:
         if method == "to_list":
             self._emit_set_to_list(recv, elem_size, instr.dst)
             return
+        if method in ("union", "intersection", "difference", "is_subset"):
+            # Set algebra: each lowers to a generated module-level
+            # helper ``$set_<method>_<key>(a, b)``. See _set_algebra.
+            self._emit_set_algebra_call(instr)
+            return
         raise WasmEmissionError(
             f"Set method {method!r} is not supported by the Wasm backend"
         )

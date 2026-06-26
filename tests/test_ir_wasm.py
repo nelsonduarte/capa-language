@@ -1199,6 +1199,132 @@ class TestWasmSetInt(unittest.TestCase):
         self.assertEqual(exp["empty_at_start"](store), 1)
         self.assertEqual(exp["empty_after_add"](store), 0)
 
+    # ----- set algebra: union / intersection / difference / subset ---
+    #
+    # Each builds a result set and folds it into an order-sensitive
+    # fingerprint (acc = acc*100 + x, walked in iteration order) so a
+    # wrong RESULT or a wrong ORDER both change the number. The
+    # base-100 fold is unambiguous because every element used is < 100.
+
+    def _ab_prelude(self) -> str:
+        # a = {3, 1, 4, 5} (insertion order), b = {5, 9, 2, 6, 3}.
+        return (
+            "    let a: Set<Int> = new_set()\n"
+            "    a.add(3)\n"
+            "    a.add(1)\n"
+            "    a.add(4)\n"
+            "    a.add(5)\n"
+            "    let b: Set<Int> = new_set()\n"
+            "    b.add(5)\n"
+            "    b.add(9)\n"
+            "    b.add(2)\n"
+            "    b.add(6)\n"
+            "    b.add(3)\n"
+        )
+
+    def _fingerprint(self, set_expr: str) -> str:
+        return (
+            "fun fp() -> Int\n"
+            + self._ab_prelude()
+            + f"    let r = {set_expr}\n"
+            "    var acc = 0\n"
+            "    for x in r\n"
+            "        acc = acc * 100 + x\n"
+            "    return acc\n"
+        )
+
+    def test_union_result_and_order(self):
+        # a union b -> 3,1,4,5,9,2,6.
+        store, exp = self._instantiate(self._fingerprint("a.union(b)"))
+        self.assertEqual(exp["fp"](store), 3010405090206)
+
+    def test_union_order_is_asymmetric(self):
+        # b union a -> 5,9,2,6,3,1,4.
+        store, exp = self._instantiate(self._fingerprint("b.union(a)"))
+        self.assertEqual(exp["fp"](store), 5090206030104)
+
+    def test_intersection_result_and_order(self):
+        # a intersect b -> 3,5.
+        store, exp = self._instantiate(self._fingerprint("a.intersection(b)"))
+        self.assertEqual(exp["fp"](store), 305)
+
+    def test_difference_result_and_order(self):
+        # a minus b -> 1,4.
+        store, exp = self._instantiate(self._fingerprint("a.difference(b)"))
+        self.assertEqual(exp["fp"](store), 104)
+
+    def test_difference_other_direction(self):
+        # b minus a -> 9,2,6.
+        store, exp = self._instantiate(self._fingerprint("b.difference(a)"))
+        self.assertEqual(exp["fp"](store), 90206)
+
+    def test_intersection_disjoint_is_empty(self):
+        src = (
+            "fun fp() -> Int\n"
+            "    let a: Set<Int> = new_set()\n"
+            "    a.add(1)\n"
+            "    a.add(2)\n"
+            "    let b: Set<Int> = new_set()\n"
+            "    b.add(3)\n"
+            "    b.add(4)\n"
+            "    let r = a.intersection(b)\n"
+            "    return r.length()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["fp"](store), 0)
+
+    def test_union_with_empty_preserves_order(self):
+        src = (
+            "fun fp() -> Int\n"
+            + self._ab_prelude()
+            + "    let e: Set<Int> = new_set()\n"
+            "    let r = a.union(e)\n"
+            "    var acc = 0\n"
+            "    for x in r\n"
+            "        acc = acc * 100 + x\n"
+            "    return acc\n"
+        )
+        store, exp = self._instantiate(src)
+        # a union empty -> 3,1,4,5.
+        self.assertEqual(exp["fp"](store), 3010405)
+
+    def test_is_subset_true_false_and_empty(self):
+        src = (
+            "fun sub_ab() -> Bool\n"
+            + self._ab_prelude()
+            + "    return a.is_subset(b)\n"
+            "fun sub_self() -> Bool\n"
+            + self._ab_prelude()
+            + "    return a.is_subset(a)\n"
+            "fun empty_sub() -> Bool\n"
+            + self._ab_prelude()
+            + "    let e: Set<Int> = new_set()\n"
+            "    return e.is_subset(a)\n"
+            "fun d_sub_a() -> Bool\n"
+            + self._ab_prelude()
+            + "    let d: Set<Int> = new_set()\n"
+            "    d.add(1)\n"
+            "    d.add(5)\n"
+            "    return d.is_subset(a)\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["sub_ab"](store), 0)
+        self.assertEqual(exp["sub_self"](store), 1)
+        self.assertEqual(exp["empty_sub"](store), 1)
+        self.assertEqual(exp["d_sub_a"](store), 1)
+
+    def test_algebra_does_not_mutate_operands(self):
+        # a.union(b) must leave a and b untouched: after the call,
+        # a still has 4 elements and b still has 5.
+        src = (
+            "fun lens() -> Int\n"
+            + self._ab_prelude()
+            + "    let r = a.union(b)\n"
+            "    return a.length() * 10 + b.length()\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["lens"](store), 45)
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),

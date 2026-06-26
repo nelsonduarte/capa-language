@@ -69,6 +69,7 @@ F = TyVar("F")
 def opt(t: Ty) -> TyName: return TyName("Option", (t,))
 def res(t: Ty, e: Ty) -> TyName: return TyName("Result", (t, e))
 def lst(t: Ty) -> TyName: return TyName("List", (t,))
+def sset(t: Ty) -> TyName: return TyName("Set", (t,))
 def fun(*params_then_ret: Ty) -> TyFun:
     *params, ret = params_then_ret
     return TyFun(tuple(params), ret)
@@ -176,6 +177,16 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("contains", fun(T, TyBool),                                               []),
         ("to_list",  fun(lst(T)),                                                  []),
         ("is_empty", fun(TyBool),                                                  []),
+        # Set algebra. Each returns a fresh Set<T> (never mutates the
+        # receiver) except ``is_subset`` which answers a Bool. The
+        # result's iteration order is specified and byte-identical
+        # across both backends: see capa/runtime/_set.py (oracle) and
+        # capa/ir/_emit_wasm/_sets.py ($set_union_* / $set_intersection_*
+        # / $set_difference_* / $set_is_subset_* helpers).
+        ("union",        fun(sset(T), sset(T)),                                     []),
+        ("intersection", fun(sset(T), sset(T)),                                     []),
+        ("difference",   fun(sset(T), sset(T)),                                     []),
+        ("is_subset",    fun(sset(T), TyBool),                                      []),
     ],
     "Option": [
         ("is_some",   fun(TyBool),                                                 []),

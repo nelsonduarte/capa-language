@@ -167,6 +167,8 @@ match m.get("a")
 ## `Set<T>`
 
 Set of unique elements. Construct via `new_set()` with a type annotation.
+A set is **insertion-ordered**: `to_list()`, iteration, and the algebra
+methods below all observe the order in which elements were first added.
 
 | Method | Type | Description |
 |---|---|---|
@@ -176,6 +178,15 @@ Set of unique elements. Construct via `new_set()` with a type annotation.
 | `remove(x: T)` | `()` | Remove (no-op if absent) |
 | `contains(x: T)` | `Bool` | |
 | `to_list()` | `List<T>` | Convert to a list |
+| `union(other: Set<T>)` | `Set<T>` | Elements of the receiver (in order), then `other`'s elements not already present (in `other`'s order) |
+| `intersection(other: Set<T>)` | `Set<T>` | Elements of the receiver (in order) that also belong to `other` |
+| `difference(other: Set<T>)` | `Set<T>` | Elements of the receiver (in order) that do not belong to `other` |
+| `is_subset(other: Set<T>)` | `Bool` | True iff every element of the receiver belongs to `other` (the empty set is a subset of any set) |
+
+`union`, `intersection`, and `difference` each return a fresh set and
+never mutate the receiver or `other`. The result's iteration order is
+specified above and is byte-identical across the Python and Wasm
+backends.
 
 ---
 
