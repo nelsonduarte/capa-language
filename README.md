@@ -349,6 +349,13 @@ The marketing + rendered learning pages live at
 repo. The deeper Markdown documents below stay here, next to the
 code they describe.
 
+For a guided, beginner-friendly path there is a book,
+**[Capa: The Capability-Typed Programming Language](https://github.com/nelsonduarte/capa-book)**:
+a hands-on introduction (~278 pages, free PDF) with didactic
+chapters, exercises, three practical projects, and an appendix of
+exercise solutions, written for compiler `v1.12.0`. Content is
+licensed CC BY-NC 4.0.
+
 | Doc | What it is |
 |-----|------------|
 | [`capa-language.com`](https://capa-language.com/) | landing page, with the case for the language |
