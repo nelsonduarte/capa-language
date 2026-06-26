@@ -24,6 +24,21 @@ fun words_for(n: Int) -> List<String>
 fun single(n: Int) -> List<Int>
     return [n]
 
+// A user-defined struct so the list elements are pointer-shaped
+// (heap records) rather than scalar Int / packed String slots.
+// reverse copies the pointers verbatim, and enumerate / zip pair
+// each pointer into a fresh tuple record; the field reads after
+// extraction must still resolve on both backends.
+type Item {
+    id: Int,
+    name: String
+}
+
+// flat_map producing struct elements: one Item per input, so the
+// concatenation walks struct pointers rather than scalars.
+fun item_for(n: Int) -> List<Item>
+    return [Item { id: n, name: "p${n}" }]
+
 fun main(stdio: Stdio)
     // --- reverse ---
     let empty: List<Int> = []
@@ -82,3 +97,35 @@ fun main(stdio: Stdio)
     // Zip with an empty list yields nothing.
     let z_empty = empty.zip(nums)
     stdio.println("zip_empty len = ${z_empty.length()}")
+
+    // --- struct (pointer-shaped) elements ---
+    // The list holds heap records, so reverse copies pointers and
+    // enumerate / zip pair those pointers into fresh tuples; the
+    // field reads after extraction must still resolve on both paths.
+    let items = [Item { id: 1, name: "one" }, Item { id: 2, name: "two" }, Item { id: 3, name: "three" }]
+
+    // reverse over struct elements (order flips, pointers intact).
+    for it in items.reverse()
+        stdio.println("item rev: ${it.id} ${it.name}")
+    // Non-mutation: the original keeps its first order.
+    for it in items
+        stdio.println("item orig: ${it.id} ${it.name}")
+
+    // enumerate over struct elements: 0-based index paired with the
+    // struct pointer, fields read out of the tuple.
+    for (i, it) in items.enumerate()
+        stdio.println("item enum: ${i} -> ${it.id} ${it.name}")
+
+    // zip a struct list against an Int list, truncating to the shorter.
+    let ranks = [10, 20]
+    for (it, r) in items.zip(ranks)
+        stdio.println("item zip: ${it.name} = ${r}")
+    // Symmetric side: struct list on the right.
+    for (r, it) in ranks.zip(items)
+        stdio.println("item zip2: ${r} = ${it.name}")
+
+    // flat_map yielding struct elements: one Item per input.
+    let fmi = [4, 5].flat_map(item_for)
+    for it in fmi
+        stdio.println("item flat: ${it.id} ${it.name}")
+    stdio.println("item flat len = ${fmi.length()}")

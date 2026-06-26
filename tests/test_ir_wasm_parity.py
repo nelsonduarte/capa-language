@@ -1502,7 +1502,8 @@ class TestPythonWasmParity(unittest.TestCase):
         # (Int, T) / (T, U) tuple records; flat_map concatenates the
         # per-element result lists in order via the HOF closure path.
         # Covers empty lists, non-mutation, 0-based indices, zip
-        # truncation from either side, and Int / String element types.
+        # truncation from either side, and Int / String / struct
+        # (pointer-shaped) element types.
         self._assert_parity("list_reverse_enumerate_zip_flatmap.capa")
 
     def test_net_allows(self):
