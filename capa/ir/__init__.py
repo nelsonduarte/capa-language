@@ -39,6 +39,9 @@ from ._emit_wasm import WasmEmitter, WasmEmissionError
 from ._emit_wit import (
     emit_wit, collect_used_capabilities, UnsupportedCapabilityMethod,
 )
+from ._env_ceiling import (
+    EnvCeiling, compute_env_ceiling, compute_env_ceiling_from_cir,
+)
 
 __all__ = [
     "Module",
@@ -58,6 +61,9 @@ __all__ = [
     "emit_wat",
     "emit_wit",
     "collect_used_capabilities",
+    "EnvCeiling",
+    "compute_env_ceiling",
+    "compute_env_ceiling_from_cir",
     "compile",
     "compile_program",
     "compile_wat",

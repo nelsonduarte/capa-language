@@ -265,6 +265,10 @@ LEVEL 1, the AUTHORITY CEILING. The set passed to `main` (its declared
 caps and their initial roots) is mapped to WASI host configuration:
 preopens, env-set, allowed-addresses. This is imposed by the RUNTIME
 on ANY conformant WASI host. No module, tampered or not, exceeds it.
+REALISED for Env in the `--wasi` mode when the program's `env.get` keys
+are static (the env-set is restricted to the static ceiling; see
+section 8, Phase 1, ENV STATUS). A dynamic key degrades that cap to
+the Level 2 ceiling (`inherit_env`).
 
 LEVEL 2, the FINE ATTENUATION, the in-program narrowings below the
 ceiling (`restrict_to`, `restrict_to_keys`, the Clock deadline). This
@@ -306,6 +310,27 @@ even observe a variable outside the ceiling, matching the fail-closed
 (`capa/runtime/_capabilities.py:368-372`). In-program
 `restrict_to_keys` / `restrict_to` narrowings below the ceiling stay
 guest-side (Level 2).
+
+ENV STATUS (2026-06-27): IMPLEMENTED for the `--wasi` mode. The Env
+ceiling is the set of keys `main` can read through `Env.get`, computed
+statically from the CIR (`capa/ir/_env_ceiling.py`, after the loader
+has inlined imports). The PRE-REQUISITE of materialising the ceiling
+statically is met by a literal scan: a `env.get` call with a STRING
+LITERAL key contributes its key; a NON-LITERAL key (computed at
+runtime) marks the ceiling NOT CLOSED. Only `Env.get` defines the
+ceiling (`Env.args` reads argv, `restrict_to_keys` / `allows` only
+narrow / query, so none widens the read set). When the ceiling is
+CLOSED the host (`capa/runtime/_wasm_component_host.py`) installs a
+`WasiConfig.env` of exactly those keys read from the host environment,
+so a variable outside the ceiling is never delivered to the component
+(the leak-by-default fix). When a key is DYNAMIC the ceiling is not
+closed and the host degrades to `inherit_env` (Level 2 ceiling, full
+environment) rather than silently widen or narrow, mirroring the Phase
+2 Fs rule below. The observable program behaviour is unchanged (the
+ceiling contains every literal the program reads; an absent ceiling key
+still reads `none`, fail-closed). A literal routed through an
+intermediate `let` is treated CONSERVATIVELY as dynamic (it never
+under-delivers a key; folding consts in is a future refinement).
 
 PHASE 2, Fs via preopens. Map the ceiling of `main`'s Fs root to a set
 of preopened directories; in-program `restrict_to` narrowings stay
@@ -358,6 +383,9 @@ Code:
 - `capa/builtins.py:245-304` (attenuation method signatures)
 - `capa/ir/_emit_wasm/_wasi.py` and `capa/ir/_emit_wit.py:60-198`
   (current `--wasi` mode and WIT with `handle: u32`)
+- `capa/ir/_env_ceiling.py` (the static Env authority-ceiling analysis
+  backing Level 1: `EnvCeiling` / `compute_env_ceiling`) and the host
+  env-set application in `capa/runtime/_wasm_component_host.py`
 
 Related design records:
 

@@ -79,8 +79,30 @@ class WasmComponentHost:
     and dispatches to the world's ``main`` export with the right
     root capability handle threaded into each declared cap slot."""
 
-    def __init__(self, args: Iterable[str] = (), *, wasi: bool = False):
+    def __init__(
+        self,
+        args: Iterable[str] = (),
+        *,
+        wasi: bool = False,
+        env_ceiling: Optional["object"] = None,
+    ):
         self._args = list(args)
+        # WASI Env Level 1 (2026-06-27): the statically-computed Env
+        # authority ceiling (``capa.ir.EnvCeiling``) for the program
+        # being run, or None when not computed. When the ceiling is
+        # CLOSED, the WASI env-set is restricted to exactly its keys
+        # (read from the host environment) instead of ``inherit_env``,
+        # so the component never receives a variable outside the
+        # ceiling -- the leak-by-default fix. When None or not closed,
+        # the host keeps ``inherit_env`` (Level 2). Only consulted in
+        # ``--wasi`` mode; the default ``capa:host`` path ignores it.
+        self._env_ceiling = env_ceiling
+        # Records the env-set actually installed on the WasiConfig in
+        # WASI mode (a dict for a closed ceiling, or the sentinel
+        # ``"inherit"`` when ``inherit_env`` was used). Exposed for
+        # tests and diagnostics so the leak-closed guarantee is
+        # inspectable without reaching into wasmtime internals.
+        self._wasi_env_applied: Optional[object] = None
         self._engine = wasmtime.Engine()
         self._store = wasmtime.Store(self._engine)
         self._linker = wc.Linker(self._engine)
@@ -114,7 +136,34 @@ class WasmComponentHost:
             #   args the host was constructed with (no synthetic argv[0])
             #   to keep ``env.args()`` byte-identical to the default
             #   backend and the core-Wasm host.
-            wasi_cfg.inherit_env()
+            #
+            # Env Level 1 (2026-06-27): when the static Env ceiling is
+            # CLOSED (every ``env.get`` key is a string literal), the
+            # env-set is restricted to exactly those keys read from the
+            # host environment, via ``env`` rather than ``inherit_env``.
+            # The component then NEVER receives a variable outside the
+            # ceiling (the leak-by-default fix, docs/design/
+            # wasi-attenuation.md Level 1). The program's observable
+            # behaviour is unchanged: it only ever reads ceiling keys,
+            # and a ceiling key absent from the host environment still
+            # reads as ``none`` (fail-closed), identical to inherit_env.
+            # When the ceiling is absent or NOT closed (a dynamic
+            # ``env.get`` key), fall back to ``inherit_env`` (Level 2);
+            # the guest-side allow-list still narrows under our host.
+            ceiling = self._env_ceiling
+            if ceiling is not None and getattr(ceiling, "closed", False):
+                env_set = ceiling.host_env_set(dict(os.environ))
+                # wasmtime's WasiConfig.env takes the FULL env-set as a
+                # list of (key, value) pairs in one assignment (it
+                # replaces, not appends), so build it once. An empty
+                # ceiling yields an empty env-set: the component gets a
+                # completely empty environment, the tightest leak-closed
+                # outcome.
+                wasi_cfg.env = list(env_set.items())
+                self._wasi_env_applied = dict(env_set)
+            else:
+                wasi_cfg.inherit_env()
+                self._wasi_env_applied = "inherit"
             wasi_cfg.argv = list(self._args)
             self._store.set_wasi(wasi_cfg)
             self._linker.add_wasip2()

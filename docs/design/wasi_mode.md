@@ -11,7 +11,10 @@ note describes an opt-in mode that migrates the reader touch-points of
 satisfied by any standard WASI P2 host (here, `wasmtime`'s
 `Linker.add_wasip2()`). Env additionally keeps its attenuation
 (`restrict_to_keys` / `allows`) working in this mode, implemented
-guest-side (Level 2 of `docs/design/wasi-attenuation.md`).
+guest-side (Level 2 of `docs/design/wasi-attenuation.md`), and, when
+its read keys are static, maps its **authority ceiling** onto the host
+env-set (**Level 1**; see "Env ceiling (runtime-imposed, Level 1)"
+below).
 
 It is a viability spike, not a general WASI port. The default
 `capa:host` path is completely unchanged.
@@ -59,10 +62,12 @@ use for unit conversion, so the call-site emitters and the
   copies the (data_ptr, len) pair straight through with no per-element
   copy.
 
-The host provides the values through the `WasiConfig`:
-`inherit_env()` (so `env.get` of a host env var returns its value) and
-`argv = <program args>` (so `env.args()` matches the default backend's
-`sys.argv[1:]`, with no synthetic argv[0]).
+The host provides the values through the `WasiConfig`. The env-set it
+installs depends on the **static Env ceiling** (see "Env ceiling
+(runtime-imposed, Level 1)" below): a restricted env-set of exactly the
+ceiling keys when the ceiling is closed, `inherit_env()` otherwise. The
+argv is always `argv = <program args>` (so `env.args()` matches the
+default backend's `sys.argv[1:]`, with no synthetic argv[0]).
 
 ### Env attenuation (guest-side, Level 2)
 
@@ -108,18 +113,89 @@ The three guest-side wrappers (`capa/ir/_emit_wasm/_wasi.py`):
 
 `Env.args` is **not** attenuated (the oracle has no arg restriction).
 
-**Guarantee level (honest).** This is **Level 2**. The host still
-`inherit_env`s the **full** environment to the component (the ceiling
-is not yet materialised via env-set - that is **Level 1**, a later
-increment), so the fine allow-list narrowing is imposed by the
-**compiler-generated guest code**, not by the WASI host. It is
-**proved** by the compiler (the guest only ever narrows) and
-**reinforced** by our host (which generated the guest); under a stock
-or tampered WASI host the full environment is reachable and the
-narrowing would not be re-checked at the syscall. The byte-parity test
+**Guarantee level (honest).** The fine allow-list narrowing
+(`restrict_to_keys` / `allows` / the `get` fail-closed gate) is
+**Level 2**: imposed by the **compiler-generated guest code**, not by
+the WASI host. It is **proved** by the compiler (the guest only ever
+narrows) and **reinforced** by our host (which generated the guest);
+under a stock or tampered WASI host the fine narrowing would not be
+re-checked at the syscall.
+
+The **ceiling** (which env vars the component receives **at all**) is
+now **Level 1** when the program's `env.get` keys are static: the host
+delivers only the ceiling keys, so a variable outside the ceiling is
+not reachable even under a stock host. When a key is dynamic the host
+falls back to `inherit_env` (a full-environment ceiling, Level 2). See
+"Env ceiling (runtime-imposed, Level 1)" below. The byte-parity test
 (`tests/test_wasi_mode.py::TestWasiEnvAttenuation`) pins the guest-side
 narrowing to the host-side `capa:host` narrowing and the Python oracle
 for the controlled keys.
+
+### Env ceiling (runtime-imposed, Level 1)
+
+`wasi:cli/environment` lets the host fix the env-set at instantiate
+time, so the **authority ceiling** (which variables the component can
+ever observe) is a thing a conformant host imposes. This mode maps
+`main`'s Env ceiling onto that env-set when the ceiling is **static**,
+closing the leak-by-default that `inherit_env` left open (the audit M1
+trust-boundary note: an unrestricted Env saw the **whole** host
+environment, secrets included).
+
+**Computing the ceiling (static analysis).** The ceiling is the set of
+keys the program can read through `Env.get`. It is computed from the
+CIR (`capa/ir/_env_ceiling.py`, `compute_env_ceiling`) after the loader
+has inlined imported functions, so every reachable `env.get` is visible.
+The analysis walks every `MethodCall` whose receiver is an `Env` and
+whose method is `get`:
+
+- a **string-literal** argument contributes its key to the ceiling;
+- any **non-literal** argument (a local / param / computed value) marks
+  the ceiling **NOT CLOSED** (the key is decided at runtime, so the set
+  cannot be materialised).
+
+Only `Env.get` defines the ceiling: `Env.args` reads argv (no key), and
+`restrict_to_keys` / `allows` only narrow or query, so neither can make
+the program read a key it does not already pass to `env.get`. A literal
+routed through an intermediate `let` (`let k = "FOO"`, then
+`env.get(k)`) appears as a local at the call site and is treated
+**conservatively as dynamic**; this declines the Level 1 tightening in
+that case but never under-delivers a key (folding consts into the scan
+is a possible future refinement, not a correctness requirement).
+
+**Host decision.**
+
+- **Ceiling closed** (no dynamic `env.get`): the host instantiates the
+  component with `WasiConfig.env` set to **exactly** the ceiling keys,
+  read from the host environment. A ceiling key absent from the host
+  environment is simply omitted (the guest reads it as `none`,
+  fail-closed). The component **never receives** a variable outside the
+  ceiling. This is **Level 1**: the ceiling is imposed by the runtime
+  on any conformant WASI host.
+- **Ceiling not closed** (a dynamic `env.get` key): the host falls back
+  to `inherit_env` (the full environment, Level 2 ceiling). The
+  guest-side allow-list still narrows under our host, but the env-set
+  is not tightened.
+
+**No observable change.** Because the closed ceiling contains every
+literal `env.get` reads, the program never requests a key outside it,
+so the functional output is **identical** to the `inherit_env` path
+(byte-for-byte across Python, `capa:host`, and WASI Level 1). The only
+difference is that the component stops **receiving** the variables
+outside the ceiling. The guest-side fine attenuation (Level 2) still
+operates **on top** of the ceiling: the internal allow-list filters
+further; the env-set only limits what the host delivers at the root.
+
+**Wiring.** `capa/cli.py` computes the ceiling in the
+`--wasi --component --run` path and passes it to
+`WasmComponentHost(..., env_ceiling=...)`; the host builds the
+restricted `WasiConfig.env` (or `inherit_env`) accordingly and records
+the installed env-set in `WasmComponentHost._wasi_env_applied` (a dict
+for a closed ceiling, the sentinel `"inherit"` otherwise) so the
+leak-closed guarantee is inspectable. Tests:
+`tests/test_wasi_mode.py::TestWasiEnvCeilingAnalysis` (pure analysis)
+and `::TestWasiEnvCeilingLevel1` (end-to-end: `CAPA_SECRET` set in the
+host env is **not** delivered to the component; output parity across
+the three backends; dynamic-key fallback to `inherit_env`).
 
 ## Generated WIT (Clock + Random + Stdio)
 
@@ -176,7 +252,12 @@ registrations and additionally:
 wasi_cfg = wasmtime.WasiConfig()
 wasi_cfg.inherit_stdout()
 wasi_cfg.inherit_stderr()
-wasi_cfg.inherit_env()           # env.get reads the host environment
+# Env ceiling (Level 1): a closed ceiling restricts the env-set to its
+# keys; otherwise inherit_env (Level 2). See "Env ceiling" above.
+if ceiling is not None and ceiling.closed:
+    wasi_cfg.env = list(ceiling.host_env_set(dict(os.environ)).items())
+else:
+    wasi_cfg.inherit_env()       # env.get reads the host environment
 wasi_cfg.argv = list(self._args) # env.args reads these (no argv[0])
 store.set_wasi(wasi_cfg)
 linker.add_wasip2()
@@ -213,10 +294,13 @@ silently miscompiles):
   readable).
 
 Env attenuation was previously excluded too; it is now supported
-guest-side. Mapping `main`'s Env **ceiling** onto the host env-set
-(Level 1, so a stock host cannot even observe a variable outside the
-ceiling) remains a future increment - guest-side Level 2 enforces the
-fine narrowing under our host but not under an arbitrary one.
+guest-side (Level 2). Mapping `main`'s Env **ceiling** onto the host
+env-set (Level 1, so a stock host cannot even observe a variable
+outside the ceiling) is now done when the program's `env.get` keys are
+**static** (see "Env ceiling (runtime-imposed, Level 1)"); a program
+with a dynamic `env.get` key falls back to `inherit_env` (Level 2
+ceiling). Guest-side Level 2 still enforces the fine narrowing under
+our host on top of whichever ceiling is in effect.
 
 A program that reaches for one of the still-excluded methods in WASI
 mode gets, e.g.:
@@ -270,6 +354,17 @@ property (see `tests/test_wasi_mode.py`):
   **byte-identical** across the Python oracle, the `capa:host` backend
   (host-side narrowing) and the WASI backend (guest-side narrowing) -
   `TestWasiEnvAttenuation`.
+- **Env ceiling (Level 1)**: `TestWasiEnvCeilingAnalysis` pins the
+  static analysis (literal keys close the ceiling; a dynamic / let-bound
+  key opens it; `args` / `restrict_to_keys` / `allows` do not widen it;
+  no `env.get` yields an empty closed ceiling). `TestWasiEnvCeilingLevel1`
+  is the end-to-end leak-closed proof: with `CAPA_PUBLIC` and
+  `CAPA_SECRET` both set in the host env, a program that reads only
+  `CAPA_PUBLIC` by literal is run in `--wasi` with the env-set installed
+  on the component asserted to be `{CAPA_PUBLIC: ...}` (so `CAPA_SECRET`
+  is **not** delivered); the output is byte-identical across Python,
+  `capa:host` and WASI; and a dynamic-key program falls back to
+  `inherit_env`.
 
 ## Files
 
@@ -279,10 +374,15 @@ property (see `tests/test_wasi_mode.py`):
   excluded-surface validation.
 - `capa/ir/_emit_wit.py` - WASI-mode world generation
   (`_emit_wit_wasi`).
+- `capa/ir/_env_ceiling.py` - the static Env authority-ceiling analysis
+  (`EnvCeiling` / `compute_env_ceiling`) backing Level 1.
 - `capa/runtime/_wasm_component_host.py` - the `wasi=True` host recipe
-  (`inherit_env()` + `argv` for the Env readers; passes `0` as the Env
-  root so the guest-side `0`-is-unrestricted convention holds).
-- `capa/cli.py` - the `--wasi` flag, the WASI-deps embed path.
+  (the env-set: a restricted ceiling projection when closed, else
+  `inherit_env`; `argv` for the Env readers; passes `0` as the Env root
+  so the guest-side `0`-is-unrestricted convention holds; records the
+  installed env-set in `_wasi_env_applied`).
+- `capa/cli.py` - the `--wasi` flag, the WASI-deps embed path, and the
+  ceiling computation handed to the host on `--wasi --component --run`.
 - `capa/wasi_wit/` - vendored WASI P2 WIT subset (random / clocks /
   cli-environment).
 - `examples/wasm/wasi_random_clock.capa` - the Random + Clock demo.

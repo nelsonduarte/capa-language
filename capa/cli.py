@@ -1528,7 +1528,26 @@ def _main_dispatch() -> int:
                     ),
                     wasi=wasi_mode,
                 )
-                host = WasmComponentHost(args=program_args, wasi=wasi_mode)
+                # WASI Env Level 1 (2026-06-27): when --wasi is active,
+                # compute the program's static Env read ceiling and hand
+                # it to the host. A CLOSED ceiling (every env.get key is
+                # a string literal) maps to a restricted WASI env-set,
+                # so the component never receives a variable outside the
+                # ceiling (closes the leak-by-default). A non-closed
+                # ceiling (a dynamic env.get key) makes the host fall
+                # back to inherit_env (Level 2). The default capa:host
+                # path passes no ceiling and is unaffected.
+                env_ceiling = None
+                if wasi_mode:
+                    from capa.ir import compute_env_ceiling
+                    env_ceiling = compute_env_ceiling(
+                        module, types=result.types,
+                    )
+                host = WasmComponentHost(
+                    args=program_args,
+                    wasi=wasi_mode,
+                    env_ceiling=env_ceiling,
+                )
                 host.run_main(component_blob)
             else:
                 from capa.runtime._wasm_host import WasmHost
