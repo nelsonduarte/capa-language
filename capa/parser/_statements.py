@@ -151,7 +151,11 @@ class _StatementsMixin:
 
     def _parse_lambda_expr(self) -> A.LambdaExpr:
         """Parses ``fun (params) -> Ret => body``. Body is a single
-        expression or an indented block. Return type is optional.
+        expression or an indented block. Return type is optional, and
+        a parameter's ``: Type`` annotation may also be omitted when
+        the lambda's type is determined by context (a higher-order
+        function argument such as ``xs.map(fun (x) => x + 1)``); the
+        analyzer infers the omitted types and writes them back.
 
         Block body: if ``=>`` is followed by NEWLINE, parses as a block
         (NEWLINE INDENT stmts DEDENT) - useful for lambdas with multiple
@@ -168,9 +172,9 @@ class _StatementsMixin:
         self._expect(T.LPAREN, "expected '(' for lambda parameters")
         params: list[A.Param] = []
         if not self._check(T.RPAREN):
-            params.append(self._parse_param())
+            params.append(self._parse_param(allow_inferred=True))
             while self._match(T.COMMA):
-                params.append(self._parse_param())
+                params.append(self._parse_param(allow_inferred=True))
         self._expect(T.RPAREN, "expected ')' after lambda parameters")
         return_type: Optional[A.TypeExpr] = None
         if self._match(T.ARROW):

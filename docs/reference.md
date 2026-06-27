@@ -331,6 +331,34 @@ Lambdas capture the lexical environment. If a single-line lambda
 contains a nested `match`, the transpiler automatically promotes it
 to a nested function.
 
+**Type inference.** When a lambda is passed to a higher-order
+function whose signature fixes its shape (a parameter typed
+`Fun(...) -> ...`, such as `map` / `filter` / `fold` / `find` /
+`find_index` / `flat_map`), the parameter types and the return type
+may be omitted; the compiler infers them from the expected type:
+
+```capa
+let xs = [1, 2, 3, 4, 5]
+let doubled = xs.map(fun (x) => x * 2)               // x: Int, -> Int
+let evens   = xs.filter(fun (x) => x % 2 == 0)       // x: Int, -> Bool
+let total   = xs.fold(0, fun (acc, x) => acc + x)    // acc, x: Int
+let r       = apply(fun (x) => x * 3, 4)             // user-defined HOF
+```
+
+Annotations may be mixed: `fun (acc, x: Int) => acc + x` infers `acc`
+and keeps the explicit `x: Int`. A fully annotated lambda is always
+accepted and lowers to identical code. Inference is a pure front-end
+step: the inferred annotations are written back into the program
+before lowering, so an inferred lambda produces byte-identical output
+on both backends as the same lambda written out by hand.
+
+Inference needs a context that determines the shape. A lambda with an
+untyped parameter that is *not* passed to a higher-order function
+(for example `let f = fun (x) => x + 1`) has nothing to infer from and
+is a clear error asking for an annotation; write `fun (x: Int) -> Int
+=> x + 1` instead. A missing **return** type alone is always inferred
+from the body, with or without a higher-order context.
+
 ### 4.5. The `?` operator
 
 Propagates `Err` in functions that return `Result`:

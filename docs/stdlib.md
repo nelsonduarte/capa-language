@@ -91,6 +91,14 @@ infers the type from the first `push`.
 
 Index access: `xs[i]` (no bounds checking, use `get(i)` for safe access).
 
+The lambda passed to any of the higher-order methods above
+(`map` / `filter` / `fold` / `find` / `find_index` / `sorted_by` /
+`flat_map`) may omit its parameter and return types: the compiler
+infers them from the method's `Fun(...)` signature, so
+`xs.map(fun (x) => x * 2)` is accepted and means the same as
+`xs.map(fun (x: Int) -> Int => x * 2)`. See *Lambdas* in the
+[reference](reference.md#44-lambdas) for the inference rules.
+
 ### Range expressions
 
 `a..b` (exclusive of `b`) and `a..=b` (inclusive) produce a

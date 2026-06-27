@@ -327,6 +327,47 @@ class _DispatchMixin:
         self._check_expr(e.callee)
         return TyUnknown
 
+    def _resolve_inferred_lambda_args(
+        self,
+        param_tys: "list[Ty]",
+        args_in_order: "list[A.Expr]",
+        arg_tys: "list[Ty]",
+        mapping: "dict[str, Ty]",
+    ) -> None:
+        """Second pass over the arguments of a call whose generic
+        params were just fixed by the receiver / non-lambda arguments.
+        For each argument that is a lambda with inferred annotations,
+        push the (substituted) expected ``Fun(..)`` parameter type,
+        re-check the lambda so its omitted types are filled in and its
+        body is checked, and write its real type back into ``arg_tys``
+        (and ``self.types``). The lambda's resulting type is unified
+        back into ``mapping`` so a result-only type variable (``U`` in
+        ``map``'s ``fun(T, U)``) gets fixed from the lambda's body and
+        the call's return type and the assignability check see it.
+
+        Only lambdas that are still pending inference are touched, so a
+        fully annotated lambda (or any other argument) is left exactly
+        as today: no behavioural change off the inference path."""
+        for i, arg in enumerate(args_in_order):
+            if not isinstance(arg, A.LambdaExpr):
+                continue
+            if id(arg) not in self._pending_inferred_lambdas:
+                continue
+            if i >= len(param_tys):
+                continue
+            expected = param_tys[i]
+            if not isinstance(expected, TyFun):
+                # No higher-order shape in this slot: cannot infer.
+                # Leave it pending so the flush emits the clear error.
+                continue
+            real_ty = self._recheck_lambda_with_expected(arg, expected)
+            arg_tys[i] = real_ty
+            # Fix any result-only type variable (e.g. ``U`` in
+            # ``map``'s ``fun(T, U) -> List<U>``) from the lambda's
+            # now-known body type, so the call's return type carries it.
+            if isinstance(real_ty, TyFun):
+                unify(expected, real_ty, mapping)
+
     def _check_call_with_inference(
         self,
         e: A.Call,
@@ -366,6 +407,15 @@ class _DispatchMixin:
         mapping: dict[str, Ty] = {}
         for param_ty, arg_ty in zip(fun_ty.params, arg_tys):
             unify(param_ty, arg_ty, mapping)
+
+        # Non-lambda arguments fixed the generic params above; now that
+        # the expected ``Fun(..)`` type of each lambda slot is known,
+        # re-check any lambda whose annotations were left to be
+        # inferred, updating ``arg_tys`` with its real type before the
+        # assignability checks below run against it.
+        self._resolve_inferred_lambda_args(
+            fun_ty.params, args_in_order, arg_tys, mapping,
+        )
 
         for i, (param_ty, arg_ty) in enumerate(zip(fun_ty.params, arg_tys)):
             substituted = substitute(param_ty, mapping)
@@ -595,6 +645,22 @@ class _DispatchMixin:
         for param_ty, arg_ty in zip(method_fun_ty.params, reordered_tys):
             substituted = substitute(param_ty, mapping)
             unify(substituted, arg_ty, mapping)
+
+        # The receiver type and the non-lambda arguments have now fixed
+        # the method's generic params (``T`` from the receiver's
+        # element type, ``U`` from the lambda's body once known). The
+        # expected ``Fun(..)`` type of each lambda argument slot is the
+        # substituted parameter type; re-check any lambda whose
+        # annotations were inferred so its real type is in
+        # ``reordered_tys`` before the assignability pass below.
+        # ``map`` / ``filter`` / ``fold`` / ``find`` / ``flat_map`` and
+        # the other higher-order list / range methods all land here.
+        substituted_params = [
+            substitute(p, mapping) for p in method_fun_ty.params
+        ]
+        self._resolve_inferred_lambda_args(
+            substituted_params, reordered_args, reordered_tys, mapping,
+        )
 
         for i, (param_ty, arg_ty) in enumerate(
             zip(method_fun_ty.params, reordered_tys)

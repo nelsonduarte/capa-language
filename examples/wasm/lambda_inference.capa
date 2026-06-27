@@ -1,0 +1,52 @@
+// Lambda parameter / return-type inference in higher-order calls.
+// None of the lambdas below carry a parameter type or a return type:
+// the analyzer infers them from each method's expected Fun(..) type
+// (map / filter / fold / find / find_index / flat_map) and writes the
+// inferred annotations back into the AST. The lowered CIR is therefore
+// byte-identical to the same lambdas written out by hand, so both
+// backends produce the same output (see test_ir_wasm_parity, plus the
+// inferred-vs-annotated CIR equality assertion there).
+
+type Point {
+    x: Int,
+    y: Int
+}
+
+fun main(stdio: Stdio)
+    let xs = [1, 2, 3, 4, 5]
+
+    // map: Fun(Int) -> Int, return type inferred from the body.
+    let doubled = xs.map(fun (x) => x * 2)
+    stdio.println("doubled = ${doubled[0]}, ${doubled[1]}, ${doubled[2]}, ${doubled[3]}, ${doubled[4]}")
+
+    // filter: Fun(Int) -> Bool, the predicate's Bool return inferred.
+    let evens = xs.filter(fun (x) => x % 2 == 0)
+    stdio.println("evens length = ${evens.length()}")
+
+    // fold: the accumulator (0) fixes the result type; both lambda
+    // parameters are inferred (acc: Int, x: Int).
+    let total = xs.fold(0, fun (acc, x) => acc + x)
+    stdio.println("total = ${total}")
+
+    // find / find_index: Fun(Int) -> Bool predicates, inferred.
+    let first_big = xs.find(fun (x) => x > 3)
+    let big_idx = xs.find_index(fun (x) => x > 3)
+    match first_big
+        Some(v) -> stdio.println("first > 3 = ${v}")
+        None -> stdio.println("none > 3")
+    match big_idx
+        Some(i) -> stdio.println("index > 3 = ${i}")
+        None -> stdio.println("no index")
+
+    // flat_map: Fun(Int) -> List<Int>, the List<Int> return inferred.
+    let pairs = xs.flat_map(fun (x) => [x, x])
+    stdio.println("pairs length = ${pairs.length()}")
+
+    // mixed: one inferred parameter, one annotated.
+    let mixed = xs.map(fun (x: Int) => x + 1)
+    stdio.println("mixed = ${mixed[0]}, ${mixed[4]}")
+
+    // struct elements: the parameter type is inferred to Point.
+    let pts = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    let scaled = pts.map(fun (p) => Point { x: p.x * 2, y: p.y + 1 })
+    stdio.println("scaled = (${scaled[0].x}, ${scaled[0].y}), (${scaled[1].x}, ${scaled[1].y})")

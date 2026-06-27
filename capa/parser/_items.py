@@ -676,7 +676,18 @@ class _ItemsMixin:
             params.append(self._parse_param())
         return params
 
-    def _parse_param(self) -> A.Param:
+    def _parse_param(self, allow_inferred: bool = False) -> A.Param:
+        """Parse one parameter ``name: Type`` (with optional leading
+        ``consume`` and the ``self`` special case).
+
+        ``allow_inferred`` is set when parsing a lambda's parameters:
+        the ``: Type`` annotation may then be omitted, leaving
+        ``type_expr=None`` for the analyzer to infer from the
+        expected (context) type of the lambda (a higher-order
+        function argument such as ``xs.map(fun (x) => x + 1)``).
+        For ordinary function / method parameters there is no such
+        context, so the annotation stays mandatory.
+        """
         ppos = self._peek().start
         # Optional `consume`: marks the parameter as consuming
         # (transfers ownership). Parsed before the ``self`` special
@@ -692,6 +703,13 @@ class _ItemsMixin:
             )
         name_tok = self._expect(T.IDENT, "expected parameter name")
         name = name_tok.text
+        if allow_inferred and not self._check(T.COLON):
+            # Lambda parameter without an annotation: the type is left
+            # to be inferred from the lambda's expected type.
+            return A.Param(
+                pos=ppos, name=name, name_pos=name_tok.start,
+                type_expr=None, consuming=consuming,
+            )
         self._expect(T.COLON, f"expected ':' after parameter name {name!r}")
         type_expr = self._parse_type()
         return A.Param(

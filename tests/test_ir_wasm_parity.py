@@ -144,6 +144,15 @@ _PARITY_PROGRAMS: list[str] = [
     # comparable stdout, so they live in tests/test_panic.py.
     "option_unwrap_expect.capa",
     "fn_ref_as_closure.capa",
+    # Slice (2026-06-27): lambda parameter / return-type inference in
+    # higher-order calls. Every lambda in this program omits its
+    # parameter and return types; the analyzer infers them from each
+    # method's expected Fun(..) type and writes them back into the AST,
+    # so the lowered CIR is byte-identical to the hand-annotated form.
+    # The dedicated CIR-equality assertion lives in
+    # ``test_lambda_inference_cir_matches_annotated`` below; this entry
+    # exercises the runtime output parity across both backends.
+    "lambda_inference.capa",
     "net_post.capa",
     # ``fs_demo`` and ``env_demo`` were both flagged as deferred
     # ("needs a fixture") in earlier slices, but inspection shows
@@ -984,6 +993,58 @@ class TestPythonWasmParity(unittest.TestCase):
 
     def test_closures(self):
         self._assert_parity("closures.capa")
+
+    def test_lambda_inference(self):
+        self._assert_parity("lambda_inference.capa")
+
+    def test_lambda_inference_cir_matches_annotated(self):
+        """A lambda whose parameter / return types are INFERRED must
+        lower to byte-identical CIR (and Python source, and Wasm bytes)
+        as the SAME lambda written out by hand. The inference is a
+        pure front-end concern: the analyzer fills the omitted
+        annotations back into the AST before lowering, so neither
+        backend can tell the two forms apart."""
+        annotated = (
+            "fun apply(f: Fun(Int) -> Int, n: Int) -> Int\n"
+            "    return f(n)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [1, 2, 3, 4, 5]\n"
+            "    let doubled = xs.map(fun (x: Int) -> Int => x * 2)\n"
+            "    let evens = xs.filter(fun (x: Int) -> Bool => x % 2 == 0)\n"
+            "    let total = xs.fold(0, fun (acc: Int, x: Int) -> Int => acc + x)\n"
+            "    let r = apply(fun (x: Int) -> Int => x * 3, 4)\n"
+            "    stdio.println(\"${doubled[0]} ${evens.length()} ${total} ${r}\")\n"
+        )
+        inferred = (
+            "fun apply(f: Fun(Int) -> Int, n: Int) -> Int\n"
+            "    return f(n)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [1, 2, 3, 4, 5]\n"
+            "    let doubled = xs.map(fun (x) => x * 2)\n"
+            "    let evens = xs.filter(fun (x) => x % 2 == 0)\n"
+            "    let total = xs.fold(0, fun (acc, x) => acc + x)\n"
+            "    let r = apply(fun (x) => x * 3, 4)\n"
+            "    stdio.println(\"${doubled[0]} ${evens.length()} ${total} ${r}\")\n"
+        )
+
+        def build(src):
+            module, result = _parse_and_analyze(src)
+            py = transpile(
+                module, types=result.types, bindings=result.bindings,
+            )
+            wasm = compile_wasm(module, types=result.types)
+            return py, wasm
+
+        py_annot, wasm_annot = build(annotated)
+        py_infer, wasm_infer = build(inferred)
+        self.assertEqual(
+            py_annot, py_infer,
+            "inferred-lambda Python source differs from annotated",
+        )
+        self.assertEqual(
+            wasm_annot, wasm_infer,
+            "inferred-lambda Wasm bytes differ from annotated",
+        )
 
     def test_self_in_impl_lambda(self):
         self._assert_parity("self_in_impl_lambda.capa")

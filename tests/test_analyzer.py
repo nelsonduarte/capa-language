@@ -7541,5 +7541,134 @@ class TestInternalBuiltinRejection(unittest.TestCase):
         )
 
 
+class TestLambdaParamInference(unittest.TestCase):
+    """Lambda parameter / return-type inference from the expected
+    ``Fun(..)`` type of a higher-order-function argument slot."""
+
+    def _main(self, body: str) -> str:
+        lines = "".join(f"    {ln}\n" for ln in body.strip().splitlines())
+        return f"fun main(stdio: Stdio)\n{lines}"
+
+    def test_map_infers_param_and_return(self):
+        r = check(self._main(
+            "let xs = [1, 2, 3]\n"
+            "let d = xs.map(fun (x) => x * 2)\n"
+            "stdio.println(\"${d[0]}\")"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_filter_infers_bool_predicate(self):
+        r = check(self._main(
+            "let xs = [1, 2, 3, 4]\n"
+            "let e = xs.filter(fun (x) => x % 2 == 0)\n"
+            "stdio.println(\"${e.length()}\")"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_fold_infers_both_params(self):
+        r = check(self._main(
+            "let xs = [1, 2, 3]\n"
+            "let t = xs.fold(0, fun (acc, x) => acc + x)\n"
+            "stdio.println(\"${t}\")"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_mixed_typed_and_inferred_param(self):
+        r = check(self._main(
+            "let xs = [1, 2, 3]\n"
+            "let t = xs.fold(0, fun (acc, x: Int) => acc + x)\n"
+            "stdio.println(\"${t}\")"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_struct_element_param_inferred(self):
+        src = (
+            "type P { x: Int, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let ps = [P { x: 1, y: 2 }]\n"
+            "    let xs = ps.map(fun (p) => p.x + p.y)\n"
+            "    stdio.println(\"${xs[0]}\")\n"
+        )
+        r = check(src)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_user_defined_hof_infers_param(self):
+        src = (
+            "fun apply(f: Fun(Int) -> Int, n: Int) -> Int\n"
+            "    return f(n)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r = apply(fun (x) => x * 3, 4)\n"
+            "    stdio.println(\"${r}\")\n"
+        )
+        r = check(src)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_no_context_is_clear_error(self):
+        r = check(self._main(
+            "let f = fun (x) => x + 1\n"
+            "stdio.println(\"hi\")"
+        ))
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("cannot infer the type" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_explicit_annotation_override_unaffected(self):
+        r = check(self._main(
+            "let xs = [1, 2, 3]\n"
+            "let d = xs.map(fun (x: Int) -> Int => x * 2)\n"
+            "stdio.println(\"${d[0]}\")"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_typed_param_no_return_still_works(self):
+        # Pre-existing behaviour: an annotated parameter with an
+        # omitted return type infers the return from the body without
+        # needing higher-order context.
+        r = check(self._main(
+            "let xs = [1, 2, 3]\n"
+            "let d = xs.map(fun (x: Int) => x * 2)\n"
+            "stdio.println(\"${d[0]}\")"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_inferred_param_type_written_back_into_ast(self):
+        # The analyzer fills the omitted parameter / return annotations
+        # back into the AST so the IR lowerer produces the same CIR as
+        # a hand-annotated lambda.
+        from capa import ast as A
+        src = self._main(
+            "let xs = [1, 2, 3]\n"
+            "let d = xs.map(fun (x) => x * 2)\n"
+            "stdio.println(\"${d[0]}\")"
+        )
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        r = analyze(module, source=src)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        lambdas = []
+
+        def walk(node):
+            if isinstance(node, A.LambdaExpr):
+                lambdas.append(node)
+            for v in vars(node).values():
+                if isinstance(v, A.Node):
+                    walk(v)
+                elif isinstance(v, list):
+                    for it in v:
+                        if isinstance(it, A.Node):
+                            walk(it)
+
+        for item in module.items:
+            walk(item)
+        self.assertEqual(len(lambdas), 1)
+        lam = lambdas[0]
+        self.assertIsNotNone(lam.params[0].type_expr)
+        self.assertEqual(lam.params[0].type_expr.name, "Int")
+        self.assertIsNotNone(lam.return_type)
+        self.assertEqual(lam.return_type.name, "Int")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -97,6 +97,29 @@ class _ExpressionsMixin:
         """
         from . import Symbol, SymbolKind
 
+        # Lambda parameter / return-type inference. A lambda with an
+        # omitted parameter type or return type is checked LAZILY: if
+        # no expected ``Fun(..)`` type has been pushed for this node
+        # yet (by the higher-order-call dispatch code), defer it. The
+        # dispatch code re-checks it once the expected type is known.
+        expected = self._expected_lambda_ty.get(id(e))
+        needs_inference = expected is None and self._lambda_has_omissions(e)
+        if needs_inference:
+            # Record as pending; ``_flush_pending_inferred_lambdas``
+            # turns any never-resolved entry into a clear error.
+            self._pending_inferred_lambdas[id(e)] = e.pos
+            # A provisional function type with unknown params keeps
+            # downstream typing from crashing; the real type lands when
+            # the lambda is re-checked with its expected type.
+            return TyFun(tuple(TyUnknown for _ in e.params), TyUnknown)
+        if expected is not None:
+            # Fill the omitted annotations from the expected type so the
+            # IR lowerer sees exactly what a hand-annotated lambda would
+            # produce (byte-identical CIR / output across both backends).
+            self._fill_lambda_annotations(e, expected)
+            # No longer pending: it now has a context to infer from.
+            self._pending_inferred_lambdas.pop(id(e), None)
+
         # Mark the lambda's scope as a function-root so the
         # block-shadow check (in _bind_pattern) stops its parent
         # walk here: a ``let`` inside the lambda body that shadows
@@ -198,6 +221,140 @@ class _ExpressionsMixin:
         self._pop_scope()
 
         return TyFun(tuple(param_tys), ret_ty)
+
+    # -----------------------------------------------------------
+    # Lambda parameter / return-type inference
+    # -----------------------------------------------------------
+
+    def _lambda_has_omissions(self, e: A.LambdaExpr) -> bool:
+        """True when the lambda left at least one PARAMETER type to be
+        inferred. A missing return type alone is NOT an omission that
+        needs context: it has always been inferred from the body
+        (``fun (x: Int) => x + 1`` returns ``Int``). Only an untyped
+        parameter requires an expected ``Fun(..)`` type to resolve."""
+        return any(
+            p.type_expr is None for p in e.params if p.name != "self"
+        )
+
+    def _fill_lambda_annotations(
+        self, e: A.LambdaExpr, expected: TyFun,
+    ) -> None:
+        """Write the inferred parameter / return types back into the
+        lambda AST from its expected ``Fun(..)`` type. An explicitly
+        annotated parameter / return type is kept as-is (so a partial
+        mix ``fun (x, y: Int) => ..`` infers only ``x``); only omitted
+        annotations are filled. Inferring from an expected type whose
+        own slot is still unknown leaves the annotation omitted, which
+        surfaces as the clear "add a type annotation" error.
+
+        Writing the types back into the AST is what makes an inferred
+        lambda lower to byte-identical CIR (and identical Python / Wasm
+        output) as the same lambda written out by hand: the IR lowerer
+        reads ``p.type_expr`` / ``e.return_type`` directly."""
+        non_self = [p for p in e.params if p.name != "self"]
+        if len(expected.params) == len(non_self):
+            for p, pty in zip(non_self, expected.params):
+                if p.type_expr is None and self._ty_fully_resolved(pty):
+                    p.type_expr = self._reify_ty(pty)
+        if e.return_type is None and self._ty_fully_resolved(expected.ret):
+            e.return_type = self._reify_ty(expected.ret)
+
+    def _ty_fully_resolved(self, ty: Ty) -> bool:
+        """True when ``ty`` is concrete enough to reify into an
+        annotation: it is not ``TyUnknown`` and contains no unresolved
+        ``TyVar`` (a result-only type variable like ``U`` in ``map``'s
+        ``fun(T, U)`` is still open at the point a parameter type is
+        filled, and inferring it as a literal type name would be
+        wrong). The lambda's body fixes such variables, and the return
+        type is then back-filled from the checked body type."""
+        if ty is TyUnknown or isinstance(ty, TyVar):
+            return False
+        if isinstance(ty, TyName):
+            return all(self._ty_fully_resolved(a) for a in ty.args)
+        if isinstance(ty, TyTuple):
+            return all(self._ty_fully_resolved(e) for e in ty.elements)
+        if isinstance(ty, TyFun):
+            return (
+                all(self._ty_fully_resolved(p) for p in ty.params)
+                and self._ty_fully_resolved(ty.ret)
+            )
+        return True
+
+    def _reify_ty(self, ty: Ty) -> A.TypeExpr:
+        """Convert a resolved analyzer ``Ty`` back into an AST
+        ``TypeExpr``. The inverse of ``_resolve_type`` for the shapes
+        a lambda's parameter / return type can take. The produced
+        node carries a builtin position; it is consumed only by the IR
+        lowerer (which reads names off it), never re-checked."""
+        if ty is TyUnit:
+            return A.UnitType(pos=_BUILTIN_POS)
+        if isinstance(ty, TyTuple):
+            return A.TupleType(
+                pos=_BUILTIN_POS,
+                elements=[self._reify_ty(e) for e in ty.elements],
+            )
+        if isinstance(ty, TyFun):
+            return A.FunType(
+                pos=_BUILTIN_POS,
+                param_types=[self._reify_ty(p) for p in ty.params],
+                return_type=self._reify_ty(ty.ret),
+            )
+        if isinstance(ty, TyVar):
+            return A.TypeName(pos=_BUILTIN_POS, name=ty.name)
+        if isinstance(ty, TyName):
+            return A.TypeName(
+                pos=_BUILTIN_POS, name=ty.name,
+                args=[self._reify_ty(a) for a in ty.args],
+                state=ty.state,
+            )
+        # TyUnknown or any unexpected shape: a bare ``?``-like name the
+        # lowerer renders as "Unknown" (same as an omitted annotation).
+        return A.TypeName(pos=_BUILTIN_POS, name="Unknown")
+
+    def _recheck_lambda_with_expected(
+        self, e: A.LambdaExpr, expected: TyFun,
+    ) -> Ty:
+        """Re-run lambda checking with a now-known expected type, so
+        the omitted annotations are filled and the body is checked.
+        Called by the higher-order-call dispatch once the argument
+        slot's ``Fun(..)`` type is resolved. Returns the lambda's
+        real type, which the caller writes into ``self.types`` and the
+        argument-type list. A no-op for a lambda with no omissions."""
+        if id(e) not in self._pending_inferred_lambdas:
+            # Either fully annotated (already checked) or already
+            # resolved: nothing to redo.
+            return self.types.get(id(e), TyFun((), TyUnknown))
+        self._expected_lambda_ty[id(e)] = expected
+        ty = self._check_expr(e)
+        del self._expected_lambda_ty[id(e)]
+        # If the return type was still omitted after filling from the
+        # expected type (a result-only type variable like ``U`` in
+        # ``map``'s ``fun(T, U)``), back-fill it from the body type the
+        # check just produced, so the IR lowerer emits the same return
+        # type a hand-annotated lambda would. This keeps the inferred
+        # and the spelled-out lambda byte-identical in both backends.
+        if (
+            e.return_type is None
+            and isinstance(ty, TyFun)
+            and ty.ret is not TyUnknown
+        ):
+            e.return_type = self._reify_ty(ty.ret)
+        return ty
+
+    def _flush_pending_inferred_lambdas(self) -> None:
+        """Emit a clear error for every lambda whose parameter /
+        return types were left to be inferred but that never received
+        an expected type (no higher-order-function context fixed it)."""
+        for lam_id, pos in self._pending_inferred_lambdas.items():
+            self._err(
+                "cannot infer the type of this lambda: it has no "
+                "context to infer from (it is not passed to a "
+                "higher-order function such as map / filter / fold). "
+                "Add type annotations to its parameters and, if needed, "
+                "a return type: fun (x: Int) -> Int => x + 1",
+                pos,
+            )
+        self._pending_inferred_lambdas.clear()
 
     def _check_if_expr(self, e: A.IfExpr) -> Ty:
         """Type ``if cond then e1 else e2``. ``cond`` must be

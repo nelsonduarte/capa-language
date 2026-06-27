@@ -489,6 +489,21 @@ class Analyzer(
         # outside, that is an error because the lambda may be called
         # multiple times.
         self._lambda_local_names_stack: list[set[str]] = []
+        # Lambda parameter / return-type inference. A lambda whose
+        # parameter or return types are omitted (``xs.map(fun (x) => x
+        # + 1)``) is checked LAZILY: the first ``_check_lambda`` pass
+        # records ``id(LambdaExpr)`` here as pending and returns a
+        # provisional type without deeply checking the body. When the
+        # call-dispatch code later resolves the expected ``Fun(..)``
+        # type for that argument slot it stores it in
+        # ``_expected_lambda_ty`` and re-checks the lambda, which fills
+        # the omitted annotations back into the AST (so the IR lowerer
+        # produces byte-identical CIR to a hand-annotated lambda) and
+        # checks the body. Any lambda still pending at the end of
+        # ``analyze`` had no context to infer from and gets a clear
+        # "add a type annotation" error.
+        self._expected_lambda_ty: dict[int, "TyFun"] = {}
+        self._pending_inferred_lambdas: dict[int, "Pos"] = {}
         # Loop nesting depth in the current control-flow region. Bumped
         # while checking a ``while`` / ``for`` body and consulted by the
         # ``break`` / ``continue`` checkers: depth 0 means "not inside a
@@ -600,6 +615,11 @@ class Analyzer(
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
             self._check_item(item)
+        # Phase 2b: any lambda whose parameter / return types were left
+        # to be inferred but that was never given an expected type by a
+        # higher-order call gets a clear, actionable error here rather
+        # than a silent ``Unknown`` propagating into the backends.
+        self._flush_pending_inferred_lambdas()
         # Phase 3: non-fatal lints. One for now (migrate tooling
         # slice 2): an ``Unsafe`` parameter whose token provably never
         # reaches py_import/py_invoke can be dropped. Warnings never

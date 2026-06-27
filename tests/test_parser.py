@@ -691,6 +691,50 @@ class TestBlockBodyInParensRestriction(unittest.TestCase):
         self.assertEqual(len(m.items), 2)
 
 
+class TestLambdaParamInference(unittest.TestCase):
+    """The parser accepts a lambda whose parameter ``: Type`` and / or
+    ``-> Ret`` are omitted, leaving them ``None`` for the analyzer to
+    infer. Ordinary function / method parameters keep the annotation
+    mandatory."""
+
+    def _lambda(self, src: str) -> A.LambdaExpr:
+        e = parse_expr(src)
+        assert isinstance(e, A.LambdaExpr), type(e)
+        return e
+
+    def test_untyped_single_param(self):
+        lam = self._lambda("fun (x) => x + 1")
+        self.assertEqual(len(lam.params), 1)
+        self.assertEqual(lam.params[0].name, "x")
+        self.assertIsNone(lam.params[0].type_expr)
+        self.assertIsNone(lam.return_type)
+
+    def test_untyped_multiple_params(self):
+        lam = self._lambda("fun (acc, x) => acc + x")
+        self.assertEqual([p.name for p in lam.params], ["acc", "x"])
+        self.assertTrue(all(p.type_expr is None for p in lam.params))
+
+    def test_mixed_typed_and_untyped_params(self):
+        lam = self._lambda("fun (x, y: Int) => x + y")
+        self.assertIsNone(lam.params[0].type_expr)
+        self.assertIsNotNone(lam.params[1].type_expr)
+
+    def test_untyped_param_with_explicit_return(self):
+        lam = self._lambda("fun (x) -> Int => x * 2")
+        self.assertIsNone(lam.params[0].type_expr)
+        self.assertIsNotNone(lam.return_type)
+
+    def test_fully_annotated_still_parses(self):
+        lam = self._lambda("fun (x: Int) -> Int => x * 2")
+        self.assertIsNotNone(lam.params[0].type_expr)
+        self.assertIsNotNone(lam.return_type)
+
+    def test_ordinary_param_still_requires_annotation(self):
+        with self.assertRaises(ParserError) as ctx:
+            parse("fun f(x)\n    return x\n")
+        self.assertIn("expected ':' after parameter name", ctx.exception.message)
+
+
 class TestExpressionDepthCap(unittest.TestCase):
     """Audit 2026-05-25 M2: pathological expression nesting must yield
     a clean parse diagnostic instead of a raw ``RecursionError``."""
