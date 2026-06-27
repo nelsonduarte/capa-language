@@ -5,11 +5,13 @@ Status: experimental proof of concept (2026-06-27).
 Capa's Wasm backend produces Component Model components whose
 capability imports live in a custom `capa:host` namespace, satisfied
 by Capa's own Python host (`capa.runtime._wasm_component_host`). This
-note describes an opt-in mode that migrates the **pure-reader**
-touch-points of **three** capabilities, Random, Clock and Env, to
-import the **canonical WASI Preview 2 (`0.2.0`)** interfaces instead,
-so they are satisfied by any standard WASI P2 host (here, `wasmtime`'s
-`Linker.add_wasip2()`).
+note describes an opt-in mode that migrates the reader touch-points of
+**three** capabilities, Random, Clock and Env, to import the
+**canonical WASI Preview 2 (`0.2.0`)** interfaces instead, so they are
+satisfied by any standard WASI P2 host (here, `wasmtime`'s
+`Linker.add_wasip2()`). Env additionally keeps its attenuation
+(`restrict_to_keys` / `allows`) working in this mode, implemented
+guest-side (Level 2 of `docs/design/wasi-attenuation.md`).
 
 It is a viability spike, not a general WASI port. The default
 `capa:host` path is completely unchanged.
@@ -26,6 +28,8 @@ see the WAT) rewrites the migrated touch-points:
 | `Clock.now_secs` | `capa:host/clock.now-secs` | `wasi:clocks/wall-clock@0.2.0` `now` |
 | `Env.get` | `capa:host/env.get` | `wasi:cli/environment@0.2.0` `get-environment` |
 | `Env.args` | `capa:host/env.args` | `wasi:cli/environment@0.2.0` `get-arguments` |
+| `Env.restrict_to_keys` | `capa:host/env.restrict-to-keys` (host handle table) | guest-side allow-list intersection (no host) |
+| `Env.allows` | `capa:host/env.allows` (host handle table) | guest-side allow-list membership (no host) |
 
 Every **other** capability the program uses (Stdio for printing the
 results, and anything else) stays on `capa:host`. The component
@@ -59,6 +63,63 @@ The host provides the values through the `WasiConfig`:
 `inherit_env()` (so `env.get` of a host env var returns its value) and
 `argv = <program args>` (so `env.args()` matches the default backend's
 `sys.argv[1:]`, with no synthetic argv[0]).
+
+### Env attenuation (guest-side, Level 2)
+
+`Env.restrict_to_keys` and `Env.allows` are **supported** under
+`--wasi`, implemented **guest-side** in WAT because
+`wasi:cli/environment` is a pure reader with no host-side cap object to
+hold an allow-list (this is **Level 2** of
+`docs/design/wasi-attenuation.md`). The semantics are **byte-identical**
+to the Python oracle (`capa/runtime/_capabilities.py:355-372`) and to
+the `capa:host` backend (which enforces the same narrowing host-side
+through its handle table).
+
+The Env value (the i32 the host passes to `main`, and that
+`restrict_to_keys` returns) is **reinterpreted** guest-side:
+
+- `0` = **unrestricted** (the root Env `main` receives; the host passes
+  `0` in this mode, since the `capa:host` handle has no meaning on the
+  wasi path).
+- non-zero = a pointer to a `List<String>` header (16 bytes: len@0,
+  cap@4, data_ptr@8, pad@12) whose data array holds the **allow-list**
+  as N packed `(str_ptr, str_len)` i32 pairs - the same layout a Capa
+  `List<String>` uses, so the keys argument and the produced allow-list
+  share one shape and one scan helper (`$str_eq`).
+
+The three guest-side wrappers (`capa/ir/_emit_wasm/_wasi.py`):
+
+- `$Env_restrict_to_keys(handle, keys_data_ptr, keys_len) -> i32`
+  builds a new allow-list = the **intersection** of the current
+  allow-list with `keys` (monotonic; never widens; an unrestricted
+  `handle` intersected with `keys` becomes restricted to `keys`),
+  allocates a fresh `List<String>` for it, returns the pointer. An
+  empty intersection yields a non-zero pointer to a zero-length
+  allow-list - a restricted-to-nothing Env, distinct from the
+  unrestricted `0` sentinel. Identical to `Env.restrict_to_keys`
+  (`new & self._allowed_keys`).
+- `$Env_allows(handle, key_ptr, key_len) -> i32` returns 1 iff
+  `handle == 0` (unrestricted) OR `key` is in the allow-list (the
+  shared `$Env_key_allowed` helper).
+- `$Env_get` gains a **fail-closed** prologue: when the Env is
+  restricted and the key is not allowed it writes `none` WITHOUT
+  reading the environment, identical to `Env.get`
+  (`if not self.allows(name): return None_`).
+
+`Env.args` is **not** attenuated (the oracle has no arg restriction).
+
+**Guarantee level (honest).** This is **Level 2**. The host still
+`inherit_env`s the **full** environment to the component (the ceiling
+is not yet materialised via env-set - that is **Level 1**, a later
+increment), so the fine allow-list narrowing is imposed by the
+**compiler-generated guest code**, not by the WASI host. It is
+**proved** by the compiler (the guest only ever narrows) and
+**reinforced** by our host (which generated the guest); under a stock
+or tampered WASI host the full environment is reachable and the
+narrowing would not be re-checked at the syscall. The byte-parity test
+(`tests/test_wasi_mode.py::TestWasiEnvAttenuation`) pins the guest-side
+narrowing to the host-side `capa:host` narrowing and the Python oracle
+for the controlled keys.
 
 ## Generated WIT (Clock + Random + Stdio)
 
@@ -133,7 +194,10 @@ Instantiation then satisfies both namespaces.
 Included: `Random.system_seed`, `Random.with_seed` /
 `int_range` / `float_unit` (these already run 100 % guest-side and are
 unaffected), `Clock.now_secs`, `Clock.now_monotonic`, `Env.get`,
-`Env.args`.
+`Env.args`, and **Env attenuation** (`Env.restrict_to_keys`,
+`Env.allows`, and the `Env.get` fail-closed gate), implemented
+guest-side (Level 2; see "Env attenuation (guest-side, Level 2)"
+above).
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
@@ -147,24 +211,19 @@ silently miscompiles):
   attenuation through a standard WASI clock is a future design item
   (likely a guest-side deadline gate, since the wall clock is
   readable).
-- **Env attenuation** (`restrict_to_keys`, `allows`). The
-  `capa:host` Env enforces a `restrict_to_keys` allow-list via the
-  host's per-instance handle table; `wasi:cli/environment` is a pure
-  reader with no host-side cap object to consult. This is Phase 1 of
-  the reconciliation plan: the in-program allow-list narrowing
-  (Level 2 of `docs/design/wasi-attenuation.md`) has no WASI runtime
-  home yet. Mapping `main`'s Env CEILING onto the host env-set (so the
-  guest cannot even observe a variable outside the ceiling) is the
-  next increment; until then the attenuators are rejected rather than
-  silently dropped, which would widen the cap's effective authority.
 
-A program that reaches for any of these in WASI mode gets, e.g.:
+Env attenuation was previously excluded too; it is now supported
+guest-side. Mapping `main`'s Env **ceiling** onto the host env-set
+(Level 1, so a stock host cannot even observe a variable outside the
+ceiling) remains a future increment - guest-side Level 2 enforces the
+fine narrowing under our host but not under an arbitrary one.
+
+A program that reaches for one of the still-excluded methods in WASI
+mode gets, e.g.:
 
 ```
 capa: --wasm: Clock.sleep is not supported in the WASI mode yet;
 use the default capa:host backend (drop --wasi).
-capa: --wasm: Env.restrict_to_keys is not supported in the WASI mode
-yet; use the default capa:host backend (drop --wasi).
 ```
 
 ## Vendored WIT
@@ -202,17 +261,31 @@ property (see `tests/test_wasi_mode.py`):
   (fail-closed). `env.args` matches the host-supplied argv. The full
   environment is non-deterministic, so only the controlled key + the
   semantics are asserted, not the whole dump.
+- **Env attenuation (three-backend byte-parity)**: with the controlled
+  keys set, `restrict_to_keys([A,B]).restrict_to_keys([B,C])` admits
+  only `B` (intersection), `allows` reflects it, `get` is fail-closed
+  against it (a denied-but-set key reads `None`), the wider parent
+  still admits `A`, the unrestricted root admits everything, and
+  `restrict_to_keys([])` admits nothing. The full output is asserted
+  **byte-identical** across the Python oracle, the `capa:host` backend
+  (host-side narrowing) and the WASI backend (guest-side narrowing) -
+  `TestWasiEnvAttenuation`.
 
 ## Files
 
 - `capa/ir/_emit_wasm/_wasi.py` - WASI import + adapter-wrapper
-  emission (Random / Clock / Env) and the excluded-surface validation.
+  emission (Random / Clock / Env readers + guest-side Env attenuation
+  `$Env_restrict_to_keys` / `$Env_allows` / `$Env_key_allowed`) and the
+  excluded-surface validation.
 - `capa/ir/_emit_wit.py` - WASI-mode world generation
   (`_emit_wit_wasi`).
 - `capa/runtime/_wasm_component_host.py` - the `wasi=True` host recipe
-  (`inherit_env()` + `argv` for the Env readers).
+  (`inherit_env()` + `argv` for the Env readers; passes `0` as the Env
+  root so the guest-side `0`-is-unrestricted convention holds).
 - `capa/cli.py` - the `--wasi` flag, the WASI-deps embed path.
 - `capa/wasi_wit/` - vendored WASI P2 WIT subset (random / clocks /
   cli-environment).
 - `examples/wasm/wasi_random_clock.capa` - the Random + Clock demo.
 - `examples/wasm/wasi_env.capa` - the Env reader demo.
+- `examples/wasm/wasi_env_attenuation.capa` - the guest-side Env
+  attenuation demo (intersection + fail-closed).

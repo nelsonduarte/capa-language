@@ -492,14 +492,21 @@ def _module_calls_panic(module: Module) -> bool:
 
 
 # Experimental WASI mode (2026-06-27): the (cap, method) touch-points
-# routed to canonical wasi:* interfaces instead of ``capa:host``. Must
-# stay in lockstep with ``capa.ir._emit_wasm._wasi._WASI_MIGRATED_METHODS``.
+# routed off ``capa:host``. ``get`` / ``args`` go to canonical wasi:*
+# interfaces; ``restrict_to_keys`` / ``allows`` are implemented
+# GUEST-SIDE (no host import at all, Level 2 of
+# docs/design/wasi-attenuation.md). Either way they carry no
+# ``capa:host`` env interface, which is why the WIT generator skips the
+# whole Env interface in WASI mode below. Kept in lockstep with
+# ``capa.ir._emit_wasm._wasi._WASI_MIGRATED_METHODS``.
 _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     ("Random", "system_seed"),
     ("Clock", "now_secs"),
     ("Clock", "now_monotonic"),
     ("Env", "get"),
     ("Env", "args"),
+    ("Env", "restrict_to_keys"),
+    ("Env", "allows"),
 })
 
 
@@ -643,12 +650,11 @@ def _emit_wit_wasi(
     Clock in WASI mode supports only ``now_secs`` / ``now_monotonic``;
     any other Clock method is rejected by the Wasm emitter's
     ``_validate_wasi_caps`` before we get here, so a Clock present in
-    ``used`` is always fully migrated too. Env in WASI mode supports
-    only ``get`` / ``args`` (routed to ``wasi:cli/environment``); its
-    attenuators (``restrict_to_keys`` / ``allows``) are likewise
-    rejected by ``_validate_wasi_caps``, so an Env present in ``used``
-    is always fully migrated too and no ``capa:host`` env interface is
-    emitted."""
+    ``used`` is always fully migrated too. Env in WASI mode routes
+    ``get`` / ``args`` to ``wasi:cli/environment`` and implements its
+    attenuators (``restrict_to_keys`` / ``allows``) GUEST-SIDE (Level 2
+    of ``docs/design/wasi-attenuation.md``, no host import), so an Env
+    present in ``used`` never carries a ``capa:host`` env interface."""
     lines: list[str] = []
     lines.append("package capa:host;")
     lines.append("")

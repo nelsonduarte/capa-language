@@ -885,6 +885,17 @@ class WasmComponentHost:
             "env": roots.get("env", 0),
             "clock": roots.get("clock", 0),
         }
+        # WASI mode: Env attenuation is enforced GUEST-SIDE (Level 2 of
+        # docs/design/wasi-attenuation.md). The guest reinterprets the
+        # Env i32 value as 0 = unrestricted root, or a pointer to a
+        # linear-memory allow-list produced by ``restrict_to_keys``.
+        # The host therefore passes 0 (the unrestricted sentinel) for
+        # the Env root rather than a capa:host handle-table handle,
+        # which has no meaning on the wasi:cli/environment path. The
+        # other handle-bearing caps (Fs / Net / Db / Proc / Clock) keep
+        # their capa:host table handles in this hybrid mode.
+        if self._wasi:
+            name_to_root["env"] = 0
         handle_args: list[int] = []
         for name, _vtype in params:
             handle_args.append(name_to_root.get(name, roots.get("fs", 0)))

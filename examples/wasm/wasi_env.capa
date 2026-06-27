@@ -12,10 +12,10 @@
 //                    Python backend).
 //   env.args()    -> wasi:cli/environment.get-arguments.
 //
-// The Env attenuators (restrict_to_keys / allows) are deliberately
-// NOT migrated in this phase: they are rejected at compile time under
-// --wasi (use the default capa:host backend for those). See
-// docs/design/wasi-attenuation.md.
+// The Env attenuators (restrict_to_keys / allows) are now SUPPORTED
+// under --wasi too, implemented guest-side (Level 2 of
+// docs/design/wasi-attenuation.md). See examples/wasm/wasi_env_attenuation.capa
+// for a demo of the narrowing + fail-closed semantics.
 //
 // Run with a known env var set so the output is determinable, e.g.:
 //   CAPA_WASI_ENV_DEMO=hello \

@@ -1,0 +1,64 @@
+// Experimental WASI mode demo: GUEST-SIDE Env attenuation
+// (capa --wasm --component --wasi).
+//
+// wasi:cli/environment is a pure reader: there is no host-side cap
+// object to hold an allow-list, so Env attenuation has no host runtime
+// home. This mode therefore implements the narrowing GUEST-SIDE, with
+// semantics byte-identical to the default capa:host backend and the
+// Python backend (the oracle). See docs/design/wasi-attenuation.md
+// (Level 2) and docs/design/wasi_mode.md.
+//
+//   env.restrict_to_keys(keys) -> a NEW Env whose allow-list is the
+//     INTERSECTION of the current allow-list with `keys` (monotonic;
+//     it never widens). An unrestricted Env narrowed to `keys` becomes
+//     restricted to exactly `keys`.
+//   env.allows(key)            -> true iff the Env is unrestricted OR
+//     `key` is in its allow-list.
+//   env.get(key)               -> FAIL-CLOSED: a key not in the
+//     allow-list reads as None without even consulting the
+//     environment, exactly like the Python backend.
+//
+// GUARANTEE LEVEL (honest): this is Level 2. The host still delivers
+// the FULL environment to the component (the ceiling is not yet
+// materialised via env-set, that is Level 1, a later increment), so
+// the fine allow-list narrowing is imposed by the compiler-generated
+// guest code (proved by the compiler, reinforced by our host); under a
+// stock / tampered WASI host the narrowing would not be re-checked.
+//
+// Run with the demo keys set so the output is determinable, e.g.:
+//   CAPA_WASI_A=alpha CAPA_WASI_B=bravo CAPA_WASI_C=charlie \
+//     capa examples/wasm/wasi_env_attenuation.capa \
+//       --wasm --component --wasi --run
+
+fun main(stdio: Stdio, env: Env)
+    // Narrow twice. The effective allow-list is the intersection:
+    // {A, B} & {B, C} = {B}.
+    let ab = env.restrict_to_keys(["CAPA_WASI_A", "CAPA_WASI_B"])
+    let only_b = ab.restrict_to_keys(["CAPA_WASI_B", "CAPA_WASI_C"])
+
+    // allows reflects the intersection.
+    if only_b.allows("CAPA_WASI_B")
+        stdio.println("allows B: yes")
+    if only_b.allows("CAPA_WASI_A")
+        stdio.println("allows A: yes")
+    else
+        stdio.println("allows A: no")
+    if only_b.allows("CAPA_WASI_C")
+        stdio.println("allows C: yes")
+    else
+        stdio.println("allows C: no")
+
+    // get is fail-closed against the allow-list: B reads through, A is
+    // denied (None) even though CAPA_WASI_A is set in the environment.
+    match only_b.get("CAPA_WASI_B")
+        Some(v) -> stdio.println("get B: ${v}")
+        None -> stdio.println("get B: none")
+    match only_b.get("CAPA_WASI_A")
+        Some(v) -> stdio.println("get A: ${v}")
+        None -> stdio.println("get A: none")
+
+    // The wider parent still admits A: each Env value carries its own
+    // restriction, so narrowing one does not affect another.
+    match ab.get("CAPA_WASI_A")
+        Some(v) -> stdio.println("parent get A: ${v}")
+        None -> stdio.println("parent get A: none")

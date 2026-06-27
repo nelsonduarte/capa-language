@@ -20,6 +20,11 @@ byte-equality:
   successive reads; ``now_secs`` is a plausible Unix timestamp.
 - SYSTEM_SEED: an unseeded ``Random()`` draws fresh entropy each run,
   so two runs of the same program produce distinct values.
+- ENV ATTENUATION: ``Env.restrict_to_keys`` / ``Env.allows`` / the
+  ``Env.get`` fail-closed gate are implemented GUEST-SIDE under
+  ``--wasi`` (Level 2 of ``docs/design/wasi-attenuation.md``), with
+  intersection + fail-closed semantics byte-identical to the Python
+  backend (the oracle) and the capa:host backend.
 - EXCLUSIONS: ``Clock.sleep`` and Clock attenuation
   (``restrict_to_after``) are rejected with a clear error in WASI mode.
 
@@ -84,6 +89,33 @@ def _run_wasi_component(src: str, args: tuple = ()) -> str:
     sys.stdout = buf
     try:
         WasmComponentHost(args=args, wasi=True).run_main(comp)
+    finally:
+        sys.stdout = saved
+    return buf.getvalue()
+
+
+def _run_capa_host_component(src: str, args: tuple = ()) -> str:
+    """Build + run a program on the DEFAULT capa:host Component
+    backend (``--wasm --component``, no ``--wasi``); capture stdout.
+
+    Used for three-way byte-parity checks of the Env attenuation: the
+    capa:host backend enforces the narrowing host-side via the cap
+    handle table, the WASI backend enforces it guest-side, and both
+    must match the Python oracle. ``Env.get`` / ``allows`` here read
+    ``os.environ`` through the capa:host bridge, so the controlled keys
+    set in the test environment are visible to this backend too."""
+    from capa.ir import compile_wasm, compile_wit
+    from capa.cli import _wrap_as_component
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    module, result = _parse_analyze(src)
+    core = compile_wasm(module, types=result.types, wasi=False)
+    wit = compile_wit(module, types=result.types, wasi=False)
+    comp = _wrap_as_component(core, wit, wasi=False)
+    buf = io.StringIO()
+    saved = sys.stdout
+    sys.stdout = buf
+    try:
+        WasmComponentHost(args=args, wasi=False).run_main(comp)
     finally:
         sys.stdout = saved
     return buf.getvalue()
@@ -167,6 +199,64 @@ fun main(stdio: Stdio, env: Env)
     stdio.println("argc=${args.length()}")
     for a in args
         stdio.println("arg=${a}")
+"""
+
+# Guest-side Env attenuation (Level 2). The three controlled keys are
+# set in os.environ for the duration of the attenuation tests so the
+# result is determinable and parity-comparable to the Python backend.
+_ATT_A = "CAPA_WASI_ATT_A"
+_ATT_B = "CAPA_WASI_ATT_B"
+_ATT_C = "CAPA_WASI_ATT_C"
+_ATT_VALS = {_ATT_A: "att-a-val", _ATT_B: "att-b-val", _ATT_C: "att-c-val"}
+
+# restrict_to_keys([A, B]) then restrict_to_keys([B, C]) -> the
+# intersection {B} is the effective allow-list. allows + get reflect it,
+# get is fail-closed against it, and the wider parent still admits A.
+_ENV_ATTEN_SRC = f"""
+fun main(stdio: Stdio, env: Env)
+    let ab = env.restrict_to_keys(["{_ATT_A}", "{_ATT_B}"])
+    let only_b = ab.restrict_to_keys(["{_ATT_B}", "{_ATT_C}"])
+    if only_b.allows("{_ATT_B}")
+        stdio.println("allows_B=yes")
+    else
+        stdio.println("allows_B=no")
+    if only_b.allows("{_ATT_A}")
+        stdio.println("allows_A=yes")
+    else
+        stdio.println("allows_A=no")
+    if only_b.allows("{_ATT_C}")
+        stdio.println("allows_C=yes")
+    else
+        stdio.println("allows_C=no")
+    match only_b.get("{_ATT_B}")
+        Some(v) -> stdio.println("get_B=${{v}}")
+        None -> stdio.println("get_B=none")
+    match only_b.get("{_ATT_A}")
+        Some(v) -> stdio.println("get_A=${{v}}")
+        None -> stdio.println("get_A=none")
+    match ab.get("{_ATT_A}")
+        Some(v) -> stdio.println("parent_get_A=${{v}}")
+        None -> stdio.println("parent_get_A=none")
+"""
+
+# Edge cases: the unrestricted root allows + reads everything, and an
+# empty restriction (restrict_to_keys([])) admits nothing (fail-closed
+# on every key), distinct from the unrestricted root.
+_ENV_ATTEN_EDGE_SRC = f"""
+fun main(stdio: Stdio, env: Env)
+    if env.allows("{_ATT_A}")
+        stdio.println("root_allows=yes")
+    match env.get("{_ATT_A}")
+        Some(v) -> stdio.println("root_get=${{v}}")
+        None -> stdio.println("root_get=none")
+    let empty = env.restrict_to_keys([])
+    if empty.allows("{_ATT_A}")
+        stdio.println("empty_allows=yes")
+    else
+        stdio.println("empty_allows=no")
+    match empty.get("{_ATT_A}")
+        Some(v) -> stdio.println("empty_get=${{v}}")
+        None -> stdio.println("empty_get=none")
 """
 
 # Env + Random + Clock all in WASI mode at once: proves the three
@@ -284,33 +374,26 @@ fun main(stdio: Stdio, clock: Clock)
             self._compile(src)
         self.assertIn("WASI mode", str(cm.exception))
 
-    def test_env_restrict_to_keys_rejected(self):
-        # Env attenuation has no wasi:cli/environment runtime home in
-        # this phase; reject rather than silently widen the cap.
-        src = """
-fun main(stdio: Stdio, env: Env)
-    let e2 = env.restrict_to_keys(["PATH"])
-    match e2.get("PATH")
-        Some(_) -> stdio.println("got")
-        None -> stdio.println("none")
-"""
-        with self.assertRaises(Exception) as cm:
-            self._compile(src)
-        self.assertIn("WASI mode", str(cm.exception))
-        self.assertIn("Env.restrict_to_keys", str(cm.exception))
+    def test_env_restrict_to_keys_accepted_guest_side(self):
+        # Env attenuation is now SUPPORTED under --wasi, implemented
+        # guest-side (Level 2). It compiles cleanly and emits the
+        # guest-side $Env_restrict_to_keys wrapper (no host import).
+        wat = self._compile(_ENV_ATTEN_SRC)
+        self.assertIn("(func $Env_restrict_to_keys", wat)
+        self.assertIn("(func $Env_allows", wat)
+        self.assertIn("(func $Env_key_allowed", wat)
+        # No capa:host env import is pulled in (the whole interface is
+        # routed off capa:host in WASI mode).
+        self.assertNotIn('"capa:host/env"', wat)
+        # The narrowing has no host import string at all.
+        self.assertNotIn("restrict-to-keys", wat)
 
-    def test_env_allows_rejected(self):
-        src = """
-fun main(stdio: Stdio, env: Env)
-    if env.allows("PATH")
-        stdio.println("yes")
-    else
-        stdio.println("no")
-"""
-        with self.assertRaises(Exception) as cm:
-            self._compile(src)
-        self.assertIn("WASI mode", str(cm.exception))
-        self.assertIn("Env.allows", str(cm.exception))
+    def test_env_get_fail_closed_consults_handle(self):
+        # The $Env_get wrapper gains the guest-side fail-closed gate:
+        # it calls $Env_key_allowed before reading the environment.
+        wat = self._compile(_ENV_ATTEN_SRC)
+        get_body = wat.split("(func $Env_get")[1].split("(func ")[0]
+        self.assertIn("call $Env_key_allowed", get_body)
 
     def test_env_get_args_accepted(self):
         # The readers compile cleanly under --wasi (no rejection).
@@ -541,6 +624,107 @@ class TestWasiEnvMode(unittest.TestCase):
         self.assertIn("CAPA_WASI_ENV_DEMO=demo-value", out)
         self.assertIn("absent: none", out)
         self.assertIn("argc=0", out)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiEnvAttenuation(unittest.TestCase):
+    """End-to-end GUEST-SIDE Env attenuation under the real WASI P2
+    host, with three-way byte-parity (Python oracle == capa:host
+    backend == WASI backend).
+
+    The three controlled keys are set in ``os.environ`` for the
+    duration of each test so every backend observes the same surface
+    (the Python runtime reads ``os.environ`` directly; the capa:host
+    bridge reads it host-side; the WASI host ``inherit_env``s it to the
+    component). The narrowing then happens guest-side on the WASI path
+    and host-side on the capa:host path; both must equal the oracle."""
+
+    def setUp(self):
+        import os
+        self._saved = {k: os.environ.get(k) for k in _ATT_VALS}
+        for k, v in _ATT_VALS.items():
+            os.environ[k] = v
+
+    def tearDown(self):
+        import os
+        for k, old in self._saved.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
+
+    def test_intersection_and_fail_closed(self):
+        # restrict_to_keys([A,B]).restrict_to_keys([B,C]) -> {B}.
+        out = _run_wasi_component(_ENV_ATTEN_SRC)
+        self.assertIn("allows_B=yes", out)
+        self.assertIn("allows_A=no", out)   # narrowed out by the chain
+        self.assertIn("allows_C=no", out)   # never in the first list
+        self.assertIn(f"get_B={_ATT_VALS[_ATT_B]}", out)
+        # Fail-closed: A is set in the environment but denied by the
+        # allow-list, so get reads None without consulting it.
+        self.assertIn("get_A=none", out)
+        # The wider parent still admits A (each Env carries its own
+        # restriction).
+        self.assertIn(f"parent_get_A={_ATT_VALS[_ATT_A]}", out)
+
+    def test_intersection_parity_three_backends(self):
+        # The load-bearing parity claim: guest-side (WASI) == host-side
+        # (capa:host) == Python oracle, byte-for-byte, for the
+        # controlled keys.
+        wasi_out = _run_wasi_component(_ENV_ATTEN_SRC)
+        host_out = _run_capa_host_component(_ENV_ATTEN_SRC)
+        py_out = _run_python(_ENV_ATTEN_SRC)
+        self.assertEqual(py_out, host_out)
+        self.assertEqual(py_out, wasi_out)
+
+    def test_unrestricted_root_and_empty_restriction(self):
+        out = _run_wasi_component(_ENV_ATTEN_EDGE_SRC)
+        # Unrestricted root: allows + reads everything.
+        self.assertIn("root_allows=yes", out)
+        self.assertIn(f"root_get={_ATT_VALS[_ATT_A]}", out)
+        # restrict_to_keys([]) admits nothing (distinct from the
+        # unrestricted root): allows is false and get fail-closes.
+        self.assertIn("empty_allows=no", out)
+        self.assertIn("empty_get=none", out)
+
+    def test_edge_parity_three_backends(self):
+        wasi_out = _run_wasi_component(_ENV_ATTEN_EDGE_SRC)
+        host_out = _run_capa_host_component(_ENV_ATTEN_EDGE_SRC)
+        py_out = _run_python(_ENV_ATTEN_EDGE_SRC)
+        self.assertEqual(py_out, host_out)
+        self.assertEqual(py_out, wasi_out)
+
+    def test_example_attenuation_program_runs(self):
+        import os
+        from pathlib import Path
+        keys = {
+            "CAPA_WASI_A": "alpha",
+            "CAPA_WASI_B": "bravo",
+            "CAPA_WASI_C": "charlie",
+        }
+        saved = {k: os.environ.get(k) for k in keys}
+        for k, v in keys.items():
+            os.environ[k] = v
+        try:
+            path = (
+                Path(__file__).resolve().parent.parent
+                / "examples" / "wasm" / "wasi_env_attenuation.capa"
+            )
+            out = _run_wasi_component(path.read_text(encoding="utf-8"))
+        finally:
+            for k, old in saved.items():
+                if old is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = old
+        self.assertIn("allows B: yes", out)
+        self.assertIn("allows A: no", out)
+        self.assertIn("get B: bravo", out)
+        self.assertIn("get A: none", out)
+        self.assertIn("parent get A: alpha", out)
 
 
 if __name__ == "__main__":

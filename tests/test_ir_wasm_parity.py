@@ -858,6 +858,16 @@ _EXCLUDED: dict[str, str] = {
         "tests/test_wasi_mode.py, which set a known env var + argv and "
         "assert controlled-key parity with the Python backend."
     ),
+    "wasi_env_attenuation.capa": (
+        "Experimental --wasi mode demo: guest-side Env attenuation "
+        "(restrict_to_keys / allows / fail-closed get) reads the "
+        "ambient host environment, which the auto-list harness does "
+        "not control, so there is no fixed byte-equality reference "
+        "here. Covered by the dedicated TestWasiEnvAttenuation tests "
+        "in tests/test_wasi_mode.py, which set known env vars and "
+        "assert three-backend byte-parity (Python oracle == capa:host "
+        "host-side narrowing == WASI guest-side narrowing)."
+    ),
 }
 
 
