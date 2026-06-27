@@ -356,10 +356,36 @@ runtime string-matching.
 
 The migrated operations are METADATA only: `exists` / `is_dir` ->
 `descriptor.stat-at`, `mkdir` -> `descriptor.create-directory-at`
-(idempotent, `exist` folded to `Ok`; single-segment). They use NO
-`wasi:io` streams. `read` / `write` / `list_dir` (stream-bearing) and
-the fine attenuators `restrict_to` / `allows` are REJECTED at compile
-time under `--wasi` (`capa/ir/_emit_wasm/_wasi.py`), a later increment.
+(idempotent, `exist` folded to `Ok`; RECURSIVE, replicating
+`os.makedirs(exist_ok=True)` by emitting one `create-directory-at` per
+cumulative prefix of the resolved relative literal, all compile-time
+literals, so a multi-segment `mkdir` whose intermediates are missing
+creates the whole tree byte-identically across the three backends).
+They use NO `wasi:io` streams. `read` / `write` / `list_dir`
+(stream-bearing) and the fine attenuators `restrict_to` / `allows` are
+REJECTED at compile time under `--wasi` (`capa/ir/_emit_wasm/_wasi.py`),
+a later increment.
+
+WHERE THE FINE BOUNDARY ACTUALLY IS (honest, do not over-sell the
+preopen). A preopen is a whole-DIRECTORY descriptor: it grants the
+RUNTIME authority over the entire subtree, which is WIDER than the set
+of literal paths the program names. The ceiling preopens each literal's
+PARENT (so a sibling under that parent is within the granted subtree),
+and it COALESCES nested parents to the OUTERMOST root (overlapping
+preopens trap in wasmtime), so the surviving preopen is broader still
+(e.g. a program naming only `data/a` and `data/sub/b` is granted a
+single `data` preopen, not `{data/a, data/sub/b}`). The preopen is
+therefore the COARSE Level-1 ceiling, NOT the fine attenuation boundary.
+The boundary that actually pins the program to the paths it names is the
+compiler's COMPILE-TIME, LITERAL-ONLY gate: the guest only ever calls a
+metadata wrapper with a `(preopen_index, relative_literal)` the compiler
+RESOLVED FROM A SOURCE LITERAL, and a dynamic path is rejected at
+compile time; no emitted guest code constructs a relative path at
+runtime, so the guest can address only the statically-fixed resolved
+literals, a set the module provably cannot get past. The preopen subtree
+is the authority the RUNTIME holds; the literal set is the authority the
+GUEST can express. (Mechanics and the TOCTOU caveat: see
+`docs/design/wasi_mode.md`, "Fs metadata + preopen ceiling".)
 
 POLICY DIVERGENCE from Env: a NON-CLOSED Fs ceiling (a dynamic Fs path)
 is FAIL-CLOSED, not degraded to a wider ceiling. The host materialises

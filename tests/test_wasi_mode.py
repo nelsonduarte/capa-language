@@ -1064,6 +1064,20 @@ class TestWasiFsCeilingAnalysis(unittest.TestCase):
         self.assertEqual(resolve_fs_call(c, "/a/b"), (0, "b"))
         self.assertEqual(resolve_fs_call(c, "/a/b/c"), (0, "b/c"))
 
+    def test_mkdir_prefixes_cumulative_segments(self):
+        # Recursive mkdir splits a relative target into its cumulative
+        # prefixes (os.makedirs order), the sequence the call site emits
+        # one create-directory-at per. Single-segment and "." (the
+        # preopen itself) stay one call, the prior behaviour.
+        from capa.ir import mkdir_prefixes
+        self.assertEqual(mkdir_prefixes("a/b/c"), ("a", "a/b", "a/b/c"))
+        self.assertEqual(mkdir_prefixes("sub"), ("sub",))
+        self.assertEqual(mkdir_prefixes("."), (".",))
+        # Defensive normalisation: stray leading / trailing / doubled
+        # separators collapse to clean cumulative segments.
+        self.assertEqual(mkdir_prefixes("x/y/"), ("x", "x/y"))
+        self.assertEqual(mkdir_prefixes("/p/q"), ("p", "p/q"))
+
 
 class TestWasiFsWitGeneration(unittest.TestCase):
     """WIT shape for Fs metadata (no wasm-tools needed)."""
@@ -1359,6 +1373,64 @@ class TestWasiFsMode(unittest.TestCase):
         )
         # Trigger the wasi config build (it runs in __init__).
         self.assertEqual(host._wasi_fs_applied, [])
+
+    def test_recursive_mkdir_multi_segment_three_backend_parity(self):
+        # REGRESSION (recursive mkdir): mkdir("data/sub/new") when the
+        # intermediate "sub" does NOT exist must create the whole tree
+        # (os.makedirs(exist_ok=True) semantics) and bite byte-identical
+        # across all three backends. The single-segment
+        # create-directory-at would return no-entry on the missing
+        # parent in --wasi; the call-site emits one create per cumulative
+        # prefix (sub, then sub/new) to match the oracle / capa:host.
+        d = self._data.replace("\\", "/")
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let r = fs.mkdir(\"{d}/sub/new\")\n"
+            "    match r\n"
+            "        Ok(_) -> stdio.println(\"mk=ok\")\n"
+            "        Err(e) -> stdio.println(\"mk=err\")\n"
+            f"    stdio.println(\"es=${{fs.is_dir(\\\"{d}/sub\\\")}}\")\n"
+            f"    stdio.println(\"en=${{fs.is_dir(\\\"{d}/sub/new\\\")}}\")\n"
+            # Idempotent re-run of the same deep mkdir is still Ok.
+            f"    let r2 = fs.mkdir(\"{d}/sub/new\")\n"
+            "    match r2\n"
+            "        Ok(_) -> stdio.println(\"mk2=ok\")\n"
+            "        Err(e) -> stdio.println(\"mk2=err\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        # And the tree was actually built (sanity over the parity).
+        self.assertIn("mk=ok", wasi)
+        self.assertIn("es=true", wasi)
+        self.assertIn("en=true", wasi)
+        self.assertIn("mk2=ok", wasi)
+
+    def test_stat_after_mkdir_does_not_corrupt_preopen(self):
+        # REGRESSION (scratch sizing): the shared Fs indirect-return
+        # scratch must fit the FULL result<descriptor-stat, error-code>
+        # that stat-at writes (104 bytes), not just 16. With a 16-byte
+        # slot, a stat-at after a create-directory-at overflowed into
+        # the cached get-directories list buffer and the NEXT is_dir
+        # trapped with "unknown handle index" reading a corrupted
+        # preopen descriptor. A program doing mkdir then two is_dir on
+        # the same preopen must run clean and match every backend.
+        d = self._data.replace("\\", "/")
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let r = fs.mkdir(\"{d}/made\")\n"
+            "    match r\n"
+            "        Ok(_) -> stdio.println(\"mk=ok\")\n"
+            "        Err(e) -> stdio.println(\"mk=err\")\n"
+            f"    stdio.println(\"a=${{fs.is_dir(\\\"{d}/existing\\\")}}\")\n"
+            f"    stdio.println(\"b=${{fs.is_dir(\\\"{d}/made\\\")}}\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("mk=ok", wasi)
+        self.assertIn("a=true", wasi)
+        self.assertIn("b=true", wasi)
 
     def test_nested_preopens_coalesce_and_run(self):
         # A program that touches both a directory and a path nested

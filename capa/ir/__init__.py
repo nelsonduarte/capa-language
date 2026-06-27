@@ -44,7 +44,7 @@ from ._env_ceiling import (
 )
 from ._fs_ceiling import (
     FsCeiling, FsPreopen, compute_fs_ceiling,
-    compute_fs_ceiling_from_cir, resolve_fs_call,
+    compute_fs_ceiling_from_cir, mkdir_prefixes, resolve_fs_call,
 )
 
 __all__ = [
@@ -72,6 +72,7 @@ __all__ = [
     "FsPreopen",
     "compute_fs_ceiling",
     "compute_fs_ceiling_from_cir",
+    "mkdir_prefixes",
     "resolve_fs_call",
     "compile",
     "compile_program",

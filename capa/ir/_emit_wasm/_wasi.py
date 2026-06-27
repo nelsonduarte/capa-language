@@ -1026,14 +1026,18 @@ class _WasiEmissionMixin:
         Err arm fields the materialiser reads (m_ptr @4, m_len @8,
         c_ptr @12, c_len @16).
 
-        Single-segment only: ``create-directory-at`` creates ONE
+        One segment per call: ``create-directory-at`` creates ONE
         directory relative to the preopen descriptor. The full
-        recursive ``os.makedirs`` (creating missing intermediate
-        segments) is NOT replicated in this increment; a literal
-        ``fs.mkdir("dir/sub")`` whose parent ``dir`` is the preopen
-        creates ``sub`` directly, which is the common case. Deeper
-        nested creation is a documented follow-up (it needs per-segment
-        open-at descriptor walking)."""
+        recursive ``os.makedirs(exist_ok=True)`` (creating every missing
+        intermediate segment) is replicated at the CALL SITE, not here:
+        ``_emit_wasi_fs_metadata_call`` splits the resolved relative
+        path into its cumulative prefixes (``a`` / ``a/b`` / ``a/b/c``,
+        all compile-time literals) and calls this wrapper once per
+        prefix in order, sharing one ret area and short-circuiting on a
+        genuine error. Each call here is idempotent, so re-creating an
+        already-existing intermediate (or the leaf) is an Ok, matching
+        the oracle. This wrapper therefore stays a single-segment
+        primitive; the recursion is the sequence the call site emits."""
         scratch = self._wasi_fs_scratch_offset
         msg_off, msg_len = self._intern_string("mkdir failed")
         self._write(

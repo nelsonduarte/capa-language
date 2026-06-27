@@ -612,7 +612,7 @@ class _CapDispatchMixin:
           20-byte canonical-ABI ret area, pass it as the trailing arg,
           and reuse the shared ``result_unit_io_error`` materialiser so
           the lifted value is identical to the capa:host mkdir."""
-        from .._fs_ceiling import resolve_fs_call
+        from .._fs_ceiling import mkdir_prefixes, resolve_fs_call
         if len(instr.args) != 1:
             raise WasmEmissionError(
                 f"Fs.{method} expected 1 arg, got {len(instr.args)}"
@@ -632,21 +632,53 @@ class _CapDispatchMixin:
                 "Fs in WASI mode has no closed preopen ceiling"
             )
         idx, rel = resolve_fs_call(ceiling, arg.literal)
-        rel_off, rel_len = self._intern_string(rel)
-        self._write(f"i32.const {idx}")
-        self._write(f"i32.const {rel_off}")
-        self._write(f"i32.const {rel_len}")
         if method == "mkdir":
-            # result<_, io-error>: allocate the 20-byte ret area, pass
-            # it as the trailing arg, then materialise the Capa Result.
+            # Recursive mkdir (parity with os.makedirs(exist_ok=True)):
+            # the relative path may be multi-segment (``a/b/c``). WASI
+            # create-directory-at is single-segment and returns no-entry
+            # if an intermediate parent is missing, so we create each
+            # cumulative prefix in order (``a`` then ``a/b`` then
+            # ``a/b/c``), reusing the idempotent ``$Fs_mkdir`` wrapper
+            # (Ok or ``exist`` -> success). All prefixes share ONE
+            # 20-byte ret area: each call overwrites it, and we
+            # short-circuit out of the block the moment a prefix writes
+            # an Err (tag @0 != 0), so the materialised Result is the
+            # first genuine failure, or the final leaf's Ok. The
+            # materialiser then reads $_ret_area directly.
+            prefixes = mkdir_prefixes(rel)
             self._write("i32.const 20")
             self._write("call $alloc")
-            self._write("local.tee $_ret_area")
-            self._write("call $Fs_mkdir")
+            self._write("local.set $_ret_area")
+            self._write("block $mkdir_done")
+            self._indent += 1
+            for i, pfx in enumerate(prefixes):
+                pfx_off, pfx_len = self._intern_string(pfx)
+                self._write(f"i32.const {idx}")
+                self._write(f"i32.const {pfx_off}")
+                self._write(f"i32.const {pfx_len}")
+                self._write("local.get $_ret_area")
+                self._write("call $Fs_mkdir")
+                if i < len(prefixes) - 1:
+                    # An intermediate prefix that failed (tag != 0) is a
+                    # genuine error (a non-``exist`` create failure);
+                    # os.makedirs would raise here. Stop and let the
+                    # materialiser lift the Err already in the ret area.
+                    self._write("local.get $_ret_area")
+                    self._write("i32.load8_u offset=0")
+                    self._write("br_if $mkdir_done")
+            self._indent -= 1
+            self._write("end")
+            # result<_, io-error>: the materialiser reads $_ret_area
+            # directly (it expects nothing on the stack), exactly as the
+            # single-segment path did.
             self._emit_cap_indirect_materialise(
                 "result_unit_io_error", instr.dst,
             )
         else:
+            rel_off, rel_len = self._intern_string(rel)
+            self._write(f"i32.const {idx}")
+            self._write(f"i32.const {rel_off}")
+            self._write(f"i32.const {rel_len}")
             self._write(f"call $Fs_{method}")
             if instr.dst is not None:
                 self._write(f"local.set ${instr.dst}")

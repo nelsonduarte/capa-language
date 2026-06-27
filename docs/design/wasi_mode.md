@@ -292,9 +292,18 @@ and `Fs.mkdir` (see "Fs metadata + preopen ceiling" below).
   false (fail-closed-as-absent, matching the Python oracle).
 - `mkdir` -> `descriptor.create-directory-at(rel)`: idempotent, an
   `already-exists` error (code `exist` == 7) is folded to `Ok`,
-  replicating `os.makedirs(path, exist_ok=True)`. Single-segment only
-  in this increment (one directory relative to the preopen; full
-  recursive intermediate creation is a follow-up).
+  replicating `os.makedirs(path, exist_ok=True)`. **Recursive**: a
+  multi-segment relative target (`a/b/c`) creates every missing
+  intermediate, matching `os.makedirs`'s tree creation. WASI
+  `create-directory-at` is single-segment (it returns `no-entry` if an
+  intermediate parent is missing), so the compiler splits the resolved
+  relative path into its cumulative prefixes -- all **compile-time
+  literals** (`a`, `a/b`, `a/b/c`) -- and emits one idempotent
+  `create-directory-at` per prefix in order, sharing one result area and
+  short-circuiting on a genuine (non-`exist`) error. There is no runtime
+  string-splitting in the guest. The three backends are byte-identical
+  for a multi-segment `mkdir` whose intermediates do not yet exist
+  (`TestWasiFsMode::test_recursive_mkdir_multi_segment_three_backend_parity`).
 
 None of these use streams. The metadata wrappers address the
 host-granted **preopen** descriptors: a `wasi:filesystem` operation
@@ -316,6 +325,40 @@ string-matching. Preopens are a **hard runtime ceiling**: wasmtime
 denies traversal outside a preopened directory and denies a write
 through a `READ_ONLY` preopen, independent of guest behaviour.
 
+**The preopen over-grants; the literal-only gate is the fine boundary
+(honest).** A preopen is a whole **directory** descriptor, so it grants
+the runtime authority over the **entire subtree** of that directory,
+which is **wider** than the specific set of literal paths the program
+names. Two effects compound this:
+
+- **Parent granularity.** A literal `data/a` is addressed relative to a
+  preopen of its **parent** `data`, so the descriptor handed to the
+  guest can in principle reach every sibling under `data`, not just `a`.
+- **Coalescing.** When the program names paths under nested directories
+  (`data/a`, `data/sub/b`), overlapping preopens are illegal in wasmtime
+  (it collapses them and the inner descriptor index then traps), so the
+  ceiling **coalesces** them to the **outermost** root (`data`) and
+  addresses the inner targets with multi-segment relative paths. The
+  surviving preopen is therefore even **broader** than the union of the
+  named parents.
+
+So the **preopen is NOT the fine attenuation boundary** -- it is a
+deliberately coarse Level-1 ceiling. The boundary that actually limits
+the program to the paths it names is the compiler's **compile-time,
+literal-only gate**: the guest WAT only ever calls a metadata wrapper
+with a `(preopen_index, relative_literal)` pair the compiler **resolved
+from a string literal in the source** (`_emit_wasi_fs_metadata_call`),
+and a dynamic path is **rejected at compile time** (fail-closed, below).
+There is **no** guest code path that constructs a relative path at
+runtime, so the guest can only ever address the **resolved basenames of
+the literals** -- a set the compiler fixes statically and that the
+emitted module **provably cannot get past** (no runtime string can
+become a new target). The preopen subtree is the authority the
+**runtime** holds; the literal set is the authority the **guest can
+express**. We do not over-sell the preopen as the tight boundary: the
+honest tight boundary is the literal-only compile gate, and the preopen
+is the (wider) hard ceiling underneath it.
+
 **Fail-closed for dynamic paths.** If any Fs op takes a non-literal
 path, the ceiling is **not closed**: the host materialises **no
 preopens at all** (the component can open nothing) and the compiler
@@ -323,6 +366,43 @@ preopens at all** (the component can open nothing) and the compiler
 ceiling (which falls back to `inherit_env`) because a wrongly-derived
 preopen is real filesystem authority; a missing preopen merely denies.
 Such a program runs unchanged on the default `capa:host` backend.
+
+**TOCTOU window (honest limitation).** The metadata ops are
+time-of-check / time-of-use exposed, and the guest WASI path is weaker
+here than the Python host. Two distinct points:
+
+- **Check-then-use race.** Between a `stat-at` (`exists` / `is_dir`)
+  and any later op against the same path, the filesystem state can
+  change (a concurrent process creates, deletes, or retypes the entry),
+  so a `true` from `is_dir` is a statement about the past, not a lock on
+  the present. This is the ordinary TOCTOU caveat of any `stat`-then-act
+  code and is identical on every backend.
+- **No guest-side kernel-true-path defence.** The Python host has an
+  extra TOCTOU defence the guest WASI path **cannot replicate**. On the
+  `capa:host` backend a restricted Fs op opens the target and then
+  re-derives the **kernel-true path** of the open handle
+  (`capa/runtime/_fs_guard.py`: Linux `/proc/self/fd`, macOS
+  `fcntl F_GETPATH`, Windows `GetFinalPathNameByHandleW`) and
+  re-validates *that* against the cap's allowed prefixes
+  (`_post_open_allows`, `capa/runtime/_capabilities.py:191-213`),
+  catching a symlink or rename that swapped the target between the
+  `realpath` check and the open. Under WASI the guest holds only the
+  **preopen descriptor** and a relative path string; it has no way to
+  ask the runtime for a descriptor's kernel-true path, so that post-open
+  re-validation has **no equivalent** here. The mitigation that remains
+  is structural, not a re-check: the **preopen is a hard runtime
+  ceiling** -- wasmtime resolves the relative path against the preopen
+  descriptor and denies any result that escapes the preopened subtree,
+  including through a symlink, regardless of guest behaviour. The
+  metadata `stat-at` does pass `symlink-follow`, so a symlink *inside*
+  the preopen is followed (matching the oracle's `realpath`-based
+  `exists` / `is_dir`); what it cannot do is follow a symlink *out of*
+  the preopened subtree, because the descriptor's authority stops at the
+  preopen boundary. So a TOCTOU swap can still change *what* a name
+  inside the preopen resolves to between check and use, but it can never
+  grant authority *outside* the preopened subtree, and (because
+  `read` / `write` are rejected under `--wasi`) no file is opened
+  through the racy name in this mode at all.
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
@@ -433,9 +513,25 @@ property (see `tests/test_wasi_mode.py`):
   preopens. `TestWasiFsCeilingAnalysis` pins the static analysis
   (literal paths close the ceiling; the parent is the preopen;
   `READ_WRITE` only when a mutating op targets it; a dynamic path opens
-  it; literal -> `(index, basename)` resolution). `TestWasiFsRejections`
+  it; literal -> `(index, basename)` resolution; `mkdir_prefixes`
+  cumulative-segment splitting). `TestWasiFsRejections`
   pins the compile-time rejection of `read` / `write` / `list_dir` /
   `allows` and of a dynamic metadata path (fail-closed).
+- **Recursive `mkdir` (three-backend parity)**:
+  `TestWasiFsMode::test_recursive_mkdir_multi_segment_three_backend_parity`
+  creates `data/sub/new` when the intermediate `sub` does **not** exist;
+  the WASI guest emits one `create-directory-at` per cumulative prefix
+  (`sub`, then `sub/new`), so the whole tree is built and the output is
+  byte-identical across Python, `capa:host`, and WASI (and an idempotent
+  re-run is still `Ok`).
+- **`stat-at` scratch sizing (no preopen corruption)**:
+  `TestWasiFsMode::test_stat_after_mkdir_does_not_corrupt_preopen`
+  exercises a `mkdir` followed by two `is_dir` on the same preopen. The
+  shared Fs indirect-return scratch holds the full 104-byte
+  `result<descriptor-stat, error-code>` that `stat-at` writes; an
+  earlier 16-byte slot overflowed into the cached `get-directories`
+  buffer and the second `is_dir` trapped with "unknown handle index" on
+  a corrupted preopen descriptor.
 
 ## Files
 

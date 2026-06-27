@@ -470,7 +470,8 @@ class WasmEmitter(
         # independently for the preopen registration.
         if self._wasi:
             from .._fs_ceiling import (
-                compute_fs_ceiling_from_cir, resolve_fs_call,
+                compute_fs_ceiling_from_cir, mkdir_prefixes,
+                resolve_fs_call,
             )
             self._fs_ceiling = compute_fs_ceiling_from_cir(module)
             # Pre-intern every WASI-Fs string the wrappers / call sites
@@ -497,7 +498,15 @@ class WasmEmitter(
                         _idx, _rel = resolve_fs_call(
                             self._fs_ceiling, instr.args[0].literal,
                         )
-                        self._intern_string(_rel)
+                        if instr.method == "mkdir":
+                            # Recursive mkdir interns EVERY cumulative
+                            # prefix segment (matching os.makedirs):
+                            # ``a/b/c`` -> ``a``, ``a/b``, ``a/b/c``,
+                            # each a create-directory-at target.
+                            for _pfx in mkdir_prefixes(_rel):
+                                self._intern_string(_pfx)
+                        else:
+                            self._intern_string(_rel)
                 if any(
                     cap == "Fs" and m == "mkdir"
                     for (cap, m) in self._used_caps
@@ -562,17 +571,29 @@ class WasmEmitter(
         # (2026-06-27). Two reservations, both gated on a migrated Fs
         # metadata op (exists / is_dir / mkdir) being present:
         #
-        # - ``_wasi_fs_scratch_offset``: a 16-byte, 8-aligned scratch
+        # - ``_wasi_fs_scratch_offset``: a 104-byte, 8-aligned scratch
         #   for the descriptor.stat-at / create-directory-at indirect
         #   returns (the result<...> discriminant @0, plus the
         #   descriptor-stat Ok payload whose first field %type sits at
-        #   offset 8 under u64 alignment). The two metadata calls never
-        #   overlap within one wrapper invocation, so one shared slot
-        #   suffices. Placed in the static data region like the other
-        #   WASI scratch slots so the wrappers do not depend on
-        #   ``$alloc`` for their own bookkeeping (mkdir still allocates
-        #   its 20-byte result area via ``$alloc`` at the call site, a
-        #   dependency a program reaching Result always pulls in).
+        #   offset 8 under u64 alignment). 104 bytes is the canonical
+        #   ABI size of ``result<descriptor-stat, error-code>`` (the
+        #   stat-at return): an 8-byte discriminant prefix plus the
+        #   96-byte ``descriptor-stat`` record (type @8, link-count @8,
+        #   size @16, then three 24-byte ``option<datetime>`` fields at
+        #   @24 / @48 / @72). stat-at writes the WHOLE record, so the
+        #   slot must hold all of it; a 16-byte slot overflowed by ~88
+        #   bytes into the adjacent get-directories list buffer and
+        #   corrupted the cached preopen descriptors after the second
+        #   stat. ``create-directory-at`` (mkdir) returns the smaller
+        #   ``result<_, error-code>`` (8 bytes) and the get-directories
+        #   header is 8 bytes, so 104 covers every Fs indirect return.
+        #   The metadata calls never overlap within one wrapper
+        #   invocation, so one shared slot suffices. Placed in the
+        #   static data region like the other WASI scratch slots so the
+        #   wrappers do not depend on ``$alloc`` for their own
+        #   bookkeeping (mkdir still allocates its 20-byte Capa-side
+        #   result area via ``$alloc`` at the call site, a dependency a
+        #   program reaching Result always pulls in).
         #
         # - ``_wasi_fs_uses_preopens``: drives the two module globals
         #   (``$__wasi_fs_pre_data`` / ``$__wasi_fs_pre_inited``) that
@@ -589,7 +610,7 @@ class WasmEmitter(
                 self._string_data_offset, 8,
             )
             self._string_data_offset = (
-                self._wasi_fs_scratch_offset + 16
+                self._wasi_fs_scratch_offset + 104
             )
 
         # Stage 1: emit the (module ... ) header with imports and

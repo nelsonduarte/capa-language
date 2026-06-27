@@ -60,10 +60,13 @@ index``). So a parent that is nested under another parent in the
 ceiling is DROPPED, and its call sites resolve against the OUTERMOST
 containing preopen with a multi-segment relative path (e.g. a file
 ``root/sub/y`` whose own parent ``root/sub`` is nested under ``root``
-resolves to the ``root`` preopen with relative ``sub/y``; wasmtime's
-``stat-at`` / ``create-directory-at`` accept multi-segment relative
-paths). The outermost preopen inherits READ_WRITE if any coalesced
-member needed it.
+resolves to the ``root`` preopen with relative ``sub/y``). wasmtime's
+``stat-at`` accepts a multi-segment relative path directly;
+``create-directory-at`` is single-segment per call, so ``mkdir`` of a
+multi-segment relative path is emitted as one idempotent
+``create-directory-at`` per cumulative prefix (see ``mkdir_prefixes``),
+replicating ``os.makedirs(exist_ok=True)``. The outermost preopen
+inherits READ_WRITE if any coalesced member needed it.
 
 This increment migrates only the METADATA operations (``exists`` /
 ``is_dir`` / ``mkdir``). ``read`` / ``write`` / ``list_dir`` still
@@ -273,6 +276,32 @@ def compute_fs_ceiling_from_cir(cir: Module) -> FsCeiling:
         for p in sorted(roots)
     )
     return FsCeiling(closed=True, preopens=preopens)
+
+
+def mkdir_prefixes(rel: str) -> tuple[str, ...]:
+    """Return the cumulative path prefixes of a relative mkdir target,
+    outermost first, replicating ``os.makedirs(exist_ok=True)``'s
+    recursive segment creation.
+
+    For ``"a/b/c"`` this is ``("a", "a/b", "a/b/c")``: the WASI guest
+    calls ``create-directory-at`` once per prefix in order, each
+    idempotent (``exist`` treated as success), so the intermediate
+    segments ``a`` and ``a/b`` are created before the leaf ``c`` exactly
+    as ``os.makedirs`` does. A single-segment ``"sub"`` yields
+    ``("sub",)`` and ``"."`` (the target IS the preopen directory)
+    yields ``(".",)`` -- both a single create-directory-at, the prior
+    behaviour. The relative path uses POSIX separators (the convention
+    the ceiling and the WASI host both speak)."""
+    r = rel.strip("/")
+    if not r or r == ".":
+        return (".",)
+    segments = [s for s in r.split("/") if s]
+    prefixes: list[str] = []
+    acc = ""
+    for seg in segments:
+        acc = seg if not acc else f"{acc}/{seg}"
+        prefixes.append(acc)
+    return tuple(prefixes)
 
 
 def resolve_fs_call(
