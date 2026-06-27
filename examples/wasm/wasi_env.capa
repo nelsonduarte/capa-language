@@ -1,0 +1,40 @@
+// Experimental WASI mode demo: Env reader migration
+// (capa --wasm --component --wasi).
+//
+// Migrates the Env reader capability to the canonical WASI Preview 2
+// interface wasi:cli/environment (get-environment / get-arguments)
+// while Stdio stays on capa:host -- the hybrid coexistence this proof
+// of concept validates. See docs/design/wasi_mode.md.
+//
+//   env.get(KEY)  -> wasi:cli/environment.get-environment, searched
+//                    guest-side for KEY (Some(value) / None, with a
+//                    missing key fail-closing to None exactly like the
+//                    Python backend).
+//   env.args()    -> wasi:cli/environment.get-arguments.
+//
+// The Env attenuators (restrict_to_keys / allows) are deliberately
+// NOT migrated in this phase: they are rejected at compile time under
+// --wasi (use the default capa:host backend for those). See
+// docs/design/wasi-attenuation.md.
+//
+// Run with a known env var set so the output is determinable, e.g.:
+//   CAPA_WASI_ENV_DEMO=hello \
+//     capa examples/wasm/wasi_env.capa --wasm --component --wasi --run
+
+fun main(stdio: Stdio, env: Env)
+    // A key the runner controls: prints its value or <unset>.
+    let demo = env.get("CAPA_WASI_ENV_DEMO")
+    match demo
+        Some(v) -> stdio.println("CAPA_WASI_ENV_DEMO=${v}")
+        None -> stdio.println("CAPA_WASI_ENV_DEMO=<unset>")
+
+    // A key that is overwhelmingly unlikely to exist: must be None
+    // (fail-closed, identical to the default backend).
+    let missing = env.get("CAPA_WASI_DEFINITELY_ABSENT_KEY_42")
+    match missing
+        Some(_) -> stdio.println("absent: UNEXPECTEDLY SET")
+        None -> stdio.println("absent: none")
+
+    // Program arguments (sys.argv[1:] equivalent).
+    let args = env.args()
+    stdio.println("argc=${args.length()}")

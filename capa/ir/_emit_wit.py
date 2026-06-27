@@ -498,6 +498,8 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     ("Random", "system_seed"),
     ("Clock", "now_secs"),
     ("Clock", "now_monotonic"),
+    ("Env", "get"),
+    ("Env", "args"),
 })
 
 
@@ -641,18 +643,23 @@ def _emit_wit_wasi(
     Clock in WASI mode supports only ``now_secs`` / ``now_monotonic``;
     any other Clock method is rejected by the Wasm emitter's
     ``_validate_wasi_caps`` before we get here, so a Clock present in
-    ``used`` is always fully migrated too."""
+    ``used`` is always fully migrated too. Env in WASI mode supports
+    only ``get`` / ``args`` (routed to ``wasi:cli/environment``); its
+    attenuators (``restrict_to_keys`` / ``allows``) are likewise
+    rejected by ``_validate_wasi_caps``, so an Env present in ``used``
+    is always fully migrated too and no ``capa:host`` env interface is
+    emitted."""
     lines: list[str] = []
     lines.append("package capa:host;")
     lines.append("")
 
     # ``capa:host`` interfaces for every NON-migrated capability,
-    # identical to the default path. Random / Clock are skipped (they
-    # move to wasi:*).
+    # identical to the default path. Random / Clock / Env are skipped
+    # (they move to wasi:*).
     for cap in sorted(used.keys()):
         if cap not in _KNOWN_CAPABILITIES:
             continue
-        if cap in ("Random", "Clock"):
+        if cap in ("Random", "Clock", "Env"):
             continue
         lines.append(f"interface {cap.lower()} {{")
         gated = _METHODS_NEEDING_IO_ERROR.get(cap)
@@ -693,9 +700,15 @@ def _emit_wit_wasi(
             lines.append("  import wasi:clocks/monotonic-clock@0.2.0;")
         if "now_secs" in clock_methods:
             lines.append("  import wasi:clocks/wall-clock@0.2.0;")
+    # Env.get / Env.args both route to the single wasi:cli/environment
+    # interface (get-environment / get-arguments); import it once.
+    if "Env" in used:
+        lines.append("  import wasi:cli/environment@0.2.0;")
     # capa:host imports for the non-migrated caps (hybrid coexistence).
     for cap in sorted(used.keys()):
-        if cap in _KNOWN_CAPABILITIES and cap not in ("Random", "Clock"):
+        if cap in _KNOWN_CAPABILITIES and cap not in (
+            "Random", "Clock", "Env",
+        ):
             lines.append(f"  import {cap.lower()};")
     if uses_panic:
         lines.append("  import panic;")

@@ -849,6 +849,15 @@ _EXCLUDED: dict[str, str] = {
         "tests/test_wasi_mode.py (monotonic non-decreasing, wall "
         "plausible, system_seed distinct, seeded byte-identical)."
     ),
+    "wasi_env.capa": (
+        "Experimental --wasi mode demo: env.get / env.args read the "
+        "ambient host environment + argv, which the auto-list harness "
+        "does not control (and the default backend would read the "
+        "real environment), so there is no fixed byte-equality "
+        "reference. Covered by the dedicated TestWasiEnvMode tests in "
+        "tests/test_wasi_mode.py, which set a known env var + argv and "
+        "assert controlled-key parity with the Python backend."
+    ),
 }
 
 

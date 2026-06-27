@@ -71,15 +71,19 @@ def _build_wasi_component(src: str) -> bytes:
     return _wrap_as_component(core, wit, wasi=True)
 
 
-def _run_wasi_component(src: str) -> str:
-    """Build + run a program in WASI mode; capture stdout."""
+def _run_wasi_component(src: str, args: tuple = ()) -> str:
+    """Build + run a program in WASI mode; capture stdout.
+
+    ``args`` is the program argument vector handed to the host (the
+    ``env.args()`` source in WASI mode comes through the WasiConfig
+    argv this host sets, not the ``capa:host/env`` bridge)."""
     from capa.runtime._wasm_component_host import WasmComponentHost
     comp = _build_wasi_component(src)
     buf = io.StringIO()
     saved = sys.stdout
     sys.stdout = buf
     try:
-        WasmComponentHost(wasi=True).run_main(comp)
+        WasmComponentHost(args=args, wasi=True).run_main(comp)
     finally:
         sys.stdout = saved
     return buf.getvalue()
@@ -139,6 +143,47 @@ fun main(stdio: Stdio, clock: Clock, rng: Random)
         stdio.println("wall ok")
 """
 
+# Env reader migration: get(KEY) -> wasi:cli/environment.get-environment
+# searched guest-side; args() -> get-arguments. The test sets the key in
+# os.environ before building so the result is determinable.
+_ENV_KEY = "CAPA_WASI_ENV_TEST_KEY"
+_ENV_VAL = "wasi-env-test-value-123"
+
+_ENV_GET_SRC = f"""
+fun main(stdio: Stdio, env: Env)
+    let present = env.get("{_ENV_KEY}")
+    match present
+        Some(v) -> stdio.println("present=${{v}}")
+        None -> stdio.println("present=<unset>")
+    let absent = env.get("CAPA_WASI_ABSENT_KEY_DEFINITELY_NOT_SET_999")
+    match absent
+        Some(_) -> stdio.println("absent=SET")
+        None -> stdio.println("absent=none")
+"""
+
+_ENV_ARGS_SRC = """
+fun main(stdio: Stdio, env: Env)
+    let args = env.args()
+    stdio.println("argc=${args.length()}")
+    for a in args
+        stdio.println("arg=${a}")
+"""
+
+# Env + Random + Clock all in WASI mode at once: proves the three
+# wasi:* interfaces coexist with capa:host/stdio in one Linker.
+_ENV_HYBRID_SRC = f"""
+fun main(stdio: Stdio, env: Env, clock: Clock, rng: Random)
+    let v = env.get("{_ENV_KEY}")
+    match v
+        Some(s) -> stdio.println("env=${{s}}")
+        None -> stdio.println("env=<unset>")
+    let seeded = rng.with_seed(7)
+    stdio.println("rng=${{seeded.int_range(0, 100)}}")
+    let now = clock.now_secs()
+    if now > 1700000000.0
+        stdio.println("wall ok")
+"""
+
 
 class TestWasiWitGeneration(unittest.TestCase):
     """WIT shape is pure (no wasm-tools needed)."""
@@ -177,6 +222,38 @@ class TestWasiWitGeneration(unittest.TestCase):
         self.assertIn("interface clock {", wit)
         self.assertNotIn("wasi:", wit)
 
+    def test_env_world_imports_wasi_environment(self):
+        wit = self._wit(_ENV_GET_SRC)
+        self.assertIn("import wasi:cli/environment@0.2.0;", wit)
+
+    def test_env_args_world_imports_wasi_environment(self):
+        wit = self._wit(_ENV_ARGS_SRC)
+        self.assertIn("import wasi:cli/environment@0.2.0;", wit)
+
+    def test_no_capa_host_env_interface(self):
+        # The migrated Env reader must NOT also emit a capa:host env
+        # interface (that would force the host to provide a stub the
+        # component never imports).
+        wit = self._wit(_ENV_GET_SRC)
+        self.assertNotIn("interface env {", wit)
+        self.assertNotIn("  import env;", wit)
+
+    def test_env_default_mode_unchanged(self):
+        # The default (non-WASI) Env WIT still uses capa:host.
+        from capa.ir import compile_wit
+        module, result = _parse_analyze(_ENV_GET_SRC)
+        wit = compile_wit(module, types=result.types, wasi=False)
+        self.assertIn("interface env {", wit)
+        self.assertNotIn("wasi:", wit)
+
+    def test_env_hybrid_imports_all_three_wasi(self):
+        wit = self._wit(_ENV_HYBRID_SRC)
+        self.assertIn("import wasi:cli/environment@0.2.0;", wit)
+        self.assertIn("import wasi:random/random@0.2.0;", wit)
+        self.assertIn("import wasi:clocks/wall-clock@0.2.0;", wit)
+        # Stdio is the only capa:host interface left.
+        self.assertIn("interface stdio {", wit)
+
 
 class TestWasiEmitterRejections(unittest.TestCase):
     """The excluded surface is rejected at compile time (no
@@ -206,6 +283,42 @@ fun main(stdio: Stdio, clock: Clock)
         with self.assertRaises(Exception) as cm:
             self._compile(src)
         self.assertIn("WASI mode", str(cm.exception))
+
+    def test_env_restrict_to_keys_rejected(self):
+        # Env attenuation has no wasi:cli/environment runtime home in
+        # this phase; reject rather than silently widen the cap.
+        src = """
+fun main(stdio: Stdio, env: Env)
+    let e2 = env.restrict_to_keys(["PATH"])
+    match e2.get("PATH")
+        Some(_) -> stdio.println("got")
+        None -> stdio.println("none")
+"""
+        with self.assertRaises(Exception) as cm:
+            self._compile(src)
+        self.assertIn("WASI mode", str(cm.exception))
+        self.assertIn("Env.restrict_to_keys", str(cm.exception))
+
+    def test_env_allows_rejected(self):
+        src = """
+fun main(stdio: Stdio, env: Env)
+    if env.allows("PATH")
+        stdio.println("yes")
+    else
+        stdio.println("no")
+"""
+        with self.assertRaises(Exception) as cm:
+            self._compile(src)
+        self.assertIn("WASI mode", str(cm.exception))
+        self.assertIn("Env.allows", str(cm.exception))
+
+    def test_env_get_args_accepted(self):
+        # The readers compile cleanly under --wasi (no rejection).
+        wat = self._compile(_ENV_GET_SRC)
+        self.assertIn("$Env_get", wat)
+        self.assertIn("wasi:cli/environment@0.2.0", wat)
+        wat_args = self._compile(_ENV_ARGS_SRC)
+        self.assertIn("$Env_args", wat_args)
 
 
 class TestWasiFlagGuards(unittest.TestCase):
@@ -271,6 +384,15 @@ class TestWasiWitLicenseHeaders(unittest.TestCase):
         )
         self.assertIn("wasi-clocks", text)
 
+    def test_cli_environment_spdx_header(self):
+        text = self._wit("cli", "environment.wit")
+        self.assertIn(
+            "SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception", text
+        )
+        self.assertIn("wasi-cli", text)
+        self.assertIn("get-environment", text)
+        self.assertIn("get-arguments", text)
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_wasip2(),
@@ -331,6 +453,94 @@ class TestWasiMode(unittest.TestCase):
         out = _run_wasi_component(path.read_text(encoding="utf-8"))
         self.assertIn("monotonic: non-decreasing", out)
         self.assertIn("wall: plausible", out)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiEnvMode(unittest.TestCase):
+    """End-to-end Env reader migration under the real WASI P2 host.
+
+    ``env.get`` reads wasi:cli/environment.get-environment (inherited
+    host env via the WasiConfig), searched guest-side for the key;
+    ``env.args`` reads get-arguments (the WasiConfig argv this host
+    sets). The controlled key is set in ``os.environ`` for the duration
+    of the test so the result is determinable and parity-comparable to
+    the Python backend (which reads ``os.environ`` directly). The full
+    environment is non-deterministic, so only the controlled key + the
+    fail-closed semantics are asserted."""
+
+    def setUp(self):
+        import os
+        self._saved = os.environ.get(_ENV_KEY)
+        os.environ[_ENV_KEY] = _ENV_VAL
+
+    def tearDown(self):
+        import os
+        if self._saved is None:
+            os.environ.pop(_ENV_KEY, None)
+        else:
+            os.environ[_ENV_KEY] = self._saved
+
+    def test_env_get_present_and_absent(self):
+        out = _run_wasi_component(_ENV_GET_SRC)
+        self.assertIn(f"present={_ENV_VAL}", out)
+        # Fail-closed: a key not set in the environment reads as None.
+        self.assertIn("absent=none", out)
+        self.assertNotIn("absent=SET", out)
+
+    def test_env_get_controlled_key_parity_with_python(self):
+        # The controlled key is in os.environ for both backends, so the
+        # WASI guest's get-environment search and the Python runtime's
+        # os.environ.get must agree on it (and on the absent key being
+        # None). The two outputs match line-for-line for this program.
+        wasi_out = _run_wasi_component(_ENV_GET_SRC)
+        py_out = _run_python(_ENV_GET_SRC)
+        self.assertEqual(py_out, wasi_out)
+
+    def test_env_args_empty(self):
+        out = _run_wasi_component(_ENV_ARGS_SRC, args=())
+        self.assertIn("argc=0", out)
+
+    def test_env_args_passed_through(self):
+        out = _run_wasi_component(_ENV_ARGS_SRC, args=("alpha", "beta"))
+        self.assertIn("argc=2", out)
+        self.assertIn("arg=alpha", out)
+        self.assertIn("arg=beta", out)
+
+    def test_env_random_clock_coexist(self):
+        # Env + Random + Clock all on wasi:* in one component; Stdio on
+        # capa:host. Hybrid coexistence with three wasi interfaces.
+        out = _run_wasi_component(_ENV_HYBRID_SRC)
+        self.assertIn(f"env={_ENV_VAL}", out)
+        self.assertIn("wall ok", out)
+        # Seeded draw is byte-stable; with_seed(7).int_range(0,100)
+        # matches the Python backend.
+        py_out = _run_python(_ENV_HYBRID_SRC)
+        wasi_rng = next(
+            ln for ln in out.splitlines() if ln.startswith("rng=")
+        )
+        py_rng = next(
+            ln for ln in py_out.splitlines() if ln.startswith("rng=")
+        )
+        self.assertEqual(wasi_rng, py_rng)
+
+    def test_example_env_program_runs(self):
+        import os
+        from pathlib import Path
+        os.environ["CAPA_WASI_ENV_DEMO"] = "demo-value"
+        try:
+            path = (
+                Path(__file__).resolve().parent.parent
+                / "examples" / "wasm" / "wasi_env.capa"
+            )
+            out = _run_wasi_component(path.read_text(encoding="utf-8"))
+        finally:
+            os.environ.pop("CAPA_WASI_ENV_DEMO", None)
+        self.assertIn("CAPA_WASI_ENV_DEMO=demo-value", out)
+        self.assertIn("absent: none", out)
+        self.assertIn("argc=0", out)
 
 
 if __name__ == "__main__":

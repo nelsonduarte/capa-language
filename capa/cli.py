@@ -1050,14 +1050,15 @@ def _main_dispatch() -> int:
         action="store_true",
         help=(
             "EXPERIMENTAL: with --wasm --component, migrate the "
-            "Random and Clock capabilities to import canonical WASI "
-            "Preview 2 interfaces (wasi:random / wasi:clocks) instead "
-            "of the custom capa:host ones. Every other capability "
-            "(Stdio, etc.) stays on capa:host (hybrid). Clock.sleep "
-            "and Clock attenuation are not supported in this mode. "
-            "Requires 'wasm-tools' on PATH; --run additionally needs "
-            "wasmtime-py with WASI P2 support. The default capa:host "
-            "path is unaffected."
+            "pure-reader touch-points of Random, Clock and Env to "
+            "import canonical WASI Preview 2 interfaces (wasi:random / "
+            "wasi:clocks / wasi:cli/environment) instead of the custom "
+            "capa:host ones. Every other capability (Stdio, etc.) stays "
+            "on capa:host (hybrid). Clock.sleep, Clock attenuation and "
+            "Env attenuation (restrict_to_keys / allows) are not "
+            "supported in this mode. Requires 'wasm-tools' on PATH; "
+            "--run additionally needs wasmtime-py with WASI P2 support. "
+            "The default capa:host path is unaffected."
         ),
     )
     parser.add_argument(

@@ -481,6 +481,29 @@ class WasmEmitter(
                 self._wasi_walltime_scratch_offset + 16
             )
 
+        # Experimental WASI mode: reserve an 8-byte scratch slot for
+        # the ``wasi:cli/environment`` ``get-environment`` /
+        # ``get-arguments`` indirect returns (both lower to a
+        # list header: data_ptr @0, len @4). The two readers never run
+        # concurrently within a single host call, so one shared slot is
+        # sufficient. Placed in the static data region like the Grisu
+        # table and the walltime scratch so the wrappers never depend on
+        # ``$alloc`` being emitted for their own bookkeeping (the
+        # materialiser still allocates the Capa-side records via
+        # ``$alloc``, which a program reaching Env always pulls in).
+        # 0 means "not reserved".
+        self._wasi_env_scratch_offset = 0
+        if self._wasi and (
+            ("Env", "get") in self._used_caps
+            or ("Env", "args") in self._used_caps
+        ):
+            self._wasi_env_scratch_offset = _align_up(
+                self._string_data_offset, 8,
+            )
+            self._string_data_offset = (
+                self._wasi_env_scratch_offset + 8
+            )
+
         # Stage 1: emit the (module ... ) header with imports and
         # memory.
         body_lines: list[str] = []
@@ -607,6 +630,7 @@ class WasmEmitter(
             self._struct_layouts
             or self._sum_layouts
             or self._uses_heap_alloc(module)
+            or self._wasi_env_uses_get_or_args()
         ):
             heap_start = _align_up(self._string_data_offset, 8)
             self._write(
@@ -626,7 +650,8 @@ class WasmEmitter(
             # ``$str_has_slash`` gate is gone.
             if (self._uses_map_ops(module)
                     or self._eq_needs_str_eq(module)
-                    or self._set_algebra_needs_str_eq(module)):
+                    or self._set_algebra_needs_str_eq(module)
+                    or self._wasi_env_get_needs_str_eq()):
                 self._emit_str_eq_function()
             if self._uses_string_concat(module):
                 # String ``+`` lowers to ``call $str_concat`` (see

@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Provenance: vendored from WebAssembly/wasi-cli, tag v0.2.0 (wit/environment.wit).
+//
+// Vendored subset of the canonical WASI Preview 2 cli environment
+// interface.
+//
+// Source: WebAssembly/wasi-cli, tag v0.2.0
+//   https://github.com/WebAssembly/wasi-cli/blob/v0.2.0/wit/environment.wit
+//
+// Trimmed to the get-environment() / get-arguments() readers Capa's
+// experimental --wasi mode imports (Env.get -> get-environment search,
+// Env.args -> get-arguments). The upstream interface also declares
+// initial-cwd(); it is omitted because Capa never reads the working
+// directory. Omitting an upstream function the host still exports is
+// harmless for instantiation (the host's add_wasip2() provides the
+// full interface; the guest only links what it imports).
+//
+// Canonical-ABI / unit conventions matching the host wasmtime
+// add_wasip2() provides:
+//   get-environment -> list<tuple<string, string>> : each element is a
+//     (key, value) pair; the guest searches the list for the requested
+//     key and returns option<string> (Env.get fail-closed: a missing
+//     key yields none, identical to the Python runtime).
+//   get-arguments   -> list<string> : the program argument vector
+//     (excludes argv[0]); the guest materialises a Capa List<String>.
+package wasi:cli@0.2.0;
+
+interface environment {
+  get-environment: func() -> list<tuple<string, string>>;
+  get-arguments: func() -> list<string>;
+}
+
+world imports {
+  import environment;
+}

@@ -5,10 +5,11 @@ Status: experimental proof of concept (2026-06-27).
 Capa's Wasm backend produces Component Model components whose
 capability imports live in a custom `capa:host` namespace, satisfied
 by Capa's own Python host (`capa.runtime._wasm_component_host`). This
-note describes an opt-in mode that migrates **two** capabilities,
-Random and Clock, to import the **canonical WASI Preview 2 (`0.2.0`)**
-interfaces instead, so they are satisfied by any standard WASI P2
-host (here, `wasmtime`'s `Linker.add_wasip2()`).
+note describes an opt-in mode that migrates the **pure-reader**
+touch-points of **three** capabilities, Random, Clock and Env, to
+import the **canonical WASI Preview 2 (`0.2.0`)** interfaces instead,
+so they are satisfied by any standard WASI P2 host (here, `wasmtime`'s
+`Linker.add_wasip2()`).
 
 It is a viability spike, not a general WASI port. The default
 `capa:host` path is completely unchanged.
@@ -23,12 +24,41 @@ see the WAT) rewrites the migrated touch-points:
 | `Random.system_seed` | `capa:host/random.system-seed` | `wasi:random/random@0.2.0` `get-random-u64` |
 | `Clock.now_monotonic` | `capa:host/clock.now-monotonic` | `wasi:clocks/monotonic-clock@0.2.0` `now` |
 | `Clock.now_secs` | `capa:host/clock.now-secs` | `wasi:clocks/wall-clock@0.2.0` `now` |
+| `Env.get` | `capa:host/env.get` | `wasi:cli/environment@0.2.0` `get-environment` |
+| `Env.args` | `capa:host/env.args` | `wasi:cli/environment@0.2.0` `get-arguments` |
 
 Every **other** capability the program uses (Stdio for printing the
 results, and anything else) stays on `capa:host`. The component
 imports the `wasi:*` interfaces and the `capa:host` interfaces
 simultaneously. This **hybrid coexistence** is the central thing the
 PoC proves.
+
+### Env reader migration (guest-side search / list reshape)
+
+`wasi:cli/environment` delivers the whole environment and argv as
+canonical-ABI lists; the Capa `Env.get` / `Env.args` shapes are
+reconstructed guest-side in WAT, the same strategy the Clock wrappers
+use for unit conversion, so the call-site emitters and the
+`option_string` / `list_string` materialisers are unchanged:
+
+- `get-environment -> list<tuple<string, string>>` is an indirect
+  return (data_ptr, len) of 16-byte `(k_ptr, k_len, v_ptr, v_len)`
+  records. `$Env_get` linear-scans for the requested key via `$str_eq`
+  and writes an `option<string>` (WIT tag convention, none=0/some=1)
+  into the call site's return area. A missing key yields `none`,
+  **fail-closed**, identical to the Python `Env.get`
+  (`capa/runtime/_capabilities.py:368-372`) and the `capa:host`
+  bridge.
+- `get-arguments -> list<string>` is an indirect return (data_ptr,
+  len) whose data layout (N packed `(str_ptr, str_len)` i32 pairs) is
+  **byte-identical** to a Capa `List<String>` data array, so `$Env_args`
+  copies the (data_ptr, len) pair straight through with no per-element
+  copy.
+
+The host provides the values through the `WasiConfig`:
+`inherit_env()` (so `env.get` of a host env var returns its value) and
+`argv = <program args>` (so `env.args()` matches the default backend's
+`sys.argv[1:]`, with no synthetic argv[0]).
 
 ## Generated WIT (Clock + Random + Stdio)
 
@@ -85,21 +115,25 @@ registrations and additionally:
 wasi_cfg = wasmtime.WasiConfig()
 wasi_cfg.inherit_stdout()
 wasi_cfg.inherit_stderr()
+wasi_cfg.inherit_env()           # env.get reads the host environment
+wasi_cfg.argv = list(self._args) # env.args reads these (no argv[0])
 store.set_wasi(wasi_cfg)
 linker.add_wasip2()
 ```
 
-`add_wasip2()` provides `wasi:random` + `wasi:clocks` (and the rest of
-WASI P2) on the same `wasmtime.component.Linker` the `capa:host`
-interfaces are registered on. Registering `capa:host` interfaces the
-WASI component does not import is harmless. Instantiation then
-satisfies both namespaces.
+`add_wasip2()` provides `wasi:random` + `wasi:clocks` +
+`wasi:cli/environment` (and the rest of WASI P2) on the same
+`wasmtime.component.Linker` the `capa:host` interfaces are registered
+on. Registering `capa:host` interfaces the WASI component does not
+import (the `capa:host/env` registration in particular) is harmless.
+Instantiation then satisfies both namespaces.
 
 ## What is included / excluded
 
-Included (v1): `Random.system_seed`, `Random.with_seed` /
+Included: `Random.system_seed`, `Random.with_seed` /
 `int_range` / `float_unit` (these already run 100 % guest-side and are
-unaffected), `Clock.now_secs`, `Clock.now_monotonic`.
+unaffected), `Clock.now_secs`, `Clock.now_monotonic`, `Env.get`,
+`Env.args`.
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
@@ -113,24 +147,39 @@ silently miscompiles):
   attenuation through a standard WASI clock is a future design item
   (likely a guest-side deadline gate, since the wall clock is
   readable).
+- **Env attenuation** (`restrict_to_keys`, `allows`). The
+  `capa:host` Env enforces a `restrict_to_keys` allow-list via the
+  host's per-instance handle table; `wasi:cli/environment` is a pure
+  reader with no host-side cap object to consult. This is Phase 1 of
+  the reconciliation plan: the in-program allow-list narrowing
+  (Level 2 of `docs/design/wasi-attenuation.md`) has no WASI runtime
+  home yet. Mapping `main`'s Env CEILING onto the host env-set (so the
+  guest cannot even observe a variable outside the ceiling) is the
+  next increment; until then the attenuators are rejected rather than
+  silently dropped, which would widen the cap's effective authority.
 
-A program that reaches for either in WASI mode gets:
+A program that reaches for any of these in WASI mode gets, e.g.:
 
 ```
 capa: --wasm: Clock.sleep is not supported in the WASI mode yet;
 use the default capa:host backend (drop --wasi).
+capa: --wasm: Env.restrict_to_keys is not supported in the WASI mode
+yet; use the default capa:host backend (drop --wasi).
 ```
 
 ## Vendored WIT
 
 `wasm-tools component embed` resolves the `wasi:random` /
-`wasi:clocks` package references from a `deps/` directory. We vendor a
-trimmed subset of the official WASI P2 `0.2.0` WIT in
-`capa/wasi_wit/deps/` (random + clocks, `now` / `get-random-*` only;
-the `subscribe-*` poll-dependent functions are omitted because Capa
-only reads the clocks). `_wrap_as_component(..., wasi=True)` copies
-these next to the generated world before embedding. Provenance and
-update instructions are in `capa/wasi_wit/README.md`.
+`wasi:clocks` / `wasi:cli` package references from a `deps/`
+directory. We vendor a trimmed subset of the official WASI P2 `0.2.0`
+WIT in `capa/wasi_wit/deps/` (random + clocks + cli/environment;
+`now` / `get-random-*` / `get-environment` / `get-arguments` only; the
+`subscribe-*` poll-dependent clock functions and the cli
+`initial-cwd` are omitted because Capa only reads the clocks and the
+env-set / argv). `_wrap_as_component(..., wasi=True)` copies these next
+to the generated world before embedding; a program imports only the
+packages it uses, and the unused deps are ignored by the embed.
+Provenance and update instructions are in `capa/wasi_wit/README.md`.
 
 ## Validation
 
@@ -147,14 +196,23 @@ property (see `tests/test_wasi_mode.py`):
   the host clock.
 - **system_seed**: an unseeded `Random()` produces distinct values
   between runs (fresh OS entropy each run).
+- **Env (controlled-key determinism)**: a key the test sets in
+  `os.environ` is returned by `env.get(KEY)` identically on the Python
+  backend and in WASI mode; an absent key reads as `None` on both
+  (fail-closed). `env.args` matches the host-supplied argv. The full
+  environment is non-deterministic, so only the controlled key + the
+  semantics are asserted, not the whole dump.
 
 ## Files
 
 - `capa/ir/_emit_wasm/_wasi.py` - WASI import + adapter-wrapper
-  emission and the excluded-surface validation.
+  emission (Random / Clock / Env) and the excluded-surface validation.
 - `capa/ir/_emit_wit.py` - WASI-mode world generation
   (`_emit_wit_wasi`).
-- `capa/runtime/_wasm_component_host.py` - the `wasi=True` host recipe.
+- `capa/runtime/_wasm_component_host.py` - the `wasi=True` host recipe
+  (`inherit_env()` + `argv` for the Env readers).
 - `capa/cli.py` - the `--wasi` flag, the WASI-deps embed path.
-- `capa/wasi_wit/` - vendored WASI P2 WIT subset.
-- `examples/wasm/wasi_random_clock.capa` - the demo.
+- `capa/wasi_wit/` - vendored WASI P2 WIT subset (random / clocks /
+  cli-environment).
+- `examples/wasm/wasi_random_clock.capa` - the Random + Clock demo.
+- `examples/wasm/wasi_env.capa` - the Env reader demo.

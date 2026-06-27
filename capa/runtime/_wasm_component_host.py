@@ -98,6 +98,24 @@ class WasmComponentHost:
             wasi_cfg = wasmtime.WasiConfig()
             wasi_cfg.inherit_stdout()
             wasi_cfg.inherit_stderr()
+            # Env migration (2026-06-27): in WASI mode ``Env.get`` /
+            # ``Env.args`` read ``wasi:cli/environment`` (get-environment
+            # / get-arguments), which ``add_wasip2()`` serves from this
+            # WasiConfig rather than the ``capa:host/env`` bridge.
+            #
+            # - inherit_env(): the guest's get-environment returns the
+            #   host process environment, so ``env.get(KEY)`` of a key
+            #   the host has set returns its value (and ``none`` for an
+            #   absent key, fail-closed). This mirrors the default
+            #   ``capa:host`` Env, which reads ``os.environ`` directly.
+            # - argv: Capa's ``Env.args()`` is ``sys.argv[1:]`` (no
+            #   argv[0]). WASI's get-arguments returns whatever argv the
+            #   host configures, so we set it to exactly the program
+            #   args the host was constructed with (no synthetic argv[0])
+            #   to keep ``env.args()`` byte-identical to the default
+            #   backend and the core-Wasm host.
+            wasi_cfg.inherit_env()
+            wasi_cfg.argv = list(self._args)
             self._store.set_wasi(wasi_cfg)
             self._linker.add_wasip2()
         # Slice 25.8 (2026-05-30): per-instance cap handle table,
