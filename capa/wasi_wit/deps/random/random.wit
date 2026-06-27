@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Provenance: vendored from WebAssembly/wasi-random, tag v0.2.0 (wit/random.wit).
+//
 // Vendored subset of the canonical WASI Preview 2 random interface.
 //
 // Source: WebAssembly/wasi-random, tag v0.2.0

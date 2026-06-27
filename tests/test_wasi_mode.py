@@ -208,6 +208,70 @@ fun main(stdio: Stdio, clock: Clock)
         self.assertIn("WASI mode", str(cm.exception))
 
 
+class TestWasiFlagGuards(unittest.TestCase):
+    """``--wasi`` is rejected unless paired with ``--wasm --component``;
+    these guards need no Wasm toolchain (they fail before compilation)."""
+
+    def _run_cli(self, argv):
+        import tempfile
+        from pathlib import Path
+        from capa.cli import main
+        src = (
+            "fun main(stdio: Stdio, rng: Random)\n"
+            "    stdio.println(\"${rng.int_range(0, 10)}\")\n"
+        )
+        err = io.StringIO()
+        old_err = sys.stderr
+        old_argv = sys.argv
+        sys.stderr = err
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "p.capa"
+            f.write_text(src, encoding="utf-8")
+            sys.argv = ["capa", *argv, str(f)]
+            try:
+                code = main()
+            finally:
+                sys.stderr = old_err
+                sys.argv = old_argv
+        return code, err.getvalue()
+
+    def test_wasi_without_wasm_rejected(self):
+        # Previously silently ignored (hit the pure-Python backend).
+        code, err = self._run_cli(["--wasi", "--run"])
+        self.assertEqual(code, 1)
+        self.assertIn("--wasi requires --wasm", err)
+
+    def test_wasi_without_component_rejected(self):
+        code, err = self._run_cli(["--wasm", "--wasi", "--run"])
+        self.assertEqual(code, 1)
+        self.assertIn("--wasi requires --component", err)
+
+
+class TestWasiWitLicenseHeaders(unittest.TestCase):
+    """Each vendored WIT carries its SPDX license + provenance header."""
+
+    def _wit(self, *parts):
+        from pathlib import Path
+        return (
+            Path(__file__).resolve().parent.parent
+            / "capa" / "wasi_wit" / "deps" / Path(*parts)
+        ).read_text(encoding="utf-8")
+
+    def test_random_spdx_header(self):
+        text = self._wit("random", "random.wit")
+        self.assertIn(
+            "SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception", text
+        )
+        self.assertIn("wasi-random", text)
+
+    def test_clocks_spdx_header(self):
+        text = self._wit("clocks", "clocks.wit")
+        self.assertIn(
+            "SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception", text
+        )
+        self.assertIn("wasi-clocks", text)
+
+
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_wasip2(),
     "wasm-tools and/or wasmtime-py with WASI P2 not installed",

@@ -1394,6 +1394,25 @@ def _main_dispatch() -> int:
     else:
         wasm_memory_cap = args.wasm_memory_cap
 
+    # ``--wasi`` only has an effect on the Wasm Component Model path: it
+    # rewrites the WIT world and the component's imports to reference the
+    # canonical wasi:random / wasi:clocks packages. Passed without
+    # ``--wasm`` it would hit the pure-Python backend, which ignores it
+    # entirely; that silent no-op masked typos / wrong invocations. Reject
+    # it up front with an actionable message. (The companion
+    # ``--wasi`` requires ``--component`` guard lives in the Wasm branch.)
+    if bool(getattr(args, "wasi", False)) and not args.wasm:
+        msg = (
+            "capa: --wasi requires --wasm --component (WASI mode only "
+            "applies to the Wasm Component Model path; it has no effect "
+            "on the default capa:host / pure-Python backend)"
+        )
+        if use_color:
+            print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+        else:
+            print(msg, file=sys.stderr)
+        return 1
+
     if (
         args.run and not args.wasm and prefer_wasm
         and _wasm_tooling_available()
