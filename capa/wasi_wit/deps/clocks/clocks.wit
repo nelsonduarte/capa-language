@@ -1,0 +1,43 @@
+// Vendored subset of the canonical WASI Preview 2 clocks interfaces.
+//
+// Source: WebAssembly/wasi-clocks, tag v0.2.0
+//   https://github.com/WebAssembly/wasi-clocks/blob/v0.2.0/wit/monotonic-clock.wit
+//   https://github.com/WebAssembly/wasi-clocks/blob/v0.2.0/wit/wall-clock.wit
+//
+// Trimmed to the now() / resolution() functions Capa's experimental
+// --wasi mode imports. The upstream monotonic-clock also declares
+// subscribe-instant / subscribe-duration, which depend on
+// wasi:io/poll; those are omitted because Capa only reads the clock
+// (Clock.now_monotonic -> monotonic-clock.now, Clock.now_secs ->
+// wall-clock.now) and never subscribes. Omitting an upstream
+// function the host still exports is harmless for instantiation.
+//
+// Unit conventions matching the host wasmtime add_wasip2() provides:
+//   monotonic-clock.now -> instant = u64 nanoseconds since an
+//                          arbitrary epoch (guest converts to f64
+//                          seconds: nanos / 1e9)
+//   wall-clock.now      -> datetime{seconds: u64, nanoseconds: u32}
+//                          (guest converts to f64 seconds:
+//                          seconds + nanoseconds / 1e9)
+package wasi:clocks@0.2.0;
+
+interface monotonic-clock {
+  type instant = u64;
+  type duration = u64;
+  now: func() -> instant;
+  resolution: func() -> duration;
+}
+
+interface wall-clock {
+  record datetime {
+    seconds: u64,
+    nanoseconds: u32,
+  }
+  now: func() -> datetime;
+  resolution: func() -> datetime;
+}
+
+world imports {
+  import monotonic-clock;
+  import wall-clock;
+}

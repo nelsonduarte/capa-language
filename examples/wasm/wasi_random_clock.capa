@@ -1,0 +1,39 @@
+// Experimental WASI mode demo (capa --wasm --component --wasi).
+//
+// Migrates the Random and Clock capabilities to canonical WASI
+// Preview 2 interfaces (wasi:random / wasi:clocks) while Stdio stays
+// on capa:host -- the hybrid coexistence this proof of concept
+// validates. See docs/design/wasi_mode.md.
+//
+// This program is NOT in the byte-equality parity list: system_seed
+// and the clocks are non-deterministic. It is validated by
+// properties (monotonic non-decreasing, wall-clock plausible,
+// system_seed distinct between runs) and the SEEDED draws are
+// covered separately by random_seeded.capa, which is byte-identical
+// across all three backends including the WASI one.
+
+fun main(stdio: Stdio, clock: Clock, rng: Random)
+    // Seeded path: runs 100% guest-side (SplitMix64 in linear
+    // memory). system_seed never fires here, so these draws are
+    // deterministic and byte-identical to the Python backend.
+    let seeded = rng.with_seed(7)
+    stdio.println("seeded:")
+    var i = 0
+    while i < 3
+        stdio.println("  ${seeded.int_range(0, 100)}")
+        i = i + 1
+
+    // Monotonic clock: must not decrease across successive reads.
+    let m1 = clock.now_monotonic()
+    let m2 = clock.now_monotonic()
+    if m2 >= m1
+        stdio.println("monotonic: non-decreasing")
+    else
+        stdio.println("monotonic: DECREASED")
+
+    // Wall clock: a plausible Unix timestamp in seconds.
+    let now = clock.now_secs()
+    if now > 1700000000.0
+        stdio.println("wall: plausible")
+    else
+        stdio.println("wall: IMPLAUSIBLE")

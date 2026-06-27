@@ -79,11 +79,27 @@ class WasmComponentHost:
     and dispatches to the world's ``main`` export with the right
     root capability handle threaded into each declared cap slot."""
 
-    def __init__(self, args: Iterable[str] = ()):
+    def __init__(self, args: Iterable[str] = (), *, wasi: bool = False):
         self._args = list(args)
         self._engine = wasmtime.Engine()
         self._store = wasmtime.Store(self._engine)
         self._linker = wc.Linker(self._engine)
+        # Experimental WASI mode (2026-06-27): when True, the migrated
+        # Random / Clock touch-points import canonical wasi:random /
+        # wasi:clocks interfaces, satisfied by wasmtime's own WASI P2
+        # host via ``add_wasip2()`` + a ``WasiConfig`` on the store.
+        # The custom ``capa:host`` registrations below still run, so
+        # the SAME linker satisfies both the wasi:* imports (random /
+        # clocks) and the capa:host:* imports (stdio, etc.) -- this is
+        # the hybrid coexistence the PoC proves. Default (False) keeps
+        # the all-``capa:host`` behaviour untouched.
+        self._wasi = wasi
+        if wasi:
+            wasi_cfg = wasmtime.WasiConfig()
+            wasi_cfg.inherit_stdout()
+            wasi_cfg.inherit_stderr()
+            self._store.set_wasi(wasi_cfg)
+            self._linker.add_wasip2()
         # Slice 25.8 (2026-05-30): per-instance cap handle table,
         # the Component Model mirror of ``WasmHost._cap_handles``.
         # Each privileged host op looks up the receiver cap by its

@@ -1046,6 +1046,21 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--wasi",
+        action="store_true",
+        help=(
+            "EXPERIMENTAL: with --wasm --component, migrate the "
+            "Random and Clock capabilities to import canonical WASI "
+            "Preview 2 interfaces (wasi:random / wasi:clocks) instead "
+            "of the custom capa:host ones. Every other capability "
+            "(Stdio, etc.) stays on capa:host (hybrid). Clock.sleep "
+            "and Clock attenuation are not supported in this mode. "
+            "Requires 'wasm-tools' on PATH; --run additionally needs "
+            "wasmtime-py with WASI P2 support. The default capa:host "
+            "path is unaffected."
+        ),
+    )
+    parser.add_argument(
         "--wasm-memory-cap",
         type=int,
         default=None,
@@ -1408,6 +1423,25 @@ def _main_dispatch() -> int:
         # Python) so coverage gaps in the Wasm backend surface as
         # actionable errors rather than silent shape changes.
         from capa.ir import compile_wat, compile_wasm, compile_wit
+        # Experimental WASI mode is only meaningful for the component
+        # path (it rewrites the WIT world + the component imports);
+        # ``--transpile`` shows the WAT, which carries the wasi:*
+        # imports too, so it is allowed. A bare ``--wasm --output``
+        # core module, or ``--wasm --run`` on the core host, would
+        # produce wasi:* imports nothing satisfies, so reject early
+        # with an actionable message instead of a late link failure.
+        wasi_mode = bool(getattr(args, "wasi", False))
+        if wasi_mode and not args.component and not args.transpile:
+            msg = (
+                "capa: --wasi requires --component (the WASI mode "
+                "rewrites the Component Model world; the bare core "
+                "module / core host has no WASI provider)"
+            )
+            if use_color:
+                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+            else:
+                print(msg, file=sys.stderr)
+            return 1
         if result is None:
             result = analyze(module, source=source, filename=filename)
         try:
@@ -1416,6 +1450,7 @@ def _main_dispatch() -> int:
                     module, types=result.types,
                     memory_cap_pages=wasm_memory_cap,
                     filename=filename,
+                    wasi=wasi_mode,
                 )
                 print(wat)
                 return 0
@@ -1423,6 +1458,7 @@ def _main_dispatch() -> int:
                 module, types=result.types,
                 memory_cap_pages=wasm_memory_cap,
                 filename=filename,
+                wasi=wasi_mode,
             )
         except Exception as e:
             msg = f"capa: --wasm: {e}"
@@ -1439,7 +1475,10 @@ def _main_dispatch() -> int:
                 if args.component:
                     blob = _wrap_as_component(
                         blob,
-                        compile_wit(module, types=result.types),
+                        compile_wit(
+                            module, types=result.types, wasi=wasi_mode,
+                        ),
+                        wasi=wasi_mode,
                     )
                 Path(args.output).write_bytes(blob)
                 kind = "component" if args.component else "core module"
@@ -1463,9 +1502,13 @@ def _main_dispatch() -> int:
                     WasmComponentHost,
                 )
                 component_blob = _wrap_as_component(
-                    blob, compile_wit(module, types=result.types),
+                    blob,
+                    compile_wit(
+                        module, types=result.types, wasi=wasi_mode,
+                    ),
+                    wasi=wasi_mode,
                 )
-                host = WasmComponentHost(args=program_args)
+                host = WasmComponentHost(args=program_args, wasi=wasi_mode)
                 host.run_main(component_blob)
             else:
                 from capa.runtime._wasm_host import WasmHost
@@ -1638,7 +1681,9 @@ def _main_dispatch() -> int:
     return 0
 
 
-def _wrap_as_component(core_wasm: bytes, wit_text: str) -> bytes:
+def _wrap_as_component(
+    core_wasm: bytes, wit_text: str, *, wasi: bool = False,
+) -> bytes:
     """Wrap a core Wasm module in a Component Model component by
     shelling out to ``wasm-tools component embed`` + ``component new``.
     Returns the bytes of the resulting .wasm component, which embeds
@@ -1648,23 +1693,44 @@ def _wrap_as_component(core_wasm: bytes, wit_text: str) -> bytes:
     embed encodes the WIT metadata into the core module as a custom
     section; new then promotes that core module to a CM component.
     Both steps require ``wasm-tools`` on PATH.
+
+    ``wasi`` (experimental, 2026-06-27): when True, the program world
+    references the canonical ``wasi:random`` / ``wasi:clocks`` packages
+    for the migrated Random / Clock touch-points. ``embed`` resolves
+    those package references from a ``deps/`` directory; we vendor a
+    minimal subset of the official WASI Preview 2 WIT in
+    ``capa/wasi_wit`` and copy it next to the generated world so the
+    embed succeeds offline. The default (False) path is unchanged.
     """
     import subprocess
+    import shutil
     import tempfile
     from pathlib import Path as _Path
     with tempfile.TemporaryDirectory() as td:
         td_path = _Path(td)
-        wit_path = td_path / "capa.wit"
+        # In WASI mode the WIT is a directory (the world plus a
+        # vendored ``deps/`` the embed resolves wasi:* from); in the
+        # default mode it is a single self-contained file.
+        if wasi:
+            wit_dir = td_path / "wit"
+            wit_dir.mkdir()
+            (wit_dir / "program.wit").write_text(wit_text, encoding="utf-8")
+            vendored = _Path(__file__).resolve().parent / "wasi_wit" / "deps"
+            shutil.copytree(vendored, wit_dir / "deps")
+            wit_arg = str(wit_dir)
+        else:
+            wit_path = td_path / "capa.wit"
+            wit_path.write_text(wit_text, encoding="utf-8")
+            wit_arg = str(wit_path)
         core_path = td_path / "core.wasm"
         embed_path = td_path / "embed.wasm"
         comp_path = td_path / "component.wasm"
-        wit_path.write_text(wit_text, encoding="utf-8")
         core_path.write_bytes(core_wasm)
         # embed: stamp the WIT world into the core module.
         embed = subprocess.run(
             [
                 "wasm-tools", "component", "embed",
-                "--world", "program", str(wit_path), str(core_path),
+                "--world", "program", wit_arg, str(core_path),
                 "-o", str(embed_path),
             ],
             capture_output=True, check=False,

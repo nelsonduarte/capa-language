@@ -1,0 +1,24 @@
+// Vendored subset of the canonical WASI Preview 2 random interface.
+//
+// Source: WebAssembly/wasi-random, tag v0.2.0
+//   https://github.com/WebAssembly/wasi-random/blob/v0.2.0/wit/random.wit
+//
+// Trimmed to the single function Capa's experimental --wasi mode
+// imports (get-random-u64). get-random-bytes is kept because the
+// upstream interface declares both and wasmtime's add_wasip2()
+// provides the full interface; dropping a function the host still
+// exports is harmless, but keeping the pair matches upstream so a
+// future widening (e.g. Random.bytes) needs no edit here.
+//
+// Do NOT add functions that add_wasip2() does not provide, or
+// instantiation will fail with an unsatisfied import.
+package wasi:random@0.2.0;
+
+interface random {
+  get-random-bytes: func(len: u64) -> list<u8>;
+  get-random-u64: func() -> u64;
+}
+
+world imports {
+  import random;
+}

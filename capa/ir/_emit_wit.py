@@ -491,14 +491,39 @@ def _module_calls_panic(module: Module) -> bool:
     )
 
 
-def emit_wit(module: Module, world_name: str = "program") -> str:
+# Experimental WASI mode (2026-06-27): the (cap, method) touch-points
+# routed to canonical wasi:* interfaces instead of ``capa:host``. Must
+# stay in lockstep with ``capa.ir._emit_wasm._wasi._WASI_MIGRATED_METHODS``.
+_WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
+    ("Random", "system_seed"),
+    ("Clock", "now_secs"),
+    ("Clock", "now_monotonic"),
+})
+
+
+def emit_wit(
+    module: Module,
+    world_name: str = "program",
+    *,
+    wasi: bool = False,
+) -> str:
     """Generate a WIT document for ``module``. The document declares
     one ``interface`` per capability that the program touches, plus
     a ``world`` that imports each interface. If the program uses no
     built-in capabilities, returns a minimal world with no imports
     (the caller may still wrap the module in a component, just
-    without external dependencies)."""
+    without external dependencies).
+
+    ``wasi`` (experimental): when True, the migrated Random / Clock
+    touch-points import the canonical ``wasi:random`` / ``wasi:clocks``
+    interfaces (resolved from the vendored WIT in ``capa/wasi_wit``)
+    instead of the matching ``capa:host`` interfaces; every other
+    capability keeps its ``capa:host`` interface (hybrid mode). See
+    ``docs/design/wasi_mode.md``."""
     used = collect_used_capabilities(module)
+
+    if wasi:
+        return _emit_wit_wasi(module, used, world_name)
 
     lines: list[str] = []
     lines.append("package capa:host;")
@@ -584,6 +609,96 @@ def emit_wit(module: Module, world_name: str = "program") -> str:
     # have no attenuation surface to thread; they stay erased (no
     # i32 param). Pure ``fun main()`` programs keep the trivial
     # ``func()`` shape.
+    main_cap_params = _main_handle_param_names(module)
+    if main_cap_params:
+        sig = ", ".join(f"{name}: u32" for name in main_cap_params)
+        lines.append(f"  export main: func({sig});")
+    else:
+        lines.append("  export main: func();")
+    lines.append("}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def _emit_wit_wasi(
+    module: Module,
+    used: dict[str, set[str]],
+    world_name: str,
+) -> str:
+    """WASI-mode WIT generator (experimental ``--wasi``).
+
+    Emits a ``capa:host`` package whose ``world`` imports the
+    canonical ``wasi:random`` / ``wasi:clocks`` interfaces for the
+    migrated Random / Clock touch-points AND every other capability's
+    ``capa:host`` interface (hybrid). The wasi:* packages are
+    resolved by ``wasm-tools component embed`` from the vendored WIT
+    in ``capa/wasi_wit`` (copied next to the generated world as
+    ``deps/``).
+
+    Random is fully migrated (its only host touch-point is
+    ``system_seed``), so no ``capa:host`` random interface is emitted.
+    Clock in WASI mode supports only ``now_secs`` / ``now_monotonic``;
+    any other Clock method is rejected by the Wasm emitter's
+    ``_validate_wasi_caps`` before we get here, so a Clock present in
+    ``used`` is always fully migrated too."""
+    lines: list[str] = []
+    lines.append("package capa:host;")
+    lines.append("")
+
+    # ``capa:host`` interfaces for every NON-migrated capability,
+    # identical to the default path. Random / Clock are skipped (they
+    # move to wasi:*).
+    for cap in sorted(used.keys()):
+        if cap not in _KNOWN_CAPABILITIES:
+            continue
+        if cap in ("Random", "Clock"):
+            continue
+        lines.append(f"interface {cap.lower()} {{")
+        gated = _METHODS_NEEDING_IO_ERROR.get(cap)
+        emit_prelude = cap in _INTERFACE_TYPE_PRELUDE and (
+            gated is None or bool(used[cap] & gated)
+        )
+        if emit_prelude:
+            for type_line in _INTERFACE_TYPE_PRELUDE.get(cap, []):
+                lines.append(f"  {type_line}")
+            lines.append("")
+        guest_only = _GUEST_ONLY_METHODS.get(cap, frozenset())
+        for method in sorted(used[cap]):
+            if method in guest_only:
+                continue
+            key = (cap, method)
+            if key not in _WIT_SIGNATURES:
+                raise UnsupportedCapabilityMethod(cap, method)
+            lines.append(f"  {_WIT_SIGNATURES[key]};")
+        lines.append("}")
+        lines.append("")
+
+    uses_panic = _module_calls_panic(module)
+    if uses_panic:
+        lines.append("interface panic {")
+        lines.append("  panic: func(msg: string);")
+        lines.append("}")
+        lines.append("")
+
+    lines.append(f"world {world_name} {{")
+    # wasi:* imports for the migrated touch-points, in a deterministic
+    # order. Each is its own versioned interface reference resolved
+    # from the vendored deps/.
+    if "Random" in used:
+        lines.append("  import wasi:random/random@0.2.0;")
+    if "Clock" in used:
+        clock_methods = used["Clock"]
+        if "now_monotonic" in clock_methods:
+            lines.append("  import wasi:clocks/monotonic-clock@0.2.0;")
+        if "now_secs" in clock_methods:
+            lines.append("  import wasi:clocks/wall-clock@0.2.0;")
+    # capa:host imports for the non-migrated caps (hybrid coexistence).
+    for cap in sorted(used.keys()):
+        if cap in _KNOWN_CAPABILITIES and cap not in ("Random", "Clock"):
+            lines.append(f"  import {cap.lower()};")
+    if uses_panic:
+        lines.append("  import panic;")
     main_cap_params = _main_handle_param_names(module)
     if main_cap_params:
         sig = ", ".join(f"{name}: u32" for name in main_cap_params)

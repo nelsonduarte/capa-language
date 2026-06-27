@@ -833,6 +833,13 @@ _EXCLUDED: dict[str, str] = {
         "which install a stdin fixture per backend run (the auto-list "
         "harness does not feed stdin)."
     ),
+    "wasi_random_clock.capa": (
+        "Experimental --wasi mode demo: Clock + system_seed Random are "
+        "non-deterministic so there is no byte-equality reference. "
+        "Covered by the dedicated TestWasiMode property tests in "
+        "tests/test_wasi_mode.py (monotonic non-decreasing, wall "
+        "plausible, system_seed distinct, seeded byte-identical)."
+    ),
 }
 
 

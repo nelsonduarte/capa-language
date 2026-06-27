@@ -127,6 +127,7 @@ def emit_wat(
     *,
     memory_cap_pages: int | None = ...,  # type: ignore[assignment]
     manifest_json: str | None = None,
+    wasi: bool = False,
 ) -> str:
     """Emit WebAssembly text format (WAT) from a CIR module.
 
@@ -152,6 +153,7 @@ def emit_wat(
     return WasmEmitter(
         memory_cap_pages=memory_cap_pages,
         manifest_json=manifest_json,
+        wasi=wasi,
     ).emit(ir_module)
 
 
@@ -162,6 +164,7 @@ def compile_wat(
     memory_cap_pages: int | None = ...,  # type: ignore[assignment]
     filename: str = "<input>",
     embed_manifest: bool = True,
+    wasi: bool = False,
 ) -> str:
     """End-to-end AST -> CIR -> WAT convenience helper. Mirrors
     :func:`compile` but targets the Wasm Component Model text form
@@ -216,6 +219,7 @@ def compile_wat(
         ir_mod,
         memory_cap_pages=memory_cap_pages,
         manifest_json=manifest_json,
+        wasi=wasi,
     )
 
 
@@ -272,14 +276,24 @@ def compile_wit(
     module: A.Module,
     types: dict | None = None,
     world_name: str = "program",
+    *,
+    wasi: bool = False,
 ) -> str:
     """End-to-end AST -> CIR -> WIT spec.
 
     Returns a WIT document declaring an interface per built-in
     capability the program touches plus a ``world`` that imports
     them. Pair with :func:`compile_wasm` and a host that provides
-    the interfaces to obtain a runnable component."""
-    return emit_wit(lower(module, types=types), world_name=world_name)
+    the interfaces to obtain a runnable component.
+
+    ``wasi`` (experimental, 2026-06-27): when True, the world imports
+    the canonical ``wasi:random`` / ``wasi:clocks`` interfaces for the
+    migrated Random / Clock touch-points instead of the matching
+    ``capa:host`` interfaces; every other capability stays
+    ``capa:host`` (hybrid). See ``docs/design/wasi_mode.md``."""
+    return emit_wit(
+        lower(module, types=types), world_name=world_name, wasi=wasi,
+    )
 
 
 def compile_wasm(
@@ -290,6 +304,7 @@ def compile_wasm(
     memory_cap_pages: int | None = ...,  # type: ignore[assignment]
     filename: str = "<input>",
     embed_manifest: bool = True,
+    wasi: bool = False,
 ) -> bytes:
     """End-to-end AST -> CIR -> WAT -> binary Wasm assembly.
 
@@ -310,6 +325,7 @@ def compile_wasm(
         memory_cap_pages=memory_cap_pages,
         filename=filename,
         embed_manifest=embed_manifest,
+        wasi=wasi,
     )
     proc = subprocess.run(
         [wasm_tools_path, "parse", "-"],
