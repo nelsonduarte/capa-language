@@ -135,6 +135,18 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     # guest WAT wrappers by ``_emit_wasi_wrappers``.
     ("Env", "restrict_to_keys"),
     ("Env", "allows"),
+    # Fs metadata migration (2026-06-27): exists / is_dir / mkdir route
+    # to wasi:filesystem (stat-at / create-directory-at) against the
+    # host-granted preopen descriptors rather than the capa:host/fs
+    # bridge. read / write / list_dir / restrict_to / allows are NOT
+    # migrated (read / write / list_dir need wasi:io streams; the
+    # attenuators are the fine-grained Level 2 layer) and are rejected
+    # by ``_validate_wasi_caps`` so a program never silently
+    # miscompiles; the same programs run on the default capa:host
+    # backend.
+    ("Fs", "exists"),
+    ("Fs", "is_dir"),
+    ("Fs", "mkdir"),
 })
 
 
@@ -145,6 +157,18 @@ _WASI_RANDOM = "wasi:random/random@0.2.0"
 _WASI_MONOTONIC = "wasi:clocks/monotonic-clock@0.2.0"
 _WASI_WALL = "wasi:clocks/wall-clock@0.2.0"
 _WASI_ENVIRONMENT = "wasi:cli/environment@0.2.0"
+_WASI_FS_TYPES = "wasi:filesystem/types@0.2.0"
+_WASI_FS_PREOPENS = "wasi:filesystem/preopens@0.2.0"
+
+# Fs metadata methods this WASI increment migrates to wasi:filesystem.
+_WASI_FS_METADATA: frozenset[str] = frozenset({"exists", "is_dir", "mkdir"})
+
+# Fs methods rejected in WASI mode for now (with a clear compile-time
+# error): read / write / list_dir need wasi:io streams; restrict_to /
+# allows are the fine-grained attenuation layer (a later increment).
+_WASI_FS_REJECTED: frozenset[str] = frozenset({
+    "read", "write", "list_dir", "restrict_to", "allows",
+})
 
 
 class _WasiEmissionMixin:
@@ -166,6 +190,13 @@ class _WasiEmissionMixin:
         ``restrict_to_keys`` / ``allows`` are implemented GUEST-SIDE
         (Level 2 of ``docs/design/wasi-attenuation.md``), so no Env
         method is rejected here.
+
+        Fs in WASI mode supports the METADATA operations only
+        (``exists`` / ``is_dir`` / ``mkdir`` -> wasi:filesystem
+        stat-at / create-directory-at against the host preopens). The
+        stream-bearing ``read`` / ``write`` / ``list_dir`` and the
+        fine-grained attenuators ``restrict_to`` / ``allows`` are
+        rejected here; they land in later increments.
         """
         for cap, method in self._used_caps:
             if cap == "Clock" and method not in (
@@ -179,6 +210,32 @@ class _WasiEmissionMixin:
                     f"yet; use the default capa:host backend (drop "
                     f"--wasi)."
                 )
+            if cap == "Fs" and method in _WASI_FS_REJECTED:
+                # read / write / list_dir need wasi:io streams;
+                # restrict_to / allows are the fine-grained attenuation
+                # layer. Only the metadata ops are migrated so far.
+                raise WasmEmissionError(
+                    f"Fs.{method} is not supported in the WASI mode "
+                    f"yet (only the metadata operations exists / "
+                    f"is_dir / mkdir are migrated to wasi:filesystem); "
+                    f"use the default capa:host backend (drop --wasi)."
+                )
+        # Fail-closed proof obligation: if the program uses a migrated
+        # Fs metadata op but its static path ceiling is NOT closed (a
+        # dynamic path), there is no preopen to address and the wrapper
+        # cannot run. Reject at compile time with a clear message
+        # rather than emit code that always denies at runtime.
+        if any(
+            cap == "Fs" and method in _WASI_FS_METADATA
+            for cap, method in self._used_caps
+        ) and self._fs_ceiling is not None and not self._fs_ceiling.closed:
+            raise WasmEmissionError(
+                "Fs in WASI mode requires every filesystem path to be a "
+                "string literal (the static preopen ceiling must be "
+                "closed); this program passes a dynamic path to an Fs "
+                "operation, so no preopen can be derived (fail-closed). "
+                "Use the default capa:host backend (drop --wasi)."
+            )
 
     def _wasi_env_uses_get_or_args(self) -> bool:
         """True when ``--wasi`` is active and the program reaches an
@@ -260,6 +317,35 @@ class _WasiEmissionMixin:
                 f'(import "{_WASI_ENVIRONMENT}" "get-arguments" '
                 f'(func $wasi_get_arguments (param i32)))'
             )
+        # Fs metadata (2026-06-27): exists / is_dir / mkdir import the
+        # wasi:filesystem preopens + descriptor methods. The imports
+        # are shared, so emit each at most once when ANY metadata op is
+        # used. The core ABI shapes were validated against
+        # wasm-tools 1.249.0 / wasmtime add_wasip2():
+        #   preopens.get-directories       -> (param i32)  [ret area]
+        #   [method]descriptor.stat-at     -> (param i32 i32 i32 i32 i32)
+        #       (self-handle, path-flags, path_ptr, path_len, ret_area)
+        #   [method]descriptor.create-directory-at
+        #                                  -> (param i32 i32 i32 i32)
+        #       (self-handle, path_ptr, path_len, ret_area)
+        #   [resource-drop]descriptor      -> (param i32)
+        if any(m in _WASI_FS_METADATA for (c, m) in used if c == "Fs"):
+            self._write(
+                f'(import "{_WASI_FS_PREOPENS}" "get-directories" '
+                f'(func $wasi_fs_get_directories (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_FS_TYPES}" "[method]descriptor.stat-at" '
+                f'(func $wasi_fs_stat_at '
+                f'(param i32) (param i32) (param i32) (param i32) (param i32)))'
+            )
+            if ("Fs", "mkdir") in used:
+                self._write(
+                    f'(import "{_WASI_FS_TYPES}" '
+                    f'"[method]descriptor.create-directory-at" '
+                    f'(func $wasi_fs_create_directory_at '
+                    f'(param i32) (param i32) (param i32) (param i32)))'
+                )
 
     def _emit_wasi_wrappers(self) -> None:
         """Emit the ``$Cap_method`` adapter functions that bridge the
@@ -293,6 +379,20 @@ class _WasiEmissionMixin:
             self._emit_wasi_env_restrict_to_keys_wrapper()
         if ("Env", "allows") in used:
             self._emit_wasi_env_allows_wrapper()
+        # Fs metadata (2026-06-27). The shared preopen-descriptor
+        # resolver backs all three metadata wrappers; emit it once when
+        # any of them is used.
+        fs_meta_used = [
+            m for (c, m) in used if c == "Fs" and m in _WASI_FS_METADATA
+        ]
+        if fs_meta_used:
+            self._emit_wasi_fs_preopen_desc_helper()
+        if ("Fs", "exists") in used:
+            self._emit_wasi_fs_exists_wrapper()
+        if ("Fs", "is_dir") in used:
+            self._emit_wasi_fs_is_dir_wrapper()
+        if ("Fs", "mkdir") in used:
+            self._emit_wasi_fs_mkdir_wrapper()
 
     # ----- adapter wrappers -------------------------------------
 
@@ -777,5 +877,211 @@ class _WasiEmissionMixin:
         self._write("i32.store offset=12")
         # Return the header pointer (the new restricted Env value).
         self._write("local.get $header")
+        self._indent -= 1
+        self._write(")")
+
+    # ----- Fs metadata via wasi:filesystem (no streams) ----------
+
+    def _emit_wasi_fs_preopen_desc_helper(self) -> None:
+        """``$__wasi_fs_preopen_desc (idx i32) -> i32`` -> the
+        directory descriptor handle for preopen ``idx``.
+
+        Lazily calls ``preopens.get-directories`` ONCE (an
+        indirect-return ``list<tuple<descriptor, string>>``) into the
+        reserved 8-byte scratch (data_ptr @0, len @4), caches the data
+        pointer in the ``$__wasi_fs_pre_data`` global, and returns the
+        descriptor handle of the ``idx``-th element. Each element is a
+        12-byte record: descriptor(own i32) @0, str_ptr @4, str_len
+        @8; only the handle @0 is needed (the compiler resolved each
+        literal Fs path to its preopen index + basename, so the guest
+        never matches the preopen path strings at runtime).
+
+        The descriptors are returned in the host's preopen registration
+        order, which the host installs in the SAME sorted order the
+        compiler used to assign indices (see capa.ir._fs_ceiling), so
+        index K names directory K. The descriptors live for the
+        component's lifetime (they are the preopen roots, never
+        dropped); caching the list pointer is sound."""
+        scratch = self._wasi_fs_scratch_offset
+        self._write(
+            "(func $__wasi_fs_preopen_desc (param $idx i32) (result i32)"
+        )
+        self._indent += 1
+        # First call: fetch + cache the preopen list data pointer.
+        self._write("global.get $__wasi_fs_pre_inited")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"i32.const {scratch}")
+        self._write("call $wasi_fs_get_directories")
+        self._write(f"i32.const {scratch}")
+        self._write("i32.load offset=0")
+        self._write("global.set $__wasi_fs_pre_data")
+        self._write("i32.const 1")
+        self._write("global.set $__wasi_fs_pre_inited")
+        self._indent -= 1
+        self._write("end")
+        # desc = pre_data[idx].handle@0 = *(pre_data + idx*12)
+        self._write("global.get $__wasi_fs_pre_data")
+        self._write("local.get $idx")
+        self._write("i32.const 12")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("i32.load offset=0")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_fs_exists_wrapper(self) -> None:
+        """``$Fs_exists (idx i32, rel_ptr i32, rel_len i32) -> i32``.
+
+        stat-at(preopen_desc(idx), path-flags=symlink-follow(1),
+        rel_path) into the reserved scratch; the result discriminant
+        @0 is 0 on Ok (the entry exists) and non-zero on Err
+        (no-entry, ...). Returns 1 when the entry exists, 0 otherwise
+        -- byte-identical to the Python oracle's
+        ``os.path.exists`` gated by the cap (here the preopen IS the
+        gate: a path outside every preopen is unreachable, fail-closed
+        as absent)."""
+        scratch = self._wasi_fs_scratch_offset
+        self._write(
+            "(func $Fs_exists (param $idx i32) (param $rel_ptr i32) "
+            "(param $rel_len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("local.get $idx")
+        self._write("call $__wasi_fs_preopen_desc")
+        self._write("i32.const 1")  # path-flags: symlink-follow
+        self._write("local.get $rel_ptr")
+        self._write("local.get $rel_len")
+        self._write(f"i32.const {scratch}")
+        self._write("call $wasi_fs_stat_at")
+        # exists iff discriminant byte @0 == 0 (Ok).
+        self._write(f"i32.const {scratch}")
+        self._write("i32.load8_u offset=0")
+        self._write("i32.eqz")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_fs_is_dir_wrapper(self) -> None:
+        """``$Fs_is_dir (idx i32, rel_ptr i32, rel_len i32) -> i32``.
+
+        stat-at as ``exists``; on Ok, the ``descriptor-stat`` Ok
+        payload starts at offset 8 (u64 alignment), and its first
+        field ``%type`` is a ``descriptor-type`` enum (1 byte), where
+        value 3 == ``directory`` in the wasi:filesystem 0.2.0 enum
+        order. Returns 1 iff the stat succeeded AND the type is
+        directory, else 0 -- byte-identical to the oracle's
+        ``os.path.isdir`` (a denied / absent path reports false, so the
+        cap leaks no path type)."""
+        scratch = self._wasi_fs_scratch_offset
+        self._write(
+            "(func $Fs_is_dir (param $idx i32) (param $rel_ptr i32) "
+            "(param $rel_len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("local.get $idx")
+        self._write("call $__wasi_fs_preopen_desc")
+        self._write("i32.const 1")
+        self._write("local.get $rel_ptr")
+        self._write("local.get $rel_len")
+        self._write(f"i32.const {scratch}")
+        self._write("call $wasi_fs_stat_at")
+        # if Err (disc != 0) -> 0; else type@+8 == 3 (directory).
+        self._write(f"i32.const {scratch}")
+        self._write("i32.load8_u offset=0")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write(f"i32.const {scratch}")
+        self._write("i32.load8_u offset=8")
+        self._write("i32.const 3")
+        self._write("i32.eq")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_fs_mkdir_wrapper(self) -> None:
+        """``$Fs_mkdir (idx i32, rel_ptr i32, rel_len i32,
+        ret_area i32)`` -> writes a ``result<_, io-error>`` (20-byte
+        canonical-ABI shape) into ``ret_area``.
+
+        Matches the call shape ``_emit_wasi_fs_metadata_call`` produces
+        for mkdir (preopen index + rel (ptr, len) + ret_area), so the
+        existing ``result_unit_io_error`` materialiser lifts the result
+        into a Capa ``Result<Unit, IoError>`` unchanged, exactly as the
+        capa:host mkdir does.
+
+        create-directory-at(preopen_desc(idx), rel_path) into the
+        wasi-call scratch. Idempotent (matching the oracle's
+        ``os.makedirs(path, exist_ok=True)``): an Ok (disc @0 == 0) is
+        success, and an Err whose error-code @+1 == 7 (``exist`` in the
+        wasi:filesystem 0.2.0 enum order) is also treated as success;
+        both write ``ret_area.tag = 0`` (Ok<Unit>). Any other Err
+        writes ``ret_area.tag = 1`` plus an IoError record (message =
+        the interned ``mkdir failed`` string, empty cause) into the
+        Err arm fields the materialiser reads (m_ptr @4, m_len @8,
+        c_ptr @12, c_len @16).
+
+        Single-segment only: ``create-directory-at`` creates ONE
+        directory relative to the preopen descriptor. The full
+        recursive ``os.makedirs`` (creating missing intermediate
+        segments) is NOT replicated in this increment; a literal
+        ``fs.mkdir("dir/sub")`` whose parent ``dir`` is the preopen
+        creates ``sub`` directly, which is the common case. Deeper
+        nested creation is a documented follow-up (it needs per-segment
+        open-at descriptor walking)."""
+        scratch = self._wasi_fs_scratch_offset
+        msg_off, msg_len = self._intern_string("mkdir failed")
+        self._write(
+            "(func $Fs_mkdir (param $idx i32) (param $rel_ptr i32) "
+            "(param $rel_len i32) (param $ret_area i32)"
+        )
+        self._indent += 1
+        self._write("local.get $idx")
+        self._write("call $__wasi_fs_preopen_desc")
+        self._write("local.get $rel_ptr")
+        self._write("local.get $rel_len")
+        self._write(f"i32.const {scratch}")
+        self._write("call $wasi_fs_create_directory_at")
+        # success = Ok (disc @0 == 0) OR Err code @+1 == 7 (exist).
+        self._write(f"i32.const {scratch}")
+        self._write("i32.load8_u offset=0")
+        self._write("i32.eqz")
+        self._write(f"i32.const {scratch}")
+        self._write("i32.load8_u offset=1")
+        self._write("i32.const 7")
+        self._write("i32.eq")
+        self._write("i32.or")
+        self._write("if")
+        self._indent += 1
+        # Ok<Unit>: tag = 0.
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=0")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # Err<io-error>: tag = 1; message = interned string; cause "".
+        self._write("local.get $ret_area")
+        self._write("i32.const 1")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_off}")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_len}")
+        self._write("i32.store offset=8")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=12")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=16")
+        self._indent -= 1
+        self._write("end")
         self._indent -= 1
         self._write(")")

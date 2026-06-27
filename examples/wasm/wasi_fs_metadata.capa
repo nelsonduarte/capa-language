@@ -1,0 +1,56 @@
+// Experimental WASI mode demo: Fs metadata via wasi:filesystem
+// (capa --wasm --component --wasi).
+//
+// Migrates the Fs METADATA operations to the canonical WASI Preview 2
+// interface wasi:filesystem (descriptor.stat-at / create-directory-at)
+// against host-granted PREOPEN descriptors, while Stdio stays on
+// capa:host -- the hybrid coexistence this mode validates. See
+// docs/design/wasi_mode.md and docs/design/wasi-attenuation.md.
+//
+//   fs.exists(path)  -> descriptor.stat-at: Ok => true, Err => false.
+//   fs.is_dir(path)  -> descriptor.stat-at: Ok and type == directory.
+//   fs.mkdir(path)   -> descriptor.create-directory-at, idempotent
+//                       (an already-exists error folds to Ok, matching
+//                       os.makedirs(path, exist_ok=True)).
+//
+// The PREOPEN CEILING: every Fs path here is a string LITERAL. The
+// compiler derives the set of preopen directories (the PARENT of each
+// literal path) and the host preopens exactly those, with READ_WRITE
+// for a directory a mkdir targets and READ_ONLY otherwise. A path
+// outside every preopen is unreachable (wasmtime denies traversal),
+// and a program with a DYNAMIC Fs path is rejected at compile time in
+// --wasi mode (fail-closed: no preopen can be derived). The same
+// program runs unchanged on the default capa:host backend.
+//
+// The stream-bearing Fs.read / Fs.write / Fs.list_dir and the fine
+// attenuators Fs.restrict_to / Fs.allows are NOT migrated yet and are
+// rejected at compile time under --wasi (later increments).
+//
+// The preopen ceiling is the PARENT of every literal path, so each
+// path's parent directory must EXIST on the host for a real descriptor
+// to be granted (a missing parent fail-closes to a throwaway
+// placeholder, so its exists / is_dir report false). The paths below
+// live under a `data` directory next to this file; create it first:
+//
+//   mkdir -p examples/wasm/data/existing
+//   echo hello > examples/wasm/data/file.txt
+//   capa --wasm --component --wasi --run examples/wasm/wasi_fs_metadata.capa
+//
+// (Adjust the literal prefix below to an absolute path you control if
+// your runner's working directory differs.)
+
+fun main(fs: Fs, stdio: Stdio)
+    stdio.println("exists file.txt?    ${fs.exists("examples/wasm/data/file.txt")}")
+    stdio.println("exists missing?     ${fs.exists("examples/wasm/data/missing.txt")}")
+    stdio.println("is_dir existing?    ${fs.is_dir("examples/wasm/data/existing")}")
+    stdio.println("is_dir file.txt?    ${fs.is_dir("examples/wasm/data/file.txt")}")
+    let made = fs.mkdir("examples/wasm/data/created")
+    match made
+        Ok(_) -> stdio.println("mkdir created: ok")
+        Err(e) -> stdio.println("mkdir created: err")
+    // Idempotent: a second mkdir of the same path still succeeds.
+    let again = fs.mkdir("examples/wasm/data/created")
+    match again
+        Ok(_) -> stdio.println("mkdir again (idempotent): ok")
+        Err(e) -> stdio.println("mkdir again (idempotent): err")
+    stdio.println("is_dir created?     ${fs.is_dir("examples/wasm/data/created")}")

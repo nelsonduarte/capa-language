@@ -35,6 +35,7 @@ this file only covers the new flag.
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import sys
 import time
@@ -948,6 +949,456 @@ class TestWasiEnvCeilingLevel1(unittest.TestCase):
         # the (dynamically named) key correctly.
         self.assertEqual(env_applied, "inherit")
         self.assertIn("pub=public-value", out)
+
+
+# ===================================================================
+# WASI Fs metadata via wasi:filesystem (Phase 0 + metadata).
+# exists / is_dir / mkdir migrate to wasi:filesystem stat-at /
+# create-directory-at against host preopen descriptors; read / write /
+# list_dir / restrict_to / allows are rejected at compile time.
+# ===================================================================
+
+
+def _fs_ceiling(src: str):
+    from capa.ir import compute_fs_ceiling
+    module, result = _parse_analyze(src)
+    return compute_fs_ceiling(module, types=result.types)
+
+
+class TestWasiFsCeilingAnalysis(unittest.TestCase):
+    """The static Fs preopen ceiling (no wasm-tools needed)."""
+
+    def test_literal_paths_close_the_ceiling(self):
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    stdio.println(\"${fs.exists(\\\"/a/b/file.txt\\\")}\")\n"
+            "    let r = fs.mkdir(\"/a/b/sub\")\n"
+        )
+        c = _fs_ceiling(src)
+        self.assertTrue(c.closed)
+        # Both literals share parent /a/b; one preopen, READ_WRITE
+        # (mkdir mutates it).
+        self.assertEqual(len(c.preopens), 1)
+        self.assertEqual(c.preopens[0].host_path, "/a/b")
+        self.assertTrue(c.preopens[0].read_write)
+
+    def test_read_only_when_no_mutating_op(self):
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    stdio.println(\"${fs.exists(\\\"/ro/x\\\")}\")\n"
+            "    stdio.println(\"${fs.is_dir(\\\"/ro/y\\\")}\")\n"
+        )
+        c = _fs_ceiling(src)
+        self.assertTrue(c.closed)
+        self.assertEqual(len(c.preopens), 1)
+        self.assertEqual(c.preopens[0].host_path, "/ro")
+        self.assertFalse(c.preopens[0].read_write)
+
+    def test_dynamic_path_opens_the_ceiling(self):
+        # A path read through env is not a literal -> not closed
+        # (fail-closed). The host materialises no preopens.
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let p = env.get(\"P\")\n"
+            "    match p\n"
+            "        Some(path) -> stdio.println("
+            "\"${fs.exists(path)}\")\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        c = _fs_ceiling(src)
+        self.assertFalse(c.closed)
+        self.assertEqual(c.preopens, ())
+
+    def test_resolve_maps_literal_to_index_and_basename(self):
+        from capa.ir import resolve_fs_call
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    stdio.println(\"${fs.exists(\\\"/p/q/file.txt\\\")}\")\n"
+            "    stdio.println(\"${fs.is_dir(\\\"/other/dir\\\")}\")\n"
+        )
+        c = _fs_ceiling(src)
+        self.assertTrue(c.closed)
+        # Sorted parents: /other, /p/q.
+        self.assertEqual(
+            [p.host_path for p in c.preopens], ["/other", "/p/q"],
+        )
+        self.assertEqual(resolve_fs_call(c, "/p/q/file.txt"), (1, "file.txt"))
+        self.assertEqual(resolve_fs_call(c, "/other/dir"), (0, "dir"))
+
+    def test_nested_parents_coalesce_to_outermost(self):
+        # A parent nested under another collected parent is folded into
+        # the outer preopen (wasmtime collapses overlapping preopens and
+        # would trap on the inner descriptor index). The inner path
+        # resolves to the outer preopen with a multi-segment relative
+        # path, and READ_WRITE propagates up from the mutating member.
+        from capa.ir import resolve_fs_call
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    stdio.println(\"${fs.exists(\\\"/root/x\\\")}\")\n"
+            "    let r = fs.mkdir(\"/root/sub/dir\")\n"
+        )
+        c = _fs_ceiling(src)
+        self.assertTrue(c.closed)
+        # Only the outermost /root survives, READ_WRITE (mkdir under it).
+        self.assertEqual(len(c.preopens), 1)
+        self.assertEqual(c.preopens[0].host_path, "/root")
+        self.assertTrue(c.preopens[0].read_write)
+        # The nested path resolves to /root with a multi-segment rel.
+        self.assertEqual(resolve_fs_call(c, "/root/x"), (0, "x"))
+        self.assertEqual(
+            resolve_fs_call(c, "/root/sub/dir"), (0, "sub/dir"),
+        )
+
+    def test_directory_itself_resolves_to_dot(self):
+        # A path that IS a preopen directory (e.g. is_dir of the dir
+        # whose own parent is the preopen) resolves to a "." relative.
+        from capa.ir import resolve_fs_call
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    stdio.println(\"${fs.is_dir(\\\"/a/b\\\")}\")\n"
+            "    stdio.println(\"${fs.exists(\\\"/a/b/c\\\")}\")\n"
+        )
+        c = _fs_ceiling(src)
+        # Parents: /a (for /a/b) and /a/b (for /a/b/c) -> coalesce to /a.
+        self.assertEqual([p.host_path for p in c.preopens], ["/a"])
+        self.assertEqual(resolve_fs_call(c, "/a/b"), (0, "b"))
+        self.assertEqual(resolve_fs_call(c, "/a/b/c"), (0, "b/c"))
+
+
+class TestWasiFsWitGeneration(unittest.TestCase):
+    """WIT shape for Fs metadata (no wasm-tools needed)."""
+
+    def _wit(self, src: str) -> str:
+        from capa.ir import compile_wit
+        module, result = _parse_analyze(src)
+        return compile_wit(module, types=result.types, wasi=True)
+
+    _FS_SRC = (
+        "fun main(fs: Fs, stdio: Stdio)\n"
+        "    stdio.println(\"${fs.exists(\\\"/d/f\\\")}\")\n"
+        "    let r = fs.mkdir(\"/d/sub\")\n"
+    )
+
+    def test_world_imports_wasi_filesystem(self):
+        wit = self._wit(self._FS_SRC)
+        self.assertIn("import wasi:filesystem/types@0.2.0;", wit)
+        self.assertIn("import wasi:filesystem/preopens@0.2.0;", wit)
+
+    def test_no_capa_host_fs_interface(self):
+        # Fs metadata routes off capa:host entirely in WASI mode.
+        wit = self._wit(self._FS_SRC)
+        self.assertNotIn("interface fs {", wit)
+        self.assertNotIn("  import fs;", wit)
+
+    def test_default_mode_unchanged(self):
+        from capa.ir import compile_wit
+        module, result = _parse_analyze(self._FS_SRC)
+        wit = compile_wit(module, types=result.types, wasi=False)
+        self.assertIn("interface fs {", wit)
+        self.assertNotIn("wasi:filesystem", wit)
+
+
+class TestWasiFsRejections(unittest.TestCase):
+    """The non-migrated Fs surface is rejected at compile time."""
+
+    def _compile(self, src: str):
+        from capa.ir import compile_wat
+        module, result = _parse_analyze(src)
+        return compile_wat(module, types=result.types, wasi=True)
+
+    def test_read_rejected(self):
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    let r = fs.read(\"/d/f\")\n"
+            "    match r\n"
+            "        Ok(c) -> stdio.println(\"ok\")\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+        )
+        with self.assertRaises(Exception) as cm:
+            self._compile(src)
+        self.assertIn("Fs.read", str(cm.exception))
+        self.assertIn("WASI mode", str(cm.exception))
+
+    def test_write_rejected(self):
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    let r = fs.write(\"/d/f\", \"x\")\n"
+            "    match r\n"
+            "        Ok(_) -> stdio.println(\"ok\")\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+        )
+        with self.assertRaises(Exception) as cm:
+            self._compile(src)
+        self.assertIn("Fs.write", str(cm.exception))
+
+    def test_list_dir_rejected(self):
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    let r = fs.list_dir(\"/d\")\n"
+            "    match r\n"
+            "        Ok(xs) -> stdio.println(\"ok\")\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+        )
+        with self.assertRaises(Exception) as cm:
+            self._compile(src)
+        self.assertIn("Fs.list_dir", str(cm.exception))
+
+    def test_allows_rejected(self):
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    stdio.println(\"${fs.allows(\\\"/d/f\\\")}\")\n"
+        )
+        with self.assertRaises(Exception) as cm:
+            self._compile(src)
+        self.assertIn("Fs.allows", str(cm.exception))
+
+    def test_dynamic_path_fail_closed_rejected(self):
+        # A migrated metadata op with a dynamic path is rejected
+        # (fail-closed: no preopen can be derived).
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let p = env.get(\"P\")\n"
+            "    match p\n"
+            "        Some(path) -> stdio.println("
+            "\"${fs.exists(path)}\")\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        with self.assertRaises(Exception) as cm:
+            self._compile(src)
+        self.assertIn("WASI mode", str(cm.exception))
+        self.assertIn("literal", str(cm.exception))
+
+    def test_metadata_accepted(self):
+        # exists / is_dir / mkdir compile cleanly and emit the
+        # wasi:filesystem wrappers (no capa:host/fs import).
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    stdio.println(\"${fs.exists(\\\"/d/f\\\")}\")\n"
+            "    stdio.println(\"${fs.is_dir(\\\"/d/g\\\")}\")\n"
+            "    let r = fs.mkdir(\"/d/sub\")\n"
+        )
+        wat = self._compile(src)
+        self.assertIn("(func $Fs_exists", wat)
+        self.assertIn("(func $Fs_is_dir", wat)
+        self.assertIn("(func $Fs_mkdir", wat)
+        self.assertIn("(func $__wasi_fs_preopen_desc", wat)
+        self.assertIn("wasi:filesystem/preopens@0.2.0", wat)
+        self.assertIn("[method]descriptor.stat-at", wat)
+        self.assertIn("[method]descriptor.create-directory-at", wat)
+        self.assertNotIn('"capa:host/fs"', wat)
+
+
+class TestWasiFsWitLicenseHeaders(unittest.TestCase):
+    """The vendored wasi:filesystem / wasi:io WIT carry SPDX +
+    provenance headers (no wasm-tools needed)."""
+
+    def _wit(self, *parts):
+        from pathlib import Path
+        return (
+            Path(__file__).resolve().parent.parent
+            / "capa" / "wasi_wit" / "deps" / Path(*parts)
+        ).read_text(encoding="utf-8")
+
+    def test_filesystem_spdx_header(self):
+        text = self._wit("filesystem", "filesystem.wit")
+        self.assertIn(
+            "SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception", text
+        )
+        self.assertIn("wasi-filesystem", text)
+        self.assertIn("get-directories", text)
+        self.assertIn("stat-at", text)
+        self.assertIn("create-directory-at", text)
+
+    def test_io_spdx_header(self):
+        text = self._wit("io", "io.wit")
+        self.assertIn(
+            "SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception", text
+        )
+        self.assertIn("wasi-io", text)
+
+
+def _run_fs_program_three_ways(src: str):
+    """Build + run a Fs metadata program on the Python backend, the
+    capa:host component backend, and the WASI component backend.
+    Returns ``(py, host, wasi)`` stdout strings. The program's paths
+    must be literals under a controlled directory the caller created."""
+    from capa.ir import compile_wasm, compile_wit, compute_fs_ceiling
+    from capa.cli import _wrap_as_component
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    module, result = _parse_analyze(src)
+
+    def _cap(buf_fn):
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            buf_fn()
+        finally:
+            sys.stdout = saved
+        return buf.getvalue()
+
+    py = _run_python(src)
+    # capa:host component
+    core_h = compile_wasm(module, types=result.types, wasi=False)
+    wit_h = compile_wit(module, types=result.types, wasi=False)
+    comp_h = _wrap_as_component(core_h, wit_h, wasi=False)
+    host = _cap(
+        lambda: WasmComponentHost(wasi=False).run_main(comp_h)
+    )
+    # WASI component (with the Fs preopen ceiling)
+    core_w = compile_wasm(module, types=result.types, wasi=True)
+    wit_w = compile_wit(module, types=result.types, wasi=True)
+    comp_w = _wrap_as_component(core_w, wit_w, wasi=True)
+    ceiling = compute_fs_ceiling(module, types=result.types)
+    wasi = _cap(
+        lambda: WasmComponentHost(
+            wasi=True, fs_ceiling=ceiling,
+        ).run_main(comp_w)
+    )
+    return py, host, wasi
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiFsMode(unittest.TestCase):
+    """End-to-end: the component imports wasi:filesystem, runs, and
+    its exists / is_dir / mkdir agree with the Python oracle and the
+    capa:host backend over a controlled temp directory."""
+
+    def setUp(self):
+        import tempfile
+        self._td = tempfile.mkdtemp(prefix="capa-wasi-fs-test-")
+        # Controlled fixtures under <td>/data.
+        self._data = os.path.join(self._td, "data")
+        os.makedirs(os.path.join(self._data, "existing"))
+        with open(os.path.join(self._data, "file.txt"), "w") as f:
+            f.write("hello")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _src(self) -> str:
+        # Forward-slash paths so the same literals work on every OS the
+        # WASI host normalises. The data dir is the single preopen
+        # (READ_WRITE because mkdir mutates it).
+        d = self._data.replace("\\", "/")
+        return (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    stdio.println(\"ef=${{fs.exists(\\\"{d}/file.txt\\\")}}\")\n"
+            f"    stdio.println(\"em=${{fs.exists(\\\"{d}/nope\\\")}}\")\n"
+            f"    stdio.println(\"id=${{fs.is_dir(\\\"{d}/existing\\\")}}\")\n"
+            f"    stdio.println(\"if=${{fs.is_dir(\\\"{d}/file.txt\\\")}}\")\n"
+            f"    let r = fs.mkdir(\"{d}/created\")\n"
+            "    match r\n"
+            "        Ok(_) -> stdio.println(\"mk=ok\")\n"
+            "        Err(e) -> stdio.println(\"mk=err\")\n"
+            f"    let r2 = fs.mkdir(\"{d}/created\")\n"
+            "    match r2\n"
+            "        Ok(_) -> stdio.println(\"mk2=ok\")\n"
+            "        Err(e) -> stdio.println(\"mk2=err\")\n"
+            f"    stdio.println(\"ec=${{fs.exists(\\\"{d}/created\\\")}}\")\n"
+        )
+
+    def test_metadata_correct_and_idempotent(self):
+        out = _run_wasi_fs(self._src(), self._data)
+        self.assertIn("ef=true", out)        # existing file
+        self.assertIn("em=false", out)       # missing
+        self.assertIn("id=true", out)        # existing dir
+        self.assertIn("if=false", out)       # file is not a dir
+        self.assertIn("mk=ok", out)          # created
+        self.assertIn("mk2=ok", out)         # idempotent
+        self.assertIn("ec=true", out)        # created now exists
+
+    def test_three_backend_parity(self):
+        py, host, wasi = _run_fs_program_three_ways(self._src())
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+
+    def test_component_imports_wasi_filesystem(self):
+        comp = _build_wasi_component(self._src())
+        import subprocess
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            suffix=".wasm", delete=False,
+        ) as t:
+            t.write(comp)
+            path = t.name
+        try:
+            wit = subprocess.run(
+                ["wasm-tools", "component", "wit", path],
+                capture_output=True, check=True,
+            ).stdout.decode("utf-8", errors="replace")
+        finally:
+            os.unlink(path)
+        self.assertIn("import wasi:filesystem/types@0.2.0;", wit)
+        self.assertIn("import wasi:filesystem/preopens@0.2.0;", wit)
+
+    def test_preopen_ceiling_is_minimal(self):
+        # The host materialises EXACTLY one preopen (the data dir,
+        # READ_WRITE), nothing else: the program can reach no directory
+        # outside its literal ceiling.
+        from capa.ir import compute_fs_ceiling
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        module, result = _parse_analyze(self._src())
+        ceiling = compute_fs_ceiling(module, types=result.types)
+        host = WasmComponentHost(wasi=True, fs_ceiling=ceiling)
+        self.assertEqual(
+            host._wasi_fs_applied,
+            [(self._data.replace("\\", "/"), "rw")],
+        )
+
+    def test_dynamic_path_fail_closed_no_preopens(self):
+        # A non-closed ceiling registers no preopens (fail-closed).
+        from capa.ir import FsCeiling
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        host = WasmComponentHost(
+            wasi=True, fs_ceiling=FsCeiling(closed=False, preopens=()),
+        )
+        # Trigger the wasi config build (it runs in __init__).
+        self.assertEqual(host._wasi_fs_applied, [])
+
+    def test_nested_preopens_coalesce_and_run(self):
+        # A program that touches both a directory and a path nested
+        # below it must coalesce to ONE preopen (overlapping preopens
+        # trap in wasmtime), and still produce results matching Python.
+        os.makedirs(os.path.join(self._data, "deep", "inner"))
+        with open(
+            os.path.join(self._data, "deep", "inner", "z.txt"), "w",
+        ) as f:
+            f.write("z")
+        d = self._data.replace("\\", "/")
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    stdio.println(\"a=${{fs.is_dir(\\\"{d}/deep\\\")}}\")\n"
+            f"    stdio.println(\"b=${{fs.exists("
+            f"\\\"{d}/deep/inner/z.txt\\\")}}\")\n"
+        )
+        py = _run_python(src)
+        wasi = _run_wasi_fs(src, self._data)
+        self.assertEqual(py, wasi)
+        self.assertIn("a=true", wasi)
+        self.assertIn("b=true", wasi)
+
+
+def _run_wasi_fs(src: str, data_dir: str) -> str:
+    """Build + run a Fs program in WASI mode with its preopen ceiling
+    computed and handed to the host; capture stdout."""
+    from capa.ir import compute_fs_ceiling
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    comp = _build_wasi_component(src)
+    module, result = _parse_analyze(src)
+    ceiling = compute_fs_ceiling(module, types=result.types)
+    buf = io.StringIO()
+    saved = sys.stdout
+    sys.stdout = buf
+    try:
+        WasmComponentHost(wasi=True, fs_ceiling=ceiling).run_main(comp)
+    finally:
+        sys.stdout = saved
+    return buf.getvalue()
 
 
 if __name__ == "__main__":

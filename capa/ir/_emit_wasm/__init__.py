@@ -289,6 +289,17 @@ class WasmEmitter(
         # before the heap base when the module uses Float formatting;
         # 0 means "table not present".
         self._cached_powers_offset: int = 0
+        # Experimental WASI mode: the statically-computed Fs preopen
+        # ceiling (``capa.ir.FsCeiling``) for the program being
+        # emitted, or None outside ``--wasi``. Computed in ``emit()``
+        # after discovery; consulted by ``_validate_wasi_caps`` (the
+        # fail-closed check) and by the Fs metadata call-site emitter
+        # (literal-path -> preopen-index + basename resolution).
+        self._fs_ceiling = None
+        # Set in ``emit()``: True when a migrated Fs metadata op needs
+        # the wasi:filesystem preopen machinery (scratch + globals).
+        self._wasi_fs_uses_preopens = False
+        self._wasi_fs_scratch_offset = 0
 
     # ----- public ------------------------------------------------
 
@@ -450,6 +461,49 @@ class WasmEmitter(
         self._discover(module)
         self._discover_lambdas(module)
 
+        # Experimental WASI mode: compute the static Fs preopen ceiling
+        # so ``_validate_wasi_caps`` can fail-closed on a dynamic Fs
+        # path and the Fs metadata call-site emitter can resolve each
+        # literal path to its (preopen_index, basename). Computed from
+        # the same module the emitter walks (the loader already inlined
+        # imported functions), mirroring how the host computes it
+        # independently for the preopen registration.
+        if self._wasi:
+            from .._fs_ceiling import (
+                compute_fs_ceiling_from_cir, resolve_fs_call,
+            )
+            self._fs_ceiling = compute_fs_ceiling_from_cir(module)
+            # Pre-intern every WASI-Fs string the wrappers / call sites
+            # reference, BEFORE the data segment is emitted below. The
+            # data segment is written once, up front; a string interned
+            # later (at wrapper- or call-site-emission time) would get a
+            # valid offset but no ``(data ...)`` block, so its bytes
+            # would be undefined at runtime. The two sources of such
+            # strings are: (1) the per-call-site relative BASENAME each
+            # Fs metadata literal resolves to, and (2) the ``mkdir
+            # failed`` Err message the mkdir wrapper writes. Pre-intern
+            # both here so they land in the data segment deterministically.
+            if self._fs_ceiling.closed:
+                from .._nodes import MethodCall
+                _fs_meta = ("exists", "is_dir", "mkdir")
+                for _fn, instr in walk_module(module):
+                    if (isinstance(instr, MethodCall)
+                            and (instr.cap_used
+                                 or (instr.receiver.ty or "")) == "Fs"
+                            and instr.method in _fs_meta
+                            and instr.args
+                            and instr.args[0].kind == "lit_str"
+                            and isinstance(instr.args[0].literal, str)):
+                        _idx, _rel = resolve_fs_call(
+                            self._fs_ceiling, instr.args[0].literal,
+                        )
+                        self._intern_string(_rel)
+                if any(
+                    cap == "Fs" and m == "mkdir"
+                    for (cap, m) in self._used_caps
+                ):
+                    self._intern_string("mkdir failed")
+
         # Reserve linear-memory space for the Grisu2 cached-powers
         # table when Float formatting is in play. Placed right after
         # the string data segment, before the heap base. The table
@@ -502,6 +556,40 @@ class WasmEmitter(
             )
             self._string_data_offset = (
                 self._wasi_env_scratch_offset + 8
+            )
+
+        # Experimental WASI mode: Fs metadata via wasi:filesystem
+        # (2026-06-27). Two reservations, both gated on a migrated Fs
+        # metadata op (exists / is_dir / mkdir) being present:
+        #
+        # - ``_wasi_fs_scratch_offset``: a 16-byte, 8-aligned scratch
+        #   for the descriptor.stat-at / create-directory-at indirect
+        #   returns (the result<...> discriminant @0, plus the
+        #   descriptor-stat Ok payload whose first field %type sits at
+        #   offset 8 under u64 alignment). The two metadata calls never
+        #   overlap within one wrapper invocation, so one shared slot
+        #   suffices. Placed in the static data region like the other
+        #   WASI scratch slots so the wrappers do not depend on
+        #   ``$alloc`` for their own bookkeeping (mkdir still allocates
+        #   its 20-byte result area via ``$alloc`` at the call site, a
+        #   dependency a program reaching Result always pulls in).
+        #
+        # - ``_wasi_fs_uses_preopens``: drives the two module globals
+        #   (``$__wasi_fs_pre_data`` / ``$__wasi_fs_pre_inited``) that
+        #   cache ``preopens.get-directories`` across all metadata
+        #   calls (the descriptors are the preopen roots, live for the
+        #   component's lifetime, never dropped).
+        self._wasi_fs_scratch_offset = 0
+        self._wasi_fs_uses_preopens = self._wasi and any(
+            cap == "Fs" and method in ("exists", "is_dir", "mkdir")
+            for (cap, method) in self._used_caps
+        )
+        if self._wasi_fs_uses_preopens:
+            self._wasi_fs_scratch_offset = _align_up(
+                self._string_data_offset, 8,
+            )
+            self._string_data_offset = (
+                self._wasi_fs_scratch_offset + 16
             )
 
         # Stage 1: emit the (module ... ) header with imports and
@@ -631,11 +719,26 @@ class WasmEmitter(
             or self._sum_layouts
             or self._uses_heap_alloc(module)
             or self._wasi_env_uses_get_or_args()
+            or self._wasi_fs_uses_preopens
         ):
             heap_start = _align_up(self._string_data_offset, 8)
             self._write(
                 f"(global $heap_top (mut i32) (i32.const {heap_start}))"
             )
+            # WASI Fs metadata (2026-06-27): cache the
+            # ``preopens.get-directories`` list pointer across all
+            # metadata calls. ``$__wasi_fs_pre_inited`` flips to 1 on
+            # the first call; ``$__wasi_fs_pre_data`` then holds the
+            # list data pointer (each 12-byte element: descriptor
+            # handle @0, str_ptr @4, str_len @8). The descriptors are
+            # the preopen roots, live for the component's lifetime.
+            if self._wasi_fs_uses_preopens:
+                self._write(
+                    "(global $__wasi_fs_pre_data (mut i32) (i32.const 0))"
+                )
+                self._write(
+                    "(global $__wasi_fs_pre_inited (mut i32) (i32.const 0))"
+                )
             self._emit_alloc_function()
             self._emit_cabi_realloc_function()
             # ``$str_eq`` is only needed when at least one Map

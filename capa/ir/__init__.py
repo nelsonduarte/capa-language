@@ -42,6 +42,10 @@ from ._emit_wit import (
 from ._env_ceiling import (
     EnvCeiling, compute_env_ceiling, compute_env_ceiling_from_cir,
 )
+from ._fs_ceiling import (
+    FsCeiling, FsPreopen, compute_fs_ceiling,
+    compute_fs_ceiling_from_cir, resolve_fs_call,
+)
 
 __all__ = [
     "Module",
@@ -64,6 +68,11 @@ __all__ = [
     "EnvCeiling",
     "compute_env_ceiling",
     "compute_env_ceiling_from_cir",
+    "FsCeiling",
+    "FsPreopen",
+    "compute_fs_ceiling",
+    "compute_fs_ceiling_from_cir",
+    "resolve_fs_call",
     "compile",
     "compile_program",
     "compile_wat",

@@ -1538,15 +1538,30 @@ def _main_dispatch() -> int:
                 # back to inherit_env (Level 2). The default capa:host
                 # path passes no ceiling and is unaffected.
                 env_ceiling = None
+                fs_ceiling = None
                 if wasi_mode:
-                    from capa.ir import compute_env_ceiling
+                    from capa.ir import (
+                        compute_env_ceiling, compute_fs_ceiling,
+                    )
                     env_ceiling = compute_env_ceiling(
+                        module, types=result.types,
+                    )
+                    # WASI Fs Phase 0 (2026-06-27): the static Fs
+                    # preopen ceiling drives the host's preopen_dir
+                    # registration (parents of every literal Fs path,
+                    # with READ_WRITE for mutating dirs). A non-closed
+                    # ceiling (dynamic path) yields no preopens
+                    # (fail-closed); the compiler already rejected such
+                    # a program in --wasi mode. The default capa:host
+                    # path passes no ceiling and is unaffected.
+                    fs_ceiling = compute_fs_ceiling(
                         module, types=result.types,
                     )
                 host = WasmComponentHost(
                     args=program_args,
                     wasi=wasi_mode,
                     env_ceiling=env_ceiling,
+                    fs_ceiling=fs_ceiling,
                 )
                 host.run_main(component_blob)
             else:

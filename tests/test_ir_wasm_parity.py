@@ -868,6 +868,16 @@ _EXCLUDED: dict[str, str] = {
         "assert three-backend byte-parity (Python oracle == capa:host "
         "host-side narrowing == WASI guest-side narrowing)."
     ),
+    "wasi_fs_metadata.capa": (
+        "Experimental --wasi mode demo: Fs metadata (exists / is_dir / "
+        "mkdir via wasi:filesystem + the preopen ceiling). The result "
+        "depends on host filesystem state (which directories the demo "
+        "paths point at), which the auto-list harness does not control, "
+        "so there is no fixed byte-equality reference here. Covered by "
+        "the dedicated TestWasiFsMode tests in tests/test_wasi_mode.py, "
+        "which build a known temp directory and assert three-backend "
+        "parity (Python oracle == capa:host == WASI)."
+    ),
 }
 
 

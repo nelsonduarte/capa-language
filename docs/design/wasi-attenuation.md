@@ -340,6 +340,37 @@ preopen). Where the root prefix is a runtime value the compiler cannot
 materialise, degrade THAT PART to guest-side only (Level 2), do not
 silently widen the preopen.
 
+FS STATUS (2026-06-27): PHASE 0 (preopen ceiling) + the METADATA
+operations IMPLEMENTED for the `--wasi` mode, in the lowest-risk
+increment. The compiler computes the Fs preopen ceiling statically from
+the CIR (`capa/ir/_fs_ceiling.py`, after the loader has inlined
+imports): every literal Fs path contributes a preopen for its PARENT
+directory, with READ_WRITE perms when a mutating op (`mkdir`/`write`)
+targets it and READ_ONLY otherwise. The host
+(`capa/runtime/_wasm_component_host.py:_apply_fs_preopens`) registers
+those directories as `wasi:filesystem` preopens in the ceiling's sorted
+order; `preopens.get-directories` returns the descriptors in that order
+so the compiler resolves each literal call to a `(preopen_index,
+basename)` pair and the guest wrapper addresses preopen K with no
+runtime string-matching.
+
+The migrated operations are METADATA only: `exists` / `is_dir` ->
+`descriptor.stat-at`, `mkdir` -> `descriptor.create-directory-at`
+(idempotent, `exist` folded to `Ok`; single-segment). They use NO
+`wasi:io` streams. `read` / `write` / `list_dir` (stream-bearing) and
+the fine attenuators `restrict_to` / `allows` are REJECTED at compile
+time under `--wasi` (`capa/ir/_emit_wasm/_wasi.py`), a later increment.
+
+POLICY DIVERGENCE from Env: a NON-CLOSED Fs ceiling (a dynamic Fs path)
+is FAIL-CLOSED, not degraded to a wider ceiling. The host materialises
+NO preopens (the component can open nothing) and the compiler REJECTS
+the program in `--wasi` mode. This is tighter than the Env
+`inherit_env` fallback because a wrongly-derived preopen is real
+filesystem authority, whereas a missing preopen merely denies. Such a
+program runs unchanged on the default `capa:host` backend. The fine
+per-call `restrict_to` narrowing below the ceiling is the deferred
+Level 2 layer (likely guest-side, like Env).
+
 CLOCK and RANDOM. Keep the current behaviour: pure readers on
 `wasi:clocks` / `wasi:random`, with Clock attenuation
 (`restrict_to_after`) and `sleep` REJECTED at compile time under
@@ -386,6 +417,10 @@ Code:
 - `capa/ir/_env_ceiling.py` (the static Env authority-ceiling analysis
   backing Level 1: `EnvCeiling` / `compute_env_ceiling`) and the host
   env-set application in `capa/runtime/_wasm_component_host.py`
+- `capa/ir/_fs_ceiling.py` (the static Fs preopen-ceiling analysis
+  backing Phase 0: `FsCeiling` / `FsPreopen` / `compute_fs_ceiling` /
+  `resolve_fs_call`) and the host preopen application
+  `_apply_fs_preopens` in `capa/runtime/_wasm_component_host.py`
 
 Related design records:
 

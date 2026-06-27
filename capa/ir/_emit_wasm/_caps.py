@@ -435,6 +435,16 @@ class _CapDispatchMixin:
         # inline machinery stays intact for Db / Proc / Env / Clock
         # (they remain on the old erased-cap path until their own
         # rollout slices).
+        # WASI mode (2026-06-27): Fs metadata ops (exists / is_dir /
+        # mkdir) route to the wasi:filesystem guest wrappers, which
+        # address the host preopens by compile-time-resolved index +
+        # basename rather than the capa:host handle table. Checked
+        # BEFORE the capa:host Fs branches so the same source compiles
+        # both ways.
+        if (self._wasi and cap == "Fs"
+                and method in ("exists", "is_dir", "mkdir")):
+            self._emit_wasi_fs_metadata_call(instr, method)
+            return
         if cap == "Fs" and indirect is not None:
             self._emit_fs_method_with_handle(instr, method, indirect)
             return
@@ -579,6 +589,67 @@ class _CapDispatchMixin:
         self._write(f"call $Fs_{method}")
         if instr.dst is not None:
             self._write(f"local.set ${instr.dst}")
+
+    # ---- WASI Fs metadata call sites (wasi:filesystem) ---------
+
+    def _emit_wasi_fs_metadata_call(
+        self, instr: MethodCall, method: str,
+    ) -> None:
+        """Emit ``fs.exists / is_dir / mkdir`` in WASI mode.
+
+        The path argument MUST be a string literal (the fail-closed
+        ceiling guarantees this; ``_validate_wasi_caps`` rejects a
+        dynamic path before emission). The compiler resolves the
+        literal to ``(preopen_index, basename)`` via the static Fs
+        ceiling (``capa.ir._fs_ceiling.resolve_fs_call``), interns the
+        basename, and calls the wasi:filesystem guest wrapper with
+        ``(idx, rel_ptr, rel_len[, ret_area])`` -- no host handle, no
+        runtime preopen-path matching.
+
+        - ``exists`` / ``is_dir`` return an i32 Bool, bound to
+          ``instr.dst`` exactly like the capa:host bool-query path.
+        - ``mkdir`` returns a ``Result<Unit, IoError>``: allocate the
+          20-byte canonical-ABI ret area, pass it as the trailing arg,
+          and reuse the shared ``result_unit_io_error`` materialiser so
+          the lifted value is identical to the capa:host mkdir."""
+        from .._fs_ceiling import resolve_fs_call
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Fs.{method} expected 1 arg, got {len(instr.args)}"
+            )
+        arg = instr.args[0]
+        if arg.kind != "lit_str" or not isinstance(arg.literal, str):
+            # Defensive: the ceiling fail-closed check should have
+            # rejected this already, but never emit a wrapper call with
+            # an unresolved path.
+            raise WasmEmissionError(
+                f"Fs.{method} in WASI mode requires a string-literal "
+                f"path (the preopen ceiling must be closed)"
+            )
+        ceiling = self._fs_ceiling
+        if ceiling is None or not ceiling.closed:
+            raise WasmEmissionError(
+                "Fs in WASI mode has no closed preopen ceiling"
+            )
+        idx, rel = resolve_fs_call(ceiling, arg.literal)
+        rel_off, rel_len = self._intern_string(rel)
+        self._write(f"i32.const {idx}")
+        self._write(f"i32.const {rel_off}")
+        self._write(f"i32.const {rel_len}")
+        if method == "mkdir":
+            # result<_, io-error>: allocate the 20-byte ret area, pass
+            # it as the trailing arg, then materialise the Capa Result.
+            self._write("i32.const 20")
+            self._write("call $alloc")
+            self._write("local.tee $_ret_area")
+            self._write("call $Fs_mkdir")
+            self._emit_cap_indirect_materialise(
+                "result_unit_io_error", instr.dst,
+            )
+        else:
+            self._write(f"call $Fs_{method}")
+            if instr.dst is not None:
+                self._write(f"local.set ${instr.dst}")
 
     # ---- slice 25.3 Net handle-passing helpers -----------------
 

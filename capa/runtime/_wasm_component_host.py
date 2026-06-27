@@ -85,8 +85,28 @@ class WasmComponentHost:
         *,
         wasi: bool = False,
         env_ceiling: Optional["object"] = None,
+        fs_ceiling: Optional["object"] = None,
     ):
         self._args = list(args)
+        # WASI Fs Phase 0 (2026-06-27): the statically-computed Fs
+        # preopen ceiling (``capa.ir.FsCeiling``) for the program being
+        # run, or None when not computed. When the ceiling is CLOSED,
+        # the host preopens exactly its directories (parents of the
+        # literal Fs paths) with the derived perms (READ_WRITE if a
+        # mutating op targets the directory, else READ_ONLY), in the
+        # SAME sorted order the compiler assigned preopen indices, so
+        # ``wasi:filesystem/preopens.get-directories`` hands the guest
+        # the descriptors index-aligned with the call sites. When the
+        # ceiling is NOT closed (a dynamic Fs path), the host
+        # materialises NO preopens at all (fail-closed) -- the compiler
+        # already rejected such a program in --wasi mode, so this is
+        # belt-and-braces. Only consulted in ``--wasi`` mode.
+        self._fs_ceiling = fs_ceiling
+        # Records the preopens actually installed on the WasiConfig in
+        # WASI mode (a list of (host_path, "ro"|"rw") tuples), exposed
+        # for tests / diagnostics so the ceiling guarantee is
+        # inspectable without reaching into wasmtime internals.
+        self._wasi_fs_applied: Optional[object] = None
         # WASI Env Level 1 (2026-06-27): the statically-computed Env
         # authority ceiling (``capa.ir.EnvCeiling``) for the program
         # being run, or None when not computed. When the ceiling is
@@ -165,6 +185,7 @@ class WasmComponentHost:
                 wasi_cfg.inherit_env()
                 self._wasi_env_applied = "inherit"
             wasi_cfg.argv = list(self._args)
+            self._apply_fs_preopens(wasi_cfg)
             self._store.set_wasi(wasi_cfg)
             self._linker.add_wasip2()
         # Slice 25.8 (2026-05-30): per-instance cap handle table,
@@ -195,6 +216,84 @@ class WasmComponentHost:
         # cannot carry a stale latch from one program into the next.
         self.panicked = False
         self._register_all()
+
+    def _apply_fs_preopens(self, wasi_cfg) -> None:
+        """Register the Fs ceiling's preopened directories on the
+        WasiConfig (WASI mode only).
+
+        For a CLOSED ceiling, preopen each directory in the ceiling's
+        ORDERED list (the compiler's preopen index order) at a guest
+        path equal to its host path, with READ_WRITE perms when the
+        directory hosts a mutating op (mkdir / write) and READ_ONLY
+        otherwise. wasmtime's ``get-directories`` returns descriptors
+        in registration order, so guest preopen index K names the K-th
+        ceiling directory -- the binding the compiler resolved each
+        literal Fs path against.
+
+        Fail-closed: a non-closed ceiling (a dynamic Fs path) or a
+        missing ceiling registers NO preopens, so the component cannot
+        open any directory. The compiler already rejects such a program
+        in --wasi mode (``_validate_wasi_caps``); this host policy is
+        the matching runtime guarantee. A directory that does not exist
+        on the host is skipped (the guest's stat / mkdir then sees no
+        descriptor for that index and reports absent / fails, the same
+        fail-closed-as-absent the capability oracle uses).
+
+        Preopens are a HARD runtime ceiling: wasmtime denies path
+        traversal outside a preopened directory and denies a write
+        through a READ_ONLY preopen, independent of guest behaviour."""
+        ceiling = self._fs_ceiling
+        if ceiling is None or not getattr(ceiling, "closed", False):
+            self._wasi_fs_applied = []
+            return
+        # ``get-directories`` returns descriptors ONLY for the preopens
+        # actually registered, in registration order, so EVERY ceiling
+        # slot must register exactly one preopen to keep the guest's
+        # index K aligned with ceiling[K]. A ceiling directory that
+        # does not exist on the host is registered against a shared,
+        # empty placeholder directory (READ_ONLY): the slot stays
+        # aligned, and any stat / mkdir the guest attempts on that
+        # index sees an empty directory, so exists / is_dir report
+        # false (fail-closed-as-absent, matching the capability
+        # oracle's denied-as-absent convention) and a mkdir there is
+        # contained to the throwaway placeholder, granting no real
+        # authority over the intended (non-existent) host path.
+        # The GUEST path each preopen is mounted at is a synthetic
+        # ``/capa-preopen-K`` (POSIX form): the guest never matches
+        # preopen path strings (it addresses preopens by the
+        # compiler-assigned INDEX, which equals registration order), so
+        # the guest path only has to be a valid, distinct WASI path.
+        # Using the host's native ``C:\...`` path as the guest path
+        # would feed a non-POSIX string to the WASI layer; the
+        # synthetic name sidesteps that entirely.
+        applied: list[tuple[str, str]] = []
+        placeholder: Optional[str] = None
+        for k, pre in enumerate(ceiling.preopens):
+            host_path = pre.host_path
+            guest_path = f"/capa-preopen-{k}"
+            if not os.path.isdir(host_path):
+                if placeholder is None:
+                    import tempfile
+                    placeholder = tempfile.mkdtemp(prefix="capa-wasi-fs-")
+                wasi_cfg.preopen_dir(
+                    placeholder, guest_path,
+                    wasmtime.DirPerms.READ_ONLY,
+                    wasmtime.FilePerms.READ_ONLY,
+                )
+                applied.append((host_path, "absent"))
+                continue
+            if pre.read_write:
+                dir_perms = wasmtime.DirPerms.READ_WRITE
+                file_perms = wasmtime.FilePerms.READ_WRITE
+                applied.append((host_path, "rw"))
+            else:
+                dir_perms = wasmtime.DirPerms.READ_ONLY
+                file_perms = wasmtime.FilePerms.READ_ONLY
+                applied.append((host_path, "ro"))
+            wasi_cfg.preopen_dir(
+                host_path, guest_path, dir_perms, file_perms,
+            )
+        self._wasi_fs_applied = applied
 
     def _register_all(self) -> None:
         root = self._linker.root()
@@ -945,6 +1044,13 @@ class WasmComponentHost:
         # their capa:host table handles in this hybrid mode.
         if self._wasi:
             name_to_root["env"] = 0
+            # WASI Fs (2026-06-27): Fs metadata is enforced by the host
+            # PREOPENS, not the capa:host handle table. The Fs i32 param
+            # on ``main`` is vestigial in this mode (the guest metadata
+            # wrappers address preopens by compile-time index, never the
+            # receiver handle), so pass the 0 sentinel rather than a
+            # capa:host table handle, matching the Env treatment.
+            name_to_root["fs"] = 0
         handle_args: list[int] = []
         for name, _vtype in params:
             handle_args.append(name_to_root.get(name, roots.get("fs", 0)))

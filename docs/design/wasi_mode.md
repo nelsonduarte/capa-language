@@ -278,7 +278,51 @@ unaffected), `Clock.now_secs`, `Clock.now_monotonic`, `Env.get`,
 `Env.args`, and **Env attenuation** (`Env.restrict_to_keys`,
 `Env.allows`, and the `Env.get` fail-closed gate), implemented
 guest-side (Level 2; see "Env attenuation (guest-side, Level 2)"
-above).
+above), plus the **Fs metadata** operations `Fs.exists`, `Fs.is_dir`,
+and `Fs.mkdir` (see "Fs metadata + preopen ceiling" below).
+
+### Fs metadata + preopen ceiling
+
+`Fs.exists` / `Fs.is_dir` / `Fs.mkdir` migrate to `wasi:filesystem`:
+
+- `exists` / `is_dir` -> `descriptor.stat-at(symlink-follow, rel)`:
+  the result discriminant is `Ok` iff the entry exists (`exists`), and
+  the `descriptor-stat.%type` field (at Ok-payload offset 8) is
+  `directory` (== 3) for `is_dir`. A denied / absent path reports
+  false (fail-closed-as-absent, matching the Python oracle).
+- `mkdir` -> `descriptor.create-directory-at(rel)`: idempotent, an
+  `already-exists` error (code `exist` == 7) is folded to `Ok`,
+  replicating `os.makedirs(path, exist_ok=True)`. Single-segment only
+  in this increment (one directory relative to the preopen; full
+  recursive intermediate creation is a follow-up).
+
+None of these use streams. The metadata wrappers address the
+host-granted **preopen** descriptors: a `wasi:filesystem` operation
+needs a directory descriptor plus a relative path, and the host
+preopens exactly the directories the program can reach.
+
+**The preopen ceiling.** The compiler computes a static Fs ceiling
+(`capa/ir/_fs_ceiling.py`) by scanning every `fs.*` path-bearing call:
+each literal path contributes a preopen for its **parent** directory
+(so a file path's parent is granted and the basename is the relative
+argument; a `mkdir`/`is_dir` of a directory grants its parent), with
+`READ_WRITE` permission when a mutating op (`mkdir`/`write`) targets it
+and `READ_ONLY` otherwise. The host registers these preopens in the
+ceiling's sorted order; `wasi:filesystem/preopens.get-directories`
+returns the descriptors in registration order, so the compiler
+resolves each literal call site to a `(preopen_index, basename)` pair
+and the guest wrapper addresses preopen index K with no runtime
+string-matching. Preopens are a **hard runtime ceiling**: wasmtime
+denies traversal outside a preopened directory and denies a write
+through a `READ_ONLY` preopen, independent of guest behaviour.
+
+**Fail-closed for dynamic paths.** If any Fs op takes a non-literal
+path, the ceiling is **not closed**: the host materialises **no
+preopens at all** (the component can open nothing) and the compiler
+**rejects** the program in `--wasi` mode. This is tighter than the Env
+ceiling (which falls back to `inherit_env`) because a wrongly-derived
+preopen is real filesystem authority; a missing preopen merely denies.
+Such a program runs unchanged on the default `capa:host` backend.
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
@@ -292,6 +336,12 @@ silently miscompiles):
   attenuation through a standard WASI clock is a future design item
   (likely a guest-side deadline gate, since the wall clock is
   readable).
+- **`Fs.read` / `Fs.write` / `Fs.list_dir`** need `wasi:io` streams
+  (`read-via-stream` / `write-via-stream` / `read-directory`), out of
+  scope for the metadata-only increment.
+- **Fs attenuation** (`Fs.restrict_to`, `Fs.allows`). The preopen
+  ceiling is the coarse Level-1 authority bound; the fine per-call
+  prefix narrowing is a later increment (likely guest-side, like Env).
 
 Env attenuation was previously excluded too; it is now supported
 guest-side (Level 2). Mapping `main`'s Env **ceiling** onto the host
@@ -313,16 +363,21 @@ use the default capa:host backend (drop --wasi).
 ## Vendored WIT
 
 `wasm-tools component embed` resolves the `wasi:random` /
-`wasi:clocks` / `wasi:cli` package references from a `deps/`
-directory. We vendor a trimmed subset of the official WASI P2 `0.2.0`
-WIT in `capa/wasi_wit/deps/` (random + clocks + cli/environment;
-`now` / `get-random-*` / `get-environment` / `get-arguments` only; the
-`subscribe-*` poll-dependent clock functions and the cli
-`initial-cwd` are omitted because Capa only reads the clocks and the
-env-set / argv). `_wrap_as_component(..., wasi=True)` copies these next
-to the generated world before embedding; a program imports only the
-packages it uses, and the unused deps are ignored by the embed.
-Provenance and update instructions are in `capa/wasi_wit/README.md`.
+`wasi:clocks` / `wasi:cli` / `wasi:filesystem` / `wasi:io` package
+references from a `deps/` directory. We vendor a trimmed subset of the
+official WASI P2 `0.2.0` WIT in `capa/wasi_wit/deps/` (random + clocks
++ cli/environment + filesystem + io; `now` / `get-random-*` /
+`get-environment` / `get-arguments` / `get-directories` / `stat-at` /
+`create-directory-at` are the functions Capa calls; the `subscribe-*`
+poll-dependent clock functions and the cli `initial-cwd` are omitted).
+The `wasi:filesystem` `descriptor` resource and the `wasi:io`
+stream/error resources it `use`s are vendored **structurally** so the
+filesystem package type-checks at embed time, even though Capa calls
+none of the stream-bearing methods (the metadata ops use no streams).
+`_wrap_as_component(..., wasi=True)` copies these next to the generated
+world before embedding; a program imports only the packages it uses,
+and the unused deps are ignored by the embed. Provenance and update
+instructions are in `capa/wasi_wit/README.md`.
 
 ## Validation
 
@@ -365,27 +420,55 @@ property (see `tests/test_wasi_mode.py`):
   is **not** delivered); the output is byte-identical across Python,
   `capa:host` and WASI; and a dynamic-key program falls back to
   `inherit_env`.
+- **Fs metadata (three-backend parity over a controlled temp dir)**:
+  `TestWasiFsMode` creates a known directory with a file and a
+  subdirectory, then asserts `exists` (present file -> true, missing ->
+  false), `is_dir` (directory -> true, file -> false), and `mkdir`
+  (creates, and the second call is idempotent -> still `Ok`). The full
+  output is byte-identical across the Python oracle, the `capa:host`
+  backend, and the WASI backend. The component is shown to **import
+  `wasi:filesystem/types` + `preopens`** (`wasm-tools component wit`),
+  the host's applied preopen set is asserted **minimal** (exactly the
+  one `READ_WRITE` data dir), and a non-closed ceiling installs **no**
+  preopens. `TestWasiFsCeilingAnalysis` pins the static analysis
+  (literal paths close the ceiling; the parent is the preopen;
+  `READ_WRITE` only when a mutating op targets it; a dynamic path opens
+  it; literal -> `(index, basename)` resolution). `TestWasiFsRejections`
+  pins the compile-time rejection of `read` / `write` / `list_dir` /
+  `allows` and of a dynamic metadata path (fail-closed).
 
 ## Files
 
 - `capa/ir/_emit_wasm/_wasi.py` - WASI import + adapter-wrapper
   emission (Random / Clock / Env readers + guest-side Env attenuation
-  `$Env_restrict_to_keys` / `$Env_allows` / `$Env_key_allowed`) and the
-  excluded-surface validation.
+  `$Env_restrict_to_keys` / `$Env_allows` / `$Env_key_allowed`; the Fs
+  metadata wrappers `$Fs_exists` / `$Fs_is_dir` / `$Fs_mkdir` +
+  `$__wasi_fs_preopen_desc`) and the excluded-surface validation.
+- `capa/ir/_emit_wasm/_caps.py` - the WASI Fs metadata call-site
+  emitter (`_emit_wasi_fs_metadata_call`: literal -> preopen index +
+  basename, mkdir result materialisation).
 - `capa/ir/_emit_wit.py` - WASI-mode world generation
-  (`_emit_wit_wasi`).
+  (`_emit_wit_wasi`; Fs routes to `wasi:filesystem` imports).
 - `capa/ir/_env_ceiling.py` - the static Env authority-ceiling analysis
   (`EnvCeiling` / `compute_env_ceiling`) backing Level 1.
+- `capa/ir/_fs_ceiling.py` - the static Fs preopen-ceiling analysis
+  (`FsCeiling` / `FsPreopen` / `compute_fs_ceiling` / `resolve_fs_call`):
+  literal paths -> sorted parent preopens with derived perms; resolves
+  each literal call to `(preopen_index, basename)`.
 - `capa/runtime/_wasm_component_host.py` - the `wasi=True` host recipe
-  (the env-set: a restricted ceiling projection when closed, else
-  `inherit_env`; `argv` for the Env readers; passes `0` as the Env root
-  so the guest-side `0`-is-unrestricted convention holds; records the
-  installed env-set in `_wasi_env_applied`).
+  (the env-set; `argv`; the Fs preopen registration `_apply_fs_preopens`
+  in ceiling order with derived perms, fail-closed for a non-closed
+  ceiling; passes `0` as the Env and Fs roots; records the installed
+  env-set / preopens in `_wasi_env_applied` / `_wasi_fs_applied`).
 - `capa/cli.py` - the `--wasi` flag, the WASI-deps embed path, and the
-  ceiling computation handed to the host on `--wasi --component --run`.
+  Env + Fs ceiling computation handed to the host on
+  `--wasi --component --run`.
 - `capa/wasi_wit/` - vendored WASI P2 WIT subset (random / clocks /
-  cli-environment).
+  cli-environment / filesystem / io).
 - `examples/wasm/wasi_random_clock.capa` - the Random + Clock demo.
 - `examples/wasm/wasi_env.capa` - the Env reader demo.
 - `examples/wasm/wasi_env_attenuation.capa` - the guest-side Env
   attenuation demo (intersection + fail-closed).
+- `examples/wasm/wasi_fs_metadata.capa` - the Fs metadata demo
+  (`exists` / `is_dir` / `mkdir` via `wasi:filesystem` + the preopen
+  ceiling).

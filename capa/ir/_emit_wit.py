@@ -660,12 +660,16 @@ def _emit_wit_wasi(
     lines.append("")
 
     # ``capa:host`` interfaces for every NON-migrated capability,
-    # identical to the default path. Random / Clock / Env are skipped
-    # (they move to wasi:*).
+    # identical to the default path. Random / Clock / Env / Fs are
+    # skipped (they move to wasi:*). Fs in WASI mode is metadata-only
+    # (exists / is_dir / mkdir via wasi:filesystem); the stream-bearing
+    # and attenuation methods are rejected by the Wasm emitter's
+    # ``_validate_wasi_caps`` before we get here, so an Fs present in
+    # ``used`` carries no ``capa:host`` fs interface.
     for cap in sorted(used.keys()):
         if cap not in _KNOWN_CAPABILITIES:
             continue
-        if cap in ("Random", "Clock", "Env"):
+        if cap in ("Random", "Clock", "Env", "Fs"):
             continue
         lines.append(f"interface {cap.lower()} {{")
         gated = _METHODS_NEEDING_IO_ERROR.get(cap)
@@ -710,10 +714,17 @@ def _emit_wit_wasi(
     # interface (get-environment / get-arguments); import it once.
     if "Env" in used:
         lines.append("  import wasi:cli/environment@0.2.0;")
+    # Fs metadata (exists / is_dir / mkdir) routes to wasi:filesystem:
+    # preopens.get-directories resolves the host-granted descriptors,
+    # types.descriptor.{stat-at, create-directory-at} do the metadata.
+    # Both interfaces are imported once when any Fs metadata op is used.
+    if "Fs" in used:
+        lines.append("  import wasi:filesystem/types@0.2.0;")
+        lines.append("  import wasi:filesystem/preopens@0.2.0;")
     # capa:host imports for the non-migrated caps (hybrid coexistence).
     for cap in sorted(used.keys()):
         if cap in _KNOWN_CAPABILITIES and cap not in (
-            "Random", "Clock", "Env",
+            "Random", "Clock", "Env", "Fs",
         ):
             lines.append(f"  import {cap.lower()};")
     if uses_panic:
