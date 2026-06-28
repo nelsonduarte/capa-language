@@ -86,6 +86,7 @@ class WasmComponentHost:
         wasi: bool = False,
         env_ceiling: Optional["object"] = None,
         fs_ceiling: Optional["object"] = None,
+        net_ceiling: Optional["object"] = None,
     ):
         self._args = list(args)
         # WASI Fs Phase 0 (2026-06-27): the statically-computed Fs
@@ -123,6 +124,20 @@ class WasmComponentHost:
         # tests and diagnostics so the leak-closed guarantee is
         # inspectable without reaching into wasmtime internals.
         self._wasi_env_applied: Optional[object] = None
+        # WASI Net Phase 1 (2026-06-28): the statically-computed Net host
+        # ceiling (``capa.ir.NetCeiling``) for the program being run, or
+        # None when the program does not use ``Net.get``. Passing a
+        # NetCeiling is the host's signal that the program uses Net.get,
+        # which gates linking wasi:http (the FFI receipt below). The
+        # ceiling itself is enforced GUEST-SIDE (codegen) because
+        # wasmtime's wasi:http C-API is allow-all with no host allowed-
+        # hosts surface; the host records it for inspection only. Only
+        # consulted in ``--wasi`` mode.
+        self._net_ceiling = net_ceiling
+        # Records whether wasi:http was linked on this host (True only in
+        # WASI mode when the program uses Net.get). Exposed for tests so
+        # the "only link wasi:http when Net is used" rule is inspectable.
+        self._wasi_http_linked: bool = False
         self._engine = wasmtime.Engine()
         self._store = wasmtime.Store(self._engine)
         self._linker = wc.Linker(self._engine)
@@ -188,6 +203,31 @@ class WasmComponentHost:
             self._apply_fs_preopens(wasi_cfg)
             self._store.set_wasi(wasi_cfg)
             self._linker.add_wasip2()
+            # Net.get Phase 1 (2026-06-28): link wasi:http ONLY when the
+            # program uses Net.get (signalled by a non-None net_ceiling).
+            # wasmtime 44+ does not expose ``add_wasi_http`` on the
+            # high-level component API, so we reach the C-ABI through
+            # ``wasmtime._bindings`` (the same pattern the high-level
+            # ``add_wasip2`` / ``set_wasi`` wrap). The OBLIGATORY
+            # ``set_wasi_http`` on the store context arms the http
+            # implementation; WITHOUT it the C-API panics
+            # (Option::unwrap-on-None) the moment a wasi:http import is
+            # linked. We DO NOT link/arm wasi:http when the program does
+            # not use Net (a clean total deny, and it also avoids that
+            # context panic for non-Net programs). The C-API is ALLOW-ALL
+            # (no allowed-hosts surface), so the Net ceiling is enforced
+            # guest-side (codegen); see docs/design/wasi-attenuation.md.
+            if self._net_ceiling is not None:
+                import wasmtime._bindings as _wt_bindings
+                err = _wt_bindings.wasmtime_component_linker_add_wasi_http(
+                    self._linker.ptr(),
+                )
+                if err:
+                    raise wasmtime.WasmtimeError._from_ptr(err)
+                _wt_bindings.wasmtime_context_set_wasi_http(
+                    self._store._context(),
+                )
+                self._wasi_http_linked = True
         # Slice 25.8 (2026-05-30): per-instance cap handle table,
         # the Component Model mirror of ``WasmHost._cap_handles``.
         # Each privileged host op looks up the receiver cap by its
@@ -1051,6 +1091,14 @@ class WasmComponentHost:
             # receiver handle), so pass the 0 sentinel rather than a
             # capa:host table handle, matching the Env treatment.
             name_to_root["fs"] = 0
+            # WASI Net (2026-06-28, Phase 1): Net.get is served by
+            # wasi:http and gated GUEST-SIDE against the static ceiling
+            # (codegen), not the capa:host handle table. The Net i32 param
+            # on ``main`` is vestigial in this mode (the $Net_get wrapper
+            # never consults the receiver handle for the ceiling), so pass
+            # the 0 sentinel rather than a capa:host table handle, matching
+            # the Env / Fs treatment.
+            name_to_root["net"] = 0
         handle_args: list[int] = []
         for name, _vtype in params:
             handle_args.append(name_to_root.get(name, roots.get("fs", 0)))

@@ -594,6 +594,12 @@ class Net:
                 data = resp.read().decode("utf-8", errors="replace")
                 return Ok(data)
         except (OSError, ValueError) as e:
+            # ``HTTPError`` (a subclass of OSError raised on status >= 400)
+            # is itself a response object holding an open socket; close it
+            # so the interpreter does not emit a ResourceWarning on GC.
+            close = getattr(e, "close", None)
+            if callable(close):
+                close()
             return Err(IoError("HTTP GET failed", str(e)))
 
     def post(self, url: str, body: str):
@@ -634,6 +640,9 @@ class Net:
                 data = resp.read().decode("utf-8", errors="replace")
                 return Ok(data)
         except (OSError, ValueError) as e:
+            close = getattr(e, "close", None)
+            if callable(close):
+                close()
             return Err(IoError("HTTP POST failed", str(e)))
 
 

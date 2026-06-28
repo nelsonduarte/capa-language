@@ -46,6 +46,10 @@ from ._fs_ceiling import (
     FsCeiling, FsPreopen, compute_fs_ceiling,
     compute_fs_ceiling_from_cir, mkdir_prefixes, resolve_fs_call,
 )
+from ._net_ceiling import (
+    NetCeiling, compute_net_ceiling, compute_net_ceiling_from_cir,
+    url_host,
+)
 
 __all__ = [
     "Module",
@@ -74,6 +78,10 @@ __all__ = [
     "compute_fs_ceiling_from_cir",
     "mkdir_prefixes",
     "resolve_fs_call",
+    "NetCeiling",
+    "compute_net_ceiling",
+    "compute_net_ceiling_from_cir",
+    "url_host",
     "compile",
     "compile_program",
     "compile_wat",

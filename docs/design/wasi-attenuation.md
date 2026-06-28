@@ -301,15 +301,48 @@ component virtualisation) and is marked as such in section 9.
 
 Phased, easiest mapping first.
 
-PHASE 1, Env and Net. Direct ceiling mapping: `main`'s Env ceiling to
-`wasi:cli/environment` env-set, `main`'s Net ceiling to the host's
-allowed-addresses. Env additionally closes the leak-by-default AT THE
-CEILING: a env-set of exactly the allowed keys means the guest cannot
-even observe a variable outside the ceiling, matching the fail-closed
-`Env.get` of the Python runtime
-(`capa/runtime/_capabilities.py:368-372`). In-program
+PHASE 1, Env and Net. Env maps `main`'s ceiling to the
+`wasi:cli/environment` env-set (a true Level 1 ceiling). Net was
+INTENDED to map `main`'s Net ceiling to the host's allowed-addresses,
+but the implemented reality is an ASYMMETRY (see NET STATUS below): the
+`wasi:http` host surface this `--wasi` mode reaches (wasmtime's
+`set-wasi-http` via the C-ABI) is ALLOW-ALL, with NO allowed-hosts
+configuration in this release, so there is no host ceiling to map onto.
+The Net ceiling is therefore enforced GUEST-SIDE (codegen, Level
+2-style), honest about the limitation, NOT a Level 1 host ceiling like
+Env / Fs. Env additionally closes the leak-by-default AT THE CEILING: a
+env-set of exactly the allowed keys means the guest cannot even observe
+a variable outside the ceiling, matching the fail-closed `Env.get` of
+the Python runtime (`capa/runtime/_capabilities.py:368-372`). In-program
 `restrict_to_keys` / `restrict_to` narrowings below the ceiling stay
 guest-side (Level 2).
+
+NET STATUS (2026-06-28): IMPLEMENTED for `Net.get` in the `--wasi` mode
+(Phase 1), GUEST-SIDE only. `Net.get` routes to `wasi:http`
+(`outgoing-handler.handle` + the outgoing-request / future-incoming-
+response / incoming-response / incoming-body resource chain) and
+`wasi:io` (`input-stream.blocking-read` for the body, `pollable.block`
+for the synchronous wait); the Ok(String) body is byte-identical to the
+Python `urlopen` oracle and the `capa:host` bridge, and `status >= 400`
+maps to Err to match the oracle's `HTTPError`. The ASYMMETRY with Fs /
+Env is the load-bearing honesty here: the Net ceiling is the set of
+HOSTS the program names as a string LITERAL in `net.get` (the static
+`NetCeiling`, `capa/ir/_net_ceiling.py`), and it is enforced by a
+COMPILER-GENERATED guest gate (`$Net_host_allowed`), NOT by the WASI
+host -- because wasmtime's `wasi:http` C-API is allow-all with no
+allowed-hosts surface in this release. A DYNAMIC `net.get` url is
+FAIL-CLOSED (the call site cannot split it into a wasi:http request, so
+it returns Err WITHOUT reaching the network), the same fail-closed
+policy a dynamic Fs path gets. So Net's ceiling is Level 2-style
+(compiler-proved + host-reinforced, not stock-host-enforced), in
+contrast to the Fs preopen and Env env-set Level 1 ceilings. The host
+links `wasi:http` (the C-ABI `add_wasi_http` + the obligatory
+`set_wasi_http`) ONLY when the program uses `Net.get`, so a non-Net
+program is a clean total deny. `Net.post` / `restrict_to` / `allows` are
+rejected at compile time under `--wasi` (Phases 2 and 3). Runtime
+enforcement of the Net ceiling under an ARBITRARY host depends on
+wasmtime exposing a `wasi:http` allowed-hosts configuration (or on
+component virtualisation); marked in section 9.
 
 ENV STATUS (2026-06-27): IMPLEMENTED for the `--wasi` mode. The Env
 ceiling is the set of keys `main` can read through `Env.get`, computed
@@ -450,6 +483,13 @@ Marked clearly as NOT achievable today:
 - Practical virtualisation of `wasi:filesystem` by sub-component, with
   per-call granularity, as a way to push Level 2 enforcement into a
   portable host.
+- Runtime enforcement of the NET ceiling (Phase 1) under an ARBITRARY
+  host. Today the `wasi:http` host surface this mode reaches
+  (`set-wasi-http`) is allow-all with no allowed-hosts configuration, so
+  the Net ceiling is guest-side (codegen) only. Promoting it to a Level 1
+  host ceiling needs wasmtime (or another host) to expose a
+  `wasi:http` outbound allowed-hosts / allowed-addresses policy the host
+  recipe can install from `main`'s static Net ceiling.
 
 Until then, maximum-guarantee per-call enforcement of fine attenuation
 remains Level 3, the Capa host.

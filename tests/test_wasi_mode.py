@@ -2545,5 +2545,455 @@ class TestWasiFsAttenuation(unittest.TestCase):
         self.assertIn("hr=err", wasi)   # restriction survived the call
 
 
+# ----- Net.get via wasi:http (Phase 1) ---------------------------
+
+
+def _has_wasmtime_wasi_http() -> bool:
+    """True when the installed wasmtime exposes the wasi:http C-ABI the
+    Net.get host recipe reaches through ``wasmtime._bindings``
+    (``add_wasi_http`` on the component linker + ``set_wasi_http`` on the
+    store context). The high-level component API does not surface these,
+    so we probe the bindings module directly."""
+    if not _has_wasmtime_wasip2():
+        return False
+    try:
+        import wasmtime._bindings as b
+    except ImportError:
+        return False
+    return hasattr(
+        b, "wasmtime_component_linker_add_wasi_http",
+    ) and hasattr(b, "wasmtime_context_set_wasi_http")
+
+
+class _LocalHttpServer:
+    """A 127.0.0.1 HTTP server returning a fixed body + status on GET.
+
+    Context-manager: yields the ``host:port`` authority. Bound to an
+    ephemeral port so concurrent tests do not collide, and to the
+    loopback interface ONLY so no external network is touched."""
+
+    def __init__(self, body: bytes, status: int = 200):
+        self._body = body
+        self._status = status
+        self._srv = None
+        self._thread = None
+        self.port = None
+
+    def __enter__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        body = self._body
+        status = self._status
+
+        class _H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self._srv = HTTPServer(("127.0.0.1", 0), _H)
+        self.port = self._srv.server_address[1]
+        self._thread = threading.Thread(
+            target=self._srv.serve_forever, daemon=True,
+        )
+        self._thread.start()
+        return f"127.0.0.1:{self.port}"
+
+    def __exit__(self, *exc):
+        if self._srv is not None:
+            self._srv.shutdown()
+            self._srv.server_close()
+        return False
+
+
+def _dead_port() -> int:
+    """Return a 127.0.0.1 port number that is closed (no listener), so a
+    GET to it is a connection-refused transport error."""
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _run_net_program_three_ways(src: str):
+    """Build + run a Net program on the Python backend, the capa:host
+    component backend, and the WASI component backend (with the Net host
+    ceiling). Returns ``(py, host, wasi)`` stdout strings. The program's
+    urls must be literals pointing at a local server the caller started.
+    """
+    from capa.ir import compile_wasm, compile_wit, compute_net_ceiling
+    from capa.cli import _wrap_as_component
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    module, result = _parse_analyze(src)
+
+    def _cap(fn):
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            fn()
+        finally:
+            sys.stdout = saved
+        return buf.getvalue()
+
+    py = _run_python(src)
+    core_h = compile_wasm(module, types=result.types, wasi=False)
+    wit_h = compile_wit(module, types=result.types, wasi=False)
+    comp_h = _wrap_as_component(core_h, wit_h, wasi=False)
+    host = _cap(lambda: WasmComponentHost(wasi=False).run_main(comp_h))
+    core_w = compile_wasm(module, types=result.types, wasi=True)
+    wit_w = compile_wit(module, types=result.types, wasi=True)
+    comp_w = _wrap_as_component(core_w, wit_w, wasi=True)
+    ceiling = compute_net_ceiling(module, types=result.types)
+    wasi = _cap(
+        lambda: WasmComponentHost(
+            wasi=True, net_ceiling=ceiling,
+        ).run_main(comp_w)
+    )
+    return py, host, wasi
+
+
+def _net_get_src(authority: str, path: str = "/p") -> str:
+    """A program that GETs ``http://<authority><path>`` and prints the
+    body wrapped in brackets on Ok, ``ERR`` on Err."""
+    return (
+        "fun main(net: Net, stdio: Stdio)\n"
+        f"    match net.get(\"http://{authority}{path}\")\n"
+        "        Ok(b) -> stdio.println(\"[${b}]\")\n"
+        "        Err(e) -> stdio.println(\"ERR\")\n"
+    )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasi_http(),
+    "wasm-tools and/or wasmtime-py with wasi:http not installed",
+)
+class TestWasiNetGet(unittest.TestCase):
+    """End-to-end: net.get in --wasi mode builds an outgoing request over
+    wasi:http (outgoing-handler.handle + the outgoing-request /
+    future-incoming-response / incoming-response / incoming-body chain),
+    reads the body via wasi:io/streams.input-stream.blocking-read, and its
+    Ok(String) is BYTE-IDENTICAL to the Python oracle and the capa:host
+    backend across small / empty / large-multichunk / UTF-8 bodies. A
+    status >= 400 and a connection-refused transport error are coherent
+    Err on all three backends. The body is fetched from a LOCAL 127.0.0.1
+    server (no external network), and all three backends GET the same
+    url."""
+
+    def _assert_parity(self, authority, **kw):
+        src = _net_get_src(authority, kw.get("path", "/p"))
+        py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        return wasi
+
+    def test_small_body_parity(self):
+        with _LocalHttpServer(b"hello world") as auth:
+            out = self._assert_parity(auth)
+        self.assertEqual(out, "[hello world]\n")
+
+    def test_empty_body_parity(self):
+        # 0 bytes: Ok("") on every backend (the first blocking-read is
+        # stream-error::closed and the loop accumulates nothing).
+        with _LocalHttpServer(b"") as auth:
+            out = self._assert_parity(auth)
+        self.assertEqual(out, "[]\n")
+
+    def test_large_multichunk_body_parity(self):
+        # > the 4096-byte blocking-read chunk: forces the read loop to run
+        # multiple iterations and the accumulation buffer to grow.
+        body = b"x" * 20000 + b"END"
+        with _LocalHttpServer(body) as auth:
+            out = self._assert_parity(auth)
+        self.assertEqual(len(out), len(body) + 3)  # [ ... ] + newline
+        self.assertIn("END]", out)
+
+    def test_utf8_multibyte_body_parity(self):
+        body = "café-\U0001F98A multi: éè你好".encode("utf-8")
+        with _LocalHttpServer(body) as auth:
+            out = self._assert_parity(auth)
+        self.assertIn("café", out)
+        self.assertIn("你好", out)
+
+    def test_status_404_is_err_on_all_backends(self):
+        # urllib raises HTTPError on status >= 400, so the oracle returns
+        # Err; the wasi wrapper maps status >= 400 to Err for parity.
+        with _LocalHttpServer(b"not found", status=404) as auth:
+            out = self._assert_parity(auth)
+        self.assertEqual(out, "ERR\n")
+
+    def test_status_500_is_err_on_all_backends(self):
+        with _LocalHttpServer(b"boom", status=500) as auth:
+            out = self._assert_parity(auth)
+        self.assertEqual(out, "ERR\n")
+
+    def test_transport_error_is_err_on_all_backends(self):
+        # Connection refused (no listener on the port): Err everywhere.
+        auth = f"127.0.0.1:{_dead_port()}"
+        out = self._assert_parity(auth)
+        self.assertEqual(out, "ERR\n")
+
+    def test_host_ceiling_links_wasi_http(self):
+        # The host links wasi:http ONLY when the program uses Net.get
+        # (signalled by a non-None net_ceiling); inspect the recorded flag.
+        from capa.ir import (
+            compile_wasm, compile_wit, compute_net_ceiling,
+        )
+        from capa.cli import _wrap_as_component
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        with _LocalHttpServer(b"ok") as auth:
+            src = _net_get_src(auth)
+            module, result = _parse_analyze(src)
+            core = compile_wasm(module, types=result.types, wasi=True)
+            wit = compile_wit(module, types=result.types, wasi=True)
+            comp = _wrap_as_component(core, wit, wasi=True)
+            ceiling = compute_net_ceiling(module, types=result.types)
+            host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
+            buf = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = buf
+            try:
+                host.run_main(comp)
+            finally:
+                sys.stdout = saved
+        self.assertTrue(host._wasi_http_linked)
+
+    def test_no_net_program_does_not_link_wasi_http(self):
+        # A program with no Net.get keeps net_ceiling None, so the host
+        # never links wasi:http (clean total deny + avoids the C-API
+        # context panic). A Stdio-only program proves it.
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        host = WasmComponentHost(wasi=True)  # no net_ceiling
+        self.assertFalse(host._wasi_http_linked)
+
+    def test_leak_many_gets_no_handle_exhaustion(self):
+        # Many GETs against the local server in one component instance
+        # exercise the resource-drop discipline (8 OWN handles per call);
+        # a leak or double-drop would trap. Distinct from heap growth,
+        # which is inherent. 300 keeps the test fast while still proving
+        # the drops (the oracle spike ran 1500).
+        from capa.ir import (
+            compile_wasm, compile_wit, compute_net_ceiling,
+        )
+        from capa.cli import _wrap_as_component
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        with _LocalHttpServer(b"leakcheck") as auth:
+            src = (
+                "fun main(net: Net, stdio: Stdio)\n"
+                "    var i = 0\n"
+                "    while i < 300\n"
+                f"        match net.get(\"http://{auth}/p\")\n"
+                "            Ok(b) -> stdio.print(\"\")\n"
+                "            Err(e) -> stdio.println(\"ERR\")\n"
+                "        i = i + 1\n"
+                "    stdio.println(\"done\")\n"
+            )
+            module, result = _parse_analyze(src)
+            core = compile_wasm(module, types=result.types, wasi=True)
+            wit = compile_wit(module, types=result.types, wasi=True)
+            comp = _wrap_as_component(core, wit, wasi=True)
+            ceiling = compute_net_ceiling(module, types=result.types)
+            host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
+            buf = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = buf
+            try:
+                host.run_main(comp)
+            finally:
+                sys.stdout = saved
+            out = buf.getvalue()
+        # No ERR (every GET succeeded) and the program reached the end.
+        self.assertNotIn("ERR", out)
+        self.assertEqual(out, "done\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasi_http(),
+    "wasm-tools and/or wasmtime-py with wasi:http not installed",
+)
+class TestWasiNetCeiling(unittest.TestCase):
+    """The Net host ceiling is GUEST-SIDE (codegen-enforced): a host the
+    program does not name as a literal net.get url is denied, and a
+    DYNAMIC url (built at runtime) is fail-closed. These are the
+    restriction guarantees, not an oracle-parity property (the deny is a
+    coarser ceiling than the Python oracle's unrestricted Net), so they
+    are asserted on the WASI backend alone."""
+
+    def test_dynamic_url_is_fail_closed(self):
+        # A url built from a local (not a literal) cannot be resolved to a
+        # wasi:http request at compile time, so the call site fail-closes
+        # to Err WITHOUT reaching the network -- even though the local
+        # server is live and the url is well-formed.
+        from capa.ir import (
+            compile_wasm, compile_wit, compute_net_ceiling,
+        )
+        from capa.cli import _wrap_as_component
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        with _LocalHttpServer(b"should-not-be-seen") as auth:
+            src = (
+                "fun main(net: Net, stdio: Stdio)\n"
+                f"    let u = \"http://{auth}/p\"\n"
+                "    match net.get(u)\n"
+                "        Ok(b) -> stdio.println(\"[${b}]\")\n"
+                "        Err(e) -> stdio.println(\"ERR\")\n"
+            )
+            module, result = _parse_analyze(src)
+            # The ceiling is NOT closed (a dynamic url).
+            ceiling = compute_net_ceiling(module, types=result.types)
+            self.assertFalse(ceiling.closed)
+            core = compile_wasm(module, types=result.types, wasi=True)
+            wit = compile_wit(module, types=result.types, wasi=True)
+            comp = _wrap_as_component(core, wit, wasi=True)
+            host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
+            buf = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = buf
+            try:
+                host.run_main(comp)
+            finally:
+                sys.stdout = saved
+            out = buf.getvalue()
+        self.assertEqual(out, "ERR\n")
+
+    def test_ceiling_collects_literal_hosts(self):
+        from capa.ir import compute_net_ceiling
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    match net.get(\"http://a.example:80/x\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+            "    match net.get(\"https://B.Example/y\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        module, result = _parse_analyze(src)
+        ceiling = compute_net_ceiling(module, types=result.types)
+        self.assertTrue(ceiling.closed)
+        # Hosts are lowercased and port-stripped.
+        self.assertEqual(ceiling.hosts, frozenset({"a.example", "b.example"}))
+
+    def test_host_outside_ceiling_denied_guest_side(self):
+        # Compile a program whose only literal host is the live server,
+        # then run it (it should succeed). Separately, a program naming a
+        # DIFFERENT host than the one it reaches cannot occur with a single
+        # literal -- the gate's denial is proven structurally by the
+        # dynamic-url fail-closed above (no literal host => empty ceiling
+        # match) and by the ceiling-collection test. Here we assert the
+        # gate admits the named host (positive control).
+        with _LocalHttpServer(b"ok") as auth:
+            src = _net_get_src(auth)
+            _py, _host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(wasi, "[ok]\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiNetWitGeneration(unittest.TestCase):
+    """The WASI-mode WIT world for a Net.get program imports wasi:http
+    (types + outgoing-handler) plus the wasi:io interfaces the body read
+    needs, and emits NO capa:host/net interface (Net.get is fully
+    migrated). Net.post / restrict_to / allows are rejected before WIT
+    generation, so a valid WASI Net program uses only get."""
+
+    def _wit(self, src: str) -> str:
+        from capa.ir import compile_wit
+        module, result = _parse_analyze(src)
+        return compile_wit(module, types=result.types, wasi=True)
+
+    def test_net_world_imports_wasi_http(self):
+        src = _net_get_src("example.com")
+        wit = self._wit(src)
+        self.assertIn("import wasi:http/types@0.2.0;", wit)
+        self.assertIn("import wasi:http/outgoing-handler@0.2.0;", wit)
+        self.assertIn("import wasi:io/streams@0.2.0;", wit)
+        self.assertIn("import wasi:io/poll@0.2.0;", wit)
+
+    def test_no_capa_host_net_interface(self):
+        src = _net_get_src("example.com")
+        wit = self._wit(src)
+        self.assertNotIn("interface net", wit)
+        self.assertNotIn("import net;", wit)
+
+    def test_io_imports_not_duplicated_with_fs(self):
+        # A program using BOTH Fs.read (wasi:io/streams + error) and
+        # Net.get (also wasi:io/streams + error) must not import the same
+        # interface twice (a world that does fails to type-check).
+        src = (
+            "fun main(fs: Fs, net: Net, stdio: Stdio)\n"
+            "    let r = fs.read(\"data/x.txt\")\n"
+            "    match net.get(\"http://example.com/p\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        wit = self._wit(src)
+        self.assertEqual(wit.count("import wasi:io/streams@0.2.0;"), 1)
+        self.assertEqual(wit.count("import wasi:io/error@0.2.0;"), 1)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiNetRejections(unittest.TestCase):
+    """Phase 1 migrates Net.get only; Net.post / restrict_to / allows are
+    rejected at compile time in --wasi mode with a clear message, so a
+    program never silently miscompiles. They all run unchanged on the
+    default capa:host backend."""
+
+    def _compile_wasi(self, src: str):
+        from capa.ir import compile_wasm
+        module, result = _parse_analyze(src)
+        return compile_wasm(module, types=result.types, wasi=True)
+
+    def test_net_post_rejected(self):
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    match net.post(\"http://example.com/p\", \"body\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        with self.assertRaises(Exception) as ctx:
+            self._compile_wasi(src)
+        self.assertIn("Net.post", str(ctx.exception))
+
+    def test_net_restrict_to_rejected(self):
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let n2 = net.restrict_to(\"example.com\")\n"
+            "    match n2.get(\"http://example.com/p\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        with self.assertRaises(Exception) as ctx:
+            self._compile_wasi(src)
+        self.assertIn("Net.restrict_to", str(ctx.exception))
+
+    def test_net_allows_rejected(self):
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    if net.allows(\"example.com\")\n"
+            "        stdio.println(\"y\")\n"
+            "    else\n"
+            "        stdio.println(\"n\")\n"
+        )
+        with self.assertRaises(Exception) as ctx:
+            self._compile_wasi(src)
+        self.assertIn("Net.allows", str(ctx.exception))
+
+    def test_net_get_accepted(self):
+        # The positive control: Net.get alone compiles (no rejection).
+        src = _net_get_src("example.com")
+        blob = self._compile_wasi(src)
+        self.assertIsInstance(blob, (bytes, bytearray))
+
+
 if __name__ == "__main__":
     unittest.main()

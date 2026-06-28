@@ -932,6 +932,19 @@ _EXCLUDED: dict[str, str] = {
         "chaining/intersection, isolation, the unrestricted root, and the "
         "cross-function-boundary restriction survival."
     ),
+    "wasi_net_get.capa": (
+        "Experimental --wasi mode demo: Net.get via wasi:http "
+        "(outgoing-handler.handle + the outgoing-request / future-incoming-"
+        "response / incoming-response / incoming-body chain) + wasi:io/streams "
+        "blocking-read body loop + the guest-side host ceiling. The demo GETs "
+        "a live HTTP server (its literal url points at 127.0.0.1:8080), which "
+        "the auto-list parity harness does not run, so there is no fixed "
+        "byte-equality reference here. Covered by the dedicated TestWasiNetGet "
+        "tests in tests/test_wasi_mode.py, which start a controlled local "
+        "127.0.0.1 server (small / empty / large-multichunk / UTF-8 bodies / "
+        "404 / 500 / connection-refused) and assert three-backend byte parity "
+        "(Python urllib oracle == capa:host == WASI)."
+    ),
 }
 
 

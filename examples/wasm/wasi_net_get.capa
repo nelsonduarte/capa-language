@@ -1,0 +1,60 @@
+// Experimental WASI mode demo: Net.get via wasi:http (Phase 1)
+// (capa --wasm --component --wasi).
+//
+// Migrates Net.get to the canonical WASI Preview 2 outbound HTTP chain:
+//
+//   net.get(url) -> fields.new()
+//                -> outgoing-request.new(fields)
+//                -> set-method(GET) / set-scheme / set-authority /
+//                   set-path-with-query   (resolved from the LITERAL url
+//                                          at compile time)
+//                -> outgoing-handler.handle(request)        [wasi:http]
+//                -> future-incoming-response.subscribe + pollable.block
+//                   (synchronous wait)                      [wasi:io/poll]
+//                -> future-incoming-response.get  (the triple-result lift:
+//                   option<result<result<incoming-response, error-code>>>)
+//                -> incoming-response.status  (status >= 400 -> Err,
+//                   PARITY with the urllib oracle which raises HTTPError)
+//                -> incoming-response.consume -> incoming-body.stream
+//                -> input-stream.blocking-read LOOP, accumulating chunks
+//                   until stream-error::closed (EOF)        [wasi:io/streams]
+//                -> Ok(String) (the UTF-8-decoded body)
+//                -> every OWN resource handle (outgoing-request /
+//                   outgoing-body / future / pollable / incoming-response /
+//                   incoming-body / input-stream, and any carried error)
+//                   is dropped on every exit path.
+//
+// The Ok(String) body is byte-identical to the Python backend's
+// urlopen(url).read().decode("utf-8") and to the capa:host bridge.
+// A status >= 400 or a transport failure is an Err(IoError). Stdio stays
+// on capa:host -- the hybrid coexistence this mode validates.
+// See docs/design/wasi_mode.md.
+//
+// THE NET CEILING IS GUEST-SIDE (the honest asymmetry). Unlike the Fs
+// preopen ceiling and the Env env-set ceiling -- both Level 1, imposed by
+// the WASI host at instantiate -- wasmtime's wasi:http C-API is ALLOW-ALL
+// (no allowed-hosts surface in this release), so there is no host ceiling
+// to map onto. The compiler instead collects the HOSTS of the LITERAL
+// urls passed to net.get and the guest wrapper refuses any host the
+// program never names (codegen-enforced). A DYNAMIC url (built at runtime)
+// is fail-closed: it cannot be split into a wasi:http request at compile
+// time, so the call returns Err WITHOUT reaching the network. A program
+// that needs dynamic Net hosts runs unchanged on the default capa:host
+// backend (drop --wasi). Net.post / restrict_to / allows are NOT migrated
+// in Phase 1; they are rejected at compile time under --wasi.
+//
+// Run against a LOCAL server (no external network) -- e.g. start a tiny
+// HTTP server on 127.0.0.1:8080 returning a known body, then:
+//
+//   capa --wasm --component --wasi --run examples/wasm/wasi_net_get.capa
+//
+// (Adjust the literal url below to the host:port your server listens on.)
+
+fun main(net: Net, stdio: Stdio)
+    let r = net.get("http://127.0.0.1:8080/hello")
+    match r
+        Ok(body) -> stdio.println("get ok, body:\n${body}")
+        Err(e) -> stdio.println("get failed: ${e}")
+    // A host the program never names as a literal would be denied by the
+    // guest-side ceiling; here every net.get url is a literal, so the
+    // ceiling is exactly { 127.0.0.1 }.

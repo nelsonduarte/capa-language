@@ -172,6 +172,16 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     # provides no such function on the wasi path).
     ("Fs", "restrict_to"),
     ("Fs", "allows"),
+    # Net.get migration (2026-06-28, Phase 1): get routes to wasi:http
+    # (outgoing-handler.handle + the outgoing-request / future-incoming-
+    # response / incoming-response / incoming-body resource chain) plus
+    # wasi:io/streams (input-stream.blocking-read loop) and wasi:io/poll
+    # (the synchronous pollable.block). Net.post / restrict_to / allows
+    # are NOT migrated in Phase 1; they are rejected at compile time in
+    # --wasi by ``_validate_wasi_caps`` (Phases 2 and 3 later). Listed
+    # here so the import loop does NOT emit a capa:host/net import for
+    # ``get`` (the host serves it through wasi:http instead).
+    ("Net", "get"),
 })
 
 
@@ -186,6 +196,16 @@ _WASI_FS_TYPES = "wasi:filesystem/types@0.2.0"
 _WASI_FS_PREOPENS = "wasi:filesystem/preopens@0.2.0"
 _WASI_IO_STREAMS = "wasi:io/streams@0.2.0"
 _WASI_IO_ERROR = "wasi:io/error@0.2.0"
+_WASI_IO_POLL = "wasi:io/poll@0.2.0"
+_WASI_HTTP_TYPES = "wasi:http/types@0.2.0"
+_WASI_HTTP_HANDLER = "wasi:http/outgoing-handler@0.2.0"
+
+# Net methods this WASI increment migrates (Phase 1: get only).
+_WASI_NET_MIGRATED: frozenset[str] = frozenset({"get"})
+
+# The size, in bytes, of each blocking-read chunk request on the Net
+# input-stream. One OS page; mirrors the Fs.read chunk.
+_WASI_NET_READ_CHUNK = 4096
 
 # Fs metadata methods this WASI increment migrates to wasi:filesystem.
 _WASI_FS_METADATA: frozenset[str] = frozenset({"exists", "is_dir", "mkdir"})
@@ -284,6 +304,18 @@ class _WasiEmissionMixin:
                     f"Fs.{method} is not supported in the WASI mode; "
                     f"use the default capa:host backend (drop --wasi)."
                 )
+            if cap == "Net" and method not in _WASI_NET_MIGRATED:
+                # Phase 1 migrates Net.get only. Net.post (a second
+                # touch-point that adds an outgoing-body write loop),
+                # Net.restrict_to and Net.allows (the fine host-set
+                # attenuators, a guest-side Level 2 layer) are deferred to
+                # Phases 2 and 3; reject them loudly so a program never
+                # silently miscompiles.
+                raise WasmEmissionError(
+                    f"Net.{method} is not supported in the WASI mode "
+                    f"yet (Phase 1 migrates Net.get only); use the "
+                    f"default capa:host backend (drop --wasi)."
+                )
         # Fail-closed proof obligation: if the program uses a migrated
         # Fs op (metadata or the stream-bearing read) but its static
         # path ceiling is NOT closed (a dynamic path), there is no
@@ -340,6 +372,18 @@ class _WasiEmissionMixin:
             or ("Env", "restrict_to_keys") in self._used_caps
             or ("Env", "allows") in self._used_caps
         )
+
+    def _wasi_net_get_needs_str_eq(self) -> bool:
+        """True when ``--wasi`` is active and the program reaches
+        ``Net.get``, whose guest-side host gate (``$Net_host_allowed``)
+        scans the static ceiling hosts via ``$str_eq``. The default path
+        routes the host membership through the capa:host bridge, so this
+        gate is WASI-only; it ensures ``$str_eq`` is emitted even when the
+        program uses no other String-equality operation. (An empty Net
+        ceiling emits a gate with no ``$str_eq`` call, but gating on
+        Net.get being present is simpler and the unused helper is a few
+        harmless bytes.)"""
+        return self._wasi and ("Net", "get") in self._used_caps
 
     def _wasi_fs_list_dir_needs_str_cmp(self) -> bool:
         """True when ``--wasi`` is active and the program reaches
@@ -577,6 +621,158 @@ class _WasiEmissionMixin:
                 f'"[resource-drop]output-stream" '
                 f'(func $wasi_io_drop_output_stream (param i32)))'
             )
+        # Net.get (2026-06-28, Phase 1): the wasi:http outbound GET chain.
+        # All core-ABI shapes were validated by the oracle spike against
+        # wasm-tools 1.249.0 / wasmtime 45.0.0 (the receipt + the eight
+        # OWN resources + the triple-result lift; see ``$Net_get``). A
+        # ``result`` with no payload type lowers to a flat i32 (the set-*
+        # methods); a ``result<own<T>, error-code>`` lowers indirect and
+        # is 8-ALIGNED (error-code carries an option<u64>), so the Ok
+        # value sits at ret+8, not ret+4; a ``result<own<T>, _>`` (body /
+        # consume / stream) is 4-aligned with the value at ret+4.
+        if ("Net", "get") in used:
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" "[constructor]fields" '
+                f'(func $wasi_http_fields_new (result i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[constructor]outgoing-request" '
+                f'(func $wasi_http_request_new (param i32) (result i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]outgoing-request.set-method" '
+                f'(func $wasi_http_set_method '
+                f'(param i32) (param i32) (param i32) (param i32) '
+                f'(result i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]outgoing-request.set-scheme" '
+                f'(func $wasi_http_set_scheme '
+                f'(param i32) (param i32) (param i32) (param i32) '
+                f'(param i32) (result i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]outgoing-request.set-authority" '
+                f'(func $wasi_http_set_authority '
+                f'(param i32) (param i32) (param i32) (param i32) '
+                f'(result i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]outgoing-request.set-path-with-query" '
+                f'(func $wasi_http_set_path '
+                f'(param i32) (param i32) (param i32) (param i32) '
+                f'(result i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]outgoing-request.body" '
+                f'(func $wasi_http_request_body (param i32) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[static]outgoing-body.finish" '
+                f'(func $wasi_http_body_finish '
+                f'(param i32) (param i32) (param i32) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_HANDLER}" "handle" '
+                f'(func $wasi_http_handle '
+                f'(param i32) (param i32) (param i32) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]future-incoming-response.subscribe" '
+                f'(func $wasi_http_future_subscribe '
+                f'(param i32) (result i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_IO_POLL}" "[method]pollable.block" '
+                f'(func $wasi_io_pollable_block (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]future-incoming-response.get" '
+                f'(func $wasi_http_future_get (param i32) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]incoming-response.status" '
+                f'(func $wasi_http_response_status '
+                f'(param i32) (result i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]incoming-response.consume" '
+                f'(func $wasi_http_response_consume '
+                f'(param i32) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[method]incoming-body.stream" '
+                f'(func $wasi_http_body_stream (param i32) (param i32)))'
+            )
+            # input-stream.blocking-read (shared with Fs.read's import name
+            # space only if Fs.read is also used; emit it here when Net.get
+            # is used but Fs.read is not, so the symbol always exists).
+            if ("Fs", "read") not in used:
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[method]input-stream.blocking-read" '
+                    f'(func $wasi_io_blocking_read '
+                    f'(param i32) (param i64) (param i32)))'
+                )
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[resource-drop]input-stream" '
+                    f'(func $wasi_io_drop_input_stream (param i32)))'
+                )
+            # io/error drop, shared with Fs.read / Fs.write; emit here only
+            # if neither imported it.
+            if ("Fs", "read") not in used and ("Fs", "write") not in used:
+                self._write(
+                    f'(import "{_WASI_IO_ERROR}" "[resource-drop]error" '
+                    f'(func $wasi_io_drop_error (param i32)))'
+                )
+            # OWN-resource drops for the http chain (the preopen-style
+            # roots have no analogue here -- every http resource is owned
+            # and dropped). outgoing-request is CONSUMED by handle and
+            # outgoing-body by finish, so neither needs a drop on the
+            # success path; but a failure BEFORE the consuming call must
+            # drop them, so both drops are imported.
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[resource-drop]outgoing-request" '
+                f'(func $wasi_http_drop_request (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[resource-drop]outgoing-body" '
+                f'(func $wasi_http_drop_outgoing_body (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[resource-drop]future-incoming-response" '
+                f'(func $wasi_http_drop_future (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_IO_POLL}" "[resource-drop]pollable" '
+                f'(func $wasi_io_drop_pollable (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[resource-drop]incoming-response" '
+                f'(func $wasi_http_drop_response (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_HTTP_TYPES}" '
+                f'"[resource-drop]incoming-body" '
+                f'(func $wasi_http_drop_incoming_body (param i32)))'
+            )
 
     def _emit_wasi_wrappers(self) -> None:
         """Emit the ``$Cap_method`` adapter functions that bridge the
@@ -642,6 +838,11 @@ class _WasiEmissionMixin:
             self._emit_wasi_fs_write_wrapper()
         if ("Fs", "list_dir") in used:
             self._emit_wasi_fs_list_dir_wrapper()
+        # Net.get (2026-06-28, Phase 1): the guest-side host ceiling gate
+        # plus the wasi:http GET chain wrapper.
+        if ("Net", "get") in used:
+            self._emit_wasi_net_host_allowed_helper()
+            self._emit_wasi_net_get_wrapper()
 
     # ----- adapter wrappers -------------------------------------
 
@@ -2781,6 +2982,485 @@ class _WasiEmissionMixin:
         Result DISCRIMINANT (is_err), as the read / write / metadata / Net
         error paths already assert. ``$ret_area`` is in scope (the
         wrapper's trailing param)."""
+        self._write("local.get $ret_area")
+        self._write("i32.const 1")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_off}")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_len}")
+        self._write("i32.store offset=8")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=12")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=16")
+
+
+    # ----- Net.get via wasi:http (Phase 1) -----------------------
+
+    def _emit_wasi_net_host_allowed_helper(self) -> None:
+        """``$Net_host_allowed (host_ptr i32, host_len i32) -> i32`` ->
+        1 iff ``host`` is in the program's static Net ceiling.
+
+        The GUEST-SIDE host ceiling (codegen-enforced, the honest Net
+        guarantee). Unlike Fs preopens / Env env-set -- both Level 1,
+        imposed by the WASI host at instantiate -- wasmtime's wasi:http
+        C-API (``set-wasi-http``) is ALLOW-ALL with no allowed-hosts
+        surface in this release, so there is no host ceiling to map onto.
+        The ceiling is enforced HERE, in compiler-generated guest code:
+        the helper scans the set of hosts the program names as a string
+        LITERAL in ``net.get`` (the static ``NetCeiling.hosts``), each a
+        data-segment literal interned up front, and returns 1 on the first
+        ``$str_eq`` match, 0 if none match.
+
+        A DYNAMIC ``net.get`` url contributes no literal host, so its host
+        is never in this set and the call is denied at runtime
+        (fail-closed), matching the Fs dynamic-path fail-closed policy (a
+        wrongly-admitted host is real outbound authority). An EMPTY ceiling
+        (only a dynamic ``net.get``) emits a helper that always returns 0,
+        denying every host."""
+        ceiling = self._net_ceiling
+        hosts = sorted(ceiling.hosts) if ceiling is not None else []
+        self._write(
+            "(func $Net_host_allowed (param $host_ptr i32) "
+            "(param $host_len i32) (result i32)"
+        )
+        self._indent += 1
+        for h in hosts:
+            off, length = self._intern_string(h)
+            self._write("local.get $host_ptr")
+            self._write("local.get $host_len")
+            self._write(f"i32.const {off}")
+            self._write(f"i32.const {length}")
+            self._write("call $str_eq")
+            self._write("if")
+            self._indent += 1
+            self._write("i32.const 1")
+            self._write("return")
+            self._indent -= 1
+            self._write("end")
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_net_get_wrapper(self) -> None:
+        """``$Net_get (handle, host_ptr, host_len, scheme, auth_ptr,
+        auth_len, path_ptr, path_len, ret_area)`` -> writes a
+        ``result<string, io-error>`` (20-byte canonical-ABI shape) into
+        ``ret_area``.
+
+        Matches the call shape ``_emit_wasi_net_get_call`` produces, so the
+        existing ``result_string_io_error`` materialiser lifts the result
+        into a Capa ``Result<String, IoError>`` unchanged, exactly as the
+        capa:host Net.get does. The url was split at the call site into its
+        HOST (the ceiling key), SCHEME (0 HTTP / 1 HTTPS), AUTHORITY
+        (host:port), and PATH-with-query (all compile-time literals); a
+        DYNAMIC url never reaches this wrapper (the call site fail-closes
+        directly).
+
+        GUEST-SIDE HOST GATE (codegen-enforced ceiling): consult
+        ``$Net_host_allowed(host)`` FIRST; a host not in the static ceiling
+        writes ``Err(IoError)`` and returns WITHOUT building any request --
+        the honest Net guarantee (wasi:http is allow-all host-side, so the
+        ceiling lives here).
+
+        wasi:http GET chain (validated end-to-end by the oracle spike
+        against wasm-tools 1.249.0 / wasmtime 45.0.0; the scratch offsets
+        are recorded in ``__init__._wasi_net_scratch_offset``):
+
+          1. fields.new() -> own<fields>.
+          2. outgoing-request.new(fields) [CONSUMES fields].
+          3. set-method(GET=0); set-scheme(some(scheme));
+             set-authority(some(authority));
+             set-path-with-query(some(path)). Each returns a flat
+             ``result`` i32 (no payload), dropped.
+          4. req.body() -> result<own<outgoing-body>> @S+0 (value @+4).
+          5. outgoing-body.finish(obody, none) -> result<_, ec> @S+8
+             [CONSUMES obody].
+          6. outgoing-handler.handle(req, none) ->
+             result<own<future>, ec> @S+16 [CONSUMES req]. The Ok value is
+             at @+8 (error-code forces 8-alignment). On Err: req + obody
+             already consumed -> write Err, return.
+          7. future.subscribe() -> own<pollable>; pollable.block();
+             drop pollable. Synchronous wait.
+          8. LOOP future.get() -> option<result<result<own<resp>, ec>>>
+             @S+32 (option disc @+0, outer result disc @+8, inner result
+             disc @+16, own<resp> @+24). none -> not ready: resubscribe,
+             block, drop pollable, retry. some + outer Err -> already
+             consumed -> Err. some + inner Err -> transport error -> Err.
+          9. resp.status(); if status >= 400 -> drop resp, write Err,
+             return (PARITY with the urllib oracle, which raises HTTPError
+             on status >= 400). Else consume() -> result<own<ibody>> @S+64
+             (value @+4); stream() -> result<own<istream>> @S+72 (@+4).
+         10. LOOP input-stream.blocking-read(CHUNK) ->
+             result<list<u8>, stream-error> @S+80, accumulating chunk bytes
+             into a geometrically-grown heap buffer (identical to Fs.read).
+             stream-error disc @+4: 1 == closed (EOF) -> break; 0 ==
+             last-operation-failed -> drop the carried error @+8, drop
+             stream + ibody + resp, write Err, return.
+         11. drop input-stream, incoming-body, incoming-response; write
+             Ok(String) = (buf, buf_len). The accumulated bytes are the raw
+             response body; the Capa String is UTF-8 by construction,
+             matching the oracle's ``resp.read().decode("utf-8")``.
+
+        RESOURCE DROPS fire on EVERY exit path so no OWN handle leaks and
+        none is dropped twice (the consuming calls -- outgoing-request by
+        handle, outgoing-body by finish -- are the only handles NOT
+        dropped, and only on the paths that reach them; the future is
+        dropped after ``get`` on every path that read it). Proven by a
+        1500-GET leak loop in the oracle spike with no handle
+        exhaustion."""
+        chunk = _WASI_NET_READ_CHUNK
+        S = self._wasi_net_scratch_offset
+        body_ret = S + 0
+        finish_ret = S + 8
+        handle_ret = S + 16
+        get_ret = S + 32
+        consume_ret = S + 64
+        stream_ret = S + 72
+        read_ret = S + 80
+        msg_off, msg_len = self._intern_string("HTTP GET failed")
+        self._write(
+            "(func $Net_get (param $handle i32) (param $host_ptr i32) "
+            "(param $host_len i32) (param $scheme i32) "
+            "(param $auth_ptr i32) (param $auth_len i32) "
+            "(param $path_ptr i32) (param $path_len i32) "
+            "(param $ret_area i32)"
+        )
+        self._indent += 1
+        for loc in ("$fields", "$req", "$obody", "$future", "$pollable",
+                    "$resp", "$ibody", "$stream", "$status", "$buf",
+                    "$buf_cap", "$buf_len", "$chunk_ptr", "$chunk_len",
+                    "$need", "$newcap", "$newbuf"):
+            self._write(f"(local {loc} i32)")
+        # Host gate.
+        self._write("local.get $host_ptr")
+        self._write("local.get $host_len")
+        self._write("call $Net_host_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Build the request.
+        self._write("call $wasi_http_fields_new")
+        self._write("local.set $fields")
+        self._write("local.get $fields")
+        self._write("call $wasi_http_request_new")
+        self._write("local.set $req")
+        self._write("local.get $req")
+        self._write("i32.const 0")
+        self._write("i32.const 0")
+        self._write("i32.const 0")
+        self._write("call $wasi_http_set_method")
+        self._write("drop")
+        self._write("local.get $req")
+        self._write("i32.const 1")
+        self._write("local.get $scheme")
+        self._write("i32.const 0")
+        self._write("i32.const 0")
+        self._write("call $wasi_http_set_scheme")
+        self._write("drop")
+        self._write("local.get $req")
+        self._write("i32.const 1")
+        self._write("local.get $auth_ptr")
+        self._write("local.get $auth_len")
+        self._write("call $wasi_http_set_authority")
+        self._write("drop")
+        self._write("local.get $req")
+        self._write("i32.const 1")
+        self._write("local.get $path_ptr")
+        self._write("local.get $path_len")
+        self._write("call $wasi_http_set_path")
+        self._write("drop")
+        # obody = req.body().value @body_ret+4.
+        self._write("local.get $req")
+        self._write(f"i32.const {body_ret}")
+        self._write("call $wasi_http_request_body")
+        self._write(f"i32.const {body_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $obody")
+        # finish(obody, none) [CONSUMES obody].
+        self._write("local.get $obody")
+        self._write("i32.const 0")
+        self._write("i32.const 0")
+        self._write(f"i32.const {finish_ret}")
+        self._write("call $wasi_http_body_finish")
+        # handle(req, none) [CONSUMES req].
+        self._write("local.get $req")
+        self._write("i32.const 0")
+        self._write("i32.const 0")
+        self._write(f"i32.const {handle_ret}")
+        self._write("call $wasi_http_handle")
+        self._write(f"i32.const {handle_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # future = handle_ret.value @+8.
+        self._write(f"i32.const {handle_ret}")
+        self._write("i32.load offset=8")
+        self._write("local.set $future")
+        # subscribe + block + drop, then loop get.
+        self._write("local.get $future")
+        self._write("call $wasi_http_future_subscribe")
+        self._write("local.set $pollable")
+        self._write("local.get $pollable")
+        self._write("call $wasi_io_pollable_block")
+        self._write("local.get $pollable")
+        self._write("call $wasi_io_drop_pollable")
+        self._write("(block $net_got")
+        self._indent += 1
+        self._write("(loop $net_poll")
+        self._indent += 1
+        self._write("local.get $future")
+        self._write(f"i32.const {get_ret}")
+        self._write("call $wasi_http_future_get")
+        self._write(f"i32.const {get_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $future")
+        self._write("call $wasi_http_future_subscribe")
+        self._write("local.set $pollable")
+        self._write("local.get $pollable")
+        self._write("call $wasi_io_pollable_block")
+        self._write("local.get $pollable")
+        self._write("call $wasi_io_drop_pollable")
+        self._write("br $net_poll")
+        self._indent -= 1
+        self._write("end")
+        self._write("br $net_got")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # outer result disc @get_ret+8 != 0 -> already consumed -> Err.
+        self._write(f"i32.const {get_ret}")
+        self._write("i32.load8_u offset=8")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $future")
+        self._write("call $wasi_http_drop_future")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # inner result disc @get_ret+16 != 0 -> transport error -> Err.
+        self._write(f"i32.const {get_ret}")
+        self._write("i32.load8_u offset=16")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $future")
+        self._write("call $wasi_http_drop_future")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # resp = own<incoming-response> @get_ret+24.
+        self._write(f"i32.const {get_ret}")
+        self._write("i32.load offset=24")
+        self._write("local.set $resp")
+        self._write("local.get $future")
+        self._write("call $wasi_http_drop_future")
+        # status >= 400 -> Err (parity with urllib HTTPError).
+        self._write("local.get $resp")
+        self._write("call $wasi_http_response_status")
+        self._write("local.set $status")
+        self._write("local.get $status")
+        self._write("i32.const 400")
+        self._write("i32.ge_u")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # consume -> result<own<incoming-body>> @consume_ret (value @+4).
+        self._write("local.get $resp")
+        self._write(f"i32.const {consume_ret}")
+        self._write("call $wasi_http_response_consume")
+        self._write(f"i32.const {consume_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"i32.const {consume_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $ibody")
+        # stream -> result<own<input-stream>> @stream_ret (value @+4).
+        self._write("local.get $ibody")
+        self._write(f"i32.const {stream_ret}")
+        self._write("call $wasi_http_body_stream")
+        self._write(f"i32.const {stream_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $ibody")
+        self._write("call $wasi_http_drop_incoming_body")
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"i32.const {stream_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $stream")
+        # Accumulation buffer.
+        self._write("i32.const 0")
+        self._write("call $alloc")
+        self._write("local.set $buf")
+        self._write("i32.const 0")
+        self._write("local.set $buf_cap")
+        self._write("i32.const 0")
+        self._write("local.set $buf_len")
+        # blocking-read loop.
+        self._write("(block $net_read_done")
+        self._indent += 1
+        self._write("(loop $net_read")
+        self._indent += 1
+        self._write("local.get $stream")
+        self._write(f"i64.const {chunk}")
+        self._write(f"i32.const {read_ret}")
+        self._write("call $wasi_io_blocking_read")
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $chunk_ptr")
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load offset=8")
+        self._write("local.set $chunk_len")
+        self._write("local.get $buf_len")
+        self._write("local.get $chunk_len")
+        self._write("i32.add")
+        self._write("local.set $need")
+        self._write("local.get $need")
+        self._write("local.get $buf_cap")
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $buf_cap")
+        self._write("i32.const 1")
+        self._write("i32.shl")
+        self._write("local.get $need")
+        self._write("i32.lt_u")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $need")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $buf_cap")
+        self._write("i32.const 1")
+        self._write("i32.shl")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $newcap")
+        self._write("local.get $newcap")
+        self._write("call $alloc")
+        self._write("local.set $newbuf")
+        self._write("local.get $newbuf")
+        self._write("local.get $buf")
+        self._write("local.get $buf_len")
+        self._write("memory.copy")
+        self._write("local.get $newbuf")
+        self._write("local.set $buf")
+        self._write("local.get $newcap")
+        self._write("local.set $buf_cap")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $buf")
+        self._write("local.get $buf_len")
+        self._write("i32.add")
+        self._write("local.get $chunk_ptr")
+        self._write("local.get $chunk_len")
+        self._write("memory.copy")
+        self._write("local.get $buf_len")
+        self._write("local.get $chunk_len")
+        self._write("i32.add")
+        self._write("local.set $buf_len")
+        self._write("br $net_read")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load offset=4")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load offset=8")
+        self._write("call $wasi_io_drop_error")
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_input_stream")
+        self._write("local.get $ibody")
+        self._write("call $wasi_http_drop_incoming_body")
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write("br $net_read_done")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # EOF: drop stream, ibody, resp.
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_input_stream")
+        self._write("local.get $ibody")
+        self._write("call $wasi_http_drop_incoming_body")
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        # Ok(String).
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write("local.get $buf")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write("local.get $buf_len")
+        self._write("i32.store offset=8")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_net_err(self, msg_off: int, msg_len: int) -> None:
+        """Write an ``Err(IoError)`` into ``$ret_area`` for the
+        ``result_string_io_error`` 20-byte shape: tag@0 = 1, message = the
+        interned fixed string (m_ptr@4, m_len@8), empty cause (c_ptr@12 =
+        0, c_len@16 = 0).
+
+        The message is fixed (``HTTP GET failed``) rather than the Python
+        oracle's transport-specific cause, which carries OS / URL bytes no
+        cross-backend comparison can reproduce; parity is on the Result
+        DISCRIMINANT (is_err), as the Fs read / write / metadata error
+        paths already assert. ``$ret_area`` is in scope (the wrapper's
+        trailing param)."""
         self._write("local.get $ret_area")
         self._write("i32.const 1")
         self._write("i32.store offset=0")

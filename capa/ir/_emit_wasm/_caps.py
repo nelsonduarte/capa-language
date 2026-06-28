@@ -460,6 +460,17 @@ class _CapDispatchMixin:
         if cap == "Fs" and method in ("exists", "is_dir"):
             self._emit_fs_bool_query_with_handle(instr, method)
             return
+        # WASI mode (2026-06-28, Phase 1): Net.get routes to the
+        # wasi:http guest wrapper, which builds the outgoing request from
+        # the url's compile-time-resolved scheme / authority / path and
+        # gates the host against the static Net ceiling guest-side. Checked
+        # BEFORE the capa:host Net branch so the same source compiles both
+        # ways. Net.post / restrict_to / allows are rejected by
+        # ``_validate_wasi_caps`` in --wasi (Phase 1), so they never reach
+        # this branch in WASI mode and stay on the capa:host path below.
+        if self._wasi and cap == "Net" and method == "get":
+            self._emit_wasi_net_get_call(instr)
+            return
         if cap == "Net" and indirect is not None:
             self._emit_net_method_with_handle(instr, method, indirect)
             return
@@ -931,6 +942,95 @@ class _CapDispatchMixin:
         self._write("local.tee $_ret_area")
         self._write(f"call $Net_{method}")
         self._emit_cap_indirect_materialise(ret_kind, instr.dst)
+
+    def _emit_wasi_net_get_call(self, instr: MethodCall) -> None:
+        """Emit ``net.get(url)`` in WASI mode (Phase 1).
+
+        wasi:http builds an ``outgoing-request`` from its component parts
+        (method / scheme / authority / path), not a single URL, so the
+        compiler splits a LITERAL url into ``(host, is_https, authority,
+        path_with_query)`` at compile time (``capa.ir._emit_wasm._net.
+        split_net_url``), interns each part, allocates the 20-byte
+        canonical-ABI ret area, and calls the ``$Net_get`` guest wrapper
+        with ``(handle, host, scheme, authority, path, ret_area)``,
+        reusing the shared ``result_string_io_error`` materialiser so the
+        lifted value is a ``Result<String, IoError>`` identical to the
+        capa:host Net.get.
+
+        A DYNAMIC url (a local / param / computed value) cannot be split
+        at compile time and so cannot become a wasi:http request. Rather
+        than reject the whole program at compile time, the call is
+        FAIL-CLOSED at the call site: an ``Err(IoError)`` is materialised
+        directly WITHOUT calling ``$Net_get`` (no request is built, no host
+        is reached). This matches the Net ceiling fail-closed policy (a
+        dynamic host is never in the static ceiling) and keeps the failure
+        a coherent ``Result`` on all three backends -- the oracle's
+        ``urlopen`` of an unreachable / dynamic host is likewise an Err.
+
+        ``$Net_get`` itself (in ``_wasi.py``) gates the host against the
+        static ceiling, builds the request, drives the synchronous poll,
+        reads the body via the input-stream loop, maps status >= 400 to
+        Err, and drops every OWN resource; this call site only resolves
+        the url and lifts the result. The receiver Net handle (0 =
+        unrestricted root in this mode) is pushed first for shape
+        uniformity with the other cap wrappers, though Phase 1 uses no
+        per-call Net attenuation."""
+        from .._net_ceiling import url_host  # noqa: F401 (parity reference)
+        from ._net import split_net_url
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Net.get expected 1 arg, got {len(instr.args)}"
+            )
+        arg = instr.args[0]
+        if arg.kind != "lit_str" or not isinstance(arg.literal, str):
+            # Dynamic url: fail-closed. Allocate the 20-byte ret area,
+            # write Err(IoError) directly, and lift it -- no $Net_get call,
+            # so no request is built and no host is reached. The Err
+            # message is the fixed ``HTTP GET failed`` interned up front.
+            msg_off, msg_len = self._intern_string("HTTP GET failed")
+            self._write("i32.const 20")
+            self._write("call $alloc")
+            self._write("local.set $_ret_area")
+            self._write("local.get $_ret_area")
+            self._write("i32.const 1")
+            self._write("i32.store offset=0")
+            self._write("local.get $_ret_area")
+            self._write(f"i32.const {msg_off}")
+            self._write("i32.store offset=4")
+            self._write("local.get $_ret_area")
+            self._write(f"i32.const {msg_len}")
+            self._write("i32.store offset=8")
+            self._write("local.get $_ret_area")
+            self._write("i32.const 0")
+            self._write("i32.store offset=12")
+            self._write("local.get $_ret_area")
+            self._write("i32.const 0")
+            self._write("i32.store offset=16")
+            self._emit_cap_indirect_materialise(
+                "result_string_io_error", instr.dst,
+            )
+            return
+        host, is_https, authority, path = split_net_url(arg.literal)
+        host_off, host_len = self._intern_string(host)
+        auth_off, auth_len = self._intern_string(authority)
+        path_off, path_len = self._intern_string(path)
+        scheme = 1 if is_https else 0
+        self._write("i32.const 20")
+        self._write("call $alloc")
+        self._write("local.set $_ret_area")
+        self._push_net_handle(instr.receiver)
+        self._write(f"i32.const {host_off}")
+        self._write(f"i32.const {host_len}")
+        self._write(f"i32.const {scheme}")
+        self._write(f"i32.const {auth_off}")
+        self._write(f"i32.const {auth_len}")
+        self._write(f"i32.const {path_off}")
+        self._write(f"i32.const {path_len}")
+        self._write("local.get $_ret_area")
+        self._write("call $Net_get")
+        self._emit_cap_indirect_materialise(
+            "result_string_io_error", instr.dst,
+        )
 
     # ---- slices 25.4 / 25.5 / 25.6 Db / Proc / Env / Clock helpers ----
 

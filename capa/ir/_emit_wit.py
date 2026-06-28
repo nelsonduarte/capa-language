@@ -676,6 +676,13 @@ def _emit_wit_wasi(
             continue
         if cap in ("Random", "Clock", "Env", "Fs"):
             continue
+        # Net in WASI mode (Phase 1) is fully migrated: ``get`` routes to
+        # wasi:http and ``post`` / ``restrict_to`` / ``allows`` are
+        # rejected by the Wasm emitter's ``_validate_wasi_caps`` before we
+        # get here, so a Net present in ``used`` carries no ``capa:host``
+        # net interface (mirroring Random / Clock / Env / Fs).
+        if cap == "Net":
+            continue
         lines.append(f"interface {cap.lower()} {{")
         gated = _METHODS_NEEDING_IO_ERROR.get(cap)
         emit_prelude = cap in _INTERFACE_TYPE_PRELUDE and (
@@ -737,12 +744,42 @@ def _emit_wit_wasi(
         if "read" in used["Fs"] or "write" in used["Fs"]:
             lines.append("  import wasi:io/streams@0.2.0;")
             lines.append("  import wasi:io/error@0.2.0;")
+    # Net.get (Phase 1) routes to wasi:http: outgoing-handler.handle
+    # builds + sends the request, types carries the outgoing-request /
+    # future-incoming-response / incoming-response / incoming-body chain,
+    # and the body is read via wasi:io/streams (input-stream.blocking-read)
+    # with a wasi:io/poll synchronous block and a wasi:io/error drop for a
+    # carried stream error. Import all four when Net.get is used.
+    if "Net" in used and "get" in used["Net"]:
+        lines.append("  import wasi:http/types@0.2.0;")
+        lines.append("  import wasi:http/outgoing-handler@0.2.0;")
+        # wasi:io/streams + wasi:io/error may already have been imported
+        # by Fs.read / Fs.write above; a world that imports the same
+        # interface twice is rejected by wasm-tools, so the trailing
+        # de-dup pass below removes the duplicate (the Net import lines are
+        # emitted unconditionally here and pruned if redundant).
+        lines.append("  import wasi:io/streams@0.2.0;")
+        lines.append("  import wasi:io/poll@0.2.0;")
+        lines.append("  import wasi:io/error@0.2.0;")
     # capa:host imports for the non-migrated caps (hybrid coexistence).
     for cap in sorted(used.keys()):
         if cap in _KNOWN_CAPABILITIES and cap not in (
-            "Random", "Clock", "Env", "Fs",
+            "Random", "Clock", "Env", "Fs", "Net",
         ):
             lines.append(f"  import {cap.lower()};")
+    # De-duplicate ``import`` lines (a wasi:io interface can be requested
+    # by both an Fs stream op and Net.get); a world importing the same
+    # interface twice fails to type-check. Order is preserved (first
+    # occurrence wins).
+    _seen: set[str] = set()
+    _deduped: list[str] = []
+    for ln in lines:
+        if ln.lstrip().startswith("import "):
+            if ln in _seen:
+                continue
+            _seen.add(ln)
+        _deduped.append(ln)
+    lines = _deduped
     if uses_panic:
         lines.append("  import panic;")
     main_cap_params = _main_handle_param_names(module)

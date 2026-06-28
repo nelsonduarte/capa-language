@@ -1539,9 +1539,11 @@ def _main_dispatch() -> int:
                 # path passes no ceiling and is unaffected.
                 env_ceiling = None
                 fs_ceiling = None
+                net_ceiling = None
                 if wasi_mode:
                     from capa.ir import (
                         compute_env_ceiling, compute_fs_ceiling,
+                        compute_net_ceiling, collect_used_capabilities,
                     )
                     env_ceiling = compute_env_ceiling(
                         module, types=result.types,
@@ -1557,11 +1559,25 @@ def _main_dispatch() -> int:
                     fs_ceiling = compute_fs_ceiling(
                         module, types=result.types,
                     )
+                    # WASI Net Phase 1 (2026-06-28): compute the static
+                    # Net host ceiling ONLY when the program uses Net.get.
+                    # Passing it to the host is the signal to link wasi:http
+                    # (the FFI receipt); a program with no Net.get keeps
+                    # net_ceiling None so wasi:http is never linked (a clean
+                    # total deny, and it avoids the C-API context panic).
+                    # The ceiling is enforced guest-side (codegen); the host
+                    # records it for inspection only.
+                    used_caps = collect_used_capabilities(module)
+                    if "get" in used_caps.get("Net", set()):
+                        net_ceiling = compute_net_ceiling(
+                            module, types=result.types,
+                        )
                 host = WasmComponentHost(
                     args=program_args,
                     wasi=wasi_mode,
                     env_ceiling=env_ceiling,
                     fs_ceiling=fs_ceiling,
+                    net_ceiling=net_ceiling,
                 )
                 host.run_main(component_blob)
             else:

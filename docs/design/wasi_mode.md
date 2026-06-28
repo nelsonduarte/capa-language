@@ -35,6 +35,7 @@ see the WAT) rewrites the migrated touch-points:
 | `Env.allows` | `capa:host/env.allows` (host handle table) | guest-side allow-list membership (no host) |
 | `Fs.restrict_to` | `capa:host/fs.restrict-to` (host handle table) | guest-side prefix allow-list union (no host) |
 | `Fs.allows` | `capa:host/fs.allows` (host handle table) | guest-side lexical prefix containment (no host) |
+| `Net.get` | `capa:host/net.get` (host handle table) | `wasi:http/outgoing-handler.handle` + the wasi:http request/response chain + `wasi:io/streams` body read |
 
 Every **other** capability the program uses (Stdio for printing the
 results, and anything else) stays on `capa:host`. The component
@@ -788,6 +789,115 @@ WASI) is asserted by `TestWasiFsAttenuation` in
 unrestricted root, and the **cross-function-boundary** restriction
 survival (a restricted Fs passed to a helper keeps its allow-list,
 because the `i32` pointer travels with the value).
+
+### Net.get via wasi:http (Phase 1)
+
+`Net.get` migrates to the canonical WASI Preview 2 outbound HTTP chain
+over `wasi:http` + `wasi:io`. It is the **first** touch-point that uses
+`wasi:http`, and the **largest** WASI increment to date (eight OWN
+resources, a synchronous poll, and a triple-nested result lift). The
+guest wrapper `$Net_get` (`capa/ir/_emit_wasm/_wasi.py`) runs, with the
+url split at the call site into its compile-time-resolved scheme /
+authority / path:
+
+1. `fields.new()` -> `outgoing-request.new(fields)` [**consumes**
+   `fields`].
+2. `set-method(GET)`, `set-scheme(some(scheme))`,
+   `set-authority(some(authority))`,
+   `set-path-with-query(some(path))`. Each returns a flat `result` i32
+   (no payload), dropped.
+3. `outgoing-request.body()` -> `result<own<outgoing-body>>`;
+   `outgoing-body.finish(obody, none)` [**consumes** `obody`].
+4. `outgoing-handler.handle(request, none)` ->
+   `result<own<future-incoming-response>, error-code>` [**consumes**
+   `request`]. The `error-code` variant carries an `option<u64>`, so the
+   result is **8-aligned** and the Ok value sits at ret+8, not ret+4.
+5. `future.subscribe()` -> `pollable.block()` (a **synchronous** wait;
+   `wasi:io/poll`), then **loop** `future.get()` ->
+   `option<result<result<own<incoming-response>, error-code>>>`. The
+   **triple lift** (option disc, the future-already-consumed result, the
+   transport result) is the heaviest ABI point: `none` = not ready ->
+   resubscribe + block + retry; `some(err())` = already consumed -> Err;
+   `some(ok(err(code)))` = transport error -> Err;
+   `some(ok(ok(resp)))` = the response.
+6. `incoming-response.status()`; **`status >= 400` -> Err**, matching the
+   urllib oracle which raises `HTTPError` on `status >= 400` (the
+   wasi:http handler delivers `status >= 400` as `some(ok(ok(resp)))`
+   with a high status, NOT an `error-code`, so the wrapper checks the
+   status and converts).
+7. `incoming-response.consume()` -> `incoming-body.stream()` -> a
+   **loop** of `input-stream.blocking-read(chunk)` over `wasi:io/streams`,
+   accumulating each chunk into a geometrically-grown heap buffer until
+   `stream-error::closed` (EOF) -- the **same** machinery as `Fs.read`.
+8. `Ok(String)` from the accumulated bytes (UTF-8 by construction).
+
+**Resource drops on every path (no leak, no double-drop).** All eight
+OWN handles are dropped on every exit: the consuming calls
+(`outgoing-request` by `handle`, `outgoing-body` by `finish`) are the
+only handles NOT dropped, and only on the paths that reach them; the
+`future` is dropped after `get` on every path that read it; the
+`pollable` is dropped after each `block`; a `last-operation-failed`
+stream error drops the carried `error` resource (via `wasi:io/error`).
+The whole chain (the receipt, the eight resources, the triple lift, the
+status mapping, the EOF convention, the drops) was confirmed by an
+**oracle spike** -- a hand-written WAT component built with `wasm-tools`
+and run under `wasmtime` against a local HTTP server -- before the
+emitter was written; a 1500-GET loop in one instance proved no handle
+exhaustion.
+
+**The Net ceiling is GUEST-SIDE (the honest asymmetry).** Unlike the Fs
+preopen ceiling and the Env env-set ceiling -- both **Level 1**, imposed
+by the WASI host at instantiate -- wasmtime's `wasi:http` C-API
+(`set-wasi-http`) is **allow-all**, with no allowed-hosts configuration
+surface in this release, so there is **no host ceiling to map onto**. The
+ceiling is therefore enforced **guest-side** (codegen): the compiler
+collects the HOSTS of the LITERAL urls passed to `net.get` (the static
+`NetCeiling`, `capa/ir/_net_ceiling.py`) and the guest wrapper's
+`$Net_host_allowed` gate refuses any host the program never names. A
+**dynamic** url (built at runtime) cannot be split into a wasi:http
+request at compile time, so the call site **fail-closes** to `Err`
+WITHOUT reaching the network -- the same fail-closed policy a dynamic Fs
+path gets (a wrongly-admitted host is real outbound authority). This is
+**Level 2-style**: proved by the compiler (the guest only ever reaches a
+named host) and reinforced by our host (which generated the guest), but
+NOT runtime-enforced by a stock WASI host. See
+`docs/design/wasi-attenuation.md` for the full stratification.
+
+**The host links `wasi:http` only when Net.get is used.** wasmtime 44+
+does not expose `add_wasi_http` on the high-level component API, so the
+host reaches the C-ABI through `wasmtime._bindings`
+(`wasmtime_component_linker_add_wasi_http(linker)` +, **obligatorily**,
+`wasmtime_context_set_wasi_http(context)` -- without the latter the
+C-API panics `Option::unwrap`-on-`None` the moment a wasi:http import is
+linked). The host links + arms wasi:http **only** when the program uses
+`Net.get` (signalled by a non-None `net_ceiling`), so a non-Net program
+is a clean total deny and never triggers that context panic.
+
+**Memory.** `$Net_get` uses a dedicated 128-byte static scratch
+(`_wasi_net_scratch_offset`) for its seven indirect returns at distinct
+sub-offsets (`body` @+0, `finish` @+8, `handle` @+16 value@+8,
+`future.get` @+32 the 32-byte triple, `consume` @+64, `stream` @+72,
+`blocking-read` @+80), **separate** from every Fs / Env / Clock scratch.
+The body **bytes** the host writes land in canonical-ABI memory and are
+copied into a geometrically-grown heap accumulation buffer, exactly like
+`Fs.read`.
+
+**Parity.** `Ok(String)` is **byte-identical** to the Python oracle's
+`urlopen(url).read().decode("utf-8")` and the `capa:host` bridge across
+small, empty, large-multi-chunk, and UTF-8 multi-byte bodies, fetched
+from a **local 127.0.0.1 server** (no external network); `status >= 400`
+(404 / 500) and a connection-refused transport error are coherent `Err`
+on all three backends (the Err **message** differs -- the wrapper writes
+a fixed `HTTP GET failed` -- so parity is on the Result **discriminant**,
+as the Fs error paths already assert). `TestWasiNetGet` /
+`TestWasiNetCeiling` / `TestWasiNetWitGeneration` / `TestWasiNetRejections`
+in `tests/test_wasi_mode.py`.
+
+**Phase 1 scope.** `Net.get` only. `Net.post` (a second touch-point that
+adds an outgoing-body **write** loop), `Net.restrict_to` and `Net.allows`
+(the fine host-set attenuators, a guest-side Level 2 layer) are **rejected
+at compile time** under `--wasi` and run unchanged on `capa:host`
+(Phases 2 and 3).
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
