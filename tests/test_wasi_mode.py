@@ -2892,6 +2892,293 @@ class TestWasiNetCeiling(unittest.TestCase):
         self.assertEqual(wasi, "[ok]\n")
 
 
+# ----- Net.post via wasi:http (Phase 2) --------------------------
+
+
+class _LocalPostServer:
+    """A 127.0.0.1 HTTP server that READS the POST request body and
+    returns a body-dependent response (echo or fixed / big), recording the
+    received request body so a test can assert the SERVER saw the exact
+    bytes the client sent.
+
+    Reads the body whether the client sends it with a Content-Length or
+    CHUNKED (Transfer-Encoding: chunked) -- wasi:http sends the outgoing
+    request body chunked by default, so the handler must accept both to
+    verify the body across all three backends. Context-manager: yields the
+    ``host:port`` authority. ``received['body']`` holds the last body."""
+
+    def __init__(self, mode: str = "echo", fixed: bytes = b"RESP-OK",
+                 status: int = 200):
+        # mode: "echo" (respond with the received body), "fixed" (respond
+        # with ``fixed``), "big" (respond with a > one-chunk fixed body).
+        self._mode = mode
+        self._fixed = fixed
+        self._status = status
+        self._srv = None
+        self._thread = None
+        self.port = None
+        self.received = {}
+
+    def __enter__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        mode = self._mode
+        fixed = self._fixed
+        status = self._status
+        received = self.received
+
+        class _H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                te = self.headers.get("Transfer-Encoding", "")
+                if "chunked" in te.lower():
+                    body = b""
+                    while True:
+                        line = self.rfile.readline().strip()
+                        if not line:
+                            continue
+                        size = int(line, 16)
+                        if size == 0:
+                            self.rfile.readline()
+                            break
+                        body += self.rfile.read(size)
+                        self.rfile.readline()
+                else:
+                    n = int(self.headers.get("Content-Length", 0))
+                    body = self.rfile.read(n)
+                received["body"] = body
+                received["len"] = len(body)
+                if mode == "echo":
+                    out = body
+                elif mode == "big":
+                    out = b"R" * 25000 + b"-END"
+                else:
+                    out = fixed
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+
+        self._srv = HTTPServer(("127.0.0.1", 0), _H)
+        self.port = self._srv.server_address[1]
+        self._thread = threading.Thread(
+            target=self._srv.serve_forever, daemon=True,
+        )
+        self._thread.start()
+        return f"127.0.0.1:{self.port}"
+
+    def __exit__(self, *exc):
+        if self._srv is not None:
+            self._srv.shutdown()
+            self._srv.server_close()
+        return False
+
+
+def _net_post_src(authority: str, body: str, path: str = "/p") -> str:
+    """A program that POSTs ``body`` to ``http://<authority><path>`` and
+    prints the RESPONSE body wrapped in brackets on Ok, ``ERR`` on Err."""
+    return (
+        "fun main(net: Net, stdio: Stdio)\n"
+        f"    match net.post(\"http://{authority}{path}\", \"{body}\")\n"
+        "        Ok(b) -> stdio.println(\"[${b}]\")\n"
+        "        Err(e) -> stdio.println(\"ERR\")\n"
+    )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasi_http(),
+    "wasm-tools and/or wasmtime-py with wasi:http not installed",
+)
+class TestWasiNetPost(unittest.TestCase):
+    """End-to-end: net.post in --wasi mode REUSES the Net.get wasi:http
+    chain and ADDS a flow-controlled outgoing-body write of the REQUEST
+    body before the handle. The Ok(String) RESPONSE is BYTE-IDENTICAL to
+    the Python oracle and the capa:host backend across small / empty /
+    large-multichunk request bodies and large-multichunk responses, with
+    UTF-8 round-tripping in both directions; a status >= 400 and a
+    connection-refused transport error are coherent Err on all three
+    backends. The SERVER additionally asserts it received the exact bytes
+    the client sent (the request body is verified, not only the response).
+    """
+
+    def _assert_response_parity(self, server, body):
+        with server as auth:
+            src = _net_post_src(auth, body)
+            py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        return wasi, server.received
+
+    def test_small_request_body_echoed_parity(self):
+        # The server echoes the request body; the response (== request) is
+        # byte-identical on all three backends, and the server saw the body.
+        wasi, recv = self._assert_response_parity(
+            _LocalPostServer("echo"), "hello-body",
+        )
+        self.assertEqual(wasi, "[hello-body]\n")
+        self.assertEqual(recv["body"], b"hello-body")
+
+    def test_empty_request_body_parity(self):
+        # 0-byte request body: the write loop runs zero times, the server
+        # receives an empty body, the echo is "".
+        wasi, recv = self._assert_response_parity(
+            _LocalPostServer("echo"), "",
+        )
+        self.assertEqual(wasi, "[]\n")
+        self.assertEqual(recv["len"], 0)
+
+    def test_large_multichunk_request_body_complete(self):
+        # > the per-iteration check-write budget: the request body is
+        # written across multiple non-blocking writes. The SERVER must
+        # receive the COMPLETE body (no truncation / duplication), proven by
+        # comparing the received bytes to the sent bytes.
+        body = "A" * 20005 + "-Z"
+        wasi, recv = self._assert_response_parity(
+            _LocalPostServer("echo"), body,
+        )
+        self.assertEqual(recv["len"], len(body.encode("utf-8")))
+        self.assertEqual(recv["body"], body.encode("utf-8"))
+        self.assertTrue(wasi.endswith("-Z]\n"))
+
+    def test_utf8_request_and_response_roundtrip(self):
+        body = "café-你好"
+        wasi, recv = self._assert_response_parity(
+            _LocalPostServer("echo"), body,
+        )
+        self.assertEqual(recv["body"], body.encode("utf-8"))
+        self.assertIn("café", wasi)
+        self.assertIn("你好", wasi)
+
+    def test_large_multichunk_response_parity(self):
+        # The response is > the 4096-byte blocking-read chunk, forcing the
+        # RESPONSE read loop to grow its accumulation buffer (the reused get
+        # path). Parity across all three backends.
+        wasi, _recv = self._assert_response_parity(
+            _LocalPostServer("big"), "small-req",
+        )
+        self.assertEqual(len(wasi), len(b"R" * 25000 + b"-END") + 3)
+        self.assertTrue(wasi.endswith("-END]\n"))
+
+    def test_status_404_is_err_on_all_backends(self):
+        wasi, _recv = self._assert_response_parity(
+            _LocalPostServer("fixed", status=404), "x",
+        )
+        self.assertEqual(wasi, "ERR\n")
+
+    def test_status_500_is_err_on_all_backends(self):
+        wasi, _recv = self._assert_response_parity(
+            _LocalPostServer("fixed", status=500), "x",
+        )
+        self.assertEqual(wasi, "ERR\n")
+
+    def test_transport_error_is_err_on_all_backends(self):
+        auth = f"127.0.0.1:{_dead_port()}"
+        src = _net_post_src(auth, "x")
+        py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertEqual(wasi, "ERR\n")
+
+    def test_leak_many_posts_no_handle_exhaustion(self):
+        # Many POSTs in one component instance exercise the resource-drop
+        # discipline (the get chain's eight OWN handles PLUS the request
+        # output-stream per call); a leak or double-drop would trap.
+        from capa.ir import (
+            compile_wasm, compile_wit, compute_net_ceiling,
+        )
+        from capa.cli import _wrap_as_component
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        with _LocalPostServer("fixed", fixed=b"ok") as auth:
+            src = (
+                "fun main(net: Net, stdio: Stdio)\n"
+                "    var i = 0\n"
+                "    while i < 300\n"
+                f"        match net.post(\"http://{auth}/p\", \"payload\")\n"
+                "            Ok(b) -> stdio.print(\"\")\n"
+                "            Err(e) -> stdio.println(\"ERR\")\n"
+                "        i = i + 1\n"
+                "    stdio.println(\"done\")\n"
+            )
+            module, result = _parse_analyze(src)
+            core = compile_wasm(module, types=result.types, wasi=True)
+            wit = compile_wit(module, types=result.types, wasi=True)
+            comp = _wrap_as_component(core, wit, wasi=True)
+            ceiling = compute_net_ceiling(module, types=result.types)
+            host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
+            buf = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = buf
+            try:
+                host.run_main(comp)
+            finally:
+                sys.stdout = saved
+            out = buf.getvalue()
+        self.assertNotIn("ERR", out)
+        self.assertEqual(out, "done\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasi_http(),
+    "wasm-tools and/or wasmtime-py with wasi:http not installed",
+)
+class TestWasiNetPostCeiling(unittest.TestCase):
+    """The Net host ceiling covers Net.post too: a host the program does
+    not name as a literal net.post url is denied, and a DYNAMIC url (built
+    at runtime) is fail-closed WITHOUT reaching the network."""
+
+    def test_post_dynamic_url_is_fail_closed(self):
+        from capa.ir import (
+            compile_wasm, compile_wit, compute_net_ceiling,
+        )
+        from capa.cli import _wrap_as_component
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        with _LocalPostServer("echo") as auth:
+            src = (
+                "fun main(net: Net, stdio: Stdio)\n"
+                f"    let u = \"http://{auth}/p\"\n"
+                "    match net.post(u, \"body\")\n"
+                "        Ok(b) -> stdio.println(\"[${b}]\")\n"
+                "        Err(e) -> stdio.println(\"ERR\")\n"
+            )
+            module, result = _parse_analyze(src)
+            ceiling = compute_net_ceiling(module, types=result.types)
+            self.assertFalse(ceiling.closed)
+            core = compile_wasm(module, types=result.types, wasi=True)
+            wit = compile_wit(module, types=result.types, wasi=True)
+            comp = _wrap_as_component(core, wit, wasi=True)
+            host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
+            buf = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = buf
+            try:
+                host.run_main(comp)
+            finally:
+                sys.stdout = saved
+            out = buf.getvalue()
+        self.assertEqual(out, "ERR\n")
+
+    def test_post_ceiling_collects_literal_hosts(self):
+        from capa.ir import compute_net_ceiling
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    match net.post(\"http://a.example:80/x\", \"b1\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+            "    match net.get(\"https://B.Example/y\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        module, result = _parse_analyze(src)
+        ceiling = compute_net_ceiling(module, types=result.types)
+        self.assertTrue(ceiling.closed)
+        # post AND get hosts both contribute (lowercased, port-stripped).
+        self.assertEqual(
+            ceiling.hosts, frozenset({"a.example", "b.example"}),
+        )
+
+
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_wasip2(),
     "wasm-tools and/or wasmtime-py with WASI P2 not installed",
@@ -2915,6 +3202,22 @@ class TestWasiNetWitGeneration(unittest.TestCase):
         self.assertIn("import wasi:http/outgoing-handler@0.2.0;", wit)
         self.assertIn("import wasi:io/streams@0.2.0;", wit)
         self.assertIn("import wasi:io/poll@0.2.0;", wit)
+
+    def test_post_world_imports_wasi_http(self):
+        # A post-only program imports the same wasi:http world as get (post
+        # reuses the get chain plus the output-stream write, all under the
+        # already-imported interfaces) and emits NO capa:host/net interface.
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    match net.post(\"http://example.com/p\", \"b\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        wit = self._wit(src)
+        self.assertIn("import wasi:http/types@0.2.0;", wit)
+        self.assertIn("import wasi:http/outgoing-handler@0.2.0;", wit)
+        self.assertIn("import wasi:io/streams@0.2.0;", wit)
+        self.assertNotIn("interface net", wit)
 
     def test_no_capa_host_net_interface(self):
         src = _net_get_src("example.com")
@@ -2943,26 +3246,27 @@ class TestWasiNetWitGeneration(unittest.TestCase):
     "wasm-tools and/or wasmtime-py with WASI P2 not installed",
 )
 class TestWasiNetRejections(unittest.TestCase):
-    """Phase 1 migrates Net.get only; Net.post / restrict_to / allows are
-    rejected at compile time in --wasi mode with a clear message, so a
-    program never silently miscompiles. They all run unchanged on the
-    default capa:host backend."""
+    """Phases 1 + 2 migrate Net.get and Net.post; Net.restrict_to / allows
+    are still rejected at compile time in --wasi mode with a clear message
+    (Phase 3 pending), so a program never silently miscompiles. They all
+    run unchanged on the default capa:host backend."""
 
     def _compile_wasi(self, src: str):
         from capa.ir import compile_wasm
         module, result = _parse_analyze(src)
         return compile_wasm(module, types=result.types, wasi=True)
 
-    def test_net_post_rejected(self):
+    def test_net_post_accepted(self):
+        # Phase 2: Net.post alone now compiles (no rejection), the
+        # positive control alongside Net.get.
         src = (
             "fun main(net: Net, stdio: Stdio)\n"
             "    match net.post(\"http://example.com/p\", \"body\")\n"
             "        Ok(b) -> stdio.println(b)\n"
             "        Err(e) -> stdio.println(\"e\")\n"
         )
-        with self.assertRaises(Exception) as ctx:
-            self._compile_wasi(src)
-        self.assertIn("Net.post", str(ctx.exception))
+        blob = self._compile_wasi(src)
+        self.assertIsInstance(blob, (bytes, bytearray))
 
     def test_net_restrict_to_rejected(self):
         src = (

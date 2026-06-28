@@ -15,7 +15,8 @@ ceiling to map onto. The ceiling is therefore enforced GUEST-SIDE
 The ceiling is computed from the CIR (after the loader has inlined
 imported functions, so every reachable ``net.get`` call site is visible)
 by scanning every ``MethodCall`` whose receiver is a ``Net`` and whose
-method is ``get``:
+method is ``get`` (Phase 1) or ``post`` (Phase 2) -- the two request-
+building ops, each of which reaches the url's host:
 
 - a STRING-LITERAL url argument (``Value(kind="lit_str")``) contributes
   the HOST component of its URL (``urlparse(url).hostname``, lowercased
@@ -34,13 +35,14 @@ because a wrongly-admitted host is real outbound network authority. A
 program that genuinely needs dynamic Net hosts must use the default
 ``capa:host`` backend (drop ``--wasi``).
 
-Why only ``Net.get`` defines the ceiling (Phase 1):
+Why ``Net.get`` and ``Net.post`` define the ceiling:
 
-- ``Net.post`` is NOT migrated in Phase 1 (rejected at compile time in
-  ``--wasi``), so it contributes no host.
+- both build an outgoing request to the url's host, so each literal url
+  they pass contributes that host to the reachable set.
 - ``Net.restrict_to`` / ``Net.allows`` only NARROW or QUERY the host
   set; they can never make the program reach a host it does not already
-  pass to ``net.get``. They are likewise not migrated in Phase 1.
+  pass to ``net.get`` / ``net.post``. They are not migrated yet (Phase 3)
+  and contribute no host.
 
 A literal bound through an intermediate ``let`` (``let u = "http://h/"``
 then ``net.get(u)``) appears as a local at the call site, so it is
@@ -60,9 +62,13 @@ from ._nodes import MethodCall, Module
 from ._walk import walk_module
 
 
-# Capability class name and method that define the Net host ceiling.
+# Capability class name and the methods that define the Net host ceiling.
+# Both ``get`` (Phase 1) and ``post`` (Phase 2) build an outgoing request
+# to the url's host, so each literal url they name contributes a host to
+# the ceiling; ``restrict_to`` / ``allows`` only narrow or query the set
+# and never widen reachability, so they do not.
 _NET_CAP = "Net"
-_NET_GET = "get"
+_NET_REQUEST_METHODS = frozenset({"get", "post"})
 
 
 def url_host(url: str) -> str:
@@ -109,12 +115,13 @@ def compute_net_ceiling_from_cir(cir: Module) -> NetCeiling:
         if not isinstance(instr, MethodCall):
             continue
         cap = instr.cap_used or (instr.receiver.ty or "")
-        if cap != _NET_CAP or instr.method != _NET_GET:
+        if cap != _NET_CAP or instr.method not in _NET_REQUEST_METHODS:
             continue
-        # net.get takes exactly one argument (the url). Defensive: an
-        # unexpected arity is treated as dynamic (cannot prove the
-        # literal), never silently narrowing the ceiling.
-        if len(instr.args) != 1:
+        # net.get takes one arg (url); net.post takes two (url, body). The
+        # FIRST arg is the url for both. Defensive: a missing url arg is
+        # treated as dynamic (cannot prove the literal), never silently
+        # narrowing the ceiling.
+        if not instr.args:
             closed = False
             continue
         arg = instr.args[0]

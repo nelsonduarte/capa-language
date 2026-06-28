@@ -676,11 +676,12 @@ def _emit_wit_wasi(
             continue
         if cap in ("Random", "Clock", "Env", "Fs"):
             continue
-        # Net in WASI mode (Phase 1) is fully migrated: ``get`` routes to
-        # wasi:http and ``post`` / ``restrict_to`` / ``allows`` are
-        # rejected by the Wasm emitter's ``_validate_wasi_caps`` before we
-        # get here, so a Net present in ``used`` carries no ``capa:host``
-        # net interface (mirroring Random / Clock / Env / Fs).
+        # Net in WASI mode is migrated for the request ops: ``get``
+        # (Phase 1) and ``post`` (Phase 2) route to wasi:http;
+        # ``restrict_to`` / ``allows`` are rejected by the Wasm emitter's
+        # ``_validate_wasi_caps`` before we get here, so a Net present in
+        # ``used`` carries no ``capa:host`` net interface (mirroring
+        # Random / Clock / Env / Fs).
         if cap == "Net":
             continue
         lines.append(f"interface {cap.lower()} {{")
@@ -744,13 +745,16 @@ def _emit_wit_wasi(
         if "read" in used["Fs"] or "write" in used["Fs"]:
             lines.append("  import wasi:io/streams@0.2.0;")
             lines.append("  import wasi:io/error@0.2.0;")
-    # Net.get (Phase 1) routes to wasi:http: outgoing-handler.handle
-    # builds + sends the request, types carries the outgoing-request /
-    # future-incoming-response / incoming-response / incoming-body chain,
-    # and the body is read via wasi:io/streams (input-stream.blocking-read)
-    # with a wasi:io/poll synchronous block and a wasi:io/error drop for a
-    # carried stream error. Import all four when Net.get is used.
-    if "Net" in used and "get" in used["Net"]:
+    # Net.get (Phase 1) / Net.post (Phase 2) route to wasi:http:
+    # outgoing-handler.handle builds + sends the request, types carries the
+    # outgoing-request / future-incoming-response / incoming-response /
+    # incoming-body chain, and the RESPONSE body is read via wasi:io/streams
+    # (input-stream.blocking-read) with a wasi:io/poll synchronous block and
+    # a wasi:io/error drop for a carried stream error. Net.post ALSO writes
+    # the REQUEST body via wasi:io/streams (output-stream.blocking-write-
+    # and-flush / blocking-flush), already covered by the same streams
+    # import. Import all four when either get or post is used.
+    if "Net" in used and ("get" in used["Net"] or "post" in used["Net"]):
         lines.append("  import wasi:http/types@0.2.0;")
         lines.append("  import wasi:http/outgoing-handler@0.2.0;")
         # wasi:io/streams + wasi:io/error may already have been imported

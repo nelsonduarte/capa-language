@@ -36,6 +36,7 @@ see the WAT) rewrites the migrated touch-points:
 | `Fs.restrict_to` | `capa:host/fs.restrict-to` (host handle table) | guest-side prefix allow-list union (no host) |
 | `Fs.allows` | `capa:host/fs.allows` (host handle table) | guest-side lexical prefix containment (no host) |
 | `Net.get` | `capa:host/net.get` (host handle table) | `wasi:http/outgoing-handler.handle` + the wasi:http request/response chain + `wasi:io/streams` body read |
+| `Net.post` | `capa:host/net.post` (host handle table) | the Net.get chain + `wasi:io/streams` flow-controlled outgoing-body **write** of the request body before the handle |
 
 Every **other** capability the program uses (Stdio for printing the
 results, and anything else) stays on `capa:host`. The component
@@ -873,14 +874,17 @@ linked). The host links + arms wasi:http **only** when the program uses
 `Net.get` (signalled by a non-None `net_ceiling`), so a non-Net program
 is a clean total deny and never triggers that context panic.
 
-**Memory.** `$Net_get` uses a dedicated 128-byte static scratch
-(`_wasi_net_scratch_offset`) for its seven indirect returns at distinct
+**Memory.** `$Net_get` and `$Net_post` share a 192-byte static scratch
+(`_wasi_net_scratch_offset`) for their indirect returns at distinct
 sub-offsets (`body` @+0, `finish` @+8, `handle` @+16 value@+8,
 `future.get` @+32 the 32-byte triple, `consume` @+64, `stream` @+72,
-`blocking-read` @+80), **separate** from every Fs / Env / Clock scratch.
-The body **bytes** the host writes land in canonical-ABI memory and are
-copied into a geometrically-grown heap accumulation buffer, exactly like
-`Fs.read`.
+`blocking-read` @+80; post additionally uses `write/flush` @+96,
+`outgoing-body.write` @+112, `check-write` @+128), **separate** from every
+Fs / Env / Clock scratch. The body **bytes** the host writes land in
+canonical-ABI memory and are copied into a geometrically-grown heap
+accumulation buffer, exactly like `Fs.read`; post's REQUEST body is handed
+to the output-stream straight from linear memory as `(ptr, len)`, no copy,
+exactly like `Fs.write`.
 
 **Parity.** `Ok(String)` is **byte-identical** to the Python oracle's
 `urlopen(url).read().decode("utf-8")` and the `capa:host` bridge across
@@ -893,11 +897,59 @@ as the Fs error paths already assert). `TestWasiNetGet` /
 `TestWasiNetCeiling` / `TestWasiNetWitGeneration` / `TestWasiNetRejections`
 in `tests/test_wasi_mode.py`.
 
-**Phase 1 scope.** `Net.get` only. `Net.post` (a second touch-point that
-adds an outgoing-body **write** loop), `Net.restrict_to` and `Net.allows`
-(the fine host-set attenuators, a guest-side Level 2 layer) are **rejected
-at compile time** under `--wasi` and run unchanged on `capa:host`
-(Phases 2 and 3).
+### Net.post via wasi:http (Phase 2)
+
+`Net.post` **reuses the entire `$Net_get` chain** (host gate, the
+Fields -> OutgoingRequest -> set-* -> body -> finish -> handle -> future
+poll -> status -> consume -> stream -> input-stream read loop, the
+triple-result lift, the `status >= 400` mapping, and every resource drop)
+and changes only two things:
+
+1. **set-method sends `POST`** -- the `method` variant **discriminant 2**.
+   No string is interned: a non-`other` method variant carries no payload,
+   so the `POST` literal never appears in the data segment.
+2. **The REQUEST body is written before `finish`.** `outgoing-body.write()`
+   yields the **output-stream** (a **ninth** OWN resource, a **child** of
+   the outgoing-body that **must be dropped before `finish`**, else
+   `finish` traps). The body is then written with the **flow-controlled**
+   `wasi:io` pattern, **not** `Fs.write`'s `blocking-write-and-flush`: a
+   `wasi:http` outgoing-body stream only **drains once the request is sent
+   at `handle`**, which runs **after** the write loop, so the blocking
+   variant deadlocks past the initial permit window (proven: a **4097-byte**
+   body hangs while **4096** succeeds). The loop is `check-write` (the
+   permitted budget) -> non-blocking `write` of `<= budget` bytes straight
+   from linear memory (no copy) -> `subscribe` + `pollable.block` to await
+   permits when the budget is momentarily 0 -> a final non-blocking `flush`.
+   A zero-length body runs the loop zero times. The output-stream is dropped
+   before `finish`, on success **and** on every error branch that reaches
+   after the stream is created.
+
+**Chunked vs Content-Length.** `wasi:http` sends the POST body with
+`Transfer-Encoding: chunked` (no `Content-Length`) by default. This affects
+only what the **server observes** (the wire framing), not the bytes; the
+Python oracle (`urllib`) sends a `Content-Length`. Parity is on the
+**RESPONSE** `Ok(String)`, which is identical regardless of framing. The
+test server reads the body under **either** framing and asserts it received
+the **exact** bytes the client sent, so the request body is verified, not
+only the response.
+
+**Parity (post).** `Ok(String)` (the response body, the same shape as get)
+is **byte-identical** to the oracle's
+`urlopen(Request(url, data=body)).read().decode("utf-8")` and the
+`capa:host` bridge across small / empty / **large-multi-chunk** request
+bodies (the server confirms the complete received body), large-multi-chunk
+responses, and UTF-8 in both directions; `status >= 400` and a
+connection-refused transport error are coherent `Err` (fixed message
+`HTTP POST failed`, parity on the discriminant). A **1500x leak loop** runs
+with no handle exhaustion. The Net **ceiling** now collects the hosts of
+literal `net.post` urls too, and a **dynamic** post url is fail-closed.
+`TestWasiNetPost` / `TestWasiNetPostCeiling` in `tests/test_wasi_mode.py`.
+
+**Remaining Net scope.** `Net.restrict_to` and `Net.allows` (the fine
+host-set attenuators, a guest-side Level 2 layer) are **rejected at compile
+time** under `--wasi` and run unchanged on `capa:host` (Phase 3). Finer
+attenuation of the request body (e.g. setting an explicit `content-length`
+header to align the server's framing observation) is a later refinement.
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):

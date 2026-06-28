@@ -1,0 +1,61 @@
+// Experimental WASI mode demo: Net.post via wasi:http (Phase 2)
+// (capa --wasm --component --wasi).
+//
+// REUSES the entire Net.get wasi:http chain (Phase 1) and ADDS only the
+// REQUEST-body write before the handle:
+//
+//   net.post(url, body) -> fields.new()
+//                       -> outgoing-request.new(fields)
+//                       -> set-method(POST) / set-scheme / set-authority /
+//                          set-path-with-query   (resolved from the LITERAL
+//                                                 url at compile time)
+//                       -> outgoing-request.body() -> outgoing-body
+//                       -> outgoing-body.write() -> output-stream
+//                       -> FLOW-CONTROLLED write loop:           [wasi:io]
+//                            check-write (the permitted budget) ->
+//                            write (non-blocking, <= budget, straight from
+//                                   linear memory, no copy) ->
+//                            subscribe + pollable.block when the budget is
+//                            momentarily 0 (the host buffers the not-yet-
+//                            sent body), then flush.
+//                          (The BLOCKING write Fs.write uses DEADLOCKS here:
+//                          a wasi:http outgoing-body stream only drains once
+//                          the request is sent at handle, which runs AFTER
+//                          the write loop.)
+//                       -> drop the output-stream (a CHILD of the
+//                          outgoing-body; finish would trap otherwise)
+//                       -> outgoing-body.finish(body)
+//                       -> outgoing-handler.handle(request)      [wasi:http]
+//                       -> the SAME synchronous poll / status / consume /
+//                          stream / input-stream.blocking-read RESPONSE loop
+//                          as Net.get -> Ok(String) (the UTF-8 response body)
+//                       -> every OWN resource handle (the get chain's eight
+//                          plus the request output-stream) is dropped on
+//                          every exit path.
+//
+// The Ok(String) RESPONSE body is byte-identical to the Python backend's
+// urlopen(Request(url, data=body)).read().decode("utf-8") and to the
+// capa:host bridge. A status >= 400 or a transport failure is an
+// Err(IoError). Stdio stays on capa:host -- the hybrid coexistence.
+// See docs/design/wasi_mode.md.
+//
+// THE NET CEILING IS GUEST-SIDE and now covers post too: the compiler
+// collects the HOSTS of the LITERAL urls passed to net.get AND net.post,
+// and the guest wrapper refuses any host the program never names. A DYNAMIC
+// url is fail-closed (Err WITHOUT reaching the network). Net.restrict_to /
+// allows are NOT migrated yet (Phase 3); they are rejected under --wasi.
+//
+// Run against a LOCAL server (no external network) that reads the POST body
+// and returns a response, then:
+//
+//   capa --wasm --component --wasi --run examples/wasm/wasi_net_post.capa
+//
+// (Adjust the literal url below to the host:port your server listens on.)
+
+fun main(net: Net, stdio: Stdio)
+    let r = net.post("http://127.0.0.1:8080/submit", "name=capa&kind=demo")
+    match r
+        Ok(body) -> stdio.println("post ok, response:\n${body}")
+        Err(e) -> stdio.println("post failed: ${e}")
+    // Every net.post / net.get url here is a literal, so the guest-side
+    // ceiling is exactly { 127.0.0.1 } -- any other host is denied.

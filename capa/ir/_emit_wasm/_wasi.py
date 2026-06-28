@@ -172,16 +172,19 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     # provides no such function on the wasi path).
     ("Fs", "restrict_to"),
     ("Fs", "allows"),
-    # Net.get migration (2026-06-28, Phase 1): get routes to wasi:http
-    # (outgoing-handler.handle + the outgoing-request / future-incoming-
-    # response / incoming-response / incoming-body resource chain) plus
-    # wasi:io/streams (input-stream.blocking-read loop) and wasi:io/poll
-    # (the synchronous pollable.block). Net.post / restrict_to / allows
-    # are NOT migrated in Phase 1; they are rejected at compile time in
-    # --wasi by ``_validate_wasi_caps`` (Phases 2 and 3 later). Listed
-    # here so the import loop does NOT emit a capa:host/net import for
-    # ``get`` (the host serves it through wasi:http instead).
+    # Net.get migration (2026-06-28, Phase 1) / Net.post migration
+    # (2026-06-28, Phase 2): both route to wasi:http (outgoing-handler.
+    # handle + the outgoing-request / future-incoming-response /
+    # incoming-response / incoming-body resource chain) plus wasi:io/streams
+    # (input-stream.blocking-read loop for the response; post ALSO writes
+    # the request body via output-stream.blocking-write-and-flush) and
+    # wasi:io/poll (the synchronous pollable.block). Net.restrict_to /
+    # allows are NOT migrated yet (Phase 3); they are rejected at compile
+    # time in --wasi by ``_validate_wasi_caps``. Both get and post are
+    # listed here so the import loop does NOT emit a capa:host/net import
+    # for them (the host serves them through wasi:http instead).
     ("Net", "get"),
+    ("Net", "post"),
 })
 
 
@@ -200,11 +203,16 @@ _WASI_IO_POLL = "wasi:io/poll@0.2.0"
 _WASI_HTTP_TYPES = "wasi:http/types@0.2.0"
 _WASI_HTTP_HANDLER = "wasi:http/outgoing-handler@0.2.0"
 
-# Net methods this WASI increment migrates (Phase 1: get only).
-_WASI_NET_MIGRATED: frozenset[str] = frozenset({"get"})
+# Net methods this WASI increment migrates (Phase 1: get; Phase 2: post).
+# ``restrict_to`` / ``allows`` (the fine host-set attenuators, Phase 3)
+# remain rejected.
+_WASI_NET_MIGRATED: frozenset[str] = frozenset({"get", "post"})
 
 # The size, in bytes, of each blocking-read chunk request on the Net
-# input-stream. One OS page; mirrors the Fs.read chunk.
+# input-stream. One OS page; mirrors the Fs.read chunk. Net.post's REQUEST
+# body write is NOT chunked by a fixed page: a wasi:http outgoing-body
+# stream is flow-controlled, so the write loop is bounded per iteration by
+# the host's ``check-write`` permit budget instead (see ``$Net_post``).
 _WASI_NET_READ_CHUNK = 4096
 
 # Fs metadata methods this WASI increment migrates to wasi:filesystem.
@@ -305,16 +313,17 @@ class _WasiEmissionMixin:
                     f"use the default capa:host backend (drop --wasi)."
                 )
             if cap == "Net" and method not in _WASI_NET_MIGRATED:
-                # Phase 1 migrates Net.get only. Net.post (a second
-                # touch-point that adds an outgoing-body write loop),
-                # Net.restrict_to and Net.allows (the fine host-set
-                # attenuators, a guest-side Level 2 layer) are deferred to
-                # Phases 2 and 3; reject them loudly so a program never
-                # silently miscompiles.
+                # Phases 1 + 2 migrate Net.get and Net.post (the request-
+                # building ops; post adds an outgoing-body write loop over
+                # the request body before the handle). Net.restrict_to and
+                # Net.allows (the fine host-set attenuators, a guest-side
+                # Level 2 layer) are deferred to Phase 3; reject them loudly
+                # so a program never silently miscompiles.
                 raise WasmEmissionError(
                     f"Net.{method} is not supported in the WASI mode "
-                    f"yet (Phase 1 migrates Net.get only); use the "
-                    f"default capa:host backend (drop --wasi)."
+                    f"yet (get and post are migrated; restrict_to / allows "
+                    f"are not); use the default capa:host backend (drop "
+                    f"--wasi)."
                 )
         # Fail-closed proof obligation: if the program uses a migrated
         # Fs op (metadata or the stream-bearing read) but its static
@@ -373,17 +382,20 @@ class _WasiEmissionMixin:
             or ("Env", "allows") in self._used_caps
         )
 
-    def _wasi_net_get_needs_str_eq(self) -> bool:
+    def _wasi_net_needs_str_eq(self) -> bool:
         """True when ``--wasi`` is active and the program reaches
-        ``Net.get``, whose guest-side host gate (``$Net_host_allowed``)
-        scans the static ceiling hosts via ``$str_eq``. The default path
-        routes the host membership through the capa:host bridge, so this
-        gate is WASI-only; it ensures ``$str_eq`` is emitted even when the
-        program uses no other String-equality operation. (An empty Net
-        ceiling emits a gate with no ``$str_eq`` call, but gating on
-        Net.get being present is simpler and the unused helper is a few
-        harmless bytes.)"""
-        return self._wasi and ("Net", "get") in self._used_caps
+        ``Net.get`` or ``Net.post``, whose shared guest-side host gate
+        (``$Net_host_allowed``) scans the static ceiling hosts via
+        ``$str_eq``. The default path routes the host membership through
+        the capa:host bridge, so this gate is WASI-only; it ensures
+        ``$str_eq`` is emitted even when the program uses no other
+        String-equality operation. (An empty Net ceiling emits a gate with
+        no ``$str_eq`` call, but gating on a Net request op being present
+        is simpler and the unused helper is a few harmless bytes.)"""
+        return self._wasi and (
+            ("Net", "get") in self._used_caps
+            or ("Net", "post") in self._used_caps
+        )
 
     def _wasi_fs_list_dir_needs_str_cmp(self) -> bool:
         """True when ``--wasi`` is active and the program reaches
@@ -621,16 +633,21 @@ class _WasiEmissionMixin:
                 f'"[resource-drop]output-stream" '
                 f'(func $wasi_io_drop_output_stream (param i32)))'
             )
-        # Net.get (2026-06-28, Phase 1): the wasi:http outbound GET chain.
-        # All core-ABI shapes were validated by the oracle spike against
-        # wasm-tools 1.249.0 / wasmtime 45.0.0 (the receipt + the eight
-        # OWN resources + the triple-result lift; see ``$Net_get``). A
-        # ``result`` with no payload type lowers to a flat i32 (the set-*
-        # methods); a ``result<own<T>, error-code>`` lowers indirect and
-        # is 8-ALIGNED (error-code carries an option<u64>), so the Ok
-        # value sits at ret+8, not ret+4; a ``result<own<T>, _>`` (body /
-        # consume / stream) is 4-aligned with the value at ret+4.
-        if ("Net", "get") in used:
+        # Net.get (2026-06-28, Phase 1) / Net.post (2026-06-28, Phase 2):
+        # the wasi:http outbound request chain (shared imports). All
+        # core-ABI shapes were validated by the oracle spike against
+        # wasm-tools 1.249.0 / wasmtime 45.0.0 (the receipt + the OWN
+        # resources + the triple-result lift; see ``$Net_get`` /
+        # ``$Net_post``). A ``result`` with no payload type lowers to a flat
+        # i32 (the set-* methods); a ``result<own<T>, error-code>`` lowers
+        # indirect and is 8-ALIGNED (error-code carries an option<u64>), so
+        # the Ok value sits at ret+8, not ret+4; a ``result<own<T>, _>``
+        # (body / consume / stream) is 4-aligned with the value at ret+4.
+        # Net.post reuses every GET import and ADDS only the output-stream
+        # write/flush/drop imports (already shared with Fs.write) to push
+        # the request body before the handle.
+        net_used = ("Net", "get") in used or ("Net", "post") in used
+        if net_used:
             self._write(
                 f'(import "{_WASI_HTTP_TYPES}" "[constructor]fields" '
                 f'(func $wasi_http_fields_new (result i32)))'
@@ -773,6 +790,69 @@ class _WasiEmissionMixin:
                 f'"[resource-drop]incoming-body" '
                 f'(func $wasi_http_drop_incoming_body (param i32)))'
             )
+            # Net.post (Phase 2) writes the REQUEST body through the
+            # outgoing-body's output-stream BEFORE the handle. Unlike a file
+            # descriptor (Fs.write), a wasi:http outgoing-body stream has a
+            # FLOW-CONTROL window: the host only drains buffered bytes once
+            # the request is actually sent (at ``handle``, which runs AFTER
+            # the write loop), so a BLOCKING write past the initial permit
+            # window deadlocks forever (proven: a 4097-byte body hangs while
+            # 4096 succeeds). The body is therefore written with the
+            # FLOW-CONTROLLED pattern the wasi:io contract mandates:
+            #   check-write -> permitted budget (u64);
+            #   write       -> non-blocking, <= the budget, returns at once;
+            #   subscribe + pollable.block -> await more permits when the
+            #     budget is momentarily 0 (the host grants them as it buffers
+            #     the not-yet-sent body);
+            #   flush       -> non-blocking, signals the bytes are complete
+            #     (the host drains them on handle).
+            # outgoing-body.write fetches the stream (a CHILD of the
+            # outgoing-body that MUST be dropped before finish, else finish
+            # traps). check-write / write / flush / output-stream.subscribe /
+            # the output-stream drop are Net.post-only (Net.get sends no body,
+            # and Fs.write's file-descriptor path uses the blocking variants
+            # that are safe there). pollable.block / pollable drop are SHARED
+            # with the response-poll path (already imported above).
+            if ("Net", "post") in used:
+                self._write(
+                    f'(import "{_WASI_HTTP_TYPES}" '
+                    f'"[method]outgoing-body.write" '
+                    f'(func $wasi_http_outgoing_body_write '
+                    f'(param i32) (param i32)))'
+                )
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[method]output-stream.check-write" '
+                    f'(func $wasi_io_check_write '
+                    f'(param i32) (param i32)))'
+                )
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[method]output-stream.write" '
+                    f'(func $wasi_io_stream_write '
+                    f'(param i32) (param i32) (param i32) (param i32)))'
+                )
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[method]output-stream.flush" '
+                    f'(func $wasi_io_stream_flush '
+                    f'(param i32) (param i32)))'
+                )
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[method]output-stream.subscribe" '
+                    f'(func $wasi_io_stream_subscribe '
+                    f'(param i32) (result i32)))'
+                )
+                # The output-stream resource-drop is SHARED with Fs.write;
+                # import it here only if Fs.write did not already, so the
+                # symbol exists exactly once.
+                if ("Fs", "write") not in used:
+                    self._write(
+                        f'(import "{_WASI_IO_STREAMS}" '
+                        f'"[resource-drop]output-stream" '
+                        f'(func $wasi_io_drop_output_stream (param i32)))'
+                    )
 
     def _emit_wasi_wrappers(self) -> None:
         """Emit the ``$Cap_method`` adapter functions that bridge the
@@ -838,11 +918,16 @@ class _WasiEmissionMixin:
             self._emit_wasi_fs_write_wrapper()
         if ("Fs", "list_dir") in used:
             self._emit_wasi_fs_list_dir_wrapper()
-        # Net.get (2026-06-28, Phase 1): the guest-side host ceiling gate
-        # plus the wasi:http GET chain wrapper.
-        if ("Net", "get") in used:
+        # Net.get (2026-06-28, Phase 1) / Net.post (2026-06-28, Phase 2):
+        # the SHARED guest-side host ceiling gate plus the per-op wasi:http
+        # chain wrapper. Emit the gate once when either request op is used;
+        # emit each wrapper on its own touch-point.
+        if ("Net", "get") in used or ("Net", "post") in used:
             self._emit_wasi_net_host_allowed_helper()
+        if ("Net", "get") in used:
             self._emit_wasi_net_get_wrapper()
+        if ("Net", "post") in used:
+            self._emit_wasi_net_post_wrapper()
 
     # ----- adapter wrappers -------------------------------------
 
@@ -3449,13 +3534,591 @@ class _WasiEmissionMixin:
         self._indent -= 1
         self._write(")")
 
+    def _emit_wasi_net_post_wrapper(self) -> None:
+        """``$Net_post (handle, host_ptr, host_len, scheme, auth_ptr,
+        auth_len, path_ptr, path_len, body_ptr, body_len, ret_area)`` ->
+        writes a ``result<string, io-error>`` (20-byte canonical-ABI shape)
+        into ``ret_area``.
+
+        REUSES the entire ``$Net_get`` chain (the host gate, the
+        Fields -> OutgoingRequest -> set-* -> body -> finish -> handle ->
+        future poll -> status -> consume -> stream -> input-stream read
+        loop, the triple-result lift, the status>=400 mapping, and the
+        resource drops on every exit path) and changes only TWO things:
+
+          1. set-method sends POST (the ``method`` variant discriminant 2)
+             instead of GET (0). No string is interned: a non-``other``
+             method variant carries no payload, so the method ptr/len args
+             are 0.
+          2. BEFORE finish, the REQUEST body is written through the
+             outgoing-body's output-stream (the NINTH OWN resource, unique
+             to post): ``outgoing-body.write()`` -> output-stream, then the
+             FLOW-CONTROLLED write loop the wasi:io contract mandates for a
+             not-yet-sent body -- ``check-write`` for the permitted budget;
+             a non-blocking ``write`` of <= budget bytes straight from
+             linear memory (no copy); ``subscribe`` + ``pollable.block`` to
+             await more permits when the budget is momentarily 0; a final
+             non-blocking ``flush``. (The BLOCKING write-and-flush that
+             Fs.write uses DEADLOCKS here: a wasi:http outgoing-body stream
+             only drains once the request is sent at ``handle``, which runs
+             AFTER the write loop, so blocking past the initial permit
+             window never returns -- a 4097-byte body hangs while 4096
+             succeeds.) The output-stream is then DROPPED (it is a CHILD of
+             the outgoing-body and MUST be dropped before finish, else finish
+             traps), and only then ``finish(obody, none)`` runs. A
+             zero-length body runs the loop zero times (empty request body),
+             matching the oracle's ``body.encode(\"utf-8\")`` of an empty
+             string.
+
+        The error message is the fixed ``HTTP POST failed`` (parity is on
+        the Result DISCRIMINANT, as the get / Fs paths assert). Every OWN
+        resource is dropped on every exit path: the GET chain's eight plus
+        the output-stream (dropped before finish on success, and on each
+        error branch that reaches AFTER the stream is created but before it
+        is dropped). The body bytes that follow ``body()`` and precede
+        ``finish`` are the ONLY structural difference from get; the rest of
+        the wrapper is line-for-line the get wrapper."""
+        chunk_r = _WASI_NET_READ_CHUNK
+        S = self._wasi_net_scratch_offset
+        body_ret = S + 0
+        finish_ret = S + 8
+        handle_ret = S + 16
+        get_ret = S + 32
+        consume_ret = S + 64
+        stream_ret = S + 72
+        read_ret = S + 80
+        write_ret = S + 96      # output-stream.write / flush result
+        obw_ret = S + 112       # outgoing-body.write result
+        cw_ret = S + 128        # output-stream.check-write result (16B)
+        msg_off, msg_len = self._intern_string("HTTP POST failed")
+        self._write(
+            "(func $Net_post (param $handle i32) (param $host_ptr i32) "
+            "(param $host_len i32) (param $scheme i32) "
+            "(param $auth_ptr i32) (param $auth_len i32) "
+            "(param $path_ptr i32) (param $path_len i32) "
+            "(param $body_ptr i32) (param $body_len i32) "
+            "(param $ret_area i32)"
+        )
+        self._indent += 1
+        for loc in ("$fields", "$req", "$obody", "$ostream", "$future",
+                    "$pollable", "$resp", "$ibody", "$stream", "$status",
+                    "$buf", "$buf_cap", "$buf_len", "$chunk_ptr",
+                    "$chunk_len", "$need", "$newcap", "$newbuf",
+                    "$cursor", "$remaining", "$n", "$budget", "$wp"):
+            self._write(f"(local {loc} i32)")
+        # Host gate (shared with get; a host outside the static ceiling
+        # writes Err WITHOUT building any request).
+        self._write("local.get $host_ptr")
+        self._write("local.get $host_len")
+        self._write("call $Net_host_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Build the request (method = POST, the only set-* difference).
+        self._write("call $wasi_http_fields_new")
+        self._write("local.set $fields")
+        self._write("local.get $fields")
+        self._write("call $wasi_http_request_new")
+        self._write("local.set $req")
+        self._write("local.get $req")
+        self._write("i32.const 2")            # method variant POST = 2
+        self._write("i32.const 0")            # method payload ptr (unused)
+        self._write("i32.const 0")            # method payload len (unused)
+        self._write("call $wasi_http_set_method")
+        self._write("drop")
+        self._write("local.get $req")
+        self._write("i32.const 1")
+        self._write("local.get $scheme")
+        self._write("i32.const 0")
+        self._write("i32.const 0")
+        self._write("call $wasi_http_set_scheme")
+        self._write("drop")
+        self._write("local.get $req")
+        self._write("i32.const 1")
+        self._write("local.get $auth_ptr")
+        self._write("local.get $auth_len")
+        self._write("call $wasi_http_set_authority")
+        self._write("drop")
+        self._write("local.get $req")
+        self._write("i32.const 1")
+        self._write("local.get $path_ptr")
+        self._write("local.get $path_len")
+        self._write("call $wasi_http_set_path")
+        self._write("drop")
+        # obody = req.body().value @body_ret+4.
+        self._write("local.get $req")
+        self._write(f"i32.const {body_ret}")
+        self._write("call $wasi_http_request_body")
+        self._write(f"i32.const {body_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $obody")
+        # ostream = obody.write().value @obw_ret+4 (the NINTH OWN resource,
+        # a child of obody). On Err: req + obody not yet consumed -> drop
+        # both, write Err, return.
+        self._write("local.get $obody")
+        self._write(f"i32.const {obw_ret}")
+        self._write("call $wasi_http_outgoing_body_write")
+        self._write(f"i32.const {obw_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $obody")
+        self._write("call $wasi_http_drop_outgoing_body")
+        self._write("local.get $req")
+        self._write("call $wasi_http_drop_request")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"i32.const {obw_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $ostream")
+        # Write the request body through the output-stream with the
+        # FLOW-CONTROLLED wasi:io pattern (NOT blocking-write-and-flush: a
+        # not-yet-handled outgoing-body stream never drains, so blocking
+        # past the initial permit window deadlocks -- a 4097-byte body hangs
+        # while 4096 succeeds). Each iteration: check-write for the
+        # permitted budget; if 0, subscribe + block on the stream pollable
+        # until the host grants more permits (it buffers the not-yet-sent
+        # body); else non-blocking write of <= budget bytes straight from
+        # linear memory (no copy). cursor = 0; remaining = body_len. A
+        # zero-length body runs the loop zero times (empty request body).
+        self._write("i32.const 0")
+        self._write("local.set $cursor")
+        self._write("local.get $body_len")
+        self._write("local.set $remaining")
+        self._write("(block $post_write_done")
+        self._indent += 1
+        self._write("(loop $post_write_loop")
+        self._indent += 1
+        self._write("local.get $remaining")
+        self._write("i32.eqz")
+        self._write("br_if $post_write_done")
+        # check-write(ostream, cw_ret) -> result<u64, stream-error>.
+        self._write("local.get $ostream")
+        self._write(f"i32.const {cw_ret}")
+        self._write("call $wasi_io_check_write")
+        # On Err (disc @cw_ret+0 != 0): clean up the write path and bail.
+        # check-write is result<u64, stream-error> (8-aligned), so its Err
+        # stream-error sits at disc @+8, error @+12 (not the +4/+8 of the
+        # 4-aligned write / flush results).
+        self._write(f"i32.const {cw_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_net_post_write_err(
+            cw_ret, msg_off, msg_len, disc_field=8, err_field=12,
+        )
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # budget = cw_ret value (u64 @+8) truncated to i32 (request bodies
+        # fit i32; a budget > 2^31 is clamped harmlessly by the per-write
+        # min with remaining).
+        self._write(f"i32.const {cw_ret}")
+        self._write("i64.load offset=8")
+        self._write("i32.wrap_i64")
+        self._write("local.set $budget")
+        # budget == 0 -> await permits: subscribe + block + drop, retry.
+        self._write("local.get $budget")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $ostream")
+        self._write("call $wasi_io_stream_subscribe")
+        self._write("local.set $wp")
+        self._write("local.get $wp")
+        self._write("call $wasi_io_pollable_block")
+        self._write("local.get $wp")
+        self._write("call $wasi_io_drop_pollable")
+        self._write("br $post_write_loop")
+        self._indent -= 1
+        self._write("end")
+        # n = min(remaining, budget).
+        self._write("local.get $remaining")
+        self._write("local.get $budget")
+        self._write("i32.lt_u")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $remaining")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $budget")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $n")
+        # write(ostream, body_ptr+cursor, n, write_ret) -- non-blocking,
+        # <= the permitted budget, returns immediately.
+        self._write("local.get $ostream")
+        self._write("local.get $body_ptr")
+        self._write("local.get $cursor")
+        self._write("i32.add")
+        self._write("local.get $n")
+        self._write(f"i32.const {write_ret}")
+        self._write("call $wasi_io_stream_write")
+        # On Err (disc @write_ret+0 != 0): clean up the write path and bail.
+        self._write(f"i32.const {write_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_net_post_write_err(
+            write_ret, msg_off, msg_len,
+        )
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # cursor += n; remaining -= n; continue.
+        self._write("local.get $cursor")
+        self._write("local.get $n")
+        self._write("i32.add")
+        self._write("local.set $cursor")
+        self._write("local.get $remaining")
+        self._write("local.get $n")
+        self._write("i32.sub")
+        self._write("local.set $remaining")
+        self._write("br $post_write_loop")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # flush(ostream, write_ret) -- non-blocking; signals the body is
+        # complete (the host drains the buffered bytes on handle). Harmless
+        # when nothing was written (empty body).
+        self._write("local.get $ostream")
+        self._write(f"i32.const {write_ret}")
+        self._write("call $wasi_io_stream_flush")
+        self._write(f"i32.const {write_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_net_post_write_err(
+            write_ret, msg_off, msg_len,
+        )
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Drop the output-stream BEFORE finish (it is a child of obody;
+        # finish would trap if the stream were still live).
+        self._write("local.get $ostream")
+        self._write("call $wasi_io_drop_output_stream")
+        # finish(obody, none) [CONSUMES obody].
+        self._write("local.get $obody")
+        self._write("i32.const 0")
+        self._write("i32.const 0")
+        self._write(f"i32.const {finish_ret}")
+        self._write("call $wasi_http_body_finish")
+        # handle(req, none) [CONSUMES req].
+        self._write("local.get $req")
+        self._write("i32.const 0")
+        self._write("i32.const 0")
+        self._write(f"i32.const {handle_ret}")
+        self._write("call $wasi_http_handle")
+        self._write(f"i32.const {handle_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # future = handle_ret.value @+8.
+        self._write(f"i32.const {handle_ret}")
+        self._write("i32.load offset=8")
+        self._write("local.set $future")
+        # subscribe + block + drop, then loop get (identical to get).
+        self._write("local.get $future")
+        self._write("call $wasi_http_future_subscribe")
+        self._write("local.set $pollable")
+        self._write("local.get $pollable")
+        self._write("call $wasi_io_pollable_block")
+        self._write("local.get $pollable")
+        self._write("call $wasi_io_drop_pollable")
+        self._write("(block $post_got")
+        self._indent += 1
+        self._write("(loop $post_poll")
+        self._indent += 1
+        self._write("local.get $future")
+        self._write(f"i32.const {get_ret}")
+        self._write("call $wasi_http_future_get")
+        self._write(f"i32.const {get_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $future")
+        self._write("call $wasi_http_future_subscribe")
+        self._write("local.set $pollable")
+        self._write("local.get $pollable")
+        self._write("call $wasi_io_pollable_block")
+        self._write("local.get $pollable")
+        self._write("call $wasi_io_drop_pollable")
+        self._write("br $post_poll")
+        self._indent -= 1
+        self._write("end")
+        self._write("br $post_got")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # outer result disc @get_ret+8 != 0 -> already consumed -> Err.
+        self._write(f"i32.const {get_ret}")
+        self._write("i32.load8_u offset=8")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $future")
+        self._write("call $wasi_http_drop_future")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # inner result disc @get_ret+16 != 0 -> transport error -> Err.
+        self._write(f"i32.const {get_ret}")
+        self._write("i32.load8_u offset=16")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $future")
+        self._write("call $wasi_http_drop_future")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # resp = own<incoming-response> @get_ret+24.
+        self._write(f"i32.const {get_ret}")
+        self._write("i32.load offset=24")
+        self._write("local.set $resp")
+        self._write("local.get $future")
+        self._write("call $wasi_http_drop_future")
+        # status >= 400 -> Err (parity with urllib HTTPError).
+        self._write("local.get $resp")
+        self._write("call $wasi_http_response_status")
+        self._write("local.set $status")
+        self._write("local.get $status")
+        self._write("i32.const 400")
+        self._write("i32.ge_u")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # consume -> result<own<incoming-body>> @consume_ret (value @+4).
+        self._write("local.get $resp")
+        self._write(f"i32.const {consume_ret}")
+        self._write("call $wasi_http_response_consume")
+        self._write(f"i32.const {consume_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"i32.const {consume_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $ibody")
+        # stream -> result<own<input-stream>> @stream_ret (value @+4).
+        self._write("local.get $ibody")
+        self._write(f"i32.const {stream_ret}")
+        self._write("call $wasi_http_body_stream")
+        self._write(f"i32.const {stream_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $ibody")
+        self._write("call $wasi_http_drop_incoming_body")
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"i32.const {stream_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $stream")
+        # Response-body accumulation buffer (identical to get).
+        self._write("i32.const 0")
+        self._write("call $alloc")
+        self._write("local.set $buf")
+        self._write("i32.const 0")
+        self._write("local.set $buf_cap")
+        self._write("i32.const 0")
+        self._write("local.set $buf_len")
+        # blocking-read loop (identical to get).
+        self._write("(block $post_read_done")
+        self._indent += 1
+        self._write("(loop $post_read")
+        self._indent += 1
+        self._write("local.get $stream")
+        self._write(f"i64.const {chunk_r}")
+        self._write(f"i32.const {read_ret}")
+        self._write("call $wasi_io_blocking_read")
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $chunk_ptr")
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load offset=8")
+        self._write("local.set $chunk_len")
+        self._write("local.get $buf_len")
+        self._write("local.get $chunk_len")
+        self._write("i32.add")
+        self._write("local.set $need")
+        self._write("local.get $need")
+        self._write("local.get $buf_cap")
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $buf_cap")
+        self._write("i32.const 1")
+        self._write("i32.shl")
+        self._write("local.get $need")
+        self._write("i32.lt_u")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $need")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $buf_cap")
+        self._write("i32.const 1")
+        self._write("i32.shl")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $newcap")
+        self._write("local.get $newcap")
+        self._write("call $alloc")
+        self._write("local.set $newbuf")
+        self._write("local.get $newbuf")
+        self._write("local.get $buf")
+        self._write("local.get $buf_len")
+        self._write("memory.copy")
+        self._write("local.get $newbuf")
+        self._write("local.set $buf")
+        self._write("local.get $newcap")
+        self._write("local.set $buf_cap")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $buf")
+        self._write("local.get $buf_len")
+        self._write("i32.add")
+        self._write("local.get $chunk_ptr")
+        self._write("local.get $chunk_len")
+        self._write("memory.copy")
+        self._write("local.get $buf_len")
+        self._write("local.get $chunk_len")
+        self._write("i32.add")
+        self._write("local.set $buf_len")
+        self._write("br $post_read")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load offset=4")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"i32.const {read_ret}")
+        self._write("i32.load offset=8")
+        self._write("call $wasi_io_drop_error")
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_input_stream")
+        self._write("local.get $ibody")
+        self._write("call $wasi_http_drop_incoming_body")
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write("br $post_read_done")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # EOF: drop stream, ibody, resp.
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_input_stream")
+        self._write("local.get $ibody")
+        self._write("call $wasi_http_drop_incoming_body")
+        self._write("local.get $resp")
+        self._write("call $wasi_http_drop_response")
+        # Ok(String).
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write("local.get $buf")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write("local.get $buf_len")
+        self._write("i32.store offset=8")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_net_post_write_err(
+        self, ret: int, msg_off: int, msg_len: int,
+        disc_field: int = 4, err_field: int = 8,
+    ) -> None:
+        """Shared error cleanup for a failed request-body stream op
+        (``check-write`` / ``write`` / ``flush``) in ``$Net_post``.
+        ``$ostream``, ``$obody`` and ``$req`` are in scope (all created
+        before any write op runs, and neither obody nor req has been
+        consumed yet -- finish / handle come AFTER the write loop).
+
+        Drops the carried error resource when the stream-error variant is
+        last-operation-failed (disc @ret+disc_field == 0; the error handle
+        @ret+err_field is an OWN resource), then drops the output-stream
+        (the child), the outgoing-body and the outgoing-request (neither
+        consumed yet), and writes Err(IoError). The ``closed`` variant
+        (disc == 1) carries no error handle, so it skips the error drop.
+
+        ``disc_field`` / ``err_field`` locate the stream-error inside the
+        ret area: a ``result<_, stream-error>`` (write / flush) is 4-aligned
+        with disc @+4, error @+8 (the defaults); a ``result<u64,
+        stream-error>`` (check-write) is 8-aligned, so its Err stream-error
+        sits at disc @+8, error @+12."""
+        self._write(f"i32.const {ret}")
+        self._write(f"i32.load offset={disc_field}")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"i32.const {ret}")
+        self._write(f"i32.load offset={err_field}")
+        self._write("call $wasi_io_drop_error")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $ostream")
+        self._write("call $wasi_io_drop_output_stream")
+        self._write("local.get $obody")
+        self._write("call $wasi_http_drop_outgoing_body")
+        self._write("local.get $req")
+        self._write("call $wasi_http_drop_request")
+        self._emit_wasi_net_err(msg_off, msg_len)
+
     def _emit_wasi_net_err(self, msg_off: int, msg_len: int) -> None:
         """Write an ``Err(IoError)`` into ``$ret_area`` for the
         ``result_string_io_error`` 20-byte shape: tag@0 = 1, message = the
         interned fixed string (m_ptr@4, m_len@8), empty cause (c_ptr@12 =
         0, c_len@16 = 0).
 
-        The message is fixed (``HTTP GET failed``) rather than the Python
+        The message is fixed (``HTTP GET failed`` for get, ``HTTP POST
+        failed`` for post -- the caller passes the offsets) rather than the
+        Python
         oracle's transport-specific cause, which carries OS / URL bytes no
         cross-backend comparison can reproduce; parity is on the Result
         DISCRIMINANT (is_err), as the Fs read / write / metadata error

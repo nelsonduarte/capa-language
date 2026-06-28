@@ -945,6 +945,20 @@ _EXCLUDED: dict[str, str] = {
         "404 / 500 / connection-refused) and assert three-backend byte parity "
         "(Python urllib oracle == capa:host == WASI)."
     ),
+    "wasi_net_post.capa": (
+        "Experimental --wasi mode demo: Net.post via wasi:http (Phase 2). "
+        "Reuses the Net.get chain and adds a flow-controlled outgoing-body "
+        "write of the request body before the handle. The demo POSTs to a "
+        "live HTTP server (its literal url points at 127.0.0.1:8080), which "
+        "the auto-list parity harness does not run, so there is no fixed "
+        "byte-equality reference here. Covered by the dedicated "
+        "TestWasiNetPost / TestWasiNetPostCeiling tests in "
+        "tests/test_wasi_mode.py, which start a controlled local 127.0.0.1 "
+        "server (small / empty / large-multichunk request bodies / "
+        "large-multichunk responses / UTF-8 / 404 / 500 / connection-refused) "
+        "and assert three-backend byte parity of the RESPONSE plus the exact "
+        "request body the server received."
+    ),
 }
 
 

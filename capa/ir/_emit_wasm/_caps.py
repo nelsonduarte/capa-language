@@ -460,16 +460,21 @@ class _CapDispatchMixin:
         if cap == "Fs" and method in ("exists", "is_dir"):
             self._emit_fs_bool_query_with_handle(instr, method)
             return
-        # WASI mode (2026-06-28, Phase 1): Net.get routes to the
-        # wasi:http guest wrapper, which builds the outgoing request from
+        # WASI mode: Net.get (Phase 1) and Net.post (Phase 2) route to the
+        # wasi:http guest wrappers, which build the outgoing request from
         # the url's compile-time-resolved scheme / authority / path and
-        # gates the host against the static Net ceiling guest-side. Checked
-        # BEFORE the capa:host Net branch so the same source compiles both
-        # ways. Net.post / restrict_to / allows are rejected by
-        # ``_validate_wasi_caps`` in --wasi (Phase 1), so they never reach
-        # this branch in WASI mode and stay on the capa:host path below.
+        # gate the host against the static Net ceiling guest-side. post
+        # additionally writes the request body through the outgoing-body
+        # output-stream before the handle. Checked BEFORE the capa:host Net
+        # branch so the same source compiles both ways. Net.restrict_to /
+        # allows are rejected by ``_validate_wasi_caps`` in --wasi (Phase 3
+        # pending), so they never reach this branch in WASI mode and stay on
+        # the capa:host path below.
         if self._wasi and cap == "Net" and method == "get":
             self._emit_wasi_net_get_call(instr)
+            return
+        if self._wasi and cap == "Net" and method == "post":
+            self._emit_wasi_net_post_call(instr)
             return
         if cap == "Net" and indirect is not None:
             self._emit_net_method_with_handle(instr, method, indirect)
@@ -1028,6 +1033,86 @@ class _CapDispatchMixin:
         self._write(f"i32.const {path_len}")
         self._write("local.get $_ret_area")
         self._write("call $Net_get")
+        self._emit_cap_indirect_materialise(
+            "result_string_io_error", instr.dst,
+        )
+
+    def _emit_wasi_net_post_call(self, instr: MethodCall) -> None:
+        """Emit ``net.post(url, body)`` in WASI mode (Phase 2).
+
+        Identical url handling to ``_emit_wasi_net_get_call`` (the URL arg
+        is split at compile time into host / scheme / authority / path; a
+        DYNAMIC url is FAIL-CLOSED at the call site), plus the BODY argument
+        (arg[1]) -- any String (literal / local / param) whose bytes already
+        live in linear memory -- pushed as ``(ptr, len)`` via
+        ``_push_string_arg`` and handed straight to the ``$Net_post``
+        wrapper (no copy, the Fs.write content convention).
+
+        Calls ``$Net_post`` with ``(handle, host, scheme, authority, path,
+        body_ptr, body_len, ret_area)`` and reuses the shared
+        ``result_string_io_error`` materialiser so the lifted value is a
+        ``Result<String, IoError>`` identical to the capa:host Net.post (the
+        oracle returns the RESPONSE body decoded UTF-8, the same shape as
+        get). ``$Net_post`` itself (in ``_wasi.py``) gates the host, builds
+        the POST request, WRITES the request body through the outgoing-body
+        output-stream, drives the synchronous poll, maps status >= 400 to
+        Err, reads the response body, and drops every OWN resource."""
+        from ._net import split_net_url
+        if len(instr.args) != 2:
+            raise WasmEmissionError(
+                f"Net.post expected 2 args (url, body), got "
+                f"{len(instr.args)}"
+            )
+        arg = instr.args[0]
+        if arg.kind != "lit_str" or not isinstance(arg.literal, str):
+            # Dynamic url: fail-closed. Allocate the 20-byte ret area, write
+            # Err(IoError) directly, and lift it -- no $Net_post call, so no
+            # request is built and no host is reached (the body is not
+            # touched either). The Err message is the fixed ``HTTP POST
+            # failed`` interned up front.
+            msg_off, msg_len = self._intern_string("HTTP POST failed")
+            self._write("i32.const 20")
+            self._write("call $alloc")
+            self._write("local.set $_ret_area")
+            self._write("local.get $_ret_area")
+            self._write("i32.const 1")
+            self._write("i32.store offset=0")
+            self._write("local.get $_ret_area")
+            self._write(f"i32.const {msg_off}")
+            self._write("i32.store offset=4")
+            self._write("local.get $_ret_area")
+            self._write(f"i32.const {msg_len}")
+            self._write("i32.store offset=8")
+            self._write("local.get $_ret_area")
+            self._write("i32.const 0")
+            self._write("i32.store offset=12")
+            self._write("local.get $_ret_area")
+            self._write("i32.const 0")
+            self._write("i32.store offset=16")
+            self._emit_cap_indirect_materialise(
+                "result_string_io_error", instr.dst,
+            )
+            return
+        host, is_https, authority, path = split_net_url(arg.literal)
+        host_off, host_len = self._intern_string(host)
+        auth_off, auth_len = self._intern_string(authority)
+        path_off, path_len = self._intern_string(path)
+        scheme = 1 if is_https else 0
+        self._write("i32.const 20")
+        self._write("call $alloc")
+        self._write("local.set $_ret_area")
+        self._push_net_handle(instr.receiver)
+        self._write(f"i32.const {host_off}")
+        self._write(f"i32.const {host_len}")
+        self._write(f"i32.const {scheme}")
+        self._write(f"i32.const {auth_off}")
+        self._write(f"i32.const {auth_len}")
+        self._write(f"i32.const {path_off}")
+        self._write(f"i32.const {path_len}")
+        # body (ptr, len) - the bytes already live in linear memory.
+        self._push_string_arg(instr.args[1])
+        self._write("local.get $_ret_area")
+        self._write("call $Net_post")
         self._emit_cap_indirect_materialise(
             "result_string_io_error", instr.dst,
         )

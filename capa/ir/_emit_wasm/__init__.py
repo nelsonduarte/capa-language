@@ -606,26 +606,34 @@ class WasmEmitter(
         # from the same module the emitter walks (the loader inlined
         # imports), mirroring how the host gates linking wasi:http on Net
         # being used at all.
-        if self._wasi and ("Net", "get") in self._used_caps:
+        if self._wasi and (
+            ("Net", "get") in self._used_caps
+            or ("Net", "post") in self._used_caps
+        ):
             from .._net_ceiling import compute_net_ceiling_from_cir, url_host
             self._net_ceiling = compute_net_ceiling_from_cir(module)
             # Pre-intern every WASI-Net string the wrappers / call sites
             # reference, BEFORE the data segment is emitted below (the same
             # write-only-parity discipline the Fs strings follow: a string
             # interned later gets a valid offset but no ``(data ...)``
-            # block, so its bytes are undefined at runtime). Three sources:
+            # block, so its bytes are undefined at runtime). Sources:
             #   (1) each literal url's HOST (the ceiling membership keys the
             #       gate scans, AND the per-call authority host the wrapper
-            #       sends),
+            #       sends) -- for BOTH get and post, whose first arg is the
+            #       url,
             #   (2) the per-call AUTHORITY (host:port) and PATH-with-query
             #       resolved from each literal url,
-            #   (3) the fixed ``HTTP GET failed`` Err message.
+            #   (3) the fixed ``HTTP GET failed`` / ``HTTP POST failed`` Err
+            #       messages.
+            # No method-name string is interned for POST: the wasi:http
+            # ``method`` variant encodes POST as the discriminant 2 (no
+            # payload), so the wrapper never references a "POST" literal.
             from ._net import split_net_url
             for _fn, instr in walk_module(module):
                 if (isinstance(instr, MethodCall)
                         and (instr.cap_used
                              or (instr.receiver.ty or "")) == "Net"
-                        and instr.method == "get"
+                        and instr.method in ("get", "post")
                         and instr.args
                         and instr.args[0].kind == "lit_str"
                         and isinstance(instr.args[0].literal, str)):
@@ -642,7 +650,10 @@ class WasmEmitter(
             # lowercases).
             for h in self._net_ceiling.hosts:
                 self._intern_string(h)
-            self._intern_string("HTTP GET failed")
+            if ("Net", "get") in self._used_caps:
+                self._intern_string("HTTP GET failed")
+            if ("Net", "post") in self._used_caps:
+                self._intern_string("HTTP POST failed")
 
         # Reserve linear-memory space for the Grisu2 cached-powers
         # table when Float formatting is in play. Placed right after
@@ -824,11 +835,13 @@ class WasmEmitter(
                 self._wasi_fs_list_dir_scratch_offset + 32
             )
 
-        # Experimental WASI mode: Net.get (2026-06-28, Phase 1). A
-        # 128-byte, 8-aligned scratch holding the SEVEN indirect returns
-        # of the wasi:http GET chain, packed at distinct sub-offsets so no
-        # two overlap in time-and-space (the offsets are also recorded in
-        # the ``$Net_get`` docstring; validated by the oracle spike):
+        # Experimental WASI mode: Net.get (2026-06-28, Phase 1) / Net.post
+        # (2026-06-28, Phase 2). A 192-byte, 8-aligned scratch SHARED by
+        # both request ops (they never interleave within one wrapper
+        # invocation), holding the indirect returns of the wasi:http chain
+        # at distinct sub-offsets so no two overlap in time-and-space (the
+        # offsets are also recorded in the ``$Net_get`` / ``$Net_post``
+        # docstrings; validated by the oracle spike):
         #   outgoing-request.body       result<own<outgoing-body>, _>   @ +0  (8B,  value @+4)
         #   outgoing-body.finish        result<_, error-code>           @ +8  (8B)
         #   outgoing-handler.handle     result<own<future>, error-code> @ +16 (16B, value @+8 -- error-code forces 8-align)
@@ -836,21 +849,30 @@ class WasmEmitter(
         #   incoming-response.consume   result<own<incoming-body>, _>   @ +64 (8B,  value @+4)
         #   incoming-body.stream        result<own<input-stream>, _>    @ +72 (8B,  value @+4)
         #   input-stream.blocking-read  result<list<u8>, stream-error>  @ +80 (12B, Ok data_ptr @+4 len @+8; Err stream-error disc @+4, error @+8)
-        # The blocking-read DATA bytes are NOT here: the host writes the
-        # chunk bytes into its own canonical-ABI-allocated memory
-        # (cabi_realloc / $alloc) and the wrapper copies them into a
-        # geometrically-grown heap accumulation buffer via $alloc +
-        # memory.copy, exactly like Fs.read. This region is SEPARATE from
-        # every Fs / Env / Clock scratch (Net never interleaves with them
-        # in one wrapper invocation, but disjoint offsets are belt-and-
-        # braces). 0 means "not reserved".
+        # Net.post ADDS three slots (unused by get) for the FLOW-CONTROLLED
+        # REQUEST-body write path, all reached BEFORE the read loop, so they
+        # cannot collide with the read scratch in time:
+        #   output-stream write/flush  result<_, stream-error>          @ +96  (12B)
+        #   outgoing-body.write        result<own<output-stream>, _>    @ +112 (8B,  value @+4)
+        #   output-stream.check-write  result<u64, stream-error>        @ +128 (16B, disc @+0, budget u64 @+8)
+        # The blocking-read DATA bytes / blocking-write SOURCE bytes are NOT
+        # here: the host writes read chunks into its own canonical-ABI
+        # memory (the wrapper copies into a geometrically-grown heap buffer
+        # via $alloc + memory.copy, like Fs.read), and the post request body
+        # is handed to blocking-write-and-flush straight from linear memory
+        # as ``(ptr, len)`` chunks, no copy (like Fs.write). This region is
+        # SEPARATE from every Fs / Env / Clock scratch (disjoint offsets are
+        # belt-and-braces). 0 means "not reserved".
         self._wasi_net_scratch_offset = 0
-        if self._wasi and ("Net", "get") in self._used_caps:
+        if self._wasi and (
+            ("Net", "get") in self._used_caps
+            or ("Net", "post") in self._used_caps
+        ):
             self._wasi_net_scratch_offset = _align_up(
                 self._string_data_offset, 8,
             )
             self._string_data_offset = (
-                self._wasi_net_scratch_offset + 128
+                self._wasi_net_scratch_offset + 192
             )
 
         # Stage 1: emit the (module ... ) header with imports and
@@ -1016,7 +1038,7 @@ class WasmEmitter(
                     or self._eq_needs_str_eq(module)
                     or self._set_algebra_needs_str_eq(module)
                     or self._wasi_env_get_needs_str_eq()
-                    or self._wasi_net_get_needs_str_eq()):
+                    or self._wasi_net_needs_str_eq()):
                 self._emit_str_eq_function()
             if self._uses_string_concat(module):
                 # String ``+`` lowers to ``call $str_concat`` (see
