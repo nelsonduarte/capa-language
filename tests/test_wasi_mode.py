@@ -1097,6 +1097,25 @@ class TestWasiFsWitGeneration(unittest.TestCase):
         wit = self._wit(self._FS_SRC)
         self.assertIn("import wasi:filesystem/types@0.2.0;", wit)
         self.assertIn("import wasi:filesystem/preopens@0.2.0;", wit)
+        # Metadata-only program does NOT pull in the io stream imports.
+        self.assertNotIn("import wasi:io/streams@0.2.0;", wit)
+        self.assertNotIn("import wasi:io/error@0.2.0;", wit)
+
+    def test_read_world_imports_io_streams(self):
+        # A program reaching fs.read additionally imports
+        # wasi:io/streams (blocking-read) and wasi:io/error (the
+        # resource-drop of the error a failed read carries).
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    let r = fs.read(\"/d/f.txt\")\n"
+            "    match r\n"
+            "        Ok(c) -> stdio.println(c)\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+        )
+        wit = self._wit(src)
+        self.assertIn("import wasi:filesystem/types@0.2.0;", wit)
+        self.assertIn("import wasi:io/streams@0.2.0;", wit)
+        self.assertIn("import wasi:io/error@0.2.0;", wit)
 
     def test_no_capa_host_fs_interface(self):
         # Fs metadata routes off capa:host entirely in WASI mode.
@@ -1119,19 +1138,6 @@ class TestWasiFsRejections(unittest.TestCase):
         from capa.ir import compile_wat
         module, result = _parse_analyze(src)
         return compile_wat(module, types=result.types, wasi=True)
-
-    def test_read_rejected(self):
-        src = (
-            "fun main(fs: Fs, stdio: Stdio)\n"
-            "    let r = fs.read(\"/d/f\")\n"
-            "    match r\n"
-            "        Ok(c) -> stdio.println(\"ok\")\n"
-            "        Err(e) -> stdio.println(\"err\")\n"
-        )
-        with self.assertRaises(Exception) as cm:
-            self._compile(src)
-        self.assertIn("Fs.read", str(cm.exception))
-        self.assertIn("WASI mode", str(cm.exception))
 
     def test_write_rejected(self):
         src = (
@@ -1200,6 +1206,56 @@ class TestWasiFsRejections(unittest.TestCase):
         self.assertIn("[method]descriptor.stat-at", wat)
         self.assertIn("[method]descriptor.create-directory-at", wat)
         self.assertNotIn('"capa:host/fs"', wat)
+
+    def test_read_accepted(self):
+        # read compiles cleanly and emits the wasi:filesystem +
+        # wasi:io/streams wrappers (open-at -> read-via-stream ->
+        # blocking-read), with all three resource drops and no
+        # capa:host/fs import.
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    let r = fs.read(\"/d/file.txt\")\n"
+            "    match r\n"
+            "        Ok(c) -> stdio.println(c)\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+        )
+        wat = self._compile(src)
+        self.assertIn("(func $Fs_read", wat)
+        self.assertIn("(func $__wasi_fs_preopen_desc", wat)
+        self.assertIn("[method]descriptor.open-at", wat)
+        self.assertIn("[method]descriptor.read-via-stream", wat)
+        self.assertIn("[method]input-stream.blocking-read", wat)
+        # All three OWN resource drops are imported.
+        self.assertIn(
+            '"wasi:filesystem/types@0.2.0" "[resource-drop]descriptor"',
+            wat,
+        )
+        self.assertIn(
+            '"wasi:io/streams@0.2.0" "[resource-drop]input-stream"', wat,
+        )
+        self.assertIn(
+            '"wasi:io/error@0.2.0" "[resource-drop]error"', wat,
+        )
+        self.assertNotIn('"capa:host/fs"', wat)
+
+    def test_read_dynamic_path_fail_closed_rejected(self):
+        # A read with a dynamic path is rejected (fail-closed: no
+        # preopen can be derived), exactly like the metadata ops.
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let p = env.get(\"P\")\n"
+            "    match p\n"
+            "        Some(path) ->\n"
+            "            let r = fs.read(path)\n"
+            "            match r\n"
+            "                Ok(c) -> stdio.println(c)\n"
+            "                Err(e) -> stdio.println(\"err\")\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        with self.assertRaises(Exception) as cm:
+            self._compile(src)
+        self.assertIn("WASI mode", str(cm.exception))
+        self.assertIn("literal", str(cm.exception))
 
 
 class TestWasiFsWitLicenseHeaders(unittest.TestCase):
@@ -1453,6 +1509,146 @@ class TestWasiFsMode(unittest.TestCase):
         self.assertEqual(py, wasi)
         self.assertIn("a=true", wasi)
         self.assertIn("b=true", wasi)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiFsRead(unittest.TestCase):
+    """End-to-end: fs.read in --wasi mode goes open-at ->
+    read-via-stream -> blocking-read loop over wasi:io/streams against
+    the host preopens, and its Ok(String) is BYTE-IDENTICAL to the
+    Python oracle and the capa:host backend across small / empty /
+    large-multichunk / UTF-8 files; a missing file is a coherent Err on
+    all three backends. Resource OWN handles (descriptor, input-stream,
+    error) are dropped on every path with no leak / double-drop (a
+    double-drop or a dropped preopen root would trap a later op).
+    """
+
+    def setUp(self):
+        import tempfile
+        self._td = tempfile.mkdtemp(prefix="capa-wasi-read-test-")
+        self._data = os.path.join(self._td, "data")
+        os.makedirs(os.path.join(self._data, "sub"))
+        # small file.
+        with open(os.path.join(self._data, "small.txt"), "wb") as f:
+            f.write(b"hello world")
+        # empty file (0 bytes): the first blocking-read is closed (EOF).
+        with open(os.path.join(self._data, "empty.txt"), "wb") as f:
+            f.write(b"")
+        # large file > the blocking-read chunk: forces the loop to run
+        # multiple iterations and the accumulation buffer to grow.
+        with open(os.path.join(self._data, "big.txt"), "wb") as f:
+            f.write(b"A" * 10000)
+        # UTF-8 multi-byte (accents + emoji + CJK): the bytes must round-
+        # trip unchanged so the Capa String is byte-identical.
+        with open(
+            os.path.join(self._data, "utf8.txt"), "w", encoding="utf-8",
+        ) as f:
+            f.write("café-\U0001F98A multi: éè你好")
+        # nested file under a subdirectory (multi-segment relative path).
+        with open(
+            os.path.join(self._data, "sub", "c.txt"), "wb",
+        ) as f:
+            f.write(b"gamma")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _read_src(self, rel: str) -> str:
+        d = self._data.replace("\\", "/")
+        return (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let r = fs.read(\"{d}/{rel}\")\n"
+            "    match r\n"
+            "        Ok(c) -> stdio.println(\"OK:${c}\")\n"
+            "        Err(e) -> stdio.println(\"ERR\")\n"
+        )
+
+    def _assert_three_backend_parity(self, rel: str):
+        src = self._read_src(rel)
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host, f"py/host diverge for {rel}")
+        self.assertEqual(py, wasi, f"py/wasi diverge for {rel}")
+        return wasi
+
+    def test_small_file_parity(self):
+        out = self._assert_three_backend_parity("small.txt")
+        self.assertIn("OK:hello world", out)
+
+    def test_empty_file_parity(self):
+        # 0 bytes: Ok("") on every backend (the first blocking-read is
+        # stream-error::closed and the loop accumulates nothing).
+        out = self._assert_three_backend_parity("empty.txt")
+        self.assertEqual(out, "OK:\n")
+
+    def test_large_multichunk_file_parity(self):
+        # > one blocking-read chunk: the loop runs multiple iterations
+        # and the heap accumulation buffer grows. Byte-identical to the
+        # single-shot Python read.
+        out = self._assert_three_backend_parity("big.txt")
+        self.assertEqual(out, "OK:" + ("A" * 10000) + "\n")
+
+    def test_utf8_multibyte_file_parity(self):
+        # Accents + emoji + CJK: the raw bytes round-trip unchanged.
+        out = self._assert_three_backend_parity("utf8.txt")
+        self.assertIn(
+            "café-\U0001F98A multi: éè你好", out,
+        )
+
+    def test_nested_relative_path_parity(self):
+        # A file under a subdirectory: the resolved relative path is
+        # multi-segment (sub/c.txt), addressed against the one preopen.
+        out = self._assert_three_backend_parity("sub/c.txt")
+        self.assertIn("OK:gamma", out)
+
+    def test_missing_file_is_coherent_err(self):
+        # A file that does not exist inside the preopen: open-at fails,
+        # the wrapper writes Err(IoError) and drops nothing (nothing
+        # opened). Every backend takes the Err arm. The Err MESSAGE
+        # differs (the oracle carries the OS errno; the WASI wrapper
+        # writes a fixed message), so parity is on the discriminant.
+        src = self._read_src("does-not-exist.txt")
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertIn("ERR", py)
+        self.assertIn("ERR", host)
+        self.assertIn("ERR", wasi)
+
+    def test_interleaved_reads_and_metadata_no_resource_leak(self):
+        # Reads interleaved with metadata ops on the SAME preopen must
+        # all succeed: a leaked / double-dropped OWN handle, or a
+        # dropped preopen ROOT, would trap the next op. The sequence
+        # ends with an exists / is_dir on the same preopen to prove the
+        # root descriptor is still live after several open/read/drop
+        # cycles.
+        d = self._data.replace("\\", "/")
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let r1 = fs.read(\"{d}/small.txt\")\n"
+            "    match r1\n"
+            "        Ok(c) -> stdio.println(\"r1=${c}\")\n"
+            "        Err(e) -> stdio.println(\"r1=ERR\")\n"
+            f"    stdio.println(\"d=${{fs.is_dir(\\\"{d}/sub\\\")}}\")\n"
+            f"    let r2 = fs.read(\"{d}/big.txt\")\n"
+            "    match r2\n"
+            "        Ok(c) -> stdio.println(\"r2ok\")\n"
+            "        Err(e) -> stdio.println(\"r2=ERR\")\n"
+            f"    let r3 = fs.read(\"{d}/sub/c.txt\")\n"
+            "    match r3\n"
+            "        Ok(c) -> stdio.println(\"r3=${c}\")\n"
+            "        Err(e) -> stdio.println(\"r3=ERR\")\n"
+            f"    stdio.println(\"e=${{fs.exists(\\\"{d}/small.txt\\\")}}\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("r1=hello world", wasi)
+        self.assertIn("d=true", wasi)
+        self.assertIn("r2ok", wasi)
+        self.assertIn("r3=gamma", wasi)
+        self.assertIn("e=true", wasi)
 
 
 def _run_wasi_fs(src: str, data_dir: str) -> str:

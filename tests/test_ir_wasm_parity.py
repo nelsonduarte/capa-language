@@ -878,6 +878,18 @@ _EXCLUDED: dict[str, str] = {
         "which build a known temp directory and assert three-backend "
         "parity (Python oracle == capa:host == WASI)."
     ),
+    "wasi_fs_read.capa": (
+        "Experimental --wasi mode demo: Fs.read via wasi:filesystem "
+        "open-at -> read-via-stream -> wasi:io/streams blocking-read "
+        "loop + the preopen ceiling. The output depends on host "
+        "filesystem state (the contents of the demo's data/file.txt), "
+        "which the auto-list harness does not control, so there is no "
+        "fixed byte-equality reference here. Covered by the dedicated "
+        "TestWasiFsRead tests in tests/test_wasi_mode.py, which build a "
+        "known temp directory (small / empty / large-multichunk / UTF-8 "
+        "files) and assert three-backend byte parity (Python oracle == "
+        "capa:host == WASI)."
+    ),
 }
 
 

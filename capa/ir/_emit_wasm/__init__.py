@@ -486,7 +486,7 @@ class WasmEmitter(
             # both here so they land in the data segment deterministically.
             if self._fs_ceiling.closed:
                 from .._nodes import MethodCall
-                _fs_meta = ("exists", "is_dir", "mkdir")
+                _fs_meta = ("exists", "is_dir", "mkdir", "read")
                 for _fn, instr in walk_module(module):
                     if (isinstance(instr, MethodCall)
                             and (instr.cap_used
@@ -506,12 +506,22 @@ class WasmEmitter(
                             for _pfx in mkdir_prefixes(_rel):
                                 self._intern_string(_pfx)
                         else:
+                            # exists / is_dir / read all resolve to a
+                            # single relative path the wrapper addresses
+                            # by (ptr, len).
                             self._intern_string(_rel)
                 if any(
                     cap == "Fs" and m == "mkdir"
                     for (cap, m) in self._used_caps
                 ):
                     self._intern_string("mkdir failed")
+                if any(
+                    cap == "Fs" and m == "read"
+                    for (cap, m) in self._used_caps
+                ):
+                    # The fixed Err message $Fs_read writes on an open /
+                    # read-via-stream / last-operation-failed failure.
+                    self._intern_string("failed to read file")
 
         # Reserve linear-memory space for the Grisu2 cached-powers
         # table when Float formatting is in play. Placed right after
@@ -602,7 +612,7 @@ class WasmEmitter(
         #   component's lifetime, never dropped).
         self._wasi_fs_scratch_offset = 0
         self._wasi_fs_uses_preopens = self._wasi and any(
-            cap == "Fs" and method in ("exists", "is_dir", "mkdir")
+            cap == "Fs" and method in ("exists", "is_dir", "mkdir", "read")
             for (cap, method) in self._used_caps
         )
         if self._wasi_fs_uses_preopens:
@@ -611,6 +621,32 @@ class WasmEmitter(
             )
             self._string_data_offset = (
                 self._wasi_fs_scratch_offset + 104
+            )
+
+        # Experimental WASI mode: Fs.read (2026-06-28). A 32-byte,
+        # 8-aligned scratch holding the THREE indirect returns of the
+        # read sequence, packed at distinct sub-offsets so they never
+        # overlap each other:
+        #   open-at         result<descriptor, error-code>     @ +0  (8B)
+        #   read-via-stream result<input-stream, error-code>   @ +8  (8B)
+        #   blocking-read   result<list<u8>, stream-error>     @ +16 (12B)
+        # This region is SEPARATE from the 104-byte metadata scratch
+        # (``_wasi_fs_scratch_offset``, used by stat-at /
+        # create-directory-at) and from the cached get-directories list
+        # buffer the host writes (addressed via the preopen globals), so
+        # a read interleaved with metadata ops cannot corrupt either.
+        # The blocking-read DATA buffer is NOT here: the host writes the
+        # chunk bytes into its own canonical-ABI-allocated memory
+        # (cabi_realloc / $alloc), and the wrapper copies them into a
+        # geometrically-grown heap accumulation buffer via $alloc +
+        # memory.copy. 0 means "not reserved".
+        self._wasi_fs_read_scratch_offset = 0
+        if self._wasi and ("Fs", "read") in self._used_caps:
+            self._wasi_fs_read_scratch_offset = _align_up(
+                self._string_data_offset, 8,
+            )
+            self._string_data_offset = (
+                self._wasi_fs_read_scratch_offset + 32
             )
 
         # Stage 1: emit the (module ... ) header with imports and

@@ -445,6 +445,9 @@ class _CapDispatchMixin:
                 and method in ("exists", "is_dir", "mkdir")):
             self._emit_wasi_fs_metadata_call(instr, method)
             return
+        if self._wasi and cap == "Fs" and method == "read":
+            self._emit_wasi_fs_read_call(instr)
+            return
         if cap == "Fs" and indirect is not None:
             self._emit_fs_method_with_handle(instr, method, indirect)
             return
@@ -682,6 +685,53 @@ class _CapDispatchMixin:
             self._write(f"call $Fs_{method}")
             if instr.dst is not None:
                 self._write(f"local.set ${instr.dst}")
+
+    def _emit_wasi_fs_read_call(self, instr: MethodCall) -> None:
+        """Emit ``fs.read(path)`` in WASI mode.
+
+        The path argument MUST be a string literal (the fail-closed
+        ceiling guarantees this; ``_validate_wasi_caps`` rejects a
+        dynamic path before emission). Resolve the literal to
+        ``(preopen_index, relative_path)`` via the static Fs ceiling,
+        intern the relative path, allocate the 20-byte canonical-ABI
+        ret area, call the ``$Fs_read`` guest wrapper with
+        ``(idx, rel_ptr, rel_len, ret_area)``, and reuse the shared
+        ``result_string_io_error`` materialiser so the lifted value is
+        a ``Result<String, IoError>`` identical to the capa:host read.
+
+        ``$Fs_read`` itself (in ``_wasi.py``) does the open-at ->
+        read-via-stream -> blocking-read loop over the host preopens,
+        with all resource drops; this call site only resolves the path
+        and lifts the result."""
+        from .._fs_ceiling import resolve_fs_call
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Fs.read expected 1 arg, got {len(instr.args)}"
+            )
+        arg = instr.args[0]
+        if arg.kind != "lit_str" or not isinstance(arg.literal, str):
+            raise WasmEmissionError(
+                "Fs.read in WASI mode requires a string-literal path "
+                "(the preopen ceiling must be closed)"
+            )
+        ceiling = self._fs_ceiling
+        if ceiling is None or not ceiling.closed:
+            raise WasmEmissionError(
+                "Fs in WASI mode has no closed preopen ceiling"
+            )
+        idx, rel = resolve_fs_call(ceiling, arg.literal)
+        rel_off, rel_len = self._intern_string(rel)
+        self._write("i32.const 20")
+        self._write("call $alloc")
+        self._write("local.set $_ret_area")
+        self._write(f"i32.const {idx}")
+        self._write(f"i32.const {rel_off}")
+        self._write(f"i32.const {rel_len}")
+        self._write("local.get $_ret_area")
+        self._write("call $Fs_read")
+        self._emit_cap_indirect_materialise(
+            "result_string_io_error", instr.dst,
+        )
 
     # ---- slice 25.3 Net handle-passing helpers -----------------
 

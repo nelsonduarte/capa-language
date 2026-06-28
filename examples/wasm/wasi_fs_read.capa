@@ -1,0 +1,50 @@
+// Experimental WASI mode demo: Fs.read via wasi:filesystem +
+// wasi:io/streams (capa --wasm --component --wasi).
+//
+// Migrates Fs.read to the canonical WASI Preview 2 streaming read:
+//
+//   fs.read(path) -> descriptor.open-at (against the host-granted
+//                    PREOPEN descriptor for the path's parent)
+//                 -> descriptor.read-via-stream(offset = 0)
+//                 -> input-stream.blocking-read LOOP, accumulating the
+//                    chunks until stream-error::closed (EOF, the normal
+//                    terminator; NOT an error) -> Ok(String)
+//                 -> all OWN resource handles (descriptor, input-stream,
+//                    and any error a failed read carries) are dropped on
+//                    every exit path; the preopen ROOT descriptors are
+//                    never dropped.
+//
+// This is the FIRST touch-point that uses wasi:io/streams. The Ok(String)
+// is byte-identical to the Python backend's f.read() (UTF-8) and to the
+// capa:host bridge; an unreadable / missing file is an Err(IoError).
+// Stdio stays on capa:host -- the hybrid coexistence this mode validates.
+// See docs/design/wasi_mode.md.
+//
+// The PREOPEN CEILING applies exactly as for the metadata ops: every
+// Fs path here is a string LITERAL, the compiler derives the parent
+// directories to preopen (READ_ONLY for read), and a path outside every
+// preopen is unreachable. A DYNAMIC read path is rejected at compile
+// time in --wasi mode (fail-closed). The same program runs unchanged on
+// the default capa:host backend. Fs.write / Fs.list_dir and the fine
+// attenuators Fs.restrict_to / Fs.allows are still rejected under --wasi
+// (later increments).
+//
+// The file below lives under a `data` directory next to this file:
+//
+//   mkdir -p examples/wasm/data
+//   printf 'hello from a capability-secured read\n' > examples/wasm/data/file.txt
+//   capa --wasm --component --wasi --run examples/wasm/wasi_fs_read.capa
+//
+// (Adjust the literal prefix below to an absolute path you control if
+// your runner's working directory differs.)
+
+fun main(fs: Fs, stdio: Stdio)
+    let r = fs.read("examples/wasm/data/file.txt")
+    match r
+        Ok(contents) -> stdio.println("read ok, contents:\n${contents}")
+        Err(e) -> stdio.println("read failed: ${e}")
+    // A path inside the preopen that does not exist is a clean Err.
+    let missing = fs.read("examples/wasm/data/missing.txt")
+    match missing
+        Ok(contents) -> stdio.println("unexpected ok: ${contents}")
+        Err(e) -> stdio.println("missing read failed (expected): err")

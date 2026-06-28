@@ -279,7 +279,8 @@ unaffected), `Clock.now_secs`, `Clock.now_monotonic`, `Env.get`,
 `Env.allows`, and the `Env.get` fail-closed gate), implemented
 guest-side (Level 2; see "Env attenuation (guest-side, Level 2)"
 above), plus the **Fs metadata** operations `Fs.exists`, `Fs.is_dir`,
-and `Fs.mkdir` (see "Fs metadata + preopen ceiling" below).
+and `Fs.mkdir` (see "Fs metadata + preopen ceiling" below) and the
+streaming **`Fs.read`** (see "Fs.read via streams" below).
 
 ### Fs metadata + preopen ceiling
 
@@ -404,6 +405,86 @@ here than the Python host. Two distinct points:
   `read` / `write` are rejected under `--wasi`) no file is opened
   through the racy name in this mode at all.
 
+### Fs.read via streams
+
+`Fs.read` migrates to a streaming read over `wasi:filesystem` +
+`wasi:io/streams`. It is the **first** touch-point that uses
+`wasi:io/streams`. The guest wrapper `$Fs_read`
+(`capa/ir/_emit_wasm/_wasi.py`) addresses the same **preopen** ceiling
+the metadata ops do (literal path -> `(preopen_index, relative_literal)`,
+no runtime string-matching; READ_ONLY preopen) and runs:
+
+1. `descriptor.open-at(preopen_desc, symlink-follow, rel, open-flags=0,
+   descriptor-flags=read)` -> `result<descriptor, error-code>`.
+2. `descriptor.read-via-stream(offset = 0)` ->
+   `result<input-stream, error-code>` (the `input-stream` is an **OWN**
+   resource).
+3. a **loop** of `input-stream.blocking-read(chunk)` ->
+   `result<list<u8>, stream-error>`, appending each chunk's bytes to a
+   heap accumulation buffer.
+4. on EOF, build the Capa `String` from the accumulated bytes ->
+   `Ok(String)`.
+
+**EOF is `stream-error::closed`, not an error.** `blocking-read`'s
+`stream-error` is a variant: discriminant `0` is
+`last-operation-failed(error)` (a genuine read failure that carries an
+`error` resource), discriminant `1` is `closed` -- the **normal**
+end-of-stream. The loop treats `closed` as EOF (break and build the
+String, which is `Ok("")` for a 0-byte file, the first `blocking-read`
+being `closed` immediately) and only `last-operation-failed` as an
+`Err`. This convention was confirmed empirically (an oracle component
+built with `wasm-tools` and run under `wasmtime` over controlled
+small / empty / large / UTF-8 files) before the WAT was written; the
+exact return-area offsets and discriminants are recorded in
+`capa/ir/_emit_wasm/_wasi.py`'s `$Fs_read` docstring.
+
+**Resource drops on every path (no leak, no double-drop).** The
+`descriptor` returned by `open-at` and the `input-stream` returned by
+`read-via-stream` are **OWN** handles the guest must drop. `$Fs_read`
+drops them on **every** exit:
+
+- success / EOF: drop `input-stream`, then drop the opened `descriptor`.
+- `open-at` error: nothing was opened -> no drop.
+- `read-via-stream` error: drop the opened `descriptor` (no stream
+  exists).
+- `blocking-read` `last-operation-failed`: drop the carried `error`
+  resource (via `wasi:io/error` `[resource-drop]error`), then the
+  `input-stream`, then the `descriptor`.
+
+The **preopen ROOT** descriptors are **never** dropped -- they are the
+runtime's per-instance ceiling and live for the component's lifetime
+(`$__wasi_fs_preopen_desc` caches them). A double-drop or a dropped root
+would trap a later op; the
+`TestWasiFsRead::test_interleaved_reads_and_metadata_no_resource_leak`
+test ends with metadata ops on the same preopen to prove the root stays
+live across several open/read/drop cycles.
+
+**Memory.** `$Fs_read` uses a dedicated 32-byte static scratch
+(`_wasi_fs_read_scratch_offset` in `capa/ir/_emit_wasm/__init__.py`) for
+its three indirect returns at distinct sub-offsets (`open-at` @+0,
+`read-via-stream` @+8, `blocking-read` @+16), **separate** from the
+104-byte metadata scratch and from the cached `get-directories` list
+buffer, so a read interleaved with metadata ops corrupts neither. The
+chunk **bytes** the host writes land in canonical-ABI memory (via the
+component's exported `cabi_realloc` / `$alloc`); the wrapper copies them
+into a geometrically-grown heap accumulation buffer (`$alloc` +
+`memory.copy`), so a large file reallocs `O(log n)` times rather than
+once per chunk.
+
+**Parity.** `Ok(String)` is **byte-identical** to the Python oracle's
+`f.read()` (UTF-8) and the `capa:host` bridge across small, empty,
+large-multi-chunk, and UTF-8 multi-byte files
+(`TestWasiFsRead`). A missing file inside the preopen is a coherent
+`Err(IoError)` on all three backends; the Err **message** differs (the
+oracle carries the OS errno, the WASI wrapper writes a fixed
+`failed to read file`), so parity there is on the Result
+**discriminant** (`is_err`), as the metadata / Net error paths already
+assert.
+
+Still rejected for now: `Fs.write` (needs `wasi:io` **output** streams),
+`Fs.list_dir` (needs directory enumeration), and the fine attenuators
+`Fs.restrict_to` / `Fs.allows`.
+
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
 
@@ -416,9 +497,10 @@ silently miscompiles):
   attenuation through a standard WASI clock is a future design item
   (likely a guest-side deadline gate, since the wall clock is
   readable).
-- **`Fs.read` / `Fs.write` / `Fs.list_dir`** need `wasi:io` streams
-  (`read-via-stream` / `write-via-stream` / `read-directory`), out of
-  scope for the metadata-only increment.
+- **`Fs.write` / `Fs.list_dir`** need `wasi:io` **output** streams
+  (`write-via-stream`) / directory enumeration (`read-directory`), out
+  of scope for this increment. (`Fs.read` is now migrated -- see
+  "Fs.read via streams" above.)
 - **Fs attenuation** (`Fs.restrict_to`, `Fs.allows`). The preopen
   ceiling is the coarse Level-1 authority bound; the fine per-call
   prefix narrowing is a later increment (likely guest-side, like Env).

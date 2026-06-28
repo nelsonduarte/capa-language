@@ -717,10 +717,16 @@ def _emit_wit_wasi(
     # Fs metadata (exists / is_dir / mkdir) routes to wasi:filesystem:
     # preopens.get-directories resolves the host-granted descriptors,
     # types.descriptor.{stat-at, create-directory-at} do the metadata.
-    # Both interfaces are imported once when any Fs metadata op is used.
+    # Both interfaces are imported once when any Fs op is used. Fs.read
+    # additionally uses wasi:io/streams (input-stream.blocking-read) and
+    # wasi:io/error (the resource-drop of the error a failed read
+    # carries), so import both when read is reached.
     if "Fs" in used:
         lines.append("  import wasi:filesystem/types@0.2.0;")
         lines.append("  import wasi:filesystem/preopens@0.2.0;")
+        if "read" in used["Fs"]:
+            lines.append("  import wasi:io/streams@0.2.0;")
+            lines.append("  import wasi:io/error@0.2.0;")
     # capa:host imports for the non-migrated caps (hybrid coexistence).
     for cap in sorted(used.keys()):
         if cap in _KNOWN_CAPABILITIES and cap not in (

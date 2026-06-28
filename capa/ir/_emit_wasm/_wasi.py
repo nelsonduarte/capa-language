@@ -138,15 +138,20 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     # Fs metadata migration (2026-06-27): exists / is_dir / mkdir route
     # to wasi:filesystem (stat-at / create-directory-at) against the
     # host-granted preopen descriptors rather than the capa:host/fs
-    # bridge. read / write / list_dir / restrict_to / allows are NOT
-    # migrated (read / write / list_dir need wasi:io streams; the
-    # attenuators are the fine-grained Level 2 layer) and are rejected
-    # by ``_validate_wasi_caps`` so a program never silently
-    # miscompiles; the same programs run on the default capa:host
-    # backend.
+    # bridge.
     ("Fs", "exists"),
     ("Fs", "is_dir"),
     ("Fs", "mkdir"),
+    # Fs.read migration (2026-06-28): read routes to wasi:filesystem
+    # (descriptor.open-at -> read-via-stream) + wasi:io/streams
+    # (input-stream.blocking-read) against the host-granted preopen
+    # descriptors. This is the first touch-point that uses streams.
+    # write / list_dir still need streams / directory enumeration and
+    # the attenuators (restrict_to / allows) are the fine-grained
+    # Level 2 layer; all remain rejected by ``_validate_wasi_caps`` so a
+    # program never silently miscompiles (the same programs run on the
+    # default capa:host backend).
+    ("Fs", "read"),
 })
 
 
@@ -159,16 +164,29 @@ _WASI_WALL = "wasi:clocks/wall-clock@0.2.0"
 _WASI_ENVIRONMENT = "wasi:cli/environment@0.2.0"
 _WASI_FS_TYPES = "wasi:filesystem/types@0.2.0"
 _WASI_FS_PREOPENS = "wasi:filesystem/preopens@0.2.0"
+_WASI_IO_STREAMS = "wasi:io/streams@0.2.0"
+_WASI_IO_ERROR = "wasi:io/error@0.2.0"
 
 # Fs metadata methods this WASI increment migrates to wasi:filesystem.
 _WASI_FS_METADATA: frozenset[str] = frozenset({"exists", "is_dir", "mkdir"})
 
+# Fs stream-bearing methods migrated to wasi:filesystem + wasi:io/streams.
+# So far: ``read`` (open-at -> read-via-stream -> blocking-read loop).
+_WASI_FS_STREAM: frozenset[str] = frozenset({"read"})
+
 # Fs methods rejected in WASI mode for now (with a clear compile-time
-# error): read / write / list_dir need wasi:io streams; restrict_to /
-# allows are the fine-grained attenuation layer (a later increment).
+# error): write needs wasi:io output streams; list_dir needs directory
+# enumeration; restrict_to / allows are the fine-grained attenuation
+# layer (a later increment).
 _WASI_FS_REJECTED: frozenset[str] = frozenset({
-    "read", "write", "list_dir", "restrict_to", "allows",
+    "write", "list_dir", "restrict_to", "allows",
 })
+
+# The size, in bytes, of each blocking-read chunk request. read-via-stream
+# yields the whole file as a single stream; the guest pulls it in fixed
+# chunks, accumulating into a heap buffer until stream-error::closed (EOF).
+# A larger chunk means fewer host round-trips; 4096 matches a typical page.
+_WASI_FS_READ_CHUNK = 4096
 
 
 class _WasiEmissionMixin:
@@ -191,12 +209,14 @@ class _WasiEmissionMixin:
         (Level 2 of ``docs/design/wasi-attenuation.md``), so no Env
         method is rejected here.
 
-        Fs in WASI mode supports the METADATA operations only
+        Fs in WASI mode supports the METADATA operations
         (``exists`` / ``is_dir`` / ``mkdir`` -> wasi:filesystem
-        stat-at / create-directory-at against the host preopens). The
-        stream-bearing ``read`` / ``write`` / ``list_dir`` and the
-        fine-grained attenuators ``restrict_to`` / ``allows`` are
-        rejected here; they land in later increments.
+        stat-at / create-directory-at against the host preopens) and
+        the stream-bearing ``read`` (open-at -> read-via-stream ->
+        blocking-read loop over wasi:io/streams). The remaining
+        stream-bearing ``write`` / ``list_dir`` and the fine-grained
+        attenuators ``restrict_to`` / ``allows`` are rejected here;
+        they land in later increments.
         """
         for cap, method in self._used_caps:
             if cap == "Clock" and method not in (
@@ -211,22 +231,24 @@ class _WasiEmissionMixin:
                     f"--wasi)."
                 )
             if cap == "Fs" and method in _WASI_FS_REJECTED:
-                # read / write / list_dir need wasi:io streams;
-                # restrict_to / allows are the fine-grained attenuation
-                # layer. Only the metadata ops are migrated so far.
+                # write needs wasi:io output streams; list_dir needs
+                # directory enumeration; restrict_to / allows are the
+                # fine-grained attenuation layer. exists / is_dir /
+                # mkdir / read are migrated.
                 raise WasmEmissionError(
                     f"Fs.{method} is not supported in the WASI mode "
-                    f"yet (only the metadata operations exists / "
-                    f"is_dir / mkdir are migrated to wasi:filesystem); "
-                    f"use the default capa:host backend (drop --wasi)."
+                    f"yet (the migrated operations are exists / is_dir "
+                    f"/ mkdir / read); use the default capa:host "
+                    f"backend (drop --wasi)."
                 )
         # Fail-closed proof obligation: if the program uses a migrated
-        # Fs metadata op but its static path ceiling is NOT closed (a
-        # dynamic path), there is no preopen to address and the wrapper
-        # cannot run. Reject at compile time with a clear message
-        # rather than emit code that always denies at runtime.
+        # Fs op (metadata or the stream-bearing read) but its static
+        # path ceiling is NOT closed (a dynamic path), there is no
+        # preopen to address and the wrapper cannot run. Reject at
+        # compile time with a clear message rather than emit code that
+        # always denies at runtime.
         if any(
-            cap == "Fs" and method in _WASI_FS_METADATA
+            cap == "Fs" and method in (_WASI_FS_METADATA | _WASI_FS_STREAM)
             for cap, method in self._used_caps
         ) and self._fs_ceiling is not None and not self._fs_ceiling.closed:
             raise WasmEmissionError(
@@ -329,11 +351,17 @@ class _WasiEmissionMixin:
         #                                  -> (param i32 i32 i32 i32)
         #       (self-handle, path_ptr, path_len, ret_area)
         #   [resource-drop]descriptor      -> (param i32)
-        if any(m in _WASI_FS_METADATA for (c, m) in used if c == "Fs"):
+        # get-directories backs the shared preopen-descriptor resolver,
+        # used by every migrated Fs op (metadata AND read).
+        if any(
+            m in (_WASI_FS_METADATA | _WASI_FS_STREAM)
+            for (c, m) in used if c == "Fs"
+        ):
             self._write(
                 f'(import "{_WASI_FS_PREOPENS}" "get-directories" '
                 f'(func $wasi_fs_get_directories (param i32)))'
             )
+        if any(m in _WASI_FS_METADATA for (c, m) in used if c == "Fs"):
             self._write(
                 f'(import "{_WASI_FS_TYPES}" "[method]descriptor.stat-at" '
                 f'(func $wasi_fs_stat_at '
@@ -346,6 +374,53 @@ class _WasiEmissionMixin:
                     f'(func $wasi_fs_create_directory_at '
                     f'(param i32) (param i32) (param i32) (param i32)))'
                 )
+        # Fs.read (2026-06-28): open-at + read-via-stream on
+        # wasi:filesystem, blocking-read on wasi:io/streams, plus the
+        # three resource-drops (descriptor, input-stream, error). The
+        # core-ABI shapes were validated against wasm-tools 1.249.0 /
+        # wasmtime 44.0.1 add_wasip2():
+        #   descriptor.open-at         -> (param i32 i32 i32 i32 i32 i32 i32)
+        #     (self, path-flags, path_ptr, path_len, open-flags,
+        #      descriptor-flags, ret_area)
+        #   descriptor.read-via-stream -> (param i32 i64 i32)
+        #     (self-handle, offset(filesize=u64), ret_area)
+        #   input-stream.blocking-read -> (param i32 i64 i32)
+        #     (self-handle, len(u64), ret_area)
+        #   [resource-drop]descriptor   (wasi:filesystem/types) -> (param i32)
+        #   [resource-drop]input-stream (wasi:io/streams)        -> (param i32)
+        #   [resource-drop]error        (wasi:io/error)          -> (param i32)
+        if ("Fs", "read") in used:
+            self._write(
+                f'(import "{_WASI_FS_TYPES}" "[method]descriptor.open-at" '
+                f'(func $wasi_fs_open_at '
+                f'(param i32) (param i32) (param i32) (param i32) '
+                f'(param i32) (param i32) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_FS_TYPES}" '
+                f'"[method]descriptor.read-via-stream" '
+                f'(func $wasi_fs_read_via_stream '
+                f'(param i32) (param i64) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_FS_TYPES}" "[resource-drop]descriptor" '
+                f'(func $wasi_fs_drop_descriptor (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_IO_STREAMS}" '
+                f'"[method]input-stream.blocking-read" '
+                f'(func $wasi_io_blocking_read '
+                f'(param i32) (param i64) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_IO_STREAMS}" '
+                f'"[resource-drop]input-stream" '
+                f'(func $wasi_io_drop_input_stream (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_IO_ERROR}" "[resource-drop]error" '
+                f'(func $wasi_io_drop_error (param i32)))'
+            )
 
     def _emit_wasi_wrappers(self) -> None:
         """Emit the ``$Cap_method`` adapter functions that bridge the
@@ -379,13 +454,14 @@ class _WasiEmissionMixin:
             self._emit_wasi_env_restrict_to_keys_wrapper()
         if ("Env", "allows") in used:
             self._emit_wasi_env_allows_wrapper()
-        # Fs metadata (2026-06-27). The shared preopen-descriptor
-        # resolver backs all three metadata wrappers; emit it once when
-        # any of them is used.
-        fs_meta_used = [
-            m for (c, m) in used if c == "Fs" and m in _WASI_FS_METADATA
+        # Fs metadata (2026-06-27) + read (2026-06-28). The shared
+        # preopen-descriptor resolver backs every Fs wrapper (metadata
+        # and read); emit it once when any migrated Fs op is used.
+        fs_preopen_used = [
+            m for (c, m) in used
+            if c == "Fs" and m in (_WASI_FS_METADATA | _WASI_FS_STREAM)
         ]
-        if fs_meta_used:
+        if fs_preopen_used:
             self._emit_wasi_fs_preopen_desc_helper()
         if ("Fs", "exists") in used:
             self._emit_wasi_fs_exists_wrapper()
@@ -393,6 +469,8 @@ class _WasiEmissionMixin:
             self._emit_wasi_fs_is_dir_wrapper()
         if ("Fs", "mkdir") in used:
             self._emit_wasi_fs_mkdir_wrapper()
+        if ("Fs", "read") in used:
+            self._emit_wasi_fs_read_wrapper()
 
     # ----- adapter wrappers -------------------------------------
 
@@ -1089,3 +1167,280 @@ class _WasiEmissionMixin:
         self._write("end")
         self._indent -= 1
         self._write(")")
+
+    # ----- Fs.read via wasi:filesystem + wasi:io/streams ---------
+
+    def _emit_wasi_fs_read_wrapper(self) -> None:
+        """``$Fs_read (idx i32, rel_ptr i32, rel_len i32, ret_area i32)``
+        -> writes a ``result<string, io-error>`` (20-byte canonical-ABI
+        shape) into ``ret_area``.
+
+        Matches the call shape ``_emit_wasi_fs_read_call`` produces
+        (preopen index + rel (ptr, len) + ret_area), so the existing
+        ``result_string_io_error`` materialiser lifts the result into a
+        Capa ``Result<String, IoError>`` unchanged, exactly as the
+        capa:host read does.
+
+        Sequence (validated against wasm-tools 1.249.0 / wasmtime
+        44.0.1; convention captured in docs/design/wasi_mode.md):
+
+          1. resolve the preopen descriptor for ``idx``.
+          2. ``open-at(desc, symlink-follow, rel, open-flags=0,
+             descriptor-flags=read)`` -> result<descriptor, error-code>.
+             On Err: write Err(IoError) and return (nothing opened).
+          3. ``read-via-stream(file_desc, offset=0)`` ->
+             result<input-stream, error-code>. On Err: drop the opened
+             descriptor, write Err, return.
+          4. LOOP ``blocking-read(stream, CHUNK)`` ->
+             result<list<u8>, stream-error>:
+               * Ok(chunk): append chunk bytes to a heap accumulation
+                 buffer, continue.
+               * Err(stream-error): variant disc @+4 == 1 is ``closed``
+                 = EOF (the normal terminator) -> break and build the
+                 String. disc @+4 == 0 is ``last-operation-failed`` ->
+                 drop the carried error handle (@+8), drop the stream +
+                 descriptor, write Err, return.
+          5. drop the input-stream, then drop the opened descriptor
+             (resource OWN handles; the preopen ROOTS are never
+             dropped), and write Ok(String) = (accumulated buffer ptr,
+             accumulated length). The accumulated bytes are the raw file
+             bytes; the Capa String is UTF-8 by construction, matching
+             the Python oracle's ``f.read()`` (UTF-8 decode) and the
+             capa:host bridge.
+
+        Resource drops fire on EVERY exit path (success, EOF, and the
+        two error paths) so no OWN handle leaks and none is dropped
+        twice. The accumulation buffer grows by re-allocating a larger
+        block and copying when a chunk would overflow the current
+        capacity, reusing ``$alloc`` + ``$memcpy`` (the same heap infra
+        the List / String builders use)."""
+        open_ret = self._wasi_fs_read_scratch_offset            # 8 bytes
+        rvs_ret = self._wasi_fs_read_scratch_offset + 8         # 8 bytes
+        br_ret = self._wasi_fs_read_scratch_offset + 16         # 12 bytes
+        chunk = _WASI_FS_READ_CHUNK
+        msg_off, msg_len = self._intern_string("failed to read file")
+        self._write(
+            "(func $Fs_read (param $idx i32) (param $rel_ptr i32) "
+            "(param $rel_len i32) (param $ret_area i32)"
+        )
+        self._indent += 1
+        self._write("(local $desc i32)")
+        self._write("(local $stream i32)")
+        self._write("(local $buf i32)")
+        self._write("(local $buf_cap i32)")
+        self._write("(local $buf_len i32)")
+        self._write("(local $chunk_ptr i32)")
+        self._write("(local $chunk_len i32)")
+        self._write("(local $need i32)")
+        self._write("(local $newcap i32)")
+        self._write("(local $newbuf i32)")
+        # open-at(preopen_desc(idx), path-flags=symlink-follow(1), rel,
+        # open-flags=0, descriptor-flags=read(1), open_ret).
+        self._write("local.get $idx")
+        self._write("call $__wasi_fs_preopen_desc")
+        self._write("i32.const 1")            # path-flags: symlink-follow
+        self._write("local.get $rel_ptr")
+        self._write("local.get $rel_len")
+        self._write("i32.const 0")            # open-flags: none
+        self._write("i32.const 1")            # descriptor-flags: read
+        self._write(f"i32.const {open_ret}")
+        self._write("call $wasi_fs_open_at")
+        # if open Err (disc @0 != 0): write Err, return.
+        self._write(f"i32.const {open_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_fs_read_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # desc = open_ret.value @4 (the opened OWN descriptor).
+        self._write(f"i32.const {open_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $desc")
+        # read-via-stream(desc, offset=0, rvs_ret).
+        self._write("local.get $desc")
+        self._write("i64.const 0")
+        self._write(f"i32.const {rvs_ret}")
+        self._write("call $wasi_fs_read_via_stream")
+        # if rvs Err: drop desc, write Err, return.
+        self._write(f"i32.const {rvs_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $desc")
+        self._write("call $wasi_fs_drop_descriptor")
+        self._emit_wasi_fs_read_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # stream = rvs_ret.value @4 (the OWN input-stream).
+        self._write(f"i32.const {rvs_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $stream")
+        # Accumulation buffer: start empty (len 0, cap 0, ptr from a
+        # zero-size alloc, a stable non-overlapping heap pointer).
+        self._write("i32.const 0")
+        self._write("call $alloc")
+        self._write("local.set $buf")
+        self._write("i32.const 0")
+        self._write("local.set $buf_cap")
+        self._write("i32.const 0")
+        self._write("local.set $buf_len")
+        # Loop blocking-read(stream, CHUNK, br_ret).
+        self._write("(block $read_done")
+        self._indent += 1
+        self._write("(loop $read_loop")
+        self._indent += 1
+        self._write("local.get $stream")
+        self._write(f"i64.const {chunk}")
+        self._write(f"i32.const {br_ret}")
+        self._write("call $wasi_io_blocking_read")
+        # if Ok (disc @0 == 0): append chunk; else handle stream-error.
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        # chunk_ptr = br_ret.data_ptr @4; chunk_len = br_ret.len @8.
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $chunk_ptr")
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load offset=8")
+        self._write("local.set $chunk_len")
+        # Grow the buffer if buf_len + chunk_len > buf_cap.
+        self._write("local.get $buf_len")
+        self._write("local.get $chunk_len")
+        self._write("i32.add")
+        self._write("local.set $need")
+        self._write("local.get $need")
+        self._write("local.get $buf_cap")
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        # newcap = max(need, buf_cap*2, CHUNK); grow geometrically so a
+        # large file does not realloc once per chunk.
+        self._write("local.get $buf_cap")
+        self._write("i32.const 1")
+        self._write("i32.shl")
+        self._write("local.get $need")
+        self._write("i32.lt_u")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $need")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $buf_cap")
+        self._write("i32.const 1")
+        self._write("i32.shl")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $newcap")
+        # newbuf = alloc(newcap); copy old bytes; buf = newbuf.
+        self._write("local.get $newcap")
+        self._write("call $alloc")
+        self._write("local.set $newbuf")
+        # memory.copy(dst=newbuf, src=buf, n=buf_len).
+        self._write("local.get $newbuf")
+        self._write("local.get $buf")
+        self._write("local.get $buf_len")
+        self._write("memory.copy")
+        self._write("local.get $newbuf")
+        self._write("local.set $buf")
+        self._write("local.get $newcap")
+        self._write("local.set $buf_cap")
+        self._indent -= 1
+        self._write("end")
+        # memory.copy(dst=buf + buf_len, src=chunk_ptr, n=chunk_len).
+        self._write("local.get $buf")
+        self._write("local.get $buf_len")
+        self._write("i32.add")
+        self._write("local.get $chunk_ptr")
+        self._write("local.get $chunk_len")
+        self._write("memory.copy")
+        # buf_len += chunk_len; continue.
+        self._write("local.get $buf_len")
+        self._write("local.get $chunk_len")
+        self._write("i32.add")
+        self._write("local.set $buf_len")
+        self._write("br $read_loop")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # Err(stream-error): variant disc @+4. 1 == closed (EOF,
+        # normal). 0 == last-operation-failed(error) -> drop the carried
+        # error handle @+8, then fall through to the shared cleanup as
+        # an error path.
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load offset=4")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        # last-operation-failed: drop the error resource, drop stream +
+        # descriptor, write Err, return.
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load offset=8")
+        self._write("call $wasi_io_drop_error")
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_input_stream")
+        self._write("local.get $desc")
+        self._write("call $wasi_fs_drop_descriptor")
+        self._emit_wasi_fs_read_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # closed: EOF, the normal terminator. Break to build the String.
+        self._write("br $read_done")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # EOF reached: drop the stream, then the opened descriptor.
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_input_stream")
+        self._write("local.get $desc")
+        self._write("call $wasi_fs_drop_descriptor")
+        # Ok(String): tag=0, ptr=buf @4, len=buf_len @8.
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write("local.get $buf")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write("local.get $buf_len")
+        self._write("i32.store offset=8")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_fs_read_err(self, msg_off: int, msg_len: int) -> None:
+        """Write an ``Err(IoError)`` into ``$ret_area`` for the
+        ``result_string_io_error`` 20-byte shape: tag@0 = 1, message =
+        the interned fixed string (m_ptr@4, m_len@8), empty cause
+        (c_ptr@12 = 0, c_len@16 = 0).
+
+        The message is fixed (``failed to read file``) rather than the
+        Python oracle's path-and-errno cause, which carries OS-specific
+        bytes no cross-backend comparison can reproduce; parity is on
+        the Result DISCRIMINANT (is_err), as the metadata / Net error
+        paths already assert. ``$ret_area`` is in scope (the wrapper's
+        trailing param)."""
+        self._write("local.get $ret_area")
+        self._write("i32.const 1")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_off}")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_len}")
+        self._write("i32.store offset=8")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=12")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=16")
