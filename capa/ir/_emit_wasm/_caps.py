@@ -641,6 +641,15 @@ class _CapDispatchMixin:
                 "Fs in WASI mode has no closed preopen ceiling"
             )
         idx, rel = resolve_fs_call(ceiling, arg.literal)
+        # The FULL original literal path is interned for the guest-side
+        # fail-closed attenuation gate (``$Fs_path_allowed``): the
+        # ``restrict_to`` prefixes were recorded against the full path the
+        # source named, so the gate compares against that full path, NOT
+        # the preopen-relative one. The receiver Fs handle (the i32 value,
+        # 0 = unrestricted root) is pushed first so the wrapper consults
+        # the allow-list the cap carries (sound across function boundaries
+        # because the handle travels with the value).
+        full_off, full_len = self._intern_string(arg.literal)
         if method == "mkdir":
             # Recursive mkdir (parity with os.makedirs(exist_ok=True)):
             # the relative path may be multi-segment (``a/b/c``). WASI
@@ -653,7 +662,10 @@ class _CapDispatchMixin:
             # short-circuit out of the block the moment a prefix writes
             # an Err (tag @0 != 0), so the materialised Result is the
             # first genuine failure, or the final leaf's Ok. The
-            # materialiser then reads $_ret_area directly.
+            # materialiser then reads $_ret_area directly. The attenuation
+            # gate sees the SAME full literal for every prefix call, so a
+            # denied target denies the first call and the block
+            # short-circuits with the deny Err.
             prefixes = mkdir_prefixes(rel)
             self._write("i32.const 20")
             self._write("call $alloc")
@@ -662,6 +674,9 @@ class _CapDispatchMixin:
             self._indent += 1
             for i, pfx in enumerate(prefixes):
                 pfx_off, pfx_len = self._intern_string(pfx)
+                self._push_fs_handle(instr.receiver)
+                self._write(f"i32.const {full_off}")
+                self._write(f"i32.const {full_len}")
                 self._write(f"i32.const {idx}")
                 self._write(f"i32.const {pfx_off}")
                 self._write(f"i32.const {pfx_len}")
@@ -685,6 +700,9 @@ class _CapDispatchMixin:
             )
         else:
             rel_off, rel_len = self._intern_string(rel)
+            self._push_fs_handle(instr.receiver)
+            self._write(f"i32.const {full_off}")
+            self._write(f"i32.const {full_len}")
             self._write(f"i32.const {idx}")
             self._write(f"i32.const {rel_off}")
             self._write(f"i32.const {rel_len}")
@@ -727,9 +745,15 @@ class _CapDispatchMixin:
             )
         idx, rel = resolve_fs_call(ceiling, arg.literal)
         rel_off, rel_len = self._intern_string(rel)
+        # Full original literal + receiver handle for the guest-side
+        # fail-closed gate (see ``_emit_wasi_fs_metadata_call``).
+        full_off, full_len = self._intern_string(arg.literal)
         self._write("i32.const 20")
         self._write("call $alloc")
         self._write("local.set $_ret_area")
+        self._push_fs_handle(instr.receiver)
+        self._write(f"i32.const {full_off}")
+        self._write(f"i32.const {full_len}")
         self._write(f"i32.const {idx}")
         self._write(f"i32.const {rel_off}")
         self._write(f"i32.const {rel_len}")
@@ -781,9 +805,15 @@ class _CapDispatchMixin:
             )
         idx, rel = resolve_fs_call(ceiling, arg.literal)
         rel_off, rel_len = self._intern_string(rel)
+        # Full original literal + receiver handle for the guest-side
+        # fail-closed gate (see ``_emit_wasi_fs_metadata_call``).
+        full_off, full_len = self._intern_string(arg.literal)
         self._write("i32.const 20")
         self._write("call $alloc")
         self._write("local.set $_ret_area")
+        self._push_fs_handle(instr.receiver)
+        self._write(f"i32.const {full_off}")
+        self._write(f"i32.const {full_len}")
         self._write(f"i32.const {idx}")
         self._write(f"i32.const {rel_off}")
         self._write(f"i32.const {rel_len}")
@@ -833,9 +863,15 @@ class _CapDispatchMixin:
             )
         idx, rel = resolve_fs_call(ceiling, arg.literal)
         rel_off, rel_len = self._intern_string(rel)
+        # Full original literal + receiver handle for the guest-side
+        # fail-closed gate (see ``_emit_wasi_fs_metadata_call``).
+        full_off, full_len = self._intern_string(arg.literal)
         self._write("i32.const 20")
         self._write("call $alloc")
         self._write("local.set $_ret_area")
+        self._push_fs_handle(instr.receiver)
+        self._write(f"i32.const {full_off}")
+        self._write(f"i32.const {full_len}")
         self._write(f"i32.const {idx}")
         self._write(f"i32.const {rel_off}")
         self._write(f"i32.const {rel_len}")

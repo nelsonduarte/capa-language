@@ -525,6 +525,34 @@ class WasmEmitter(
                             # all resolve to a single relative path the
                             # wrapper addresses by (ptr, len).
                             self._intern_string(_rel)
+                        # FINE ATTENUATION (2026-06-28): every migrated Fs
+                        # op now also passes the FULL original literal path
+                        # to its guest-side fail-closed gate
+                        # (``$Fs_path_allowed``), so the full literal must
+                        # be interned here too -- interning it only at
+                        # call-site emission time would leave it without a
+                        # backing ``(data ...)`` block and the gate would
+                        # compare against undefined memory. The relative
+                        # path (above) and the full path are usually
+                        # distinct strings (the full path carries the
+                        # preopen prefix), so both must be pre-interned.
+                        self._intern_string(instr.args[0].literal)
+                # FINE ATTENUATION (2026-06-28): a literal ``restrict_to``
+                # prefix and a literal ``allows`` path also reach the data
+                # segment (the prefix is stored verbatim in the allow-list
+                # the guest builds; the allows path is compared against it).
+                # Dynamic (local / param) args travel as a runtime
+                # ``(ptr, len)`` and need no static interning. Pre-intern
+                # the literal ones for the same backing-data reason.
+                for _fn, instr in walk_module(module):
+                    if (isinstance(instr, MethodCall)
+                            and (instr.cap_used
+                                 or (instr.receiver.ty or "")) == "Fs"
+                            and instr.method in ("restrict_to", "allows")
+                            and instr.args
+                            and instr.args[0].kind == "lit_str"
+                            and isinstance(instr.args[0].literal, str)):
+                        self._intern_string(instr.args[0].literal)
                 if any(
                     cap == "Fs" and m == "mkdir"
                     for (cap, m) in self._used_caps

@@ -146,11 +146,6 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     # (descriptor.open-at -> read-via-stream) + wasi:io/streams
     # (input-stream.blocking-read) against the host-granted preopen
     # descriptors. This is the first touch-point that uses streams.
-    # write / list_dir still need streams / directory enumeration and
-    # the attenuators (restrict_to / allows) are the fine-grained
-    # Level 2 layer; all remain rejected by ``_validate_wasi_caps`` so a
-    # program never silently miscompiles (the same programs run on the
-    # default capa:host backend).
     ("Fs", "read"),
     # Fs.write migration (2026-06-28): write routes to wasi:filesystem
     # (descriptor.open-at with create|truncate + write -> write-via-
@@ -165,11 +160,18 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     # directory-entry-stream.read-directory-entry to accumulate the entry
     # names, then a guest-side lexicographic sort (via $str_cmp) to match
     # the oracle's ``sorted(os.listdir(path))`` ORDER byte-for-byte (wasi
-    # returns entries in filesystem order, not sorted). The last Fs
-    # touch-point to land. The fine attenuators (restrict_to / allows)
-    # are the Level 2 layer; they remain rejected by
-    # ``_validate_wasi_caps``.
+    # returns entries in filesystem order, not sorted).
     ("Fs", "list_dir"),
+    # Fs FINE ATTENUATION (2026-06-28): restrict_to / allows are
+    # implemented GUEST-SIDE (Level 2 of docs/design/wasi-attenuation.md),
+    # analogous to Env's restrict_to_keys / allows but with LEXICAL path
+    # containment in place of key equality. No capa:host/fs import: their
+    # ``$Fs_restrict_to`` / ``$Fs_allows`` bindings are emitted as guest
+    # WAT wrappers by ``_emit_wasi_wrappers``. Listed here so the import
+    # loop does NOT try to emit a capa:host/fs import for them (the host
+    # provides no such function on the wasi path).
+    ("Fs", "restrict_to"),
+    ("Fs", "allows"),
 })
 
 
@@ -199,13 +201,14 @@ _WASI_FS_METADATA: frozenset[str] = frozenset({"exists", "is_dir", "mkdir"})
 #               read-directory-entry loop -> guest-side sort).
 _WASI_FS_STREAM: frozenset[str] = frozenset({"read", "write", "list_dir"})
 
-# Fs methods rejected in WASI mode for now (with a clear compile-time
-# error): restrict_to / allows are the fine-grained attenuation layer
-# (a later increment). list_dir is now migrated (directory enumeration
-# via read-directory + directory-entry-stream).
-_WASI_FS_REJECTED: frozenset[str] = frozenset({
-    "restrict_to", "allows",
-})
+# Fs methods rejected in WASI mode. EMPTY as of 2026-06-28: every Fs
+# method is now migrated -- the metadata ops (exists / is_dir / mkdir),
+# the stream-bearing ops (read / write / list_dir), AND the fine
+# attenuators (restrict_to / allows, implemented guest-side, Level 2).
+# Kept as a (now empty) frozenset so ``_validate_wasi_caps`` and any
+# future re-introduction of a rejected method stay structurally
+# unchanged.
+_WASI_FS_REJECTED: frozenset[str] = frozenset()
 
 # The size, in bytes, of each blocking-read chunk request. read-via-stream
 # yields the whole file as a single stream; the guest pulls it in fixed
@@ -244,15 +247,22 @@ class _WasiEmissionMixin:
         (Level 2 of ``docs/design/wasi-attenuation.md``), so no Env
         method is rejected here.
 
-        Fs in WASI mode supports the METADATA operations
-        (``exists`` / ``is_dir`` / ``mkdir`` -> wasi:filesystem
-        stat-at / create-directory-at against the host preopens) and
-        the stream-bearing ``read`` (open-at -> read-via-stream ->
-        blocking-read loop) and ``write`` (open-at create|truncate ->
-        write-via-stream -> blocking-write-and-flush loop -> blocking-
-        flush) over wasi:io/streams. The remaining ``list_dir`` and the
-        fine-grained attenuators ``restrict_to`` / ``allows`` are
-        rejected here; they land in later increments.
+        Fs is FULLY supported in WASI mode (2026-06-28): the METADATA
+        operations (``exists`` / ``is_dir`` / ``mkdir`` ->
+        wasi:filesystem stat-at / create-directory-at against the host
+        preopens), the stream-bearing ``read`` (open-at -> read-via-
+        stream -> blocking-read loop), ``write`` (open-at create|
+        truncate -> write-via-stream -> blocking-write-and-flush loop ->
+        blocking-flush) and ``list_dir`` (open-at directory ->
+        read-directory enumeration -> guest-side sort) over
+        wasi:io/streams, AND the fine-grained attenuators ``restrict_to``
+        / ``allows`` implemented GUEST-SIDE (Level 2 of
+        ``docs/design/wasi-attenuation.md``), with LEXICAL path
+        containment in place of the oracle's realpath (the honest TOCTOU
+        / symlink loss documented there). No Fs method is rejected here
+        (``_WASI_FS_REJECTED`` is now empty); the fail-closed preopen
+        ceiling obligation below still applies to any op that touches the
+        filesystem.
         """
         for cap, method in self._used_caps:
             if cap == "Clock" and method not in (
@@ -267,14 +277,12 @@ class _WasiEmissionMixin:
                     f"--wasi)."
                 )
             if cap == "Fs" and method in _WASI_FS_REJECTED:
-                # restrict_to / allows are the fine-grained attenuation
-                # layer. exists / is_dir / mkdir / read / write / list_dir
-                # are migrated.
+                # _WASI_FS_REJECTED is empty as of 2026-06-28 (every Fs
+                # method is migrated). Kept structurally so a future
+                # rejected method re-uses this branch unchanged.
                 raise WasmEmissionError(
-                    f"Fs.{method} is not supported in the WASI mode "
-                    f"yet (the migrated operations are exists / is_dir "
-                    f"/ mkdir / read / write / list_dir); use the default "
-                    f"capa:host backend (drop --wasi)."
+                    f"Fs.{method} is not supported in the WASI mode; "
+                    f"use the default capa:host backend (drop --wasi)."
                 )
         # Fail-closed proof obligation: if the program uses a migrated
         # Fs op (metadata or the stream-bearing read) but its static
@@ -342,6 +350,31 @@ class _WasiEmissionMixin:
         WASI-only; it ensures ``$str_cmp`` is emitted even when the
         program uses no String ``<`` / ``>`` operator."""
         return self._wasi and ("Fs", "list_dir") in self._used_caps
+
+    def _wasi_fs_uses_attenuation(self) -> bool:
+        """True when ``--wasi`` is active and the program reaches the
+        FINE Fs attenuators ``restrict_to`` / ``allows`` (Level 2 of
+        ``docs/design/wasi-attenuation.md``) OR any privileged Fs op
+        that the attenuation gate sits in front of (exists / is_dir /
+        mkdir / read / write / list_dir).
+
+        Gates the emission of the guest-side attenuation helpers
+        (``$Fs_path_contained`` / ``$Fs_path_allowed``) and the
+        ``$Fs_restrict_to`` / ``$Fs_allows`` wrappers. Every migrated Fs
+        op consults ``$Fs_path_allowed`` in its fail-closed prologue, so
+        the helper must be present whenever any Fs op is, not only when
+        ``restrict_to`` / ``allows`` appear textually: a program that
+        receives a restricted Fs from a CALLER (across a function
+        boundary) and only ever reads through it must still re-check the
+        allow-list it carries."""
+        return self._wasi and any(
+            cap == "Fs"
+            and method in (
+                "restrict_to", "allows",
+                "exists", "is_dir", "mkdir", "read", "write", "list_dir",
+            )
+            for (cap, method) in self._used_caps
+        )
 
     def _emit_wasi_imports(self) -> None:
         """Emit the raw ``wasi:*`` imports for whichever migrated
@@ -586,6 +619,17 @@ class _WasiEmissionMixin:
         ]
         if fs_preopen_used:
             self._emit_wasi_fs_preopen_desc_helper()
+        # Guest-side Fs attenuation (Level 2). The shared lexical
+        # containment helpers back the fail-closed prologue of every
+        # migrated Fs op AND the ``restrict_to`` / ``allows`` wrappers;
+        # emit them once when any Fs op (or attenuator) is present.
+        if self._wasi_fs_uses_attenuation():
+            self._emit_wasi_fs_path_contained_helper()
+            self._emit_wasi_fs_path_allowed_helper()
+        if ("Fs", "restrict_to") in used:
+            self._emit_wasi_fs_restrict_to_wrapper()
+        if ("Fs", "allows") in used:
+            self._emit_wasi_fs_allows_wrapper()
         if ("Fs", "exists") in used:
             self._emit_wasi_fs_exists_wrapper()
         if ("Fs", "is_dir") in used:
@@ -1085,6 +1129,406 @@ class _WasiEmissionMixin:
         self._indent -= 1
         self._write(")")
 
+    # ----- guest-side Fs attenuation (Level 2) -------------------
+
+    def _emit_wasi_fs_path_contained_helper(self) -> None:
+        """``$Fs_path_contained (path_ptr i32, path_len i32,
+        pre_ptr i32, pre_len i32) -> i32`` -> 1 iff ``path`` is the
+        directory/file ``prefix`` itself or lies under it, by LEXICAL
+        path-segment containment.
+
+        This is the guest-side analogue of the Python oracle's
+        ``Path(os.path.realpath(path)).is_relative_to(
+        os.path.realpath(prefix))`` (``Fs.allows``,
+        ``capa/runtime/_capabilities.py:173-183``). The guest cannot
+        ``realpath`` (no kernel syscall), so the containment is LEXICAL:
+        it compares the literal path strings. For CANONICAL paths (no
+        ``.`` / ``..`` segments, no symlinks, no repeated slashes) the
+        lexical result is BYTE-IDENTICAL to the oracle, because
+        ``realpath`` prepends the SAME process CWD to a relative path and
+        its relative prefix (so the CWD cancels in the containment) and
+        leaves a canonical absolute path unchanged. For NON-CANONICAL
+        paths the lexical check may diverge from ``realpath`` -- the
+        honest, documented Level-2 loss (TOCTOU / symlink) in
+        ``docs/design/wasi-attenuation.md``.
+
+        Algorithm (matching the segment-aware ``is_relative_to``):
+
+          1. strip trailing ``/`` from both path and prefix (keep a lone
+             ``/`` as ``/``), so ``dir/`` and ``dir`` compare equal.
+          2. if the stripped prefix is LONGER than the stripped path,
+             not contained.
+          3. the first ``pre_len`` bytes of path must equal prefix
+             byte-for-byte.
+          4. SEGMENT BOUNDARY: either the lengths are equal (path IS the
+             prefix) or the byte at ``path[pre_len]`` is ``/`` (the
+             prefix ends on a separator, so ``data/ab`` is NOT contained
+             in ``data/a``)."""
+        self._write(
+            "(func $Fs_path_contained (param $path_ptr i32) "
+            "(param $path_len i32) (param $pre_ptr i32) "
+            "(param $pre_len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $pl i32)")
+        self._write("(local $ql i32)")
+        self._write("(local $i i32)")
+        # pl = strip_trailing_slash_len(path); ql = ...(prefix). A
+        # trailing '/' is dropped unless the string is a lone '/'.
+        self._write("local.get $path_ptr")
+        self._write("local.get $path_len")
+        self._write("call $__fs_strip_slash_len")
+        self._write("local.set $pl")
+        self._write("local.get $pre_ptr")
+        self._write("local.get $pre_len")
+        self._write("call $__fs_strip_slash_len")
+        self._write("local.set $ql")
+        # if ql > pl, not contained.
+        self._write("local.get $ql")
+        self._write("local.get $pl")
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Compare the first ql bytes: path[i] == prefix[i] for i<ql.
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("(block $cmp_done")
+        self._indent += 1
+        self._write("(loop $cmp")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("local.get $ql")
+        self._write("i32.ge_u")
+        self._write("br_if $cmp_done")
+        # if path_ptr[i] != pre_ptr[i] -> return 0
+        self._write("local.get $path_ptr")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.get $pre_ptr")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.ne")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $cmp")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # Segment boundary: equal lengths (path IS prefix) -> contained.
+        self._write("local.get $pl")
+        self._write("local.get $ql")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Otherwise contained iff path[ql] == '/' (0x2f).
+        self._write("local.get $path_ptr")
+        self._write("local.get $ql")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 47")
+        self._write("i32.eq")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_fs_strip_slash_helper(self) -> None:
+        """``$__fs_strip_slash_len (ptr i32, len i32) -> i32`` -> the
+        length of ``[ptr, ptr+len)`` with trailing ``/`` bytes removed,
+        but never below 1 (a lone ``/`` keeps length 1).
+
+        Matches the oracle's ``rstrip('/')`` normalisation used before
+        the containment compare so ``dir/`` and ``dir`` are the same
+        prefix. Pure length arithmetic; reads no bytes past ``ptr+len``."""
+        self._write(
+            "(func $__fs_strip_slash_len (param $ptr i32) "
+            "(param $len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(block $strip_done")
+        self._indent += 1
+        self._write("(loop $strip")
+        self._indent += 1
+        # if len <= 1, stop (keep a lone '/' or empty as-is).
+        self._write("local.get $len")
+        self._write("i32.const 1")
+        self._write("i32.le_u")
+        self._write("br_if $strip_done")
+        # if last byte (ptr + len - 1) != '/', stop.
+        self._write("local.get $ptr")
+        self._write("local.get $len")
+        self._write("i32.add")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("i32.load8_u")
+        self._write("i32.const 47")
+        self._write("i32.ne")
+        self._write("br_if $strip_done")
+        # len -= 1; continue.
+        self._write("local.get $len")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $len")
+        self._write("br $strip")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        self._write("local.get $len")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_fs_path_allowed_helper(self) -> None:
+        """``$Fs_path_allowed (handle i32, path_ptr i32, path_len i32)
+        -> i32`` -> 1 iff the Fs value ``handle`` admits ``path``.
+
+        The shared containment test behind both ``allows`` (its whole
+        body) and every privileged Fs op (its fail-closed prologue):
+
+          handle == 0  -> 1 (unrestricted root Fs: every path allowed)
+          else         -> handle is a pointer to a List<String> header
+                          (len@0, data_ptr@8) whose entries are the
+                          canonicalised prefixes accumulated by
+                          ``restrict_to``. ``path`` is admitted iff it is
+                          contained (``$Fs_path_contained``) in EVERY
+                          stored prefix.
+
+        Mirrors ``Fs.allows`` exactly: the oracle requires
+        ``is_relative_to`` ALL prefixes (the INTERSECTION of the prefix
+        containments, ``capa/runtime/_capabilities.py:180-183``), so a
+        single non-containing prefix denies. An empty prefix list (which
+        ``restrict_to`` never produces -- it always adds one prefix)
+        would vacuously allow; a fresh non-zero allow-list always holds
+        at least one prefix."""
+        self._emit_wasi_fs_strip_slash_helper()
+        self._write(
+            "(func $Fs_path_allowed (param $handle i32) "
+            "(param $path_ptr i32) (param $path_len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $data i32)")
+        self._write("(local $count i32)")
+        self._write("(local $i i32)")
+        self._write("(local $entry i32)")
+        # Unrestricted root: handle 0 admits every path.
+        self._write("local.get $handle")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Restricted: require containment in EVERY stored prefix.
+        # count = header.len@0; data = header.data_ptr@8.
+        self._write("local.get $handle")
+        self._write("i32.load offset=0")
+        self._write("local.set $count")
+        self._write("local.get $handle")
+        self._write("i32.load offset=8")
+        self._write("local.set $data")
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("(block $allow_done")
+        self._indent += 1
+        self._write("(loop $scan_prefixes")
+        self._indent += 1
+        # if i >= count, every prefix contained -> break (allowed).
+        self._write("local.get $i")
+        self._write("local.get $count")
+        self._write("i32.ge_u")
+        self._write("br_if $allow_done")
+        # entry = data + i*8 (packed (pre_ptr@0, pre_len@4)).
+        self._write("local.get $data")
+        self._write("local.get $i")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $entry")
+        # if NOT contained(path, entry.prefix) -> return 0 (denied).
+        self._write("local.get $path_ptr")
+        self._write("local.get $path_len")
+        self._write("local.get $entry")
+        self._write("i32.load offset=0")
+        self._write("local.get $entry")
+        self._write("i32.load offset=4")
+        self._write("call $Fs_path_contained")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # i += 1; continue.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $scan_prefixes")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # Contained in all prefixes (or count was 0): allowed.
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_fs_allows_wrapper(self) -> None:
+        """``$Fs_allows (handle i32, path_ptr i32, path_len i32) ->
+        i32`` -> the Bool result of ``fs.allows(path)``.
+
+        Matches the call shape ``_emit_cap_allows_with_handle`` produces
+        (receiver handle + path (ptr, len) -> i32 Bool). Delegates
+        straight to the shared ``$Fs_path_allowed`` so the query answer
+        is identical to the gate every privileged Fs op consults (no
+        guest-side divergence) and to the Python oracle for canonical
+        paths."""
+        self._write(
+            "(func $Fs_allows (param $handle i32) (param $path_ptr i32) "
+            "(param $path_len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("local.get $handle")
+        self._write("local.get $path_ptr")
+        self._write("local.get $path_len")
+        self._write("call $Fs_path_allowed")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_fs_restrict_to_wrapper(self) -> None:
+        """``$Fs_restrict_to (handle i32, pre_ptr i32, pre_len i32) ->
+        i32`` -> a fresh Fs value (pointer to a new ``List<String>``
+        prefix allow-list).
+
+        Matches the call shape ``_emit_fs_restrict_to`` produces
+        (receiver handle + the prefix String as (ptr, len)).
+
+        Builds the UNION of the parent's prefix list with the new
+        ``prefix``, identical to ``Fs.restrict_to``
+        (``existing | {canon}``, ``capa/runtime/_capabilities.py:168-171``):
+
+          parent unrestricted (handle == 0): result = [prefix].
+          parent restricted: result = parent's prefixes ++ [prefix].
+
+        Unlike Env (which INTERSECTS its key set), Fs ACCUMULATES
+        prefixes by union and ``allows`` then requires containment in ALL
+        of them (so the EFFECTIVE admitted set is the intersection of the
+        containments -- the monotone narrowing the model intends; see the
+        design doc section 2.2). The prefix BYTES are shared, not copied
+        (the prefix arg already lives in linear memory for the program's
+        lifetime); only the (ptr, len) pairs are stored. The new header
+        is always non-zero (``$alloc`` never returns 0), so a restricted
+        Fs is always distinguishable from the unrestricted 0 sentinel."""
+        self._write(
+            "(func $Fs_restrict_to (param $handle i32) "
+            "(param $pre_ptr i32) (param $pre_len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $header i32)")
+        self._write("(local $out_data i32)")
+        self._write("(local $parent_n i32)")
+        self._write("(local $parent_data i32)")
+        self._write("(local $out_n i32)")
+        # Parent prefix count: 0 when handle is the unrestricted root,
+        # else header.len@0.
+        self._write("local.get $handle")
+        self._write("i32.eqz")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $handle")
+        self._write("i32.load offset=0")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $parent_n")
+        # out_n = parent_n + 1 (the new prefix).
+        self._write("local.get $parent_n")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $out_n")
+        # Allocate the result header (16 bytes) + data buffer
+        # (out_n * 8 bytes for the packed (ptr, len) pairs).
+        self._write("i32.const 16")
+        self._write("call $alloc")
+        self._write("local.set $header")
+        self._write("local.get $out_n")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write("local.set $out_data")
+        # Copy the parent's prefix pairs (parent_n * 8 bytes) into the
+        # front of out_data, when the parent is restricted.
+        self._write("local.get $parent_n")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $handle")
+        self._write("i32.load offset=8")
+        self._write("local.set $parent_data")
+        # memory.copy(dst=out_data, src=parent_data, n=parent_n*8).
+        self._write("local.get $out_data")
+        self._write("local.get $parent_data")
+        self._write("local.get $parent_n")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("memory.copy")
+        self._indent -= 1
+        self._write("end")
+        # Append the new prefix at out_data[parent_n] = (pre_ptr, pre_len).
+        self._write("local.get $out_data")
+        self._write("local.get $parent_n")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.get $pre_ptr")
+        self._write("i32.store offset=0")
+        self._write("local.get $out_data")
+        self._write("local.get $parent_n")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.get $pre_len")
+        self._write("i32.store offset=4")
+        # Fill the List<String> header: len@0 = cap@4 = out_n,
+        # data_ptr@8 = out_data, pad@12 = 0.
+        self._write("local.get $header")
+        self._write("local.get $out_n")
+        self._write("i32.store offset=0")
+        self._write("local.get $header")
+        self._write("local.get $out_n")
+        self._write("i32.store offset=4")
+        self._write("local.get $header")
+        self._write("local.get $out_data")
+        self._write("i32.store offset=8")
+        self._write("local.get $header")
+        self._write("i32.const 0")
+        self._write("i32.store offset=12")
+        # Return the header pointer (the new restricted Fs value).
+        self._write("local.get $header")
+        self._indent -= 1
+        self._write(")")
+
     # ----- Fs metadata via wasi:filesystem (no streams) ----------
 
     def _emit_wasi_fs_preopen_desc_helper(self) -> None:
@@ -1137,22 +1581,46 @@ class _WasiEmissionMixin:
         self._write(")")
 
     def _emit_wasi_fs_exists_wrapper(self) -> None:
-        """``$Fs_exists (idx i32, rel_ptr i32, rel_len i32) -> i32``.
+        """``$Fs_exists (handle i32, full_ptr i32, full_len i32,
+        idx i32, rel_ptr i32, rel_len i32) -> i32``.
+
+        FAIL-CLOSED ATTENUATION (guest-side, Level 2): before touching
+        the filesystem, consult the receiver Fs's prefix allow-list via
+        ``$Fs_path_allowed(handle, full_path)`` (the FULL original
+        literal path, against which the ``restrict_to`` prefixes were
+        recorded). When the Fs is restricted and the path is not
+        admitted, return 0 (fail-closed-as-absent) WITHOUT any
+        ``stat-at`` -- byte-identical to the Python oracle
+        (``if not self.allows(path): return False``,
+        ``capa/runtime/_capabilities.py:259-261``). An unrestricted Fs
+        (``handle == 0``) short-circuits to allowed.
 
         stat-at(preopen_desc(idx), path-flags=symlink-follow(1),
         rel_path) into the reserved scratch; the result discriminant
         @0 is 0 on Ok (the entry exists) and non-zero on Err
         (no-entry, ...). Returns 1 when the entry exists, 0 otherwise
         -- byte-identical to the Python oracle's
-        ``os.path.exists`` gated by the cap (here the preopen IS the
-        gate: a path outside every preopen is unreachable, fail-closed
-        as absent)."""
+        ``os.path.exists`` gated by the cap (the preopen is the Level-1
+        ceiling, the allow-list the Level-2 fine attenuation)."""
         scratch = self._wasi_fs_scratch_offset
         self._write(
-            "(func $Fs_exists (param $idx i32) (param $rel_ptr i32) "
+            "(func $Fs_exists (param $handle i32) (param $full_ptr i32) "
+            "(param $full_len i32) (param $idx i32) (param $rel_ptr i32) "
             "(param $rel_len i32) (result i32)"
         )
         self._indent += 1
+        # Fail-closed: denied path reports absent (0) without a syscall.
+        self._write("local.get $handle")
+        self._write("local.get $full_ptr")
+        self._write("local.get $full_len")
+        self._write("call $Fs_path_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
         self._write("local.get $idx")
         self._write("call $__wasi_fs_preopen_desc")
         self._write("i32.const 1")  # path-flags: symlink-follow
@@ -1177,13 +1645,32 @@ class _WasiEmissionMixin:
         order. Returns 1 iff the stat succeeded AND the type is
         directory, else 0 -- byte-identical to the oracle's
         ``os.path.isdir`` (a denied / absent path reports false, so the
-        cap leaks no path type)."""
+        cap leaks no path type).
+
+        FAIL-CLOSED ATTENUATION (guest-side, Level 2): same prologue as
+        ``$Fs_exists`` -- a path the receiver Fs does not admit reports
+        false (0) WITHOUT a ``stat-at``, matching the Python oracle
+        (``if not self.allows(path): return False``,
+        ``capa/runtime/_capabilities.py:267-269``)."""
         scratch = self._wasi_fs_scratch_offset
         self._write(
-            "(func $Fs_is_dir (param $idx i32) (param $rel_ptr i32) "
+            "(func $Fs_is_dir (param $handle i32) (param $full_ptr i32) "
+            "(param $full_len i32) (param $idx i32) (param $rel_ptr i32) "
             "(param $rel_len i32) (result i32)"
         )
         self._indent += 1
+        # Fail-closed: denied path reports not-a-dir (0) without a syscall.
+        self._write("local.get $handle")
+        self._write("local.get $full_ptr")
+        self._write("local.get $full_len")
+        self._write("call $Fs_path_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
         self._write("local.get $idx")
         self._write("call $__wasi_fs_preopen_desc")
         self._write("i32.const 1")
@@ -1242,14 +1729,39 @@ class _WasiEmissionMixin:
         genuine error. Each call here is idempotent, so re-creating an
         already-existing intermediate (or the leaf) is an Ok, matching
         the oracle. This wrapper therefore stays a single-segment
-        primitive; the recursion is the sequence the call site emits."""
+        primitive; the recursion is the sequence the call site emits.
+
+        FAIL-CLOSED ATTENUATION (guest-side, Level 2): before any
+        ``create-directory-at``, consult ``$Fs_path_allowed(handle,
+        full_path)``. When the Fs is restricted and the path is not
+        admitted, write the deny ``Err(IoError)`` and return WITHOUT
+        creating anything -- byte-identical (on the Result discriminant)
+        to the Python oracle (``if not self.allows(path): return
+        self._deny(...)``, ``capa/runtime/_capabilities.py:275-276``).
+        Because the call site calls this wrapper once per cumulative
+        mkdir prefix sharing one full path + ret area, the gate is the
+        SAME full literal for every prefix call; a denied target denies
+        the whole sequence on the first prefix and short-circuits."""
         scratch = self._wasi_fs_scratch_offset
         msg_off, msg_len = self._intern_string("mkdir failed")
         self._write(
-            "(func $Fs_mkdir (param $idx i32) (param $rel_ptr i32) "
+            "(func $Fs_mkdir (param $handle i32) (param $full_ptr i32) "
+            "(param $full_len i32) (param $idx i32) (param $rel_ptr i32) "
             "(param $rel_len i32) (param $ret_area i32)"
         )
         self._indent += 1
+        # Fail-closed: denied path writes Err(IoError), creates nothing.
+        self._write("local.get $handle")
+        self._write("local.get $full_ptr")
+        self._write("local.get $full_len")
+        self._write("call $Fs_path_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_fs_unit_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
         self._write("local.get $idx")
         self._write("call $__wasi_fs_preopen_desc")
         self._write("local.get $rel_ptr")
@@ -1294,6 +1806,29 @@ class _WasiEmissionMixin:
         self._write("end")
         self._indent -= 1
         self._write(")")
+
+    def _emit_wasi_fs_unit_err(self, msg_off: int, msg_len: int) -> None:
+        """Write an ``Err(IoError)`` into ``$ret_area`` for the
+        ``result_unit_io_error`` 20-byte shape: tag@0 = 1, message = the
+        interned fixed string (m_ptr@4, m_len@8), empty cause (c_ptr@12 =
+        0, c_len@16 = 0). Shared by the ``mkdir`` fail-closed prologue
+        (the deny path) and identical to ``_emit_wasi_fs_write_err``'s
+        body; ``$ret_area`` is in scope (the wrapper's trailing param)."""
+        self._write("local.get $ret_area")
+        self._write("i32.const 1")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_off}")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_len}")
+        self._write("i32.store offset=8")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=12")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=16")
 
     # ----- Fs.read via wasi:filesystem + wasi:io/streams ---------
 
@@ -1347,7 +1882,8 @@ class _WasiEmissionMixin:
         chunk = _WASI_FS_READ_CHUNK
         msg_off, msg_len = self._intern_string("failed to read file")
         self._write(
-            "(func $Fs_read (param $idx i32) (param $rel_ptr i32) "
+            "(func $Fs_read (param $handle i32) (param $full_ptr i32) "
+            "(param $full_len i32) (param $idx i32) (param $rel_ptr i32) "
             "(param $rel_len i32) (param $ret_area i32)"
         )
         self._indent += 1
@@ -1361,6 +1897,23 @@ class _WasiEmissionMixin:
         self._write("(local $need i32)")
         self._write("(local $newcap i32)")
         self._write("(local $newbuf i32)")
+        # Fail-closed attenuation (guest-side, Level 2): a path the
+        # receiver Fs does not admit writes Err(IoError) and returns
+        # WITHOUT opening anything, byte-identical (on the Result
+        # discriminant) to the Python oracle (``if not self.allows(path):
+        # return self._deny("read", path)``,
+        # capa/runtime/_capabilities.py:231-232).
+        self._write("local.get $handle")
+        self._write("local.get $full_ptr")
+        self._write("local.get $full_len")
+        self._write("call $Fs_path_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_fs_read_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
         # open-at(preopen_desc(idx), path-flags=symlink-follow(1), rel,
         # open-flags=0, descriptor-flags=read(1), open_ret).
         self._write("local.get $idx")
@@ -1627,7 +2180,8 @@ class _WasiEmissionMixin:
         chunk = _WASI_FS_WRITE_CHUNK
         msg_off, msg_len = self._intern_string("failed to write file")
         self._write(
-            "(func $Fs_write (param $idx i32) (param $rel_ptr i32) "
+            "(func $Fs_write (param $handle i32) (param $full_ptr i32) "
+            "(param $full_len i32) (param $idx i32) (param $rel_ptr i32) "
             "(param $rel_len i32) (param $content_ptr i32) "
             "(param $content_len i32) (param $ret_area i32)"
         )
@@ -1637,6 +2191,27 @@ class _WasiEmissionMixin:
         self._write("(local $cursor i32)")
         self._write("(local $remaining i32)")
         self._write("(local $n i32)")
+        # Fail-closed attenuation (guest-side, Level 2): a path the
+        # receiver Fs does not admit writes Err(IoError) and returns
+        # WITHOUT opening / truncating anything, byte-identical (on the
+        # Result discriminant) to the Python oracle (``if not
+        # self.allows(path): return self._deny("write", path)``,
+        # capa/runtime/_capabilities.py:242-243). The oracle never
+        # touches the file on a deny, and neither does this (open-at is
+        # reached only after the gate passes), so no empty file is left
+        # behind for a denied write -- the same guarantee the capa:host
+        # post-open guard gives.
+        self._write("local.get $handle")
+        self._write("local.get $full_ptr")
+        self._write("local.get $full_len")
+        self._write("call $Fs_path_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_fs_write_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
         # open-at(preopen_desc(idx), path-flags=symlink-follow(1), rel,
         # open-flags=create|truncate(9), descriptor-flags=write(2),
         # wvs_ret). The 8-byte wvs_ret slot holds open-at's
@@ -1892,7 +2467,8 @@ class _WasiEmissionMixin:
         rde_ret = self._wasi_fs_list_dir_scratch_offset + 8     # 20 bytes
         msg_off, msg_len = self._intern_string("failed to list directory")
         self._write(
-            "(func $Fs_list_dir (param $idx i32) (param $rel_ptr i32) "
+            "(func $Fs_list_dir (param $handle i32) (param $full_ptr i32) "
+            "(param $full_len i32) (param $idx i32) (param $rel_ptr i32) "
             "(param $rel_len i32) (param $ret_area i32)"
         )
         self._indent += 1
@@ -1911,6 +2487,23 @@ class _WasiEmissionMixin:
         self._write("(local $b i32)")          # &pairs[j-1]
         self._write("(local $t0 i32)")         # swap temp ptr
         self._write("(local $t1 i32)")         # swap temp len
+        # Fail-closed attenuation (guest-side, Level 2): a path the
+        # receiver Fs does not admit writes Err(IoError) and returns
+        # WITHOUT opening the directory, byte-identical (on the Result
+        # discriminant) to the Python oracle (``if not self.allows(path):
+        # return self._deny("list_dir", path)``,
+        # capa/runtime/_capabilities.py:288-289).
+        self._write("local.get $handle")
+        self._write("local.get $full_ptr")
+        self._write("local.get $full_len")
+        self._write("call $Fs_path_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_fs_list_dir_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
         # open-at(preopen_desc(idx), symlink-follow(1), rel,
         # open-flags=directory(2), descriptor-flags=read(1), rd_ret).
         self._write("local.get $idx")

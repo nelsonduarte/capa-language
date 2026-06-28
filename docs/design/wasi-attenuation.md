@@ -340,9 +340,12 @@ preopen). Where the root prefix is a runtime value the compiler cannot
 materialise, degrade THAT PART to guest-side only (Level 2), do not
 silently widen the preopen.
 
-FS STATUS (2026-06-27): PHASE 0 (preopen ceiling) + the METADATA
-operations IMPLEMENTED for the `--wasi` mode, in the lowest-risk
-increment. The compiler computes the Fs preopen ceiling statically from
+FS STATUS (2026-06-28): COMPLETE for the `--wasi` mode. PHASE 0 (preopen
+ceiling) + the METADATA operations (`exists` / `is_dir` / `mkdir`) + the
+stream-bearing operations (`read` / `write` / `list_dir`) + the FINE
+ATTENUATION (`restrict_to` / `allows`, Level 2, guest-side) are all
+implemented; every Fs operation now runs under `--wasi`. The compiler
+computes the Fs preopen ceiling statically from
 the CIR (`capa/ir/_fs_ceiling.py`, after the loader has inlined
 imports): every literal Fs path contributes a preopen for its PARENT
 directory, with READ_WRITE perms when a mutating op (`mkdir`/`write`)
@@ -361,10 +364,40 @@ The migrated operations are METADATA only: `exists` / `is_dir` ->
 cumulative prefix of the resolved relative literal, all compile-time
 literals, so a multi-segment `mkdir` whose intermediates are missing
 creates the whole tree byte-identically across the three backends).
-They use NO `wasi:io` streams. `read` / `write` / `list_dir`
-(stream-bearing) and the fine attenuators `restrict_to` / `allows` are
-REJECTED at compile time under `--wasi` (`capa/ir/_emit_wasm/_wasi.py`),
-a later increment.
+They use NO `wasi:io` streams. The stream-bearing `read` / `write` /
+`list_dir` are migrated too (`descriptor.open-at` +
+`wasi:io/streams` for read / write, `descriptor.read-directory`
+enumeration + a guest-side sort for `list_dir`; see
+`docs/design/wasi_mode.md`). The fine attenuators `restrict_to` /
+`allows` are implemented GUEST-SIDE (Level 2; see "FS FINE ATTENUATION"
+below) -- NOTHING in the Fs surface is rejected any more.
+
+FS FINE ATTENUATION (Level 2, guest-side, 2026-06-28). `restrict_to` /
+`allows` and every op's fail-closed gate are implemented guest-side, the
+DIRECT ANALOGUE of the Env guest-side attenuation, with PATH-PREFIX
+CONTAINMENT in place of key equality. The Fs value is reinterpreted
+guest-side (`0` = unrestricted root; non-zero = a pointer to a
+`List<String>` of canonicalised prefixes). `restrict_to(prefix)` returns
+a new Fs whose prefix list is the parent's UNION `prefix`; `allows(path)`
+is true iff the path is contained (LEXICAL segment containment) in EVERY
+prefix -- so the EFFECTIVE admitted set is the INTERSECTION of the
+containments (the monotone narrowing the oracle's `is_relative_to` over
+ALL prefixes computes). Each privileged op consults the same gate before
+the syscall and fails closed identically to the Python oracle
+(`Err(IoError)` for read / write / mkdir / list_dir; `false` for exists /
+is_dir), with NO file touched on a denied write / mkdir. The containment
+is LEXICAL, not realpath: BYTE-IDENTICAL to the oracle for CANONICAL
+paths (the shared process CWD that `realpath` prepends to a relative path
+and its relative prefix cancels in the containment), and a HONEST
+DIVERGENCE for non-canonical paths or symlinks -- the documented TOCTOU /
+symlink loss of Level 2, the same caveat the preopen note below states.
+This sits ON TOP OF the preopen (the fine narrowing is always at least as
+tight as the Level-1 ceiling). It is COMPILER-PROVED and REINFORCED by
+our host (which generated the guest); under a stock / tampered WASI host
+the fine narrowing would not be re-checked at the syscall. The
+restriction survives crossing a function boundary (the `i32` allow-list
+pointer travels with the Fs value, the same property the `capa:host`
+handle table gives). This CLOSES the full Fs reconciliation.
 
 WHERE THE FINE BOUNDARY ACTUALLY IS (honest, do not over-sell the
 preopen). A preopen is a whole-DIRECTORY descriptor: it grants the
@@ -394,8 +427,8 @@ the program in `--wasi` mode. This is tighter than the Env
 `inherit_env` fallback because a wrongly-derived preopen is real
 filesystem authority, whereas a missing preopen merely denies. Such a
 program runs unchanged on the default `capa:host` backend. The fine
-per-call `restrict_to` narrowing below the ceiling is the deferred
-Level 2 layer (likely guest-side, like Env).
+per-call `restrict_to` narrowing below the ceiling is the guest-side
+Level 2 layer (now IMPLEMENTED; see "FS FINE ATTENUATION" above).
 
 CLOCK and RANDOM. Keep the current behaviour: pure readers on
 `wasi:clocks` / `wasi:random`, with Clock attenuation

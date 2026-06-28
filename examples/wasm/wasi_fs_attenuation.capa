@@ -1,0 +1,64 @@
+// Experimental WASI mode demo: GUEST-SIDE Fs fine attenuation
+// (capa --wasm --component --wasi).
+//
+// wasi:filesystem grants authority through PREOPENS (whole-directory
+// descriptors); there is no host-side cap object to hold a finer
+// allow-list, so Fs.restrict_to / Fs.allows have no host runtime home.
+// This mode therefore implements the fine narrowing GUEST-SIDE, with
+// semantics byte-identical to the default capa:host backend and the
+// Python backend (the oracle) FOR CANONICAL PATHS. See
+// docs/design/wasi-attenuation.md (Level 2) and docs/design/wasi_mode.md.
+//
+//   fs.restrict_to(prefix) -> a NEW Fs whose prefix allow-list is the
+//     parent's prefixes UNION `prefix`. `allows` then requires a path to
+//     be contained in EVERY stored prefix, so chaining restrict_to
+//     INTERSECTS the containments (monotonic; it never widens).
+//   fs.allows(path)        -> true iff the Fs is unrestricted OR `path`
+//     is contained (by LEXICAL path-segment containment) in all prefixes.
+//   read / write / exists / is_dir / mkdir / list_dir -> FAIL-CLOSED: a
+//     path the Fs does not admit is denied WITHOUT touching the
+//     filesystem (Err for read/write/mkdir/list_dir, false for
+//     exists/is_dir), exactly like the Python backend.
+//
+// HONEST LIMIT (Level 2): the containment is LEXICAL, not realpath. The
+// guest has no realpath syscall, so for CANONICAL paths (no `.` / `..`
+// segments, no symlinks, no repeated slashes) the lexical check is
+// byte-identical to the oracle's realpath + is_relative_to; for
+// non-canonical paths or symlinks it may diverge (the documented TOCTOU
+// / symlink loss). The PREOPEN ceiling is the hard Level-1 runtime
+// ceiling underneath; this fine attenuation sits ON TOP of it.
+//
+// Adjust the literal prefix below to an absolute directory you control
+// (the preopen ceiling needs literal paths), e.g.:
+//   mkdir -p /tmp/capa/data/a /tmp/capa/data/b
+//   printf 'alpha\n' > /tmp/capa/data/a/f.txt
+//   capa examples/wasm/wasi_fs_attenuation.capa --wasm --component --wasi --run
+
+fun main(fs: Fs, stdio: Stdio)
+    // Narrow the root Fs to the `a` subtree. The returned Fs carries a
+    // one-element prefix allow-list; the root `fs` is unrestricted.
+    let scoped = fs.restrict_to("/tmp/capa/data/a")
+
+    // allows reflects the restriction: an in-prefix path is admitted, an
+    // out-of-prefix path is denied (segment-aware, so /tmp/capa/data/ab
+    // would NOT be admitted by a /tmp/capa/data/a prefix).
+    if scoped.allows("/tmp/capa/data/a/f.txt")
+        stdio.println("allows a/f.txt: yes")
+    if scoped.allows("/tmp/capa/data/b/g.txt")
+        stdio.println("allows b/g.txt: yes")
+    else
+        stdio.println("allows b/g.txt: no")
+
+    // read is fail-closed against the allow-list: the in-prefix file
+    // reads through, the out-of-prefix one is an Err WITHOUT any open-at.
+    match scoped.read("/tmp/capa/data/a/f.txt")
+        Ok(c) -> stdio.println("read a/f.txt: ok")
+        Err(e) -> stdio.println("read a/f.txt: err")
+    match scoped.read("/tmp/capa/data/b/g.txt")
+        Ok(c) -> stdio.println("read b/g.txt: ok")
+        Err(e) -> stdio.println("read b/g.txt: err (denied, fail-closed)")
+
+    // The wider root still admits everything: each Fs value carries its
+    // own restriction, so narrowing `scoped` does not affect `fs`.
+    if fs.allows("/tmp/capa/data/b/g.txt")
+        stdio.println("root allows b/g.txt: yes")

@@ -491,13 +491,18 @@ def _module_calls_panic(module: Module) -> bool:
     )
 
 
-# Experimental WASI mode (2026-06-27): the (cap, method) touch-points
-# routed off ``capa:host``. ``get`` / ``args`` go to canonical wasi:*
-# interfaces; ``restrict_to_keys`` / ``allows`` are implemented
-# GUEST-SIDE (no host import at all, Level 2 of
-# docs/design/wasi-attenuation.md). Either way they carry no
-# ``capa:host`` env interface, which is why the WIT generator skips the
-# whole Env interface in WASI mode below. Kept in lockstep with
+# Experimental WASI mode: a DOCUMENTATION snapshot of the Random / Clock
+# / Env (cap, method) touch-points routed off ``capa:host`` -- the
+# readers (``get`` / ``args``) to canonical wasi:* interfaces and the
+# attenuators (``restrict_to_keys`` / ``allows``) GUEST-SIDE (Level 2 of
+# docs/design/wasi-attenuation.md, no host import). Fs is FULLY migrated
+# too (metadata + streams + the guest-side restrict_to / allows), but the
+# WIT generator does not consult this set for Fs: it skips the WHOLE Fs
+# capa:host interface in WASI mode unconditionally (see the
+# ``cap in ("Random", "Clock", "Env", "Fs")`` skip in ``_emit_wit_wasi``),
+# routing every Fs op to wasi:filesystem. This constant is unused by the
+# generator (the per-cap skips drive the logic); it is kept only as a
+# human-readable index, NOT a lockstep mirror of
 # ``capa.ir._emit_wasm._wasi._WASI_MIGRATED_METHODS``.
 _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     ("Random", "system_seed"),

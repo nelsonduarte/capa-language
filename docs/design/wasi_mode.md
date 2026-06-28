@@ -33,6 +33,8 @@ see the WAT) rewrites the migrated touch-points:
 | `Env.args` | `capa:host/env.args` | `wasi:cli/environment@0.2.0` `get-arguments` |
 | `Env.restrict_to_keys` | `capa:host/env.restrict-to-keys` (host handle table) | guest-side allow-list intersection (no host) |
 | `Env.allows` | `capa:host/env.allows` (host handle table) | guest-side allow-list membership (no host) |
+| `Fs.restrict_to` | `capa:host/fs.restrict-to` (host handle table) | guest-side prefix allow-list union (no host) |
+| `Fs.allows` | `capa:host/fs.allows` (host handle table) | guest-side lexical prefix containment (no host) |
 
 Every **other** capability the program uses (Stdio for printing the
 results, and anything else) stays on `capa:host`. The component
@@ -281,8 +283,12 @@ guest-side (Level 2; see "Env attenuation (guest-side, Level 2)"
 above), plus the **Fs metadata** operations `Fs.exists`, `Fs.is_dir`,
 and `Fs.mkdir` (see "Fs metadata + preopen ceiling" below), the
 streaming **`Fs.read`** / **`Fs.write`** (see "Fs.read via streams" /
-"Fs.write via streams" below), and the directory enumeration
-**`Fs.list_dir`** (see "Fs.list_dir via directory enumeration" below).
+"Fs.write via streams" below), the directory enumeration
+**`Fs.list_dir`** (see "Fs.list_dir via directory enumeration" below),
+and **Fs attenuation** (`Fs.restrict_to`, `Fs.allows`, and every op's
+fail-closed gate), implemented guest-side (Level 2; see "Fs attenuation
+(guest-side, Level 2)" below). With this, **every Fs operation is
+migrated** under `--wasi` -- the Fs reconciliation is complete.
 
 ### Fs metadata + preopen ceiling
 
@@ -483,8 +489,9 @@ oracle carries the OS errno, the WASI wrapper writes a fixed
 **discriminant** (`is_err`), as the metadata / Net error paths already
 assert.
 
-Still rejected for now: `Fs.list_dir` (needs directory enumeration) and
-the fine attenuators `Fs.restrict_to` / `Fs.allows`.
+All Fs operations are migrated; `Fs.list_dir` is covered below and the
+fine attenuators `Fs.restrict_to` / `Fs.allows` are implemented
+guest-side (see "Fs attenuation (guest-side, Level 2)" below).
 
 ### Fs.write via streams
 
@@ -597,8 +604,8 @@ a write denied through a `READ_ONLY` preopen -- each with **no** `fs.read`
 in the source, so the on-disk bytes are read back directly in Python and
 compared across all three backends.
 
-Still rejected for now: the fine attenuators `Fs.restrict_to` /
-`Fs.allows`.
+The fine attenuators `Fs.restrict_to` / `Fs.allows` are implemented
+guest-side (see "Fs attenuation (guest-side, Level 2)" below).
 
 ### Fs.list_dir via directory enumeration
 
@@ -691,8 +698,96 @@ directory) are coherent `Err(IoError)` on all three backends; the Err
 directory`), so parity is on the Result **discriminant** (`is_err`), as
 the read / write / metadata / Net error paths already assert.
 
-Still rejected for now: the fine attenuators `Fs.restrict_to` /
-`Fs.allows`.
+The fine attenuators `Fs.restrict_to` / `Fs.allows` are implemented
+guest-side (see "Fs attenuation (guest-side, Level 2)" below).
+
+### Fs attenuation (guest-side, Level 2)
+
+`Fs.restrict_to` and `Fs.allows` are **supported** under `--wasi`,
+implemented entirely **guest-side** -- `wasi:filesystem` grants authority
+through whole-directory **preopens** (the coarse Level-1 ceiling) and has
+no host-side cap object to hold a finer per-call allow-list, so the fine
+narrowing has no host runtime home. This is **Level 2** of
+`docs/design/wasi-attenuation.md`, the **direct analogue of the Env
+guest-side attenuation** above, with **path-prefix containment** in place
+of key equality. This **closes the full Fs reconciliation**: every Fs op
+now runs under `--wasi`.
+
+**State representation.** The Fs value (an `i32` the host passes to
+`main`, and that `restrict_to` returns) is **reinterpreted** guest-side,
+exactly like Env:
+
+- `0` = **unrestricted** (the root Fs `main` receives; the host passes
+  `0` in this mode, since the `capa:host` handle table is not consulted
+  on the wasi path).
+- non-zero = a pointer to a `List<String>` header (16 bytes: len@0,
+  cap@4, data_ptr@8, pad@12) whose data array holds the **prefix
+  allow-list**: N packed `(str_ptr, str_len)` pairs (the canonical Capa
+  `List<String>` layout). The prefixes are the literal paths the source
+  passed to `restrict_to`.
+
+**The three operations, all in WAT:**
+
+- `$Fs_restrict_to(handle, pre_ptr, pre_len) -> i32` builds a NEW
+  allow-list = the parent's prefixes **UNION** `prefix` (the prefix bytes
+  are shared, not copied), allocates a fresh `List<String>`, returns the
+  pointer. Identical to the oracle `Fs.restrict_to`
+  (`existing | {canon}`, `capa/runtime/_capabilities.py:168-171`). Note
+  the contrast with Env: Env **intersects** its key set, Fs
+  **accumulates** prefixes and `allows` then requires containment in ALL
+  of them -- so the EFFECTIVE admitted set is the **intersection of the
+  containments**, the monotone narrowing the model intends.
+- `$Fs_allows(handle, path_ptr, path_len) -> i32` returns 1 iff
+  `handle == 0` (unrestricted) OR `path` is contained in EVERY stored
+  prefix (`$Fs_path_allowed` -> `$Fs_path_contained` per prefix). Mirrors
+  `Fs.allows` (`is_relative_to` ALL prefixes,
+  `capa/runtime/_capabilities.py:173-183`).
+- Every privileged op (`read` / `write` / `exists` / `is_dir` / `mkdir`
+  / `list_dir`) is extended with a **fail-closed prologue**: it consults
+  `$Fs_path_allowed(handle, FULL_path)` (the FULL original literal path,
+  against which the prefixes were recorded -- NOT the preopen-relative
+  path) BEFORE touching the filesystem, and on a deny returns the
+  fail-closed result (`Err(IoError)` for read / write / mkdir / list_dir;
+  `false` for exists / is_dir) WITHOUT any `open-at` / `stat-at` /
+  `create-directory-at`. Byte-identical (on the Result discriminant /
+  Bool) to the Python oracle's `if not self.allows(path): ...`. A denied
+  `write` / `mkdir` therefore leaves **nothing** on disk -- the gate
+  fires before the file is opened.
+
+**Path containment (LEXICAL, not realpath).** The oracle canonicalises
+both the prefix and the queried path with `os.path.realpath` (resolving
+`..` / `.` / symlinks) before the `is_relative_to` boundary check. The
+guest has **no realpath syscall**, so `$Fs_path_contained` does a
+**lexical** path-segment containment: strip trailing `/` from both, then
+the path is contained iff its first `len(prefix)` bytes equal the prefix
+AND the next byte is `/` or the path IS the prefix (the segment boundary
+that stops `data/ab` matching `data/a`). **For CANONICAL paths** (no `.`
+/ `..` segments, no symlinks, no repeated slashes) this is
+**byte-identical** to the oracle: `realpath` prepends the SAME process
+CWD to a relative path and its relative prefix (so the CWD cancels in the
+containment) and leaves a canonical absolute path unchanged. **For
+NON-CANONICAL paths or symlinks** the lexical check may **diverge** from
+the realpath oracle -- the honest, documented **TOCTOU / symlink loss**
+of Level 2. The migrated tests use canonical absolute literals, where
+parity holds byte-for-byte across all three backends.
+
+**Interaction Level 1 + Level 2.** The guest-side allow-list (fine,
+Level 2) operates ON TOP OF the preopen (the Level-1 ceiling): the fine
+check is always at least as tight as the preopen, so the two are
+coherent. The preopen is real **runtime** authority enforced by any
+conformant WASI host; the fine narrowing is **compiler-proved** and
+**reinforced by our host** (which generated the guest), but under a stock
+or tampered WASI host the fine narrowing would not be re-checked at the
+syscall (Level 2, honest).
+
+**Parity.** Three-backend byte-parity (Python oracle == `capa:host` ==
+WASI) is asserted by `TestWasiFsAttenuation` in
+`tests/test_wasi_mode.py` over a controlled temp directory:
+`restrict_to` + `allows` + every op's fail-closed deny, chaining
+(intersection), isolation (a child Fs does not affect its parent), the
+unrestricted root, and the **cross-function-boundary** restriction
+survival (a restricted Fs passed to a helper keeps its allow-list,
+because the `i32` pointer travels with the value).
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
@@ -706,12 +801,6 @@ silently miscompiles):
   attenuation through a standard WASI clock is a future design item
   (likely a guest-side deadline gate, since the wall clock is
   readable).
-- **Fs attenuation** (`Fs.restrict_to`, `Fs.allows`). The preopen
-  ceiling is the coarse Level-1 authority bound; the fine per-call
-  prefix narrowing is a later increment (likely guest-side, like Env).
-  (`Fs.read`, `Fs.write`, and `Fs.list_dir` are now migrated -- see
-  "Fs.read via streams" / "Fs.write via streams" / "Fs.list_dir via
-  directory enumeration" above.)
 
 Env attenuation was previously excluded too; it is now supported
 guest-side (Level 2). Mapping `main`'s Env **ceiling** onto the host

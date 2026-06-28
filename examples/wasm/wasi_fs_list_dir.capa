@@ -36,8 +36,8 @@
 // outside every preopen is unreachable. A DYNAMIC path is rejected at
 // compile time in --wasi mode (fail-closed). The same program runs
 // unchanged on the default capa:host backend. The fine attenuators
-// Fs.restrict_to / Fs.allows are still rejected under --wasi (a later
-// increment).
+// Fs.restrict_to / Fs.allows are migrated now too (guest-side Level 2;
+// see wasi_fs_attenuation.capa).
 //
 // The directory below lives next to this file:
 //

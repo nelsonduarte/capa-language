@@ -1218,14 +1218,38 @@ class TestWasiFsRejections(unittest.TestCase):
         self.assertNotIn("wasi:io/error@0.2.0", wat)
         self.assertNotIn('"capa:host/fs"', wat)
 
-    def test_allows_rejected(self):
+    def test_allows_accepted_guest_side(self):
+        # Fs.allows is now SUPPORTED under --wasi, implemented entirely
+        # guest-side (Level 2): the receiver Fs handle (0 = unrestricted
+        # root, else a List<String> prefix allow-list) is consulted by
+        # the guest ``$Fs_allows`` -> ``$Fs_path_allowed`` ->
+        # ``$Fs_path_contained`` helpers (no host import).
         src = (
             "fun main(fs: Fs, stdio: Stdio)\n"
             "    stdio.println(\"${fs.allows(\\\"/d/f\\\")}\")\n"
         )
-        with self.assertRaises(Exception) as cm:
-            self._compile(src)
-        self.assertIn("Fs.allows", str(cm.exception))
+        wat = self._compile(src)
+        self.assertIn("(func $Fs_allows", wat)
+        self.assertIn("(func $Fs_path_allowed", wat)
+        self.assertIn("(func $Fs_path_contained", wat)
+        # No capa:host/fs import: the whole attenuation surface is
+        # routed off capa:host in WASI mode.
+        self.assertNotIn('"capa:host/fs"', wat)
+
+    def test_restrict_to_accepted_guest_side(self):
+        # Fs.restrict_to is now SUPPORTED under --wasi, implemented
+        # guest-side: it builds a fresh List<String> prefix allow-list
+        # (parent's prefixes UNION the new one) via ``$Fs_restrict_to``,
+        # the Fs analogue of ``$Env_restrict_to_keys``.
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    let s = fs.restrict_to(\"/d/a\")\n"
+            "    stdio.println(\"${s.allows(\\\"/d/a/f\\\")}\")\n"
+        )
+        wat = self._compile(src)
+        self.assertIn("(func $Fs_restrict_to", wat)
+        self.assertIn("(func $Fs_path_allowed", wat)
+        self.assertNotIn('"capa:host/fs"', wat)
 
     def test_dynamic_path_fail_closed_rejected(self):
         # A migrated metadata op with a dynamic path is rejected
@@ -2292,6 +2316,233 @@ def _run_wasi_fs(src: str, data_dir: str) -> str:
     finally:
         sys.stdout = saved
     return buf.getvalue()
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiFsAttenuation(unittest.TestCase):
+    """End-to-end GUEST-SIDE Fs fine attenuation (Level 2 of
+    ``docs/design/wasi-attenuation.md``) under the real WASI P2 host,
+    with three-way byte-parity (Python oracle == capa:host backend ==
+    WASI backend) over a controlled temp directory.
+
+    ``Fs.restrict_to`` accumulates canonical path prefixes; ``allows``
+    requires LEXICAL segment-containment in EVERY prefix (the
+    intersection of the containments the oracle's realpath +
+    is_relative_to computes for CANONICAL paths). Every privileged op
+    (read / write / exists / is_dir / mkdir / list_dir) consults the
+    same gate and FAILS CLOSED on a denied path, exactly as the Python
+    runtime does. All paths here are CANONICAL absolute literals, so the
+    lexical guest-side check is byte-identical to the realpath oracle.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._td = tempfile.mkdtemp(prefix="capa-wasi-fs-att-test-")
+        self._data = os.path.join(self._td, "data")
+        os.makedirs(os.path.join(self._data, "a"))
+        os.makedirs(os.path.join(self._data, "b"))
+        with open(os.path.join(self._data, "a", "f.txt"), "w") as f:
+            f.write("ALPHA")
+        with open(os.path.join(self._data, "b", "g.txt"), "w") as f:
+            f.write("BRAVO")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _d(self) -> str:
+        # Forward-slash absolute paths (the convention the WASI host
+        # normalises and the lexical guest-side containment compares).
+        return self._data.replace("\\", "/")
+
+    def test_restrict_read_exists_isdir_per_op_three_backend_parity(self):
+        # Each op (allows / read / exists / is_dir) admits a path inside
+        # the restricted prefix and DENIES one outside, fail-closed,
+        # byte-identical across all three backends.
+        d = self._d()
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let s = fs.restrict_to(\"{d}/a\")\n"
+            f"    stdio.println(\"ai=${{s.allows(\\\"{d}/a/f.txt\\\")}}\")\n"
+            f"    stdio.println(\"ao=${{s.allows(\\\"{d}/b/g.txt\\\")}}\")\n"
+            f"    let r1 = s.read(\"{d}/a/f.txt\")\n"
+            "    match r1\n"
+            "        Ok(c) -> stdio.println(\"r1=${c}\")\n"
+            "        Err(e) -> stdio.println(\"r1=err\")\n"
+            f"    let r2 = s.read(\"{d}/b/g.txt\")\n"
+            "    match r2\n"
+            "        Ok(c) -> stdio.println(\"r2=${c}\")\n"
+            "        Err(e) -> stdio.println(\"r2=err\")\n"
+            f"    stdio.println(\"ef=${{s.exists(\\\"{d}/a/f.txt\\\")}}\")\n"
+            f"    stdio.println(\"eo=${{s.exists(\\\"{d}/b/g.txt\\\")}}\")\n"
+            f"    stdio.println(\"di=${{s.is_dir(\\\"{d}/a\\\")}}\")\n"
+            f"    stdio.println(\"do=${{s.is_dir(\\\"{d}/b\\\")}}\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("ai=true", wasi)
+        self.assertIn("ao=false", wasi)
+        self.assertIn("r1=ALPHA", wasi)
+        self.assertIn("r2=err", wasi)        # denied read, fail-closed
+        self.assertIn("ef=true", wasi)
+        self.assertIn("eo=false", wasi)      # denied exists -> absent
+        self.assertIn("di=true", wasi)
+        self.assertIn("do=false", wasi)      # denied is_dir -> false
+
+    def test_denied_write_and_mkdir_leave_no_trace(self):
+        # A denied write / mkdir is an Err and creates NOTHING on disk
+        # (the gate fires before open-at / create-directory-at), matching
+        # the Python oracle. Three-backend parity on the Result, plus a
+        # disk check that the out-of-prefix targets were never created.
+        d = self._d()
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let s = fs.restrict_to(\"{d}/a\")\n"
+            f"    let w1 = s.write(\"{d}/a/new.txt\", \"X\")\n"
+            "    match w1\n"
+            "        Ok(_) -> stdio.println(\"w1=ok\")\n"
+            "        Err(e) -> stdio.println(\"w1=err\")\n"
+            f"    let w2 = s.write(\"{d}/b/new.txt\", \"Y\")\n"
+            "    match w2\n"
+            "        Ok(_) -> stdio.println(\"w2=ok\")\n"
+            "        Err(e) -> stdio.println(\"w2=err\")\n"
+            f"    let m1 = s.mkdir(\"{d}/a/sub\")\n"
+            "    match m1\n"
+            "        Ok(_) -> stdio.println(\"m1=ok\")\n"
+            "        Err(e) -> stdio.println(\"m1=err\")\n"
+            f"    let m2 = s.mkdir(\"{d}/b/sub\")\n"
+            "    match m2\n"
+            "        Ok(_) -> stdio.println(\"m2=ok\")\n"
+            "        Err(e) -> stdio.println(\"m2=err\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("w1=ok", wasi)
+        self.assertIn("w2=err", wasi)
+        self.assertIn("m1=ok", wasi)
+        self.assertIn("m2=err", wasi)
+        # The out-of-prefix targets were never created on disk.
+        self.assertFalse(
+            os.path.exists(os.path.join(self._data, "b", "new.txt"))
+        )
+        self.assertFalse(
+            os.path.exists(os.path.join(self._data, "b", "sub"))
+        )
+
+    def test_chaining_intersection_three_backend_parity(self):
+        # restrict_to(a).restrict_to(b): a path must be contained in
+        # BOTH prefixes (the intersection of the containments), so
+        # neither an a-path nor a b-path is admitted; the wider single
+        # restriction still admits its own subtree.
+        d = self._d()
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let sa = fs.restrict_to(\"{d}/a\")\n"
+            f"    let sab = sa.restrict_to(\"{d}/b\")\n"
+            f"    stdio.println(\"both_a=${{sab.allows(\\\"{d}/a/f.txt\\\")}}\")\n"
+            f"    stdio.println(\"both_b=${{sab.allows(\\\"{d}/b/g.txt\\\")}}\")\n"
+            f"    stdio.println(\"single_a=${{sa.allows(\\\"{d}/a/f.txt\\\")}}\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("both_a=false", wasi)
+        self.assertIn("both_b=false", wasi)
+        self.assertIn("single_a=true", wasi)
+
+    def test_isolation_child_does_not_affect_parent(self):
+        # Deriving a more restricted child Fs leaves the parent's
+        # authority untouched (each value carries its own restriction).
+        d = self._d()
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let parent = fs.restrict_to(\"{d}\")\n"
+            f"    let child = parent.restrict_to(\"{d}/a\")\n"
+            f"    stdio.println(\"parent_b=${{parent.allows(\\\"{d}/b/g.txt\\\")}}\")\n"
+            f"    stdio.println(\"child_b=${{child.allows(\\\"{d}/b/g.txt\\\")}}\")\n"
+            f"    stdio.println(\"child_a=${{child.allows(\\\"{d}/a/f.txt\\\")}}\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("parent_b=true", wasi)   # parent still admits b
+        self.assertIn("child_b=false", wasi)   # child narrowed b out
+        self.assertIn("child_a=true", wasi)
+
+    def test_unrestricted_root_admits_everything(self):
+        # The Fs root main receives is unrestricted: allows is true for
+        # any path and every op runs (here list_dir + read).
+        d = self._d()
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    stdio.println(\"ra=${{fs.allows(\\\"{d}/b/g.txt\\\")}}\")\n"
+            f"    let r = fs.read(\"{d}/b/g.txt\")\n"
+            "    match r\n"
+            "        Ok(c) -> stdio.println(\"r=${c}\")\n"
+            "        Err(e) -> stdio.println(\"r=err\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("ra=true", wasi)
+        self.assertIn("r=BRAVO", wasi)
+
+    def test_list_dir_attenuated_three_backend_parity(self):
+        # list_dir on a denied directory is a fail-closed Err; on an
+        # allowed one it returns the sorted entries, byte-identical
+        # across all three backends.
+        d = self._d()
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let s = fs.restrict_to(\"{d}/a\")\n"
+            f"    let denied = s.list_dir(\"{d}/b\")\n"
+            "    match denied\n"
+            "        Ok(xs) -> stdio.println(\"ld=ok\")\n"
+            "        Err(e) -> stdio.println(\"ld=err\")\n"
+            f"    let ok = s.list_dir(\"{d}/a\")\n"
+            "    match ok\n"
+            "        Ok(xs) ->\n"
+            "            for x in xs\n"
+            "                stdio.println(\"e=${x}\")\n"
+            "        Err(e) -> stdio.println(\"ld2=err\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("ld=err", wasi)    # denied dir, fail-closed
+        self.assertIn("e=f.txt", wasi)   # allowed dir lists its entry
+
+    def test_cross_function_boundary_keeps_restriction(self):
+        # The load-bearing guarantee: a restricted Fs passed to a helper
+        # KEEPS its restriction (the allow-list travels with the Fs
+        # value, an i32 pointer, across the function boundary), so the
+        # helper's read of an out-of-prefix path fails closed -- the same
+        # result on all three backends.
+        d = self._d()
+        src = (
+            "fun probe(fs: Fs, stdio: Stdio)\n"
+            f"    stdio.println(\"hi=${{fs.allows(\\\"{d}/a/f.txt\\\")}}\")\n"
+            f"    stdio.println(\"ho=${{fs.allows(\\\"{d}/b/g.txt\\\")}}\")\n"
+            f"    let r = fs.read(\"{d}/b/g.txt\")\n"
+            "    match r\n"
+            "        Ok(c) -> stdio.println(\"hr=ok\")\n"
+            "        Err(e) -> stdio.println(\"hr=err\")\n"
+            "\n"
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let s = fs.restrict_to(\"{d}/a\")\n"
+            "    probe(s, stdio)\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("hi=true", wasi)
+        self.assertIn("ho=false", wasi)
+        self.assertIn("hr=err", wasi)   # restriction survived the call
 
 
 if __name__ == "__main__":

@@ -38,9 +38,9 @@
 // clean Err). A path outside every preopen is unreachable, and a
 // DYNAMIC write path is rejected at compile time in --wasi mode
 // (fail-closed). The same program runs unchanged on the default
-// capa:host backend. Fs.list_dir and the fine attenuators
-// Fs.restrict_to / Fs.allows are still rejected under --wasi (later
-// increments).
+// capa:host backend. Every Fs op is migrated now: list_dir (see
+// wasi_fs_list_dir.capa) and the fine attenuators Fs.restrict_to /
+// Fs.allows (guest-side Level 2; see wasi_fs_attenuation.capa).
 //
 // The file below lives under a `data` directory next to this file:
 //

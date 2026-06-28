@@ -917,6 +917,21 @@ _EXCLUDED: dict[str, str] = {
         "path) and assert three-backend byte parity INCLUDING the sorted "
         "order (Python oracle == capa:host == WASI)."
     ),
+    "wasi_fs_attenuation.capa": (
+        "Experimental --wasi mode demo: GUEST-SIDE Fs fine attenuation "
+        "(Level 2) -- Fs.restrict_to builds a prefix allow-list and every "
+        "privileged op fails closed on a path outside it, with LEXICAL "
+        "path containment in place of the oracle's realpath. The literal "
+        "paths point at an absolute directory the runner must create "
+        "(/tmp/capa/data/...), which the auto-list parity harness does not "
+        "control, so there is no fixed byte-equality reference here. "
+        "Covered by the dedicated TestWasiFsAttenuation tests in "
+        "tests/test_wasi_mode.py, which build a known temp directory and "
+        "assert three-backend byte parity (Python oracle == capa:host == "
+        "WASI) for restrict_to + allows + every op's fail-closed deny, "
+        "chaining/intersection, isolation, the unrestricted root, and the "
+        "cross-function-boundary restriction survival."
+    ),
 }
 
 
