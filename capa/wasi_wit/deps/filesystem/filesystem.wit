@@ -17,13 +17,14 @@
 //
 // The full ``descriptor`` resource is declared structurally (matching
 // upstream) so the package type-checks at ``wasm-tools component
-// embed`` time; the stream-bearing methods (read-via-stream /
-// write-via-stream / append-via-stream) USE wasi:io's input-stream /
-// output-stream, hence the io dep. Capa never CALLS a stream-bearing
-// method -- Fs.read / Fs.write / Fs.list_dir are rejected at
-// compile time in --wasi mode (they need streams; a later increment).
-// wasmtime's add_wasip2() provides the full interfaces, so the
-// unused declarations are harmless at instantiation time.
+// embed`` time. Capa's --wasi mode CALLS open-at + read-via-stream /
+// write-via-stream (Fs.read / Fs.write, over wasi:io's input-stream /
+// output-stream, hence the io dep) and read-directory +
+// directory-entry-stream.read-directory-entry (Fs.list_dir, no
+// streams). The remaining stream-bearing / descriptor methods are
+// declared but never called; wasmtime's add_wasip2() provides the full
+// interfaces, so the unused declarations are harmless at instantiation
+// time.
 package wasi:filesystem@0.2.0;
 
 interface types {

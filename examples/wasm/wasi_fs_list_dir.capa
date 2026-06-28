@@ -1,0 +1,63 @@
+// Experimental WASI mode demo: Fs.list_dir via wasi:filesystem
+// directory enumeration (capa --wasm --component --wasi).
+//
+// Migrates Fs.list_dir to the canonical WASI Preview 2 directory walk:
+//
+//   fs.list_dir(path) -> descriptor.open-at (against the host-granted
+//                        PREOPEN descriptor for the path's parent, with
+//                        the `directory` open-flag so opening a
+//                        non-directory fails cleanly)
+//                     -> descriptor.read-directory ->
+//                        directory-entry-stream
+//                     -> directory-entry-stream.read-directory-entry
+//                        LOOP, accumulating each entry NAME until the
+//                        option is `none` (end of stream; NOT an error)
+//                     -> a guest-side lexicographic SORT of the names so
+//                        the order matches the Python oracle's
+//                        sorted(os.listdir(path)) BYTE-FOR-BYTE (wasi
+//                        returns entries in filesystem order)
+//                     -> Ok(List<String>)
+//                     -> the directory-entry-stream and the opened
+//                        descriptor are dropped on every exit path; the
+//                        preopen ROOT descriptors are never dropped.
+//
+// Unlike Fs.read / Fs.write, list_dir uses NO wasi:io/streams: the
+// directory-entry-stream is a wasi:filesystem/types resource. The
+// returned List<String> (names only, no "." / "..", sorted) is
+// byte-identical to the Python backend and the capa:host bridge,
+// including the ORDER. An unreadable / missing path, or a path that is a
+// FILE rather than a directory, is a coherent Err(IoError) on every
+// backend. Stdio stays on capa:host -- the hybrid coexistence this mode
+// validates. See docs/design/wasi_mode.md.
+//
+// The PREOPEN CEILING applies exactly as for the other Fs ops: every
+// path here is a string LITERAL, the compiler derives the parent
+// directory to preopen (READ_ONLY for list_dir, a read op), and a path
+// outside every preopen is unreachable. A DYNAMIC path is rejected at
+// compile time in --wasi mode (fail-closed). The same program runs
+// unchanged on the default capa:host backend. The fine attenuators
+// Fs.restrict_to / Fs.allows are still rejected under --wasi (a later
+// increment).
+//
+// The directory below lives next to this file:
+//
+//   mkdir -p examples/wasm/data
+//   printf 'x' > examples/wasm/data/file.txt
+//   capa --wasm --component --wasi --run examples/wasm/wasi_fs_list_dir.capa
+//
+// (Adjust the literal prefix below to an absolute path you control if
+// your runner's working directory differs.)
+
+fun main(fs: Fs, stdio: Stdio)
+    let r = fs.list_dir("examples/wasm/data")
+    match r
+        Ok(entries) ->
+            stdio.println("list ok, ${entries.length()} entries (sorted):")
+            for name in entries
+                stdio.println("  ${name}")
+        Err(e) -> stdio.println("list failed: ${e}")
+    // A path that does not exist inside the preopen is a clean Err.
+    let missing = fs.list_dir("examples/wasm/data/no-such-dir")
+    match missing
+        Ok(entries) -> stdio.println("unexpected ok")
+        Err(e) -> stdio.println("missing list failed (expected): err")

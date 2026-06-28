@@ -499,7 +499,9 @@ class WasmEmitter(
                 # failed at runtime (no file written). A co-present
                 # ``read`` of the same path masked the bug by interning
                 # the shared basename early.
-                _fs_meta = ("exists", "is_dir", "mkdir", "read", "write")
+                _fs_meta = (
+                    "exists", "is_dir", "mkdir", "read", "write", "list_dir",
+                )
                 for _fn, instr in walk_module(module):
                     if (isinstance(instr, MethodCall)
                             and (instr.cap_used
@@ -519,9 +521,9 @@ class WasmEmitter(
                             for _pfx in mkdir_prefixes(_rel):
                                 self._intern_string(_pfx)
                         else:
-                            # exists / is_dir / read / write all resolve
-                            # to a single relative path the wrapper
-                            # addresses by (ptr, len).
+                            # exists / is_dir / read / write / list_dir
+                            # all resolve to a single relative path the
+                            # wrapper addresses by (ptr, len).
                             self._intern_string(_rel)
                 if any(
                     cap == "Fs" and m == "mkdir"
@@ -545,6 +547,17 @@ class WasmEmitter(
                     # interning it only at $Fs_write emission time would
                     # leave it without a backing data segment.
                     self._intern_string("failed to write file")
+                if any(
+                    cap == "Fs" and m == "list_dir"
+                    for (cap, m) in self._used_caps
+                ):
+                    # The fixed Err message $Fs_list_dir writes on an
+                    # open / read-directory / read-directory-entry
+                    # failure. Pre-interned for the same reason as the
+                    # read / write messages: interning it only at
+                    # $Fs_list_dir emission time would leave it without a
+                    # backing data segment.
+                    self._intern_string("failed to list directory")
 
         # Reserve linear-memory space for the Grisu2 cached-powers
         # table when Float formatting is in play. Placed right after
@@ -636,7 +649,9 @@ class WasmEmitter(
         self._wasi_fs_scratch_offset = 0
         self._wasi_fs_uses_preopens = self._wasi and any(
             cap == "Fs"
-            and method in ("exists", "is_dir", "mkdir", "read", "write")
+            and method in (
+                "exists", "is_dir", "mkdir", "read", "write", "list_dir",
+            )
             for (cap, method) in self._used_caps
         )
         if self._wasi_fs_uses_preopens:
@@ -696,6 +711,32 @@ class WasmEmitter(
             )
             self._string_data_offset = (
                 self._wasi_fs_write_scratch_offset + 32
+            )
+
+        # Experimental WASI mode: Fs.list_dir (2026-06-28). A 32-byte,
+        # 8-aligned scratch holding the TWO indirect returns of the
+        # directory-enumeration sequence, packed at distinct sub-offsets:
+        #   read-directory        result<dir-entry-stream, error-code>  @ +0  (8B)
+        #   read-directory-entry  result<option<dir-entry>, error-code> @ +8  (20B)
+        # The read-directory slot @+0 also holds open-at's
+        # result<descriptor, error-code> first (the two never overlap in
+        # time: read-directory runs only after open's result is consumed
+        # into $desc). This region is SEPARATE from the 104-byte metadata
+        # scratch, the 32-byte read scratch, the 32-byte write scratch,
+        # and the cached get-directories list buffer the host writes, so a
+        # list_dir interleaved with read / write / metadata ops corrupts
+        # none of them. The entry NAME bytes are NOT here: the host writes
+        # them into its own canonical-ABI-allocated memory (cabi_realloc),
+        # and the wrapper accumulates only (ptr, len) pairs into a
+        # geometrically-grown heap buffer via $alloc + memory.copy.
+        # 0 means "not reserved".
+        self._wasi_fs_list_dir_scratch_offset = 0
+        if self._wasi and ("Fs", "list_dir") in self._used_caps:
+            self._wasi_fs_list_dir_scratch_offset = _align_up(
+                self._string_data_offset, 8,
+            )
+            self._string_data_offset = (
+                self._wasi_fs_list_dir_scratch_offset + 32
             )
 
         # Stage 1: emit the (module ... ) header with imports and
@@ -868,10 +909,15 @@ class WasmEmitter(
                 # last bump allocation in place so ``out = out + x``
                 # in a loop is O(n) amortised rather than O(n^2).
                 self._emit_str_concat_function()
-            if self._uses_string_order_cmp(module):
+            if (self._uses_string_order_cmp(module)
+                    or self._wasi_fs_list_dir_needs_str_cmp()):
                 # Bug #2: String ``<`` / ``>`` / ``<=`` / ``>=`` lower
                 # to ``call $str_cmp`` (byte-by-byte UTF-8 ordering ==
                 # Python's code-point ordering). Independent of $str_eq.
+                # WASI Fs.list_dir also calls ``$str_cmp`` to sort the
+                # directory entry names into the oracle's
+                # ``sorted(os.listdir(path))`` order, so the helper must
+                # be present even when the program uses no String ``<``.
                 self._emit_str_cmp_function()
             if self._uses_string_codepoint_index(module):
                 # Slice 17 (2026-05-29): String.length and

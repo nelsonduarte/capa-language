@@ -717,8 +717,11 @@ def _emit_wit_wasi(
     # Fs metadata (exists / is_dir / mkdir) routes to wasi:filesystem:
     # preopens.get-directories resolves the host-granted descriptors,
     # types.descriptor.{stat-at, create-directory-at} do the metadata.
-    # Both interfaces are imported once when any Fs op is used. The
-    # stream-bearing Fs.read (input-stream.blocking-read) and Fs.write
+    # Both interfaces are imported once when any Fs op is used.
+    # Fs.list_dir (read-directory + directory-entry-stream.
+    # read-directory-entry) lives entirely in wasi:filesystem/types and
+    # needs no extra interface. Only the stream-bearing Fs.read
+    # (input-stream.blocking-read) and Fs.write
     # (output-stream.blocking-write-and-flush / blocking-flush)
     # additionally use wasi:io/streams plus wasi:io/error (the
     # resource-drop of the error a failed stream op carries), so import

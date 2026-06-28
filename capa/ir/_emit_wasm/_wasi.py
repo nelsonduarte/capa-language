@@ -157,10 +157,19 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     # stream) + wasi:io/streams (output-stream.blocking-write-and-flush
     # loop + blocking-flush) against the host-granted preopen
     # descriptors. The inverse of read, reusing the same stream
-    # machinery. list_dir still needs directory enumeration and the
-    # attenuators (restrict_to / allows) are the fine-grained Level 2
-    # layer; both remain rejected by ``_validate_wasi_caps``.
+    # machinery.
     ("Fs", "write"),
+    # Fs.list_dir migration (2026-06-28): list_dir routes to
+    # wasi:filesystem (descriptor.open-at with the directory open-flag +
+    # descriptor.read-directory -> directory-entry-stream) and a loop of
+    # directory-entry-stream.read-directory-entry to accumulate the entry
+    # names, then a guest-side lexicographic sort (via $str_cmp) to match
+    # the oracle's ``sorted(os.listdir(path))`` ORDER byte-for-byte (wasi
+    # returns entries in filesystem order, not sorted). The last Fs
+    # touch-point to land. The fine attenuators (restrict_to / allows)
+    # are the Level 2 layer; they remain rejected by
+    # ``_validate_wasi_caps``.
+    ("Fs", "list_dir"),
 })
 
 
@@ -179,17 +188,23 @@ _WASI_IO_ERROR = "wasi:io/error@0.2.0"
 # Fs metadata methods this WASI increment migrates to wasi:filesystem.
 _WASI_FS_METADATA: frozenset[str] = frozenset({"exists", "is_dir", "mkdir"})
 
-# Fs stream-bearing methods migrated to wasi:filesystem + wasi:io/streams.
-# ``read`` (open-at -> read-via-stream -> blocking-read loop) and
-# ``write`` (open-at create|truncate -> write-via-stream ->
-# blocking-write-and-flush loop -> blocking-flush).
-_WASI_FS_STREAM: frozenset[str] = frozenset({"read", "write"})
+# Fs stream-bearing / preopen-resource methods migrated to
+# wasi:filesystem (+ wasi:io/streams for read / write). All three share
+# the preopen-descriptor resolver and the open-at / descriptor-drop
+# imports:
+# ``read``     (open-at -> read-via-stream -> blocking-read loop),
+# ``write``    (open-at create|truncate -> write-via-stream ->
+#               blocking-write-and-flush loop -> blocking-flush),
+# ``list_dir`` (open-at directory -> read-directory ->
+#               read-directory-entry loop -> guest-side sort).
+_WASI_FS_STREAM: frozenset[str] = frozenset({"read", "write", "list_dir"})
 
 # Fs methods rejected in WASI mode for now (with a clear compile-time
-# error): list_dir needs directory enumeration; restrict_to / allows
-# are the fine-grained attenuation layer (a later increment).
+# error): restrict_to / allows are the fine-grained attenuation layer
+# (a later increment). list_dir is now migrated (directory enumeration
+# via read-directory + directory-entry-stream).
 _WASI_FS_REJECTED: frozenset[str] = frozenset({
-    "list_dir", "restrict_to", "allows",
+    "restrict_to", "allows",
 })
 
 # The size, in bytes, of each blocking-read chunk request. read-via-stream
@@ -252,14 +267,14 @@ class _WasiEmissionMixin:
                     f"--wasi)."
                 )
             if cap == "Fs" and method in _WASI_FS_REJECTED:
-                # list_dir needs directory enumeration; restrict_to /
-                # allows are the fine-grained attenuation layer. exists /
-                # is_dir / mkdir / read / write are migrated.
+                # restrict_to / allows are the fine-grained attenuation
+                # layer. exists / is_dir / mkdir / read / write / list_dir
+                # are migrated.
                 raise WasmEmissionError(
                     f"Fs.{method} is not supported in the WASI mode "
                     f"yet (the migrated operations are exists / is_dir "
-                    f"/ mkdir / read / write); use the default capa:host "
-                    f"backend (drop --wasi)."
+                    f"/ mkdir / read / write / list_dir); use the default "
+                    f"capa:host backend (drop --wasi)."
                 )
         # Fail-closed proof obligation: if the program uses a migrated
         # Fs op (metadata or the stream-bearing read) but its static
@@ -317,6 +332,16 @@ class _WasiEmissionMixin:
             or ("Env", "restrict_to_keys") in self._used_caps
             or ("Env", "allows") in self._used_caps
         )
+
+    def _wasi_fs_list_dir_needs_str_cmp(self) -> bool:
+        """True when ``--wasi`` is active and the program reaches
+        ``Fs.list_dir``, whose guest-side wrapper sorts the directory
+        entry names via ``$str_cmp`` to match the oracle's
+        ``sorted(os.listdir(path))`` order. The default path routes the
+        sort through the Python host's ``sorted``, so this gate is
+        WASI-only; it ensures ``$str_cmp`` is emitted even when the
+        program uses no String ``<`` / ``>`` operator."""
+        return self._wasi and ("Fs", "list_dir") in self._used_caps
 
     def _emit_wasi_imports(self) -> None:
         """Emit the raw ``wasi:*`` imports for whichever migrated
@@ -394,15 +419,21 @@ class _WasiEmissionMixin:
                     f'(func $wasi_fs_create_directory_at '
                     f'(param i32) (param i32) (param i32) (param i32)))'
                 )
-        # Fs.read (2026-06-28) + Fs.write (2026-06-28): the stream-
-        # bearing ops. ``read`` is open-at + read-via-stream +
-        # blocking-read; ``write`` is open-at + write-via-stream +
-        # blocking-write-and-flush + blocking-flush. The SHARED imports
-        # (open-at, the descriptor drop, and the io error drop) are
-        # emitted once if EITHER op is used; the read-only and write-only
-        # method imports are gated individually. The core-ABI shapes were
-        # validated against wasm-tools 1.249.0 / wasmtime 44.0.1
-        # add_wasip2():
+        # Fs.read (2026-06-28) + Fs.write (2026-06-28) + Fs.list_dir
+        # (2026-06-28): the ops that open-at a descriptor relative to a
+        # preopen. ``read`` is open-at + read-via-stream + blocking-read;
+        # ``write`` is open-at + write-via-stream +
+        # blocking-write-and-flush + blocking-flush; ``list_dir`` is
+        # open-at (directory open-flag) + read-directory +
+        # read-directory-entry loop. The SHARED imports (open-at and the
+        # descriptor drop) are emitted once if ANY of the three is used;
+        # the per-op method imports are gated individually. The io-error
+        # drop is shared by read + write only (their blocking stream-error
+        # carries an ``error`` OWN resource); list_dir's read-directory /
+        # read-directory-entry fail with an ``error-code`` ENUM, which
+        # carries no resource, so list_dir does not import it. The
+        # core-ABI shapes were validated against wasm-tools 1.249.0 /
+        # wasmtime 44.0.1 add_wasip2():
         #   descriptor.open-at         -> (param i32 i32 i32 i32 i32 i32 i32)
         #     (self, path-flags, path_ptr, path_len, open-flags,
         #      descriptor-flags, ret_area)
@@ -410,19 +441,31 @@ class _WasiEmissionMixin:
         #     (self-handle, offset(filesize=u64), ret_area)
         #   descriptor.write-via-stream -> (param i32 i64 i32)
         #     (self-handle, offset(filesize=u64), ret_area)
+        #   descriptor.read-directory  -> (param i32 i32)
+        #     (self-handle, ret_area) -> result<directory-entry-stream,
+        #     error-code> (disc @0, stream-own @4)
+        #   directory-entry-stream.read-directory-entry -> (param i32 i32)
+        #     (self-handle, ret_area) -> result<option<directory-entry>,
+        #     error-code> (result-disc @0, option-disc @4, entry.type @8,
+        #     entry.name_ptr @12, entry.name_len @16)
         #   input-stream.blocking-read  -> (param i32 i64 i32)
         #     (self-handle, len(u64), ret_area)
         #   output-stream.blocking-write-and-flush -> (param i32 i32 i32 i32)
         #     (self-handle, contents_ptr, contents_len, ret_area)
         #   output-stream.blocking-flush -> (param i32 i32)
         #     (self-handle, ret_area)
-        #   [resource-drop]descriptor    (wasi:filesystem/types) -> (param i32)
-        #   [resource-drop]input-stream  (wasi:io/streams)        -> (param i32)
-        #   [resource-drop]output-stream (wasi:io/streams)        -> (param i32)
-        #   [resource-drop]error         (wasi:io/error)          -> (param i32)
-        stream_used = ("Fs", "read") in used or ("Fs", "write") in used
-        if stream_used:
-            # Shared by read + write.
+        #   [resource-drop]descriptor              (wasi:filesystem/types) -> (param i32)
+        #   [resource-drop]directory-entry-stream  (wasi:filesystem/types) -> (param i32)
+        #   [resource-drop]input-stream            (wasi:io/streams)       -> (param i32)
+        #   [resource-drop]output-stream           (wasi:io/streams)       -> (param i32)
+        #   [resource-drop]error                   (wasi:io/error)         -> (param i32)
+        open_at_used = (
+            ("Fs", "read") in used
+            or ("Fs", "write") in used
+            or ("Fs", "list_dir") in used
+        )
+        if open_at_used:
+            # Shared by read + write + list_dir.
             self._write(
                 f'(import "{_WASI_FS_TYPES}" "[method]descriptor.open-at" '
                 f'(func $wasi_fs_open_at '
@@ -433,9 +476,31 @@ class _WasiEmissionMixin:
                 f'(import "{_WASI_FS_TYPES}" "[resource-drop]descriptor" '
                 f'(func $wasi_fs_drop_descriptor (param i32)))'
             )
+        if ("Fs", "read") in used or ("Fs", "write") in used:
+            # The io-error drop is needed only by the blocking stream
+            # ops (read / write); list_dir's enumeration errors are an
+            # error-code enum with no carried resource.
             self._write(
                 f'(import "{_WASI_IO_ERROR}" "[resource-drop]error" '
                 f'(func $wasi_io_drop_error (param i32)))'
+            )
+        if ("Fs", "list_dir") in used:
+            self._write(
+                f'(import "{_WASI_FS_TYPES}" '
+                f'"[method]descriptor.read-directory" '
+                f'(func $wasi_fs_read_directory '
+                f'(param i32) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_FS_TYPES}" '
+                f'"[method]directory-entry-stream.read-directory-entry" '
+                f'(func $wasi_fs_read_directory_entry '
+                f'(param i32) (param i32)))'
+            )
+            self._write(
+                f'(import "{_WASI_FS_TYPES}" '
+                f'"[resource-drop]directory-entry-stream" '
+                f'(func $wasi_fs_drop_dir_entry_stream (param i32)))'
             )
         if ("Fs", "read") in used:
             self._write(
@@ -531,6 +596,8 @@ class _WasiEmissionMixin:
             self._emit_wasi_fs_read_wrapper()
         if ("Fs", "write") in used:
             self._emit_wasi_fs_write_wrapper()
+        if ("Fs", "list_dir") in used:
+            self._emit_wasi_fs_list_dir_wrapper()
 
     # ----- adapter wrappers -------------------------------------
 
@@ -1745,6 +1812,382 @@ class _WasiEmissionMixin:
         Result DISCRIMINANT (is_err), as the read / metadata / Net error
         paths already assert. ``$ret_area`` is in scope (the wrapper's
         trailing param)."""
+        self._write("local.get $ret_area")
+        self._write("i32.const 1")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_off}")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_len}")
+        self._write("i32.store offset=8")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=12")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=16")
+
+    # ----- Fs.list_dir via wasi:filesystem directory enumeration -----
+
+    def _emit_wasi_fs_list_dir_wrapper(self) -> None:
+        """``$Fs_list_dir (idx i32, rel_ptr i32, rel_len i32,
+        ret_area i32)`` -> writes a ``result<list<string>, io-error>``
+        (20-byte canonical-ABI shape) into ``ret_area``.
+
+        Matches the call shape ``_emit_wasi_fs_list_dir_call`` produces
+        (preopen index + rel (ptr, len) + ret_area), so the existing
+        ``result_list_string_io_error`` materialiser lifts the result
+        into a Capa ``Result<List<String>, IoError>`` unchanged, exactly
+        as the capa:host list_dir does.
+
+        Sequence (validated against wasm-tools 1.249.0 / wasmtime 44.0.1;
+        convention captured in docs/design/wasi_mode.md):
+
+          1. resolve the preopen descriptor for ``idx``.
+          2. ``open-at(desc, symlink-follow, rel, open-flags=directory(2),
+             descriptor-flags=read(1))`` -> result<descriptor,
+             error-code>. The ``directory`` open-flag makes opening a
+             non-directory (a regular file) fail at open-at (confirmed by
+             oracle). On Err: write Err(IoError) and return (nothing
+             opened).
+          3. ``read-directory(dir_desc)`` ->
+             result<directory-entry-stream, error-code>. On Err: drop the
+             opened descriptor, write Err, return. The OWN
+             directory-entry-stream is value @4.
+          4. LOOP ``read-directory-entry(stream)`` ->
+             result<option<directory-entry>, error-code>:
+               * result disc @0 != 0 (Err): drop stream + descriptor,
+                 write Err, return.
+               * option disc @4 == 0 (none): END of stream (the normal
+                 terminator, NOT an error) -> break.
+               * option disc @4 == 1 (some): the directory-entry record
+                 starts at @8 (type @8 ignored; name_ptr @12, name_len
+                 @16). Append the (name_ptr, name_len) pair to a heap
+                 accumulation buffer (8 bytes per pair, grown
+                 geometrically), continue.
+          5. SORT the accumulated (ptr, len) pairs lexicographically via
+             ``$str_cmp`` (unsigned byte compare == Python's code-point
+             ``sorted()`` over str), an in-place stable insertion sort.
+             wasi returns entries in FILESYSTEM order; the oracle returns
+             ``sorted(os.listdir(path))``, so the guest-side sort is what
+             makes the ORDER byte-identical across the three backends.
+             read-directory does NOT include "." / ".." (confirmed by
+             oracle, matching os.listdir), so no filtering is needed.
+          6. drop the directory-entry-stream, then drop the opened
+             descriptor (OWN handles; the preopen ROOT is never dropped),
+             and write Ok(list<string>): ret_area Ok arm = data_ptr @4,
+             count @8. The materialiser wraps the (ptr, len)-pair buffer
+             in a 16-byte List<String> header.
+
+        Resource drops fire on EVERY exit path (success, EOF, and the two
+        error paths) so no OWN handle leaks and none is dropped twice. The
+        name BYTES are NOT copied: the host wrote each entry name into
+        canonical-ABI memory (via the component's cabi_realloc) that lives
+        for the call's duration, and the accumulation buffer stores only
+        the (ptr, len) pairs pointing at them, exactly as the
+        get-arguments / get-environment readers do for their string
+        lists."""
+        rd_ret = self._wasi_fs_list_dir_scratch_offset          # 8 bytes
+        rde_ret = self._wasi_fs_list_dir_scratch_offset + 8     # 20 bytes
+        msg_off, msg_len = self._intern_string("failed to list directory")
+        self._write(
+            "(func $Fs_list_dir (param $idx i32) (param $rel_ptr i32) "
+            "(param $rel_len i32) (param $ret_area i32)"
+        )
+        self._indent += 1
+        self._write("(local $desc i32)")
+        self._write("(local $stream i32)")
+        self._write("(local $buf i32)")        # pair buffer base (8B/pair)
+        self._write("(local $buf_cap i32)")    # capacity in PAIRS
+        self._write("(local $count i32)")      # accumulated entry count
+        self._write("(local $name_ptr i32)")
+        self._write("(local $name_len i32)")
+        self._write("(local $newcap i32)")
+        self._write("(local $newbuf i32)")
+        self._write("(local $i i32)")
+        self._write("(local $j i32)")
+        self._write("(local $a i32)")          # &pairs[j]
+        self._write("(local $b i32)")          # &pairs[j-1]
+        self._write("(local $t0 i32)")         # swap temp ptr
+        self._write("(local $t1 i32)")         # swap temp len
+        # open-at(preopen_desc(idx), symlink-follow(1), rel,
+        # open-flags=directory(2), descriptor-flags=read(1), rd_ret).
+        self._write("local.get $idx")
+        self._write("call $__wasi_fs_preopen_desc")
+        self._write("i32.const 1")            # path-flags: symlink-follow
+        self._write("local.get $rel_ptr")
+        self._write("local.get $rel_len")
+        self._write("i32.const 2")            # open-flags: directory
+        self._write("i32.const 1")            # descriptor-flags: read
+        self._write(f"i32.const {rd_ret}")
+        self._write("call $wasi_fs_open_at")
+        # if open Err (disc @0 != 0): write Err, return (nothing opened).
+        self._write(f"i32.const {rd_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_fs_list_dir_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # desc = open_ret.value @4 (the opened OWN directory descriptor).
+        self._write(f"i32.const {rd_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $desc")
+        # read-directory(desc, rd_ret) -> result<dir-entry-stream, ec>.
+        # rd_ret (8 bytes) is reused: open-at's result was consumed into
+        # $desc, so the slot is free.
+        self._write("local.get $desc")
+        self._write(f"i32.const {rd_ret}")
+        self._write("call $wasi_fs_read_directory")
+        # if read-directory Err: drop desc, write Err, return.
+        self._write(f"i32.const {rd_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $desc")
+        self._write("call $wasi_fs_drop_descriptor")
+        self._emit_wasi_fs_list_dir_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # stream = rd_ret.value @4 (the OWN directory-entry-stream).
+        self._write(f"i32.const {rd_ret}")
+        self._write("i32.load offset=4")
+        self._write("local.set $stream")
+        # Accumulation buffer: start empty (count 0, cap 0 pairs, ptr from
+        # a zero-size alloc, a stable non-overlapping heap pointer).
+        self._write("i32.const 0")
+        self._write("call $alloc")
+        self._write("local.set $buf")
+        self._write("i32.const 0")
+        self._write("local.set $buf_cap")
+        self._write("i32.const 0")
+        self._write("local.set $count")
+        # Loop read-directory-entry(stream, rde_ret).
+        self._write("(block $list_done")
+        self._indent += 1
+        self._write("(loop $list_loop")
+        self._indent += 1
+        self._write("local.get $stream")
+        self._write(f"i32.const {rde_ret}")
+        self._write("call $wasi_fs_read_directory_entry")
+        # if result Err (disc @0 != 0): drop stream + desc, write Err,
+        # return.
+        self._write(f"i32.const {rde_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $stream")
+        self._write("call $wasi_fs_drop_dir_entry_stream")
+        self._write("local.get $desc")
+        self._write("call $wasi_fs_drop_descriptor")
+        self._emit_wasi_fs_list_dir_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # option disc @4 == 0 (none): END of stream -> break.
+        self._write(f"i32.const {rde_ret}")
+        self._write("i32.load8_u offset=4")
+        self._write("i32.eqz")
+        self._write("br_if $list_done")
+        # some(directory-entry): name_ptr @12, name_len @16.
+        self._write(f"i32.const {rde_ret}")
+        self._write("i32.load offset=12")
+        self._write("local.set $name_ptr")
+        self._write(f"i32.const {rde_ret}")
+        self._write("i32.load offset=16")
+        self._write("local.set $name_len")
+        # Grow the pair buffer if count == buf_cap (need one more pair).
+        self._write("local.get $count")
+        self._write("local.get $buf_cap")
+        self._write("i32.ge_u")
+        self._write("if")
+        self._indent += 1
+        # newcap = max(buf_cap*2, 4) pairs; geometric growth so a large
+        # directory does not realloc once per entry.
+        self._write("local.get $buf_cap")
+        self._write("i32.const 1")
+        self._write("i32.shl")
+        self._write("local.tee $newcap")
+        self._write("i32.const 4")
+        self._write("i32.lt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 4")
+        self._write("local.set $newcap")
+        self._indent -= 1
+        self._write("end")
+        # newbuf = alloc(newcap * 8 bytes); copy old (count*8) bytes.
+        self._write("local.get $newcap")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write("local.set $newbuf")
+        self._write("local.get $newbuf")
+        self._write("local.get $buf")
+        self._write("local.get $count")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("memory.copy")
+        self._write("local.get $newbuf")
+        self._write("local.set $buf")
+        self._write("local.get $newcap")
+        self._write("local.set $buf_cap")
+        self._indent -= 1
+        self._write("end")
+        # pairs[count] = (name_ptr, name_len); count += 1.
+        self._write("local.get $buf")
+        self._write("local.get $count")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.get $name_ptr")
+        self._write("i32.store offset=0")
+        self._write("local.get $buf")
+        self._write("local.get $count")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.get $name_len")
+        self._write("i32.store offset=4")
+        self._write("local.get $count")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $count")
+        self._write("br $list_loop")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # Sort the accumulated (ptr, len) pairs lexicographically to
+        # match the oracle's sorted(os.listdir(path)). Stable insertion
+        # sort over the pair buffer; $str_cmp returns -1/0/1 for the
+        # unsigned byte order (== Python str code-point order). i from 1.
+        self._write("i32.const 1")
+        self._write("local.set $i")
+        self._write("(block $sort_done")
+        self._indent += 1
+        self._write("(loop $sort_outer")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("local.get $count")
+        self._write("i32.ge_u")
+        self._write("br_if $sort_done")
+        # j = i; while j > 0 and pairs[j] < pairs[j-1]: swap; j -= 1.
+        self._write("local.get $i")
+        self._write("local.set $j")
+        self._write("(block $inner_done")
+        self._indent += 1
+        self._write("(loop $sort_inner")
+        self._indent += 1
+        # if j == 0, stop.
+        self._write("local.get $j")
+        self._write("i32.eqz")
+        self._write("br_if $inner_done")
+        # a = &pairs[j]; b = &pairs[j-1].
+        self._write("local.get $buf")
+        self._write("local.get $j")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $a")
+        self._write("local.get $buf")
+        self._write("local.get $j")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $b")
+        # if str_cmp(a.ptr, a.len, b.ptr, b.len) >= 0, in order: stop.
+        self._write("local.get $a")
+        self._write("i32.load offset=0")
+        self._write("local.get $a")
+        self._write("i32.load offset=4")
+        self._write("local.get $b")
+        self._write("i32.load offset=0")
+        self._write("local.get $b")
+        self._write("i32.load offset=4")
+        self._write("call $str_cmp")
+        self._write("i32.const 0")
+        self._write("i32.ge_s")
+        self._write("br_if $inner_done")
+        # swap pairs[j] and pairs[j-1] (both i32 fields).
+        self._write("local.get $a")
+        self._write("i32.load offset=0")
+        self._write("local.set $t0")
+        self._write("local.get $a")
+        self._write("i32.load offset=4")
+        self._write("local.set $t1")
+        self._write("local.get $a")
+        self._write("local.get $b")
+        self._write("i32.load offset=0")
+        self._write("i32.store offset=0")
+        self._write("local.get $a")
+        self._write("local.get $b")
+        self._write("i32.load offset=4")
+        self._write("i32.store offset=4")
+        self._write("local.get $b")
+        self._write("local.get $t0")
+        self._write("i32.store offset=0")
+        self._write("local.get $b")
+        self._write("local.get $t1")
+        self._write("i32.store offset=4")
+        # j -= 1; continue inner.
+        self._write("local.get $j")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $j")
+        self._write("br $sort_inner")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # i += 1; continue outer.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $sort_outer")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # EOF + sorted: drop the directory-entry-stream, then the opened
+        # descriptor (the preopen ROOT is never dropped).
+        self._write("local.get $stream")
+        self._write("call $wasi_fs_drop_dir_entry_stream")
+        self._write("local.get $desc")
+        self._write("call $wasi_fs_drop_descriptor")
+        # Ok(list<string>): tag=0, data_ptr=buf @4, count @8. The data
+        # buffer holds N packed (str_ptr, str_len) i32 pairs, exactly the
+        # canonical list<string> data layout the materialiser wraps.
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write("local.get $buf")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write("local.get $count")
+        self._write("i32.store offset=8")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_fs_list_dir_err(self, msg_off: int, msg_len: int) -> None:
+        """Write an ``Err(IoError)`` into ``$ret_area`` for the
+        ``result_list_string_io_error`` 20-byte shape: tag@0 = 1, message
+        = the interned fixed string (m_ptr@4, m_len@8), empty cause
+        (c_ptr@12 = 0, c_len@16 = 0).
+
+        The message is fixed (``failed to list directory``) rather than
+        the Python oracle's path-and-errno cause, which carries OS-specific
+        bytes no cross-backend comparison can reproduce; parity is on the
+        Result DISCRIMINANT (is_err), as the read / write / metadata / Net
+        error paths already assert. ``$ret_area`` is in scope (the
+        wrapper's trailing param)."""
         self._write("local.get $ret_area")
         self._write("i32.const 1")
         self._write("i32.store offset=0")

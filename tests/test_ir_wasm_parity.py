@@ -903,6 +903,20 @@ _EXCLUDED: dict[str, str] = {
         "assert three-backend byte parity AND on-disk byte equality "
         "(Python oracle == capa:host == WASI) via write-then-read-back."
     ),
+    "wasi_fs_list_dir.capa": (
+        "Experimental --wasi mode demo: Fs.list_dir via wasi:filesystem "
+        "open-at (directory open-flag) -> read-directory -> "
+        "directory-entry-stream.read-directory-entry loop + a guest-side "
+        "lexicographic sort + the preopen ceiling. The output depends on "
+        "host filesystem state (the entries of the demo's data/ "
+        "directory), which the auto-list harness does not control, so "
+        "there is no fixed byte-equality reference here. Covered by the "
+        "dedicated TestWasiFsListDir tests in tests/test_wasi_mode.py, "
+        "which build a known temp directory (multi-entry mixed-case + a "
+        "subdirectory / empty / UTF-8 names / a non-directory / a missing "
+        "path) and assert three-backend byte parity INCLUDING the sorted "
+        "order (Python oracle == capa:host == WASI)."
+    ),
 }
 
 

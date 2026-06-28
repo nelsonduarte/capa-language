@@ -1181,7 +1181,14 @@ class TestWasiFsRejections(unittest.TestCase):
         # No capa:host/fs interface is imported in WASI mode.
         self.assertNotIn('"capa:host/fs"', wat)
 
-    def test_list_dir_rejected(self):
+    def test_list_dir_accepted(self):
+        # list_dir compiles cleanly and emits the wasi:filesystem
+        # directory-enumeration wrappers (open-at with the directory
+        # open-flag -> read-directory -> directory-entry-stream.
+        # read-directory-entry loop), the guest-side sort helper
+        # ($str_cmp), the directory-entry-stream drop, and the shared
+        # descriptor drop -- with no capa:host/fs import and no
+        # wasi:io/streams (list_dir uses no streams).
         src = (
             "fun main(fs: Fs, stdio: Stdio)\n"
             "    let r = fs.list_dir(\"/d\")\n"
@@ -1189,9 +1196,27 @@ class TestWasiFsRejections(unittest.TestCase):
             "        Ok(xs) -> stdio.println(\"ok\")\n"
             "        Err(e) -> stdio.println(\"err\")\n"
         )
-        with self.assertRaises(Exception) as cm:
-            self._compile(src)
-        self.assertIn("Fs.list_dir", str(cm.exception))
+        wat = self._compile(src)
+        self.assertIn("(func $Fs_list_dir", wat)
+        self.assertIn("(func $__wasi_fs_preopen_desc", wat)
+        self.assertIn("[method]descriptor.open-at", wat)
+        self.assertIn("[method]descriptor.read-directory", wat)
+        self.assertIn(
+            "[method]directory-entry-stream.read-directory-entry", wat,
+        )
+        self.assertIn("[resource-drop]directory-entry-stream", wat)
+        self.assertIn(
+            '"wasi:filesystem/types@0.2.0" "[resource-drop]descriptor"',
+            wat,
+        )
+        # The guest-side sort comparator (sorted(os.listdir) parity).
+        self.assertIn("(func $str_cmp", wat)
+        self.assertIn("call $str_cmp", wat)
+        # list_dir uses no streams: no wasi:io/streams / wasi:io/error
+        # imports are pulled in by a list_dir-only program.
+        self.assertNotIn("wasi:io/streams@0.2.0", wat)
+        self.assertNotIn("wasi:io/error@0.2.0", wat)
+        self.assertNotIn('"capa:host/fs"', wat)
 
     def test_allows_rejected(self):
         src = (
@@ -2102,6 +2127,153 @@ class TestWasiFsWriteOnly(unittest.TestCase):
             os.path.exists(os.path.join(self._data, "ro.txt")),
             "a denied write-only must not leave a file behind",
         )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiFsListDir(unittest.TestCase):
+    """End-to-end: fs.list_dir in --wasi mode goes open-at (directory
+    open-flag) -> read-directory -> directory-entry-stream.
+    read-directory-entry loop over the host preopens, accumulates the
+    entry names, and SORTS them guest-side ($str_cmp, unsigned byte ==
+    Python code-point order) so the returned List<String> is
+    BYTE-IDENTICAL -- including the ORDER -- to the Python oracle's
+    sorted(os.listdir(path)) and the capa:host backend across a
+    multi-entry directory (mixed case + a subdirectory), an empty
+    directory (-> empty list), and UTF-8 multi-byte names; a missing
+    path and a path that is a FILE (not a directory) are coherent Errs on
+    all three backends. The directory-entry-stream and the opened
+    descriptor are dropped on every path (the preopen ROOT never).
+    """
+
+    def setUp(self):
+        import tempfile
+        self._td = tempfile.mkdtemp(prefix="capa-wasi-listdir-test-")
+        self._data = os.path.join(self._td, "data")
+        # A multi-entry directory whose names exercise the lexicographic
+        # ordering: an UPPERCASE name (Z, 0x5A) sorts BEFORE the lowercase
+        # ones (a/b, 0x61/0x62) by code point, exactly as Python's
+        # sorted() does; a subdirectory entry sorts among the files by
+        # name with no special treatment. (Names are chosen NOT to collide
+        # under a case-insensitive filesystem -- Windows -- so all entries
+        # survive.)
+        os.makedirs(os.path.join(self._data, "many", "c_dir"))
+        for n in ("b.txt", "a.txt", "Z.txt"):
+            with open(os.path.join(self._data, "many", n), "wb") as f:
+                f.write(b"x")
+        # An empty directory: read-directory's first read-directory-entry
+        # is none (end of stream), so the list is empty.
+        os.makedirs(os.path.join(self._data, "empty"))
+        # A plain file (to list_dir as a non-directory -> Err).
+        with open(os.path.join(self._data, "afile.txt"), "wb") as f:
+            f.write(b"x")
+        # A directory with UTF-8 multi-byte names: the byte-wise sort must
+        # equal Python's code-point sort over these names.
+        self._utf8_dir = os.path.join(self._data, "utf8names")
+        os.makedirs(self._utf8_dir)
+        for n in ("zebra", "Apple", "banana", "Zulu", "你好"):
+            with open(
+                os.path.join(self._utf8_dir, n), "w", encoding="utf-8",
+            ) as f:
+                f.write("x")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _list_src(self, rel: str) -> str:
+        d = self._data.replace("\\", "/")
+        return (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let r = fs.list_dir(\"{d}/{rel}\")\n"
+            "    match r\n"
+            "        Ok(xs) ->\n"
+            "            for x in xs\n"
+            "                stdio.println(x)\n"
+            "        Err(e) -> stdio.println(\"ERR\")\n"
+        )
+
+    def test_multi_entry_sorted_order_parity(self):
+        # The crux: wasi returns entries in FILESYSTEM order; the oracle
+        # returns sorted(os.listdir). The guest-side sort makes the ORDER
+        # byte-identical. Z.txt (uppercase) sorts before a.txt / b.txt.
+        src = self._list_src("many")
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host, "py/host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge (order!)")
+        self.assertEqual(wasi, "Z.txt\na.txt\nb.txt\nc_dir\n")
+
+    def test_empty_directory_parity(self):
+        # An empty directory -> empty List<String> -> no lines printed.
+        src = self._list_src("empty")
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertEqual(wasi, "")
+
+    def test_utf8_names_sorted_parity(self):
+        # UTF-8 multi-byte names: the byte-wise $str_cmp must equal
+        # Python's code-point sorted(). 你好 (high code points) sorts last.
+        expected = sorted(os.listdir(self._utf8_dir))
+        src = self._list_src("utf8names")
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertEqual(
+            wasi, "".join(name + "\n" for name in expected),
+        )
+
+    def test_missing_directory_is_coherent_err(self):
+        # A path that does not exist inside the preopen: open-at fails,
+        # the wrapper writes Err(IoError) and drops nothing. Every backend
+        # takes the Err arm. The Err MESSAGE differs (the oracle carries
+        # the OS errno; the WASI wrapper writes a fixed message), so parity
+        # is on the discriminant.
+        src = self._list_src("does-not-exist")
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertIn("ERR", py)
+        self.assertIn("ERR", host)
+        self.assertIn("ERR", wasi)
+
+    def test_path_is_a_file_is_coherent_err(self):
+        # list_dir of a path that is a FILE (not a directory): the
+        # directory open-flag makes open-at fail (confirmed by oracle), so
+        # the wrapper returns Err on every backend.
+        src = self._list_src("afile.txt")
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertIn("ERR", py)
+        self.assertIn("ERR", host)
+        self.assertIn("ERR", wasi)
+
+    def test_list_dir_interleaved_with_metadata_no_resource_leak(self):
+        # list_dir interleaved with metadata + read on the SAME preopen
+        # must all succeed: a leaked / double-dropped OWN handle, or a
+        # dropped preopen ROOT, would trap the next op. The sequence ends
+        # with an is_dir on the same preopen to prove the root descriptor
+        # is still live after the open/read-directory/drop cycle.
+        d = self._data.replace("\\", "/")
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f"    let r = fs.list_dir(\"{d}/many\")\n"
+            "    match r\n"
+            "        Ok(xs) -> stdio.println(\"n=${xs.length()}\")\n"
+            "        Err(e) -> stdio.println(\"ERR\")\n"
+            f"    stdio.println(\"d=${{fs.is_dir(\\\"{d}/empty\\\")}}\")\n"
+            f"    let r2 = fs.list_dir(\"{d}/utf8names\")\n"
+            "    match r2\n"
+            "        Ok(xs) -> stdio.println(\"n2=${xs.length()}\")\n"
+            "        Err(e) -> stdio.println(\"ERR\")\n"
+            f"    stdio.println(\"e=${{fs.exists(\\\"{d}/afile.txt\\\")}}\")\n"
+        )
+        py, host, wasi = _run_fs_program_three_ways(src)
+        self.assertEqual(py, host)
+        self.assertEqual(py, wasi)
+        self.assertIn("n=4", wasi)
+        self.assertIn("d=true", wasi)
+        self.assertIn("n2=5", wasi)
+        self.assertIn("e=true", wasi)
 
 
 def _run_wasi_fs(src: str, data_dir: str) -> str:

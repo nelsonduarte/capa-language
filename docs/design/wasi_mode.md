@@ -279,9 +279,10 @@ unaffected), `Clock.now_secs`, `Clock.now_monotonic`, `Env.get`,
 `Env.allows`, and the `Env.get` fail-closed gate), implemented
 guest-side (Level 2; see "Env attenuation (guest-side, Level 2)"
 above), plus the **Fs metadata** operations `Fs.exists`, `Fs.is_dir`,
-and `Fs.mkdir` (see "Fs metadata + preopen ceiling" below) and the
+and `Fs.mkdir` (see "Fs metadata + preopen ceiling" below), the
 streaming **`Fs.read`** / **`Fs.write`** (see "Fs.read via streams" /
-"Fs.write via streams" below).
+"Fs.write via streams" below), and the directory enumeration
+**`Fs.list_dir`** (see "Fs.list_dir via directory enumeration" below).
 
 ### Fs metadata + preopen ceiling
 
@@ -596,8 +597,102 @@ a write denied through a `READ_ONLY` preopen -- each with **no** `fs.read`
 in the source, so the on-disk bytes are read back directly in Python and
 compared across all three backends.
 
-Still rejected for now: `Fs.list_dir` (needs directory enumeration) and
-the fine attenuators `Fs.restrict_to` / `Fs.allows`.
+Still rejected for now: the fine attenuators `Fs.restrict_to` /
+`Fs.allows`.
+
+### Fs.list_dir via directory enumeration
+
+`Fs.list_dir` migrates to a directory walk over `wasi:filesystem`. It is
+the **last** Fs touch-point to land, and unlike `Fs.read` / `Fs.write`
+it uses **no** `wasi:io/streams`: the `directory-entry-stream` is a
+`wasi:filesystem/types` resource. The guest wrapper `$Fs_list_dir`
+(`capa/ir/_emit_wasm/_wasi.py`) addresses the same **preopen** ceiling
+the other ops do (literal path -> `(preopen_index, relative_literal)`, no
+runtime string-matching; READ_ONLY preopen, a directory walk is a read)
+and runs:
+
+1. `descriptor.open-at(preopen_desc, symlink-follow, rel,
+   open-flags=directory (2), descriptor-flags=read (1))` ->
+   `result<descriptor, error-code>`. The `directory` open-flag makes
+   opening a **non-directory** (a regular file) fail at `open-at`, so a
+   `list_dir` of a file is a clean `Err` with nothing opened.
+2. `descriptor.read-directory()` ->
+   `result<directory-entry-stream, error-code>` (the
+   `directory-entry-stream` is an **OWN** resource, value @4).
+3. a **loop** of `directory-entry-stream.read-directory-entry()` ->
+   `result<option<directory-entry>, error-code>`, accumulating each
+   entry's `name` into a heap buffer of packed `(str_ptr, str_len)` i32
+   pairs.
+4. a guest-side **sort** of the accumulated `(ptr, len)` pairs, then
+   `Ok(List<String>)`.
+
+**The return-area convention (confirmed empirically).**
+`read-directory-entry` returns into a 20-byte area:
+`result disc @0` (Ok==0); `option disc @4` (**none==0 is END OF STREAM**,
+the normal terminator, NOT an error; some==1); the `directory-entry`
+record at @8 (`%type` @8, **ignored**; `name` ptr @12, len @16).
+`read-directory` returns 8 bytes (disc @0, stream-own @4). These
+offsets, the `directory` open-flag bit, the none==end convention, and
+the fact that `read-directory` returns entries in **filesystem order**
+and does **not** include `.` / `..` (matching `os.listdir`) were all
+confirmed by an oracle component (built with `wasm-tools`, run under
+`wasmtime` over a controlled multi-entry / empty / non-directory /
+UTF-8-named directory) **before** the WAT was written; the exact offsets
+and discriminants are recorded in `$Fs_list_dir`'s docstring.
+
+**The guest-side sort is what makes the ORDER match (the sensitive
+parity point).** The Python oracle returns
+`sorted(os.listdir(path))` -- a lexicographic sort over `str` code
+points. `wasi` `read-directory` yields entries in **filesystem order**,
+which is NOT sorted, so the guest **must** sort to match. `$Fs_list_dir`
+runs a stable insertion sort over the `(ptr, len)` pairs using the
+existing `$str_cmp` helper, which compares the name bytes **unsigned**;
+for well-formed UTF-8 an unsigned byte-by-byte comparison yields the same
+order as comparing Unicode code points, which is **exactly** Python's
+`str` ordering (the same property the String `<` / `>` operators rely
+on). So an UPPERCASE name (`Z`, 0x5A) sorts before the lowercase ones
+(`a` / `b`, 0x61 / 0x62), and a high-code-point UTF-8 name (`你好`) sorts
+last, byte-identically across all three backends. `$str_cmp` is normally
+gated on a String `<` / `>` operator being present; a WASI-only
+`list_dir` program may use neither, so the emission is additionally
+gated on `Fs.list_dir` under `--wasi`
+(`_wasi_fs_list_dir_needs_str_cmp`).
+
+**Resource drops on every path (no leak, no double-drop).** The
+`descriptor` returned by `open-at` and the `directory-entry-stream`
+returned by `read-directory` are **OWN** handles dropped on **every**
+exit: success/EOF drops the stream then the descriptor; an `open-at`
+error opened nothing (no drop); a `read-directory` error drops the
+descriptor; a `read-directory-entry` error drops the stream then the
+descriptor. `read-directory-entry`'s error is an `error-code` **enum**
+(no carried resource), so list_dir -- unlike read/write -- imports no
+`wasi:io/error` `[resource-drop]error`. The **preopen ROOT** descriptors
+are **never** dropped.
+
+**Memory.** `$Fs_list_dir` uses a dedicated 32-byte static scratch
+(`_wasi_fs_list_dir_scratch_offset`) for its two indirect returns
+(`read-directory` / the `open-at` reuse @+0 (8B), `read-directory-entry`
+@+8 (20B)), **separate** from the metadata / read / write scratches and
+the cached `get-directories` buffer. The entry **name bytes are not
+copied**: the host writes them into canonical-ABI memory (via the
+component's `cabi_realloc`) and the accumulation buffer stores only the
+`(ptr, len)` pairs pointing at them, exactly as the `get-arguments` /
+`get-environment` readers do for their string lists; the
+`result_list_string_io_error` materialiser then wraps the pair buffer in
+a 16-byte `List<String>` header.
+
+**Parity.** `Ok(List<String>)` is **byte-identical** -- including the
+ORDER -- to the Python oracle's `sorted(os.listdir(path))` and the
+`capa:host` bridge across a multi-entry directory (mixed case + a
+subdirectory), an empty directory (`-> []`), and UTF-8 multi-byte names
+(`TestWasiFsListDir`). A missing path and a path that is a FILE (not a
+directory) are coherent `Err(IoError)` on all three backends; the Err
+**message** differs (the wrapper writes a fixed `failed to list
+directory`), so parity is on the Result **discriminant** (`is_err`), as
+the read / write / metadata / Net error paths already assert.
+
+Still rejected for now: the fine attenuators `Fs.restrict_to` /
+`Fs.allows`.
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
@@ -611,13 +706,12 @@ silently miscompiles):
   attenuation through a standard WASI clock is a future design item
   (likely a guest-side deadline gate, since the wall clock is
   readable).
-- **`Fs.list_dir`** needs directory enumeration (`read-directory`), out
-  of scope for this increment. (`Fs.read` and `Fs.write` are now
-  migrated -- see "Fs.read via streams" / "Fs.write via streams"
-  above.)
 - **Fs attenuation** (`Fs.restrict_to`, `Fs.allows`). The preopen
   ceiling is the coarse Level-1 authority bound; the fine per-call
   prefix narrowing is a later increment (likely guest-side, like Env).
+  (`Fs.read`, `Fs.write`, and `Fs.list_dir` are now migrated -- see
+  "Fs.read via streams" / "Fs.write via streams" / "Fs.list_dir via
+  directory enumeration" above.)
 
 Env attenuation was previously excluded too; it is now supported
 guest-side (Level 2). Mapping `main`'s Env **ceiling** onto the host
@@ -741,13 +835,16 @@ property (see `tests/test_wasi_mode.py`):
   (read-via-stream + blocking-read loop) and `$Fs_write`
   (open-at create|truncate + write-via-stream +
   blocking-write-and-flush loop + blocking-flush, all OWN-resource
-  drops)) and the excluded-surface validation.
+  drops); the directory-enumeration `$Fs_list_dir` (open-at directory +
+  read-directory + read-directory-entry loop + guest-side `$str_cmp`
+  sort, stream + descriptor drops)) and the excluded-surface validation.
 - `capa/ir/_emit_wasm/_caps.py` - the WASI Fs call-site emitters
   (`_emit_wasi_fs_metadata_call`: literal -> preopen index + basename,
   mkdir result materialisation; `_emit_wasi_fs_read_call` /
-  `_emit_wasi_fs_write_call`: literal path + content -> `$Fs_read` /
-  `$Fs_write`, `result_string_io_error` / `result_unit_io_error`
-  materialisation).
+  `_emit_wasi_fs_write_call` / `_emit_wasi_fs_list_dir_call`: literal
+  path (+ content) -> `$Fs_read` / `$Fs_write` / `$Fs_list_dir`,
+  `result_string_io_error` / `result_unit_io_error` /
+  `result_list_string_io_error` materialisation).
 - `capa/ir/_emit_wit.py` - WASI-mode world generation
   (`_emit_wit_wasi`; Fs routes to `wasi:filesystem` imports).
 - `capa/ir/_env_ceiling.py` - the static Env authority-ceiling analysis

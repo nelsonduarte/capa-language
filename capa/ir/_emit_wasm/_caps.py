@@ -451,6 +451,9 @@ class _CapDispatchMixin:
         if self._wasi and cap == "Fs" and method == "write":
             self._emit_wasi_fs_write_call(instr)
             return
+        if self._wasi and cap == "Fs" and method == "list_dir":
+            self._emit_wasi_fs_list_dir_call(instr)
+            return
         if cap == "Fs" and indirect is not None:
             self._emit_fs_method_with_handle(instr, method, indirect)
             return
@@ -790,6 +793,56 @@ class _CapDispatchMixin:
         self._write("call $Fs_write")
         self._emit_cap_indirect_materialise(
             "result_unit_io_error", instr.dst,
+        )
+
+    def _emit_wasi_fs_list_dir_call(self, instr: MethodCall) -> None:
+        """Emit ``fs.list_dir(path)`` in WASI mode.
+
+        The path argument MUST be a string literal (the fail-closed
+        ceiling guarantees this; ``_validate_wasi_caps`` rejects a
+        dynamic path before emission). Resolve the literal to
+        ``(preopen_index, relative_path)`` via the static Fs ceiling,
+        intern the relative path, allocate the 20-byte canonical-ABI ret
+        area, call the ``$Fs_list_dir`` guest wrapper with
+        ``(idx, rel_ptr, rel_len, ret_area)``, and reuse the shared
+        ``result_list_string_io_error`` materialiser so the lifted value
+        is a ``Result<List<String>, IoError>`` identical to the capa:host
+        list_dir.
+
+        ``$Fs_list_dir`` itself (in ``_wasi.py``) does the open-at
+        (directory open-flag) -> read-directory -> read-directory-entry
+        loop, accumulates the entry names, and SORTS them guest-side
+        (``$str_cmp``) to match the oracle's ``sorted(os.listdir(path))``
+        order, with all resource drops; this call site only resolves the
+        path and lifts the result."""
+        from .._fs_ceiling import resolve_fs_call
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Fs.list_dir expected 1 arg, got {len(instr.args)}"
+            )
+        arg = instr.args[0]
+        if arg.kind != "lit_str" or not isinstance(arg.literal, str):
+            raise WasmEmissionError(
+                "Fs.list_dir in WASI mode requires a string-literal path "
+                "(the preopen ceiling must be closed)"
+            )
+        ceiling = self._fs_ceiling
+        if ceiling is None or not ceiling.closed:
+            raise WasmEmissionError(
+                "Fs in WASI mode has no closed preopen ceiling"
+            )
+        idx, rel = resolve_fs_call(ceiling, arg.literal)
+        rel_off, rel_len = self._intern_string(rel)
+        self._write("i32.const 20")
+        self._write("call $alloc")
+        self._write("local.set $_ret_area")
+        self._write(f"i32.const {idx}")
+        self._write(f"i32.const {rel_off}")
+        self._write(f"i32.const {rel_len}")
+        self._write("local.get $_ret_area")
+        self._write("call $Fs_list_dir")
+        self._emit_cap_indirect_materialise(
+            "result_list_string_io_error", instr.dst,
         )
 
     # ---- slice 25.3 Net handle-passing helpers -----------------
