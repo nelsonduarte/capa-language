@@ -486,7 +486,20 @@ class WasmEmitter(
             # both here so they land in the data segment deterministically.
             if self._fs_ceiling.closed:
                 from .._nodes import MethodCall
-                _fs_meta = ("exists", "is_dir", "mkdir", "read")
+                # Every migrated Fs op that resolves a literal path to a
+                # relative BASENAME the wrapper addresses by (ptr, len)
+                # must be pre-interned here: exists / is_dir / mkdir AND
+                # the stream-bearing read / write. ``write`` was missing
+                # from this tuple, so a program whose ONLY Fs op was
+                # ``write`` (no read / metadata sharing the same literal)
+                # never pre-interned its basename: the string got a valid
+                # offset at $Fs_write call-site emission time but no
+                # ``(data ...)`` block, so the relative path the guest
+                # handed to ``open-at`` was undefined memory and the open
+                # failed at runtime (no file written). A co-present
+                # ``read`` of the same path masked the bug by interning
+                # the shared basename early.
+                _fs_meta = ("exists", "is_dir", "mkdir", "read", "write")
                 for _fn, instr in walk_module(module):
                     if (isinstance(instr, MethodCall)
                             and (instr.cap_used
@@ -506,9 +519,9 @@ class WasmEmitter(
                             for _pfx in mkdir_prefixes(_rel):
                                 self._intern_string(_pfx)
                         else:
-                            # exists / is_dir / read all resolve to a
-                            # single relative path the wrapper addresses
-                            # by (ptr, len).
+                            # exists / is_dir / read / write all resolve
+                            # to a single relative path the wrapper
+                            # addresses by (ptr, len).
                             self._intern_string(_rel)
                 if any(
                     cap == "Fs" and m == "mkdir"
@@ -522,6 +535,16 @@ class WasmEmitter(
                     # The fixed Err message $Fs_read writes on an open /
                     # read-via-stream / last-operation-failed failure.
                     self._intern_string("failed to read file")
+                if any(
+                    cap == "Fs" and m == "write"
+                    for (cap, m) in self._used_caps
+                ):
+                    # The fixed Err message $Fs_write writes on an open /
+                    # write-via-stream / last-operation-failed failure.
+                    # Pre-interned for the same reason as the read message:
+                    # interning it only at $Fs_write emission time would
+                    # leave it without a backing data segment.
+                    self._intern_string("failed to write file")
 
         # Reserve linear-memory space for the Grisu2 cached-powers
         # table when Float formatting is in play. Placed right after

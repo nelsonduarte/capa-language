@@ -560,6 +560,24 @@ interleaved with read / metadata ops corrupts none of them. The
 (the String argument) and each chunk is handed to
 `blocking-write-and-flush` as `(content_ptr + cursor, n)`.
 
+**Pre-interning the write strings (write-only parity fix, 2026-06-28).**
+Two strings the write path needs -- the resolved relative **basename**
+the literal path resolves to (the `(ptr, len)` `open-at` addresses) and
+the fixed `failed to write file` Err message -- must be interned
+**before** the static `(data ...)` segment is written, in the same
+up-front Fs pre-intern pass that already handles `exists` / `is_dir` /
+`mkdir` / `read`. `write` was originally **missing** from that pass's
+op set, so a program whose **only** Fs op was `write` (no read / metadata
+sharing the same literal) interned the basename only at `$Fs_write`
+emission time -- after the data segment was laid out -- and the string
+got a valid offset but **no backing data segment**. The relative path
+the guest handed to `open-at` was then undefined memory: `open-at`
+failed, the wrapper returned `Err(IoError)`, and **no file** was written,
+diverging from Python / `capa:host`. A co-present `read` of the same
+path masked the bug by interning the shared basename early. The pre-intern
+pass now includes `write` (and pre-interns `failed to write file`), so a
+write-only program lands both strings in the data segment deterministically.
+
 **Parity.** `Ok(Unit)` and **the bytes on disk** are byte-identical to
 the Python oracle's `open(p, "w") + f.write(content)` and the
 `capa:host` bridge across small, empty, large-multi-chunk, UTF-8
@@ -569,6 +587,14 @@ backend (`TestWasiFsWrite`). A write denied through a `READ_ONLY`
 preopen is a coherent `Err` on all three with no file left behind; the
 Err **message** differs (the wrapper writes a fixed
 `failed to write file`), so parity is on the Result **discriminant**.
+
+`TestWasiFsWriteOnly` covers the **write-only** programs the
+write-then-read-back cases could not (every `TestWasiFsWrite` case also
+reads, which masked the pre-intern bug above): a single create, an
+overwrite/truncate of a pre-existing file, several sequential writes, and
+a write denied through a `READ_ONLY` preopen -- each with **no** `fs.read`
+in the source, so the on-disk bytes are read back directly in Python and
+compared across all three backends.
 
 Still rejected for now: `Fs.list_dir` (needs directory enumeration) and
 the fine attenuators `Fs.restrict_to` / `Fs.allows`.

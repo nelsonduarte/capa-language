@@ -1896,6 +1896,214 @@ class TestWasiFsWrite(unittest.TestCase):
         )
 
 
+class TestWasiFsWriteOnly(unittest.TestCase):
+    """Regression for the WRITE-ONLY parity bug (2026-06-28).
+
+    A program whose ONLY Fs operation is ``write`` (no read / exists /
+    is_dir / mkdir sharing the literal path) used to FAIL in ``--wasi``
+    mode: the resolved relative basename (and the ``failed to write
+    file`` Err message) were interned only at ``$Fs_write`` emission
+    time, AFTER the static data segment had already been written, so
+    they got a valid offset but NO ``(data ...)`` block. The relative
+    path the guest handed to ``open-at`` was therefore undefined memory;
+    the open failed and the wrapper returned ``Err(IoError)`` with NO
+    file written -- diverging from the Python and ``capa:host`` backends,
+    which both wrote ``Ok(Unit)`` and the file. A co-present ``read`` of
+    the same path masked the bug (it pre-interned the shared basename
+    early), which is why ``TestWasiFsWrite`` (every case write-then-read-
+    back) never caught it.
+
+    These tests use NO read at all: each asserts the write result AND
+    reads the file back from the HOST disk directly in Python. They fail
+    before the pre-intern fix (W=err, no file) and pass after.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._td = tempfile.mkdtemp(prefix="capa-wasi-writeonly-test-")
+        self._data = os.path.join(self._td, "data")
+        os.makedirs(self._data)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _write_only_src(self, rel: str, content_literal: str) -> str:
+        """A program whose sole Fs op is a single ``write`` (no read)."""
+        d = self._data.replace("\\", "/")
+        return (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f'    let w = fs.write("{d}/{rel}", "{content_literal}")\n'
+            "    match w\n"
+            '        Ok(_) -> stdio.println("W=ok")\n'
+            '        Err(e) -> stdio.println("W=err")\n'
+        )
+
+    def _runners(self, src):
+        """Yield (backend, zero-arg runner) for the three backends, each
+        capturing stdout, mutating disk in a deterministic py -> host ->
+        wasi order. Mirrors TestWasiFsWrite._runners but for a write-only
+        program (no read in the source)."""
+        from capa.ir import compile_wasm, compile_wit, compute_fs_ceiling
+        from capa.cli import _wrap_as_component
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        module, result = _parse_analyze(src)
+
+        def _cap(fn):
+            buf = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = buf
+            try:
+                fn()
+            finally:
+                sys.stdout = saved
+            return buf.getvalue()
+
+        def py():
+            return _run_python(src)
+
+        def host():
+            core = compile_wasm(module, types=result.types, wasi=False)
+            wit = compile_wit(module, types=result.types, wasi=False)
+            comp = _wrap_as_component(core, wit, wasi=False)
+            return _cap(lambda: WasmComponentHost(wasi=False).run_main(comp))
+
+        def wasi():
+            core = compile_wasm(module, types=result.types, wasi=True)
+            wit = compile_wit(module, types=result.types, wasi=True)
+            comp = _wrap_as_component(core, wit, wasi=True)
+            ceiling = compute_fs_ceiling(module, types=result.types)
+            return _cap(
+                lambda: WasmComponentHost(
+                    wasi=True, fs_ceiling=ceiling,
+                ).run_main(comp)
+            )
+
+        return [("py", py), ("host", host), ("wasi", wasi)]
+
+    def _assert_parity_and_disk(self, rel, content_literal, expected_bytes):
+        """Run the write-only program on all three backends (each
+        overwriting the SAME file) and assert identical stdout across
+        backends AND that the on-disk bytes equal ``expected_bytes``
+        after EACH backend ran. The on-disk read is in Python (the
+        program has no fs.read), so a wrong-bytes write is caught even if
+        stdout matched."""
+        src = self._write_only_src(rel, content_literal)
+        target = os.path.join(self._data, rel.replace("/", os.sep))
+        outs = {}
+        for backend, runner in self._runners(src):
+            outs[backend] = runner()
+            with open(target, "rb") as f:
+                disk = f.read()
+            self.assertEqual(
+                disk, expected_bytes,
+                f"{backend} wrote wrong bytes for write-only {rel}",
+            )
+        self.assertEqual(outs["py"], outs["host"], f"py/host diverge {rel}")
+        self.assertEqual(outs["py"], outs["wasi"], f"py/wasi diverge {rel}")
+        for backend, out in outs.items():
+            self.assertEqual(out, "W=ok\n", f"{backend} not Ok for {rel}")
+        return outs["wasi"]
+
+    def test_write_only_creates_new_file(self):
+        # (a) A single write that CREATES a new file; no read in the
+        # program. Three-backend Ok(Unit) parity + on-disk bytes.
+        self._assert_parity_and_disk(
+            "new.txt", "hello world", b"hello world",
+        )
+
+    def test_write_only_overwrites_existing_file_truncates(self):
+        # (b) A single write that OVERWRITES (truncates) a pre-existing
+        # longer file; final on-disk content must be exactly the new
+        # bytes, not a mix.
+        rel = "ov.txt"
+        target = os.path.join(self._data, rel)
+        src = self._write_only_src(rel, "short")
+        outs = {}
+        for backend, runner in self._runners(src):
+            with open(target, "wb") as f:
+                f.write(b"PREEXISTING LONGER CONTENT 1234567890")
+            outs[backend] = runner()
+            with open(target, "rb") as f:
+                disk = f.read()
+            self.assertEqual(
+                disk, b"short",
+                f"{backend} did not truncate on write-only overwrite",
+            )
+        self.assertEqual(outs["py"], outs["host"])
+        self.assertEqual(outs["py"], outs["wasi"])
+        self.assertEqual(outs["wasi"], "W=ok\n")
+
+    def test_write_only_several_writes_in_sequence(self):
+        # (c) Several distinct write-only calls in one program (different
+        # files, no read anywhere). Each must land its own bytes.
+        d = self._data.replace("\\", "/")
+        src = (
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            f'    let a = fs.write("{d}/one.txt", "alpha")\n'
+            f'    let b = fs.write("{d}/two.txt", "beta")\n'
+            f'    let c = fs.write("{d}/three.txt", "gamma")\n'
+            "    match a\n"
+            '        Ok(_) -> stdio.println("A=ok")\n'
+            '        Err(e) -> stdio.println("A=err")\n'
+            "    match b\n"
+            '        Ok(_) -> stdio.println("B=ok")\n'
+            '        Err(e) -> stdio.println("B=err")\n'
+            "    match c\n"
+            '        Ok(_) -> stdio.println("C=ok")\n'
+            '        Err(e) -> stdio.println("C=err")\n'
+        )
+        outs = {}
+        for backend, runner in self._runners(src):
+            outs[backend] = runner()
+            for name, payload in (
+                ("one.txt", b"alpha"),
+                ("two.txt", b"beta"),
+                ("three.txt", b"gamma"),
+            ):
+                with open(os.path.join(self._data, name), "rb") as f:
+                    self.assertEqual(
+                        f.read(), payload,
+                        f"{backend} wrong bytes for {name}",
+                    )
+        self.assertEqual(outs["py"], outs["host"])
+        self.assertEqual(outs["py"], outs["wasi"])
+        self.assertEqual(outs["wasi"], "A=ok\nB=ok\nC=ok\n")
+
+    def test_write_only_denied_through_read_only_preopen(self):
+        # (d) A write-only program whose target preopen is forced
+        # READ_ONLY: wasmtime denies the open-at, the wrapper returns
+        # Err(IoError) with NO file left behind. Coherent Err, no file.
+        from capa.ir import FsCeiling, FsPreopen
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        from capa.ir import compile_wasm, compile_wit
+        from capa.cli import _wrap_as_component
+        src = self._write_only_src("ro.txt", "nope")
+        module, result = _parse_analyze(src)
+        core = compile_wasm(module, types=result.types, wasi=True)
+        wit = compile_wit(module, types=result.types, wasi=True)
+        comp = _wrap_as_component(core, wit, wasi=True)
+        ro_ceiling = FsCeiling(
+            closed=True,
+            preopens=(FsPreopen(host_path=self._data, read_write=False),),
+        )
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            WasmComponentHost(
+                wasi=True, fs_ceiling=ro_ceiling,
+            ).run_main(comp)
+        finally:
+            sys.stdout = saved
+        out = buf.getvalue()
+        self.assertEqual(out, "W=err\n")
+        self.assertFalse(
+            os.path.exists(os.path.join(self._data, "ro.txt")),
+            "a denied write-only must not leave a file behind",
+        )
+
+
 def _run_wasi_fs(src: str, data_dir: str) -> str:
     """Build + run a Fs program in WASI mode with its preopen ceiling
     computed and handed to the host; capture stdout."""
