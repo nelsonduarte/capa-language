@@ -22,7 +22,8 @@
 // --wasi mode (fail-closed: no preopen can be derived). The same
 // program runs unchanged on the default capa:host backend.
 //
-// The stream-bearing Fs.read / Fs.write / Fs.list_dir and the fine
+// The stream-bearing Fs.read / Fs.write are migrated too (see
+// wasi_fs_read.capa / wasi_fs_write.capa); Fs.list_dir and the fine
 // attenuators Fs.restrict_to / Fs.allows are NOT migrated yet and are
 // rejected at compile time under --wasi (later increments).
 //

@@ -280,7 +280,8 @@ unaffected), `Clock.now_secs`, `Clock.now_monotonic`, `Env.get`,
 guest-side (Level 2; see "Env attenuation (guest-side, Level 2)"
 above), plus the **Fs metadata** operations `Fs.exists`, `Fs.is_dir`,
 and `Fs.mkdir` (see "Fs metadata + preopen ceiling" below) and the
-streaming **`Fs.read`** (see "Fs.read via streams" below).
+streaming **`Fs.read`** / **`Fs.write`** (see "Fs.read via streams" /
+"Fs.write via streams" below).
 
 ### Fs metadata + preopen ceiling
 
@@ -481,9 +482,96 @@ oracle carries the OS errno, the WASI wrapper writes a fixed
 **discriminant** (`is_err`), as the metadata / Net error paths already
 assert.
 
-Still rejected for now: `Fs.write` (needs `wasi:io` **output** streams),
-`Fs.list_dir` (needs directory enumeration), and the fine attenuators
-`Fs.restrict_to` / `Fs.allows`.
+Still rejected for now: `Fs.list_dir` (needs directory enumeration) and
+the fine attenuators `Fs.restrict_to` / `Fs.allows`.
+
+### Fs.write via streams
+
+`Fs.write` migrates to a streaming write over `wasi:filesystem` +
+`wasi:io/streams` -- the **inverse** of `Fs.read`, reusing the same
+preopen ceiling and the same proven stream machinery. The guest wrapper
+`$Fs_write` (`capa/ir/_emit_wasm/_wasi.py`) addresses the literal path
+against its preopen (`(preopen_index, relative_literal)`, no runtime
+string-matching; the targeted preopen is `READ_WRITE` because `write`
+mutates) and runs:
+
+1. `descriptor.open-at(preopen_desc, symlink-follow, rel,
+   open-flags=create|truncate (9), descriptor-flags=write (2))` ->
+   `result<descriptor, error-code>`. `create` makes a new file,
+   `truncate` empties an existing one -- matching the Python oracle's
+   `open(path, "w")` create-or-truncate. On error nothing is opened.
+2. `descriptor.write-via-stream(offset = 0)` ->
+   `result<output-stream, error-code>` (the `output-stream` is an
+   **OWN** resource).
+3. a **loop** of `output-stream.blocking-write-and-flush((cursor, n))`
+   -> `result<_, stream-error>`, handing the `content` bytes (already in
+   linear memory) to the stream in chunks of at most **one OS page
+   (4096 bytes)** per call.
+4. a final `output-stream.blocking-flush()` for durability of any
+   buffered bytes, then `Ok(Unit)`.
+
+**The output-stream write convention (confirmed empirically).** WASI
+0.2's `output-stream` exposes a permit-window protocol:
+`check-write()` reports how many bytes the stream accepts **now**,
+`write(contents)` is non-blocking and valid only within that window, and
+`blocking-write-and-flush(contents)` writes **and** flushes but is
+bounded to **<= 4096 bytes (one page) per call** by the contract. This
+wrapper uses **only** `blocking-write-and-flush` in a loop capped at
+4096 bytes: because that call self-limits to a page **and** flushes, the
+guest never has to track the `check-write` permit window itself -- the
+simplest provably-correct write loop, and the exact inverse of the read
+loop's `blocking-read(chunk)` accumulation. A **zero-length** `content`
+runs the loop zero times; the file is already truncated empty by `open`,
+so a 0-byte file results (matching `open(p, "w")` + `write("")`). This
+4096-byte per-call limit and the open-flag bits (path-flags
+`symlink-follow`=1; open-flags `create|truncate`=9; descriptor-flags
+`write`=2) were confirmed by an oracle run (build + `wasmtime` over
+controlled small / empty / large-multi-chunk / UTF-8 / overwrite
+content, with **write-then-read-back** comparing the on-disk bytes)
+before the WAT was finalised; the exact offsets and discriminants are in
+`$Fs_write`'s docstring.
+
+**Resource drops on every path (no leak, no double-drop).** The
+`descriptor` returned by `open-at` and the `output-stream` returned by
+`write-via-stream` are **OWN** handles dropped on **every** exit:
+
+- success: drop `output-stream`, then drop the opened `descriptor`.
+- `open-at` error: nothing was opened -> no drop.
+- `write-via-stream` error: drop the opened `descriptor` (no stream
+  exists).
+- `blocking-write-and-flush` / `blocking-flush` `last-operation-failed`:
+  drop the carried `error` resource (via `wasi:io/error`
+  `[resource-drop]error`), then the `output-stream`, then the
+  `descriptor`.
+
+The **preopen ROOT** descriptors are **never** dropped. A write through
+a `READ_ONLY` preopen is denied by `wasmtime` at `open-at` (the open
+error path fires, with no drops and **no file** left on disk), returning
+a coherent `Err`.
+
+**Memory.** `$Fs_write` uses a dedicated 32-byte static scratch
+(`_wasi_fs_write_scratch_offset`) for its two indirect returns
+(`write-via-stream` / the open-at reuse `result<...>` @+0, the
+`blocking-write-and-flush` / `blocking-flush` `result<_, stream-error>`
+@+8), **separate** from the 104-byte metadata scratch, the 32-byte
+**read** scratch, and the cached `get-directories` buffer, so a write
+interleaved with read / metadata ops corrupts none of them. The
+`content` **bytes are not copied**: they already live in linear memory
+(the String argument) and each chunk is handed to
+`blocking-write-and-flush` as `(content_ptr + cursor, n)`.
+
+**Parity.** `Ok(Unit)` and **the bytes on disk** are byte-identical to
+the Python oracle's `open(p, "w") + f.write(content)` and the
+`capa:host` bridge across small, empty, large-multi-chunk, UTF-8
+multi-byte, and overwrite (truncate) content -- proved by
+write-then-read-back **and** a direct on-disk byte comparison after each
+backend (`TestWasiFsWrite`). A write denied through a `READ_ONLY`
+preopen is a coherent `Err` on all three with no file left behind; the
+Err **message** differs (the wrapper writes a fixed
+`failed to write file`), so parity is on the Result **discriminant**.
+
+Still rejected for now: `Fs.list_dir` (needs directory enumeration) and
+the fine attenuators `Fs.restrict_to` / `Fs.allows`.
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
@@ -497,10 +585,10 @@ silently miscompiles):
   attenuation through a standard WASI clock is a future design item
   (likely a guest-side deadline gate, since the wall clock is
   readable).
-- **`Fs.write` / `Fs.list_dir`** need `wasi:io` **output** streams
-  (`write-via-stream`) / directory enumeration (`read-directory`), out
-  of scope for this increment. (`Fs.read` is now migrated -- see
-  "Fs.read via streams" above.)
+- **`Fs.list_dir`** needs directory enumeration (`read-directory`), out
+  of scope for this increment. (`Fs.read` and `Fs.write` are now
+  migrated -- see "Fs.read via streams" / "Fs.write via streams"
+  above.)
 - **Fs attenuation** (`Fs.restrict_to`, `Fs.allows`). The preopen
   ceiling is the coarse Level-1 authority bound; the fine per-call
   prefix narrowing is a later increment (likely guest-side, like Env).
@@ -597,8 +685,10 @@ property (see `tests/test_wasi_mode.py`):
   `READ_WRITE` only when a mutating op targets it; a dynamic path opens
   it; literal -> `(index, basename)` resolution; `mkdir_prefixes`
   cumulative-segment splitting). `TestWasiFsRejections`
-  pins the compile-time rejection of `read` / `write` / `list_dir` /
-  `allows` and of a dynamic metadata path (fail-closed).
+  pins the acceptance of `read` / `write` (emit the wasi:filesystem +
+  wasi:io stream wrappers, no `capa:host/fs`) and the compile-time
+  rejection of `list_dir` / `allows` and of a dynamic metadata path
+  (fail-closed).
 - **Recursive `mkdir` (three-backend parity)**:
   `TestWasiFsMode::test_recursive_mkdir_multi_segment_three_backend_parity`
   creates `data/sub/new` when the intermediate `sub` does **not** exist;
@@ -621,10 +711,17 @@ property (see `tests/test_wasi_mode.py`):
   emission (Random / Clock / Env readers + guest-side Env attenuation
   `$Env_restrict_to_keys` / `$Env_allows` / `$Env_key_allowed`; the Fs
   metadata wrappers `$Fs_exists` / `$Fs_is_dir` / `$Fs_mkdir` +
-  `$__wasi_fs_preopen_desc`) and the excluded-surface validation.
-- `capa/ir/_emit_wasm/_caps.py` - the WASI Fs metadata call-site
-  emitter (`_emit_wasi_fs_metadata_call`: literal -> preopen index +
-  basename, mkdir result materialisation).
+  `$__wasi_fs_preopen_desc`; the stream-bearing `$Fs_read`
+  (read-via-stream + blocking-read loop) and `$Fs_write`
+  (open-at create|truncate + write-via-stream +
+  blocking-write-and-flush loop + blocking-flush, all OWN-resource
+  drops)) and the excluded-surface validation.
+- `capa/ir/_emit_wasm/_caps.py` - the WASI Fs call-site emitters
+  (`_emit_wasi_fs_metadata_call`: literal -> preopen index + basename,
+  mkdir result materialisation; `_emit_wasi_fs_read_call` /
+  `_emit_wasi_fs_write_call`: literal path + content -> `$Fs_read` /
+  `$Fs_write`, `result_string_io_error` / `result_unit_io_error`
+  materialisation).
 - `capa/ir/_emit_wit.py` - WASI-mode world generation
   (`_emit_wit_wasi`; Fs routes to `wasi:filesystem` imports).
 - `capa/ir/_env_ceiling.py` - the static Env authority-ceiling analysis
@@ -650,3 +747,9 @@ property (see `tests/test_wasi_mode.py`):
 - `examples/wasm/wasi_fs_metadata.capa` - the Fs metadata demo
   (`exists` / `is_dir` / `mkdir` via `wasi:filesystem` + the preopen
   ceiling).
+- `examples/wasm/wasi_fs_read.capa` - the Fs.read demo (open-at ->
+  read-via-stream -> blocking-read loop over `wasi:io/streams`).
+- `examples/wasm/wasi_fs_write.capa` - the Fs.write demo (open-at
+  create|truncate -> write-via-stream -> blocking-write-and-flush loop
+  -> blocking-flush over `wasi:io/streams`; write-then-read-back +
+  overwrite/truncate).

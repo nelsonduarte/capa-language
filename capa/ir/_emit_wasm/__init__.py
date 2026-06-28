@@ -612,7 +612,8 @@ class WasmEmitter(
         #   component's lifetime, never dropped).
         self._wasi_fs_scratch_offset = 0
         self._wasi_fs_uses_preopens = self._wasi and any(
-            cap == "Fs" and method in ("exists", "is_dir", "mkdir", "read")
+            cap == "Fs"
+            and method in ("exists", "is_dir", "mkdir", "read", "write")
             for (cap, method) in self._used_caps
         )
         if self._wasi_fs_uses_preopens:
@@ -647,6 +648,31 @@ class WasmEmitter(
             )
             self._string_data_offset = (
                 self._wasi_fs_read_scratch_offset + 32
+            )
+
+        # Experimental WASI mode: Fs.write (2026-06-28). A 32-byte,
+        # 8-aligned scratch holding the TWO indirect returns of the
+        # write sequence, packed at distinct sub-offsets so they never
+        # overlap each other:
+        #   write-via-stream result<output-stream, error-code>  @ +0  (8B)
+        #   blocking-write-and-flush / blocking-flush
+        #       result<_, stream-error>                         @ +8  (12B)
+        # This region is SEPARATE from the 104-byte metadata scratch
+        # (``_wasi_fs_scratch_offset``), the 32-byte read scratch
+        # (``_wasi_fs_read_scratch_offset``), and the cached
+        # get-directories list buffer the host writes (addressed via the
+        # preopen globals), so a write interleaved with read / metadata
+        # ops cannot corrupt either. The content bytes are NOT here: they
+        # already live in linear memory (the String ``content`` argument)
+        # and are handed to blocking-write-and-flush as ``(ptr, len)``
+        # chunks straight through, no copy. 0 means "not reserved".
+        self._wasi_fs_write_scratch_offset = 0
+        if self._wasi and ("Fs", "write") in self._used_caps:
+            self._wasi_fs_write_scratch_offset = _align_up(
+                self._string_data_offset, 8,
+            )
+            self._string_data_offset = (
+                self._wasi_fs_write_scratch_offset + 32
             )
 
         # Stage 1: emit the (module ... ) header with imports and

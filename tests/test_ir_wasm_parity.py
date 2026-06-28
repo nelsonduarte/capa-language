@@ -890,6 +890,19 @@ _EXCLUDED: dict[str, str] = {
         "files) and assert three-backend byte parity (Python oracle == "
         "capa:host == WASI)."
     ),
+    "wasi_fs_write.capa": (
+        "Experimental --wasi mode demo: Fs.write via wasi:filesystem "
+        "open-at (create|truncate) -> write-via-stream -> wasi:io/streams "
+        "blocking-write-and-flush loop -> blocking-flush + the preopen "
+        "ceiling. The demo writes to and reads back the host filesystem "
+        "(its data/note.txt), which the auto-list harness does not "
+        "control, so there is no fixed byte-equality reference here. "
+        "Covered by the dedicated TestWasiFsWrite tests in "
+        "tests/test_wasi_mode.py, which build a known temp directory "
+        "(small / empty / large-multichunk / UTF-8 / overwrite) and "
+        "assert three-backend byte parity AND on-disk byte equality "
+        "(Python oracle == capa:host == WASI) via write-then-read-back."
+    ),
 }
 
 

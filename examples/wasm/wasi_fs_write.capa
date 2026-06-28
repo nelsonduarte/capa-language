@@ -1,0 +1,72 @@
+// Experimental WASI mode demo: Fs.write via wasi:filesystem +
+// wasi:io/streams (capa --wasm --component --wasi).
+//
+// Migrates Fs.write to the canonical WASI Preview 2 streaming write,
+// the inverse of Fs.read:
+//
+//   fs.write(path, content)
+//     -> descriptor.open-at (against the host-granted PREOPEN
+//        descriptor for the path's parent) with open-flags
+//        create|truncate and descriptor-flags write: a new file is
+//        created, an existing file is TRUNCATED (matching the Python
+//        oracle's open(path, "w") create-or-truncate).
+//     -> descriptor.write-via-stream(offset = 0)
+//     -> output-stream.blocking-write-and-flush LOOP, handing the
+//        content bytes (already in linear memory) to the stream in
+//        chunks of at most one OS page (4096 bytes) per call;
+//        blocking-write-and-flush self-limits AND flushes, so the
+//        wrapper never has to track the check-write permit window.
+//     -> output-stream.blocking-flush for final durability.
+//     -> all OWN resource handles (descriptor, output-stream, and any
+//        error a failed stream op carries) are dropped on every exit
+//        path; the preopen ROOT descriptors are never dropped.
+//     -> Ok(Unit) on success, Err(IoError) on a failed open / write /
+//        flush.
+//
+// The Ok(Unit) / Err(IoError) result and the bytes that land on disk
+// are identical to the Python backend's open(p, "w") + f.write(content)
+// and to the capa:host bridge. An EMPTY content yields a 0-byte file;
+// content larger than a page forces the multi-chunk write loop; an
+// overwrite truncates the previous content. Stdio stays on capa:host --
+// the hybrid coexistence this mode validates. See
+// docs/design/wasi_mode.md.
+//
+// The PREOPEN CEILING applies as for read: every Fs path here is a
+// string LITERAL, the compiler derives the parent directories to
+// preopen, and a directory a write targets is preopened READ_WRITE
+// (a write into a READ_ONLY preopen is denied by wasmtime, returning a
+// clean Err). A path outside every preopen is unreachable, and a
+// DYNAMIC write path is rejected at compile time in --wasi mode
+// (fail-closed). The same program runs unchanged on the default
+// capa:host backend. Fs.list_dir and the fine attenuators
+// Fs.restrict_to / Fs.allows are still rejected under --wasi (later
+// increments).
+//
+// The file below lives under a `data` directory next to this file:
+//
+//   mkdir -p examples/wasm/data
+//   capa --wasm --component --wasi --run examples/wasm/wasi_fs_write.capa
+//   cat examples/wasm/data/note.txt
+//
+// (Adjust the literal prefix below to an absolute path you control if
+// your runner's working directory differs.)
+
+fun main(fs: Fs, stdio: Stdio)
+    let w = fs.write("examples/wasm/data/note.txt", "written by a capability-secured Capa program\n")
+    match w
+        Ok(_) -> stdio.println("write ok")
+        Err(e) -> stdio.println("write failed: ${e}")
+    // Read it back to prove the bytes landed (read is also --wasi).
+    let r = fs.read("examples/wasm/data/note.txt")
+    match r
+        Ok(contents) -> stdio.println("read back:\n${contents}")
+        Err(e) -> stdio.println("read back failed: ${e}")
+    // Overwrite truncates: the file now holds only the new content.
+    let w2 = fs.write("examples/wasm/data/note.txt", "overwritten\n")
+    match w2
+        Ok(_) -> stdio.println("overwrite ok")
+        Err(e) -> stdio.println("overwrite failed: ${e}")
+    let r2 = fs.read("examples/wasm/data/note.txt")
+    match r2
+        Ok(contents) -> stdio.println("after overwrite:\n${contents}")
+        Err(e) -> stdio.println("read back failed: ${e}")
