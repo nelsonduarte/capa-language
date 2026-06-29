@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "capa"
-version = "1.13.0"
+version = "1.14.0"
 description = "Capa, a capability-centric programming language"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,7 +48,15 @@ eval = ["matplotlib>=3.8"]
 # external pip install. The ``wasm-tools`` binary still needs to
 # be on PATH separately - it ships as a Rust executable and is
 # the only piece of the Wasm pipeline Python cannot vendor.
-wasm = ["wasmtime>=45"]
+#
+# The experimental ``--wasi`` mode additionally reaches wasi:http
+# through wasmtime's C-ABI (``wasmtime._bindings``:
+# ``wasmtime_component_linker_add_wasi_http`` +
+# ``wasmtime_context_set_wasi_http``), which the high-level
+# component API does not surface. Those symbols are present and the
+# Net end-to-end suite passes on both wasmtime 44 and 45, so 44 is
+# the validated floor.
+wasm = ["wasmtime>=44"]
 
 [project.scripts]
 capa = "capa.cli:main"

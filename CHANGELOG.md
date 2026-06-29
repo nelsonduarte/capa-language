@@ -9,6 +9,65 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Proposed: 1.14.0 (experimental WASI Preview 2 mode)
+
+> **PROPOSAL.** The version number (`1.14.0`) and this wording are a
+> proposal for the maintainer to confirm before the release is cut. The
+> feature is opt-in and experimental; nothing on the default path changes.
+
+**Added.**
+
+- *Experimental opt-in `--wasi` mode targeting WASI Preview 2.* Paired
+  with `--wasm --component` (and rejected without them), `--wasi` routes
+  the `Env`, `Fs`, and `Net` capabilities off the custom `capa:host`
+  interfaces and onto the canonical WASI Preview 2 interfaces, satisfied
+  by wasmtime's `add_wasip2()` host. `Random` and `Clock` were migrated
+  in the earlier proof-of-concept (`wasi:random` / `wasi:clocks`); this
+  batch completes the migration:
+  - `Env` -> `wasi:cli/environment` (`get-environment` / `get-arguments`).
+  - `Fs` -> `wasi:filesystem` (`stat-at`, `create-directory-at`,
+    `open-at` + `wasi:io/streams` for read / write, directory
+    enumeration for `list_dir`) against host preopen descriptors.
+  - `Net` -> `wasi:http` (`outgoing-handler.handle` + the outgoing /
+    incoming request-response chain, body I/O over `wasi:io/streams`)
+    for `get` and `post`.
+  Interfaces not yet migrated (e.g. `Clock.sleep` and Clock
+  `restrict_to_after`) are rejected at compile time in WASI mode with a
+  clear error, so the flag never silently degrades a capability.
+- *Two-level guest-side attenuation under `--wasi`.* Because the WASI
+  C-ABI host is allow-all (it exposes no per-call allowed-host or
+  per-key surface), the capability narrowing is enforced *in the guest*
+  (codegen), byte-identical to the Python oracle and the `capa:host`
+  backend:
+  - *Level 1 (static authority ceiling).* A closed `Env` ceiling
+    (all `env.get` keys are literals) instantiates the component with an
+    env-set of only the read keys, closing the inherit-everything leak;
+    a closed `Fs` preopen ceiling materialises only the directories the
+    program names; a closed `Net` ceiling collects only the literal
+    hosts. A dynamic key / path / url opens the ceiling and fails closed
+    (or falls back to `inherit_env` for `Env`).
+  - *Level 2 (fine attenuation).* `Env.restrict_to_keys`,
+    `Fs.restrict_to`, and `Net.restrict_to` (plus the matching
+    `allows` / fail-closed `get`) are implemented guest-side with
+    intersection-monotonic narrowing that travels with the capability
+    value across function boundaries.
+
+**Notes.**
+
+- *Honest `Net` ceiling asymmetry.* The static `Net` ceiling is a
+  *coarser* deny than the Python oracle's unrestricted `Net`: a host the
+  program does not name as a literal `net.get`/`net.post` url is denied,
+  and a dynamically built url is fail-closed without reaching the
+  network. The fine `restrict_to` / `allows` narrowing on top of that is
+  byte-parity with the oracle, but the ceiling itself is deliberately
+  tighter (and asserted on the WASI backend alone, not as oracle parity).
+- *Toolchain.* `--wasi` reaches `wasi:http` through wasmtime's C-ABI
+  (`wasmtime._bindings`), validated on wasmtime 44 and 45; the `wasm`
+  extra now pins `wasmtime>=44`. A dedicated CI job installs the Wasm
+  toolchain (the `wasm` extra + a pinned `wasm-tools`) and runs the WASI
+  end-to-end suite; the default test matrix has no toolchain, so its
+  WASI tests skip cleanly.
+
 ## [1.13.0], 2026-06-26
 
 **Capa 1.13.0.** A MINOR release: a batch of standard-library additions

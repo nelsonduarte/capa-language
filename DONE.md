@@ -19,6 +19,35 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## Experimental WASI Preview 2 `--wasi` mode (Env/Fs/Net migrated) (2026-06-29)
+
+- **Opt-in `--wasi` (with `--wasm --component`) migrates Env/Fs/Net to
+  canonical WASI Preview 2 interfaces.** `Env` -> `wasi:cli/environment`,
+  `Fs` -> `wasi:filesystem` (+ `wasi:io/streams` for read/write/list_dir),
+  `Net` -> `wasi:http` (get/post over the outgoing-handler chain). Builds
+  on the earlier `Random`/`Clock` -> `wasi:random`/`wasi:clocks` PoC. The
+  default `capa:host` path is unchanged; non-migrated surface
+  (`Clock.sleep`, Clock `restrict_to_after`) is rejected at compile time
+  under `--wasi`.
+- **Guest-side attenuation (Levels 1 + 2).** Level 1: a closed static
+  authority ceiling instantiates the component with only the env keys /
+  preopen directories / hosts the program names as literals (leak-closed
+  by construction; dynamic -> fail-closed or `inherit_env` fallback for
+  Env). Level 2: `restrict_to(_keys)` / `allows` / fail-closed `get` are
+  codegen-enforced guest-side with intersection-monotonic narrowing that
+  travels with the capability value across function boundaries,
+  byte-identical to the Python oracle and the `capa:host` backend.
+- **Honest Net ceiling asymmetry.** The static `Net` ceiling is a coarser
+  deny than the oracle's unrestricted `Net` (a non-literal url is denied
+  fail-closed); the fine `restrict_to`/`allows` narrowing on top is
+  oracle-parity. Asserted on the WASI backend alone where it is coarser.
+- **Toolchain + CI.** `wasi:http` is reached through wasmtime's C-ABI
+  (`wasmtime._bindings`), validated on wasmtime 44 and 45; the `wasm`
+  extra now pins `wasmtime>=44`. A dedicated `wasi` CI job installs the
+  toolchain (the `wasm` extra + a pinned `wasm-tools`) and runs the WASI
+  end-to-end suite; the default matrix has no toolchain, so its WASI
+  tests skip cleanly (full suite green in both states).
+
 ## M4: `verify_provenance` modes close the SLSA fail-open layer (2026-06-21)
 
 - **Per-dep `verify_provenance` field (`off` / `warn` / `required`),

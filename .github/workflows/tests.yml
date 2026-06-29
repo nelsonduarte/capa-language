@@ -47,3 +47,51 @@ jobs:
             echo "--- $f ---"
             python -m capa --run "examples/$f.capa"
           done
+
+  wasi:
+    # Experimental --wasi mode (WASI Preview 2). The main `test` job runs
+    # on three OSes WITHOUT the Wasm toolchain, so its WASI tests skip
+    # cleanly. This dedicated job installs the toolchain so the WASI
+    # end-to-end suite actually executes: the wasmtime Python binding
+    # (the `wasm` extra) and the wasm-tools binary, pinned by tag.
+    name: WASI Preview 2 (ubuntu, Python 3.12)
+    runs-on: ubuntu-latest
+    env:
+      # Pinned wasm-tools release. The WASI end-to-end tests shell out to
+      # `wasm-tools component embed`/`new`; the binding the http recipe
+      # reaches is provided by the `wasm` extra (wasmtime).
+      WASM_TOOLS_VERSION: "1.249.0"
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the package with the wasm extra
+        # The `wasm` extra adds the wasmtime Python binding. The
+        # experimental --wasi mode reaches wasi:http through wasmtime's
+        # C-ABI (validated on wasmtime 44 and 45); the extra pins the
+        # supported floor.
+        run: pip install -e .[test,wasm]
+
+      - name: Install wasm-tools (pinned)
+        run: |
+          set -euo pipefail
+          base="wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux"
+          url="https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/${base}.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL "$url" -o /tmp/wasm-tools.tar.gz
+          tar -xzf /tmp/wasm-tools.tar.gz -C /tmp
+          install -Dm755 "/tmp/${base}/wasm-tools" "$HOME/.local/bin/wasm-tools"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify the toolchain is present
+        run: |
+          wasm-tools --version
+          python -c "import importlib.metadata as m; print('wasmtime', m.version('wasmtime'))"
+
+      - name: Run the test suite (WASI tests now execute)
+        run: python -m unittest discover tests -v

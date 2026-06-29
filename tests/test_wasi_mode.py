@@ -1945,6 +1945,10 @@ class TestWasiFsWrite(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
 class TestWasiFsWriteOnly(unittest.TestCase):
     """Regression for the WRITE-ONLY parity bug (2026-06-28).
 
