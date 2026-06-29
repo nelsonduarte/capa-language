@@ -193,6 +193,62 @@ class TestRecursiveTypeReachability(unittest.TestCase):
         names = {fn["name"] for fn in m["functions"]}
         self.assertIn("eval", names)
 
+    # ------------------------------------------------------------------
+    # Soundness net: the termination fix forwards ``_seen`` through every
+    # branch and short-circuits ``if t.name in seen: return False``. The
+    # theoretical risk of a guard like that is that the revisit could LOSE
+    # a ``Fun`` that is only reachable THROUGH the recursion - which would
+    # make the manifest/SBOM unsound (it would omit a capability). These
+    # cases pin the opposite: a ``Fun`` sitting ALONGSIDE the recursive
+    # self-reference (in a sibling field, in a sibling tuple slot, or one
+    # mutual-recursion hop away) is still detected, so the type is
+    # correctly flagged UNPROVABLE. They also confirm termination (no
+    # RecursionError). If the revisit ever regressed to dropping the Fun,
+    # these fail.
+
+    def test_recursive_list_sibling_fun_field_is_unprovable(self):
+        # The Fun lives in a field NEXT TO the recursive ``List<T>``.
+        # The seen-guard cuts the cycle on ``T`` but must not stop the
+        # walk from reaching the sibling ``Fun() -> Unit`` field.
+        reachable, unprovable = self._reach(
+            "type T =\n"
+            "    Leaf\n"
+            "    Node(List<T>, Fun() -> Unit)\n"
+            "fun f(x: T) -> Int\n"
+            "    return 0\n"
+        )
+        self.assertIn("T", unprovable)
+
+    def test_recursive_list_sibling_fun_in_tuple_is_unprovable(self):
+        # The Fun is inside a TUPLE that also carries the recursive
+        # ``List<T>``. Same cut, same requirement: the tuple branch must
+        # still surface the closure.
+        reachable, unprovable = self._reach(
+            "type T =\n"
+            "    Leaf\n"
+            "    Node((List<T>, Fun() -> Unit))\n"
+            "fun f(x: T) -> Int\n"
+            "    return 0\n"
+        )
+        self.assertIn("T", unprovable)
+
+    def test_mutually_recursive_fun_via_list_is_unprovable(self):
+        # The Fun is one mutual-recursion hop away: A carries List<B>,
+        # B carries a Fun. Both A and B must come out unprovable, and
+        # the mutual cycle must not loop forever.
+        reachable, unprovable = self._reach(
+            "type A =\n"
+            "    ANil\n"
+            "    ACons(List<B>)\n"
+            "type B =\n"
+            "    BNil\n"
+            "    BCons(List<A>, Fun() -> Unit)\n"
+            "fun f(x: A) -> Int\n"
+            "    return 0\n"
+        )
+        self.assertIn("A", unprovable)
+        self.assertIn("B", unprovable)
+
 
 class TestTopLevelShape(unittest.TestCase):
     """Contract: every manifest carries the documented keys.
