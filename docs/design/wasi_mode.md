@@ -35,8 +35,10 @@ see the WAT) rewrites the migrated touch-points:
 | `Env.allows` | `capa:host/env.allows` (host handle table) | guest-side allow-list membership (no host) |
 | `Fs.restrict_to` | `capa:host/fs.restrict-to` (host handle table) | guest-side prefix allow-list union (no host) |
 | `Fs.allows` | `capa:host/fs.allows` (host handle table) | guest-side lexical prefix containment (no host) |
-| `Net.get` | `capa:host/net.get` (host handle table) | `wasi:http/outgoing-handler.handle` + the wasi:http request/response chain + `wasi:io/streams` body read |
-| `Net.post` | `capa:host/net.post` (host handle table) | the Net.get chain + `wasi:io/streams` flow-controlled outgoing-body **write** of the request body before the handle |
+| `Net.get` | `capa:host/net.get` (host handle table) | `wasi:http/outgoing-handler.handle` + the wasi:http request/response chain + `wasi:io/streams` body read, gated guest-side by the static ceiling **and** the fine allow-list |
+| `Net.post` | `capa:host/net.post` (host handle table) | the Net.get chain + `wasi:io/streams` flow-controlled outgoing-body **write** of the request body before the handle, same two guest-side gates |
+| `Net.restrict_to` | `capa:host/net.restrict-to` (host handle table) | guest-side host allow-list intersection (no host) |
+| `Net.allows` | `capa:host/net.allows` (host handle table) | guest-side exact-hostname allow-list membership (no host) |
 
 Every **other** capability the program uses (Stdio for printing the
 results, and anything else) stays on `capa:host`. The component
@@ -862,7 +864,10 @@ path gets (a wrongly-admitted host is real outbound authority). This is
 **Level 2-style**: proved by the compiler (the guest only ever reaches a
 named host) and reinforced by our host (which generated the guest), but
 NOT runtime-enforced by a stock WASI host. See
-`docs/design/wasi-attenuation.md` for the full stratification.
+`docs/design/wasi-attenuation.md` for the full stratification. The
+per-value **fine** attenuation (`Net.restrict_to` / `Net.allows`) sits on
+top of this ceiling gate (see "Net fine attenuation (guest-side, Level 2,
+Phase 3)" below).
 
 **The host links `wasi:http` only when Net.get is used.** wasmtime 44+
 does not expose `add_wasi_http` on the high-level component API, so the
@@ -945,11 +950,79 @@ with no handle exhaustion. The Net **ceiling** now collects the hosts of
 literal `net.post` urls too, and a **dynamic** post url is fail-closed.
 `TestWasiNetPost` / `TestWasiNetPostCeiling` in `tests/test_wasi_mode.py`.
 
-**Remaining Net scope.** `Net.restrict_to` and `Net.allows` (the fine
-host-set attenuators, a guest-side Level 2 layer) are **rejected at compile
-time** under `--wasi` and run unchanged on `capa:host` (Phase 3). Finer
-attenuation of the request body (e.g. setting an explicit `content-length`
-header to align the server's framing observation) is a later refinement.
+### Net fine attenuation (guest-side, Level 2, Phase 3)
+
+`Net.restrict_to` and `Net.allows` are **supported** under `--wasi`,
+implemented **guest-side** (Level 2 of `docs/design/wasi-attenuation.md`),
+the **direct analogue of the Env guest-side attenuation** above, with
+**exact-hostname equality** in place of Env's key equality. This **closes
+the Net surface** in `--wasi`: `get` / `post` / `restrict_to` / `allows`
+all compile, with **byte-identical** semantics to the Python oracle and
+the `capa:host` backend.
+
+The runtime representation of a Net value (the `i32` handle threaded
+through every Net method and across function boundaries; `0` is the
+unrestricted root `main` receives) is **reinterpreted** guest-side:
+
+- `0` = the unrestricted root (admits every host the ceiling admits);
+- non-zero = a pointer to a `List<String>` allow-list header (the same
+  16-byte `len@0 / cap@4 / data_ptr@8 / pad@12` shape Env / Fs use), whose
+  entries are the **hostnames** `restrict_to` narrowed to, packed as
+  `(str_ptr, str_len)` pairs.
+
+The guest wrappers (no `capa:host/net` import):
+
+- `$Net_restrict_to(handle, host_ptr, host_len) -> i32` builds the
+  **INTERSECTION** of the parent's allow-list with `{host}`, identical to
+  `Net.restrict_to` (`new = frozenset({host}); if parent: new = new &
+  parent`, `capa/runtime/_capabilities.py:565-569`). On the unrestricted
+  root the result is `[host]`; on a restricted parent the result is
+  `[host]` if the parent admits `host`, else an **empty** (but non-zero)
+  allow-list = a Net that admits nothing. This is why a chain
+  `restrict_to(A).restrict_to(B)` with `A != B` **collapses** to the empty
+  set (`{B} & {A} == frozenset()`). The host bytes are **shared, not
+  copied**, and stored **verbatim** (no case-folding). A fresh header is
+  always allocated, so deriving a narrower child **never mutates the
+  parent** (the oracle's immutable `Net` value).
+- `$Net_handle_allows(handle, host_ptr, host_len) -> i32` is the shared
+  **exact-hostname membership** test: `handle == 0 -> 1`, else scan the
+  allow-list and return 1 on the first `$str_eq` (byte-exact) match, 0
+  otherwise. Membership is **equality, NOT containment**: a host that is a
+  substring / super-domain / differing-case of an allowed host does **not**
+  pass -- the security point (`restrict_to("example.com")` admits neither
+  `evil-example.com` nor `example.com.evil.com` nor `Example.com`). This is
+  the hostname analogue of Env's `$str_eq` key equality, **not** the Fs
+  prefix-containment model.
+- `$Net_allows(handle, host_ptr, host_len) -> i32` delegates straight to
+  `$Net_handle_allows`, so the query answer equals the enforcement.
+  Matching the oracle, `allows` passes its argument through **unchanged**
+  (no case-folding), while `get` / `post` compare the **lowercased** URL
+  host (`urlparse(url).hostname` / `split_net_url`); a differing-case query
+  against a verbatim-stored allow-list entry therefore returns false,
+  byte-identical to the oracle.
+
+**Layered on top of the ceiling.** Every Net request op (`$Net_get` /
+`$Net_post`) consults **two** guest-side gates before building any
+request: first `$Net_host_allowed` (the static ceiling), then
+`$Net_handle_allows` (the receiver cap's fine allow-list). A request passes
+only when the host is in the ceiling **AND** in the fine allow-list; a host
+outside either **fail-closes** to `Err(IoError)` before touching the
+network, exactly as the oracle's `if not self.allows(host): return
+Err(...)` prologue does (the fine gate; the ceiling gate has no oracle
+counterpart -- it is the codegen-enforced asymmetry). The unrestricted
+root (handle `0`) passes the fine gate trivially, so it is a no-op for an
+unrestricted Net.
+
+`TestWasiNetAttenuation` / `TestWasiNetRejections` in
+`tests/test_wasi_mode.py` cover restrict + allowed + denied (get and post),
+`allows` true / false, chaining / intersection-collapse, parent isolation,
+the unrestricted root, and **exact-equality-not-substring**, each with
+byte-identical output across the three backends. Example:
+`examples/wasm/wasi_net_attenuation.capa`.
+
+Finer attenuation of the request body (e.g. setting an explicit
+`content-length` header to align the server's framing observation) is a
+later refinement.
 
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):

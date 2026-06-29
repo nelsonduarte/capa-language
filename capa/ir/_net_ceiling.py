@@ -41,8 +41,10 @@ Why ``Net.get`` and ``Net.post`` define the ceiling:
   they pass contributes that host to the reachable set.
 - ``Net.restrict_to`` / ``Net.allows`` only NARROW or QUERY the host
   set; they can never make the program reach a host it does not already
-  pass to ``net.get`` / ``net.post``. They are not migrated yet (Phase 3)
-  and contribute no host.
+  pass to ``net.get`` / ``net.post``, so they contribute no host to the
+  ceiling. (They are migrated guest-side in Phase 3 as the FINE
+  attenuation layered on top of this ceiling; see
+  ``docs/design/wasi_mode.md``, "Net fine attenuation".)
 
 A literal bound through an intermediate ``let`` (``let u = "http://h/"``
 then ``net.get(u)``) appears as a local at the call site, so it is

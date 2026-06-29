@@ -655,6 +655,35 @@ class WasmEmitter(
             if ("Net", "post") in self._used_caps:
                 self._intern_string("HTTP POST failed")
 
+        # Experimental WASI mode, Net FINE ATTENUATION (2026-06-29,
+        # Phase 3): a literal ``Net.restrict_to`` host and a literal
+        # ``Net.allows`` host also reach the data segment (the restrict_to
+        # host is stored VERBATIM in the guest's allow-list List<String>;
+        # the allows host is compared byte-exact against it via $str_eq).
+        # Pre-intern the literal ones here, BEFORE the data segment is
+        # emitted, for the same write-only-parity reason the Fs / Net.get
+        # strings follow (a string interned at call-site emission time gets
+        # a valid offset but no backing ``(data ...)`` block, so its bytes
+        # would be undefined at runtime). Dynamic (local / param) args
+        # travel as a runtime ``(ptr, len)`` and need no static interning.
+        # Gated independently of the Net ceiling above: a program may
+        # narrow / query a Net it received from a caller without ever
+        # naming a literal url to get / post.
+        if self._wasi and (
+            ("Net", "restrict_to") in self._used_caps
+            or ("Net", "allows") in self._used_caps
+        ):
+            from .._nodes import MethodCall
+            for _fn, instr in walk_module(module):
+                if (isinstance(instr, MethodCall)
+                        and (instr.cap_used
+                             or (instr.receiver.ty or "")) == "Net"
+                        and instr.method in ("restrict_to", "allows")
+                        and instr.args
+                        and instr.args[0].kind == "lit_str"
+                        and isinstance(instr.args[0].literal, str)):
+                    self._intern_string(instr.args[0].literal)
+
         # Reserve linear-memory space for the Grisu2 cached-powers
         # table when Float formatting is in play. Placed right after
         # the string data segment, before the heap base. The table
@@ -1002,6 +1031,7 @@ class WasmEmitter(
             or self._sum_layouts
             or self._uses_heap_alloc(module)
             or self._wasi_env_uses_get_or_args()
+            or self._wasi_net_uses_attenuation()
             or self._wasi_fs_uses_preopens
         ):
             heap_start = _align_up(self._string_data_offset, 8)

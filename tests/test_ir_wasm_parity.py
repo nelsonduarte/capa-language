@@ -959,6 +959,21 @@ _EXCLUDED: dict[str, str] = {
         "and assert three-backend byte parity of the RESPONSE plus the exact "
         "request body the server received."
     ),
+    "wasi_net_attenuation.capa": (
+        "Experimental --wasi mode demo: Net FINE ATTENUATION via guest-side "
+        "Level 2 (Phase 3) -- Net.restrict_to (host allow-list intersection) "
+        "and Net.allows (exact-hostname equality membership), with get / post "
+        "fail-closed on a host outside the allow-list, layered on top of the "
+        "static ceiling. The demo GETs a live HTTP server (its literal url "
+        "points at 127.0.0.1:8080), which the auto-list parity harness does "
+        "not run, so there is no fixed byte-equality reference here. Covered "
+        "by the dedicated TestWasiNetAttenuation tests in "
+        "tests/test_wasi_mode.py, which start a controlled local 127.0.0.1 "
+        "server and assert three-backend byte parity (Python oracle == "
+        "capa:host == WASI) for restrict + allowed + denied (get and post), "
+        "allows true / false, chaining / intersection-collapse, parent "
+        "isolation, the unrestricted root, and exact-equality-not-substring."
+    ),
 }
 
 

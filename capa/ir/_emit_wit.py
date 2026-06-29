@@ -676,12 +676,12 @@ def _emit_wit_wasi(
             continue
         if cap in ("Random", "Clock", "Env", "Fs"):
             continue
-        # Net in WASI mode is migrated for the request ops: ``get``
-        # (Phase 1) and ``post`` (Phase 2) route to wasi:http;
-        # ``restrict_to`` / ``allows`` are rejected by the Wasm emitter's
-        # ``_validate_wasi_caps`` before we get here, so a Net present in
-        # ``used`` carries no ``capa:host`` net interface (mirroring
-        # Random / Clock / Env / Fs).
+        # Net in WASI mode is FULLY migrated: the request ops ``get``
+        # (Phase 1) and ``post`` (Phase 2) route to wasi:http, and the fine
+        # attenuators ``restrict_to`` / ``allows`` (Phase 3) are implemented
+        # GUEST-SIDE (Level 2 of ``docs/design/wasi-attenuation.md``, no
+        # host import). So a Net present in ``used`` carries no ``capa:host``
+        # net interface (mirroring Random / Clock / Env / Fs).
         if cap == "Net":
             continue
         lines.append(f"interface {cap.lower()} {{")

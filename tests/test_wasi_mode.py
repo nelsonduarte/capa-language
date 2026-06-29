@@ -3246,19 +3246,23 @@ class TestWasiNetWitGeneration(unittest.TestCase):
     "wasm-tools and/or wasmtime-py with WASI P2 not installed",
 )
 class TestWasiNetRejections(unittest.TestCase):
-    """Phases 1 + 2 migrate Net.get and Net.post; Net.restrict_to / allows
-    are still rejected at compile time in --wasi mode with a clear message
-    (Phase 3 pending), so a program never silently miscompiles. They all
-    run unchanged on the default capa:host backend."""
+    """The Net surface is COMPLETE in --wasi (Phase 3, 2026-06-29):
+    get / post (wasi:http) AND restrict_to / allows (guest-side Level 2
+    fine attenuation). Every Net method now compiles under --wasi; this
+    class is the positive control that none is rejected. The guest-side
+    wrappers (no capa:host/net import) back restrict_to / allows."""
 
     def _compile_wasi(self, src: str):
         from capa.ir import compile_wasm
         module, result = _parse_analyze(src)
         return compile_wasm(module, types=result.types, wasi=True)
 
+    def _compile_wat(self, src: str):
+        from capa.ir import compile_wat
+        module, result = _parse_analyze(src)
+        return compile_wat(module, types=result.types, wasi=True)
+
     def test_net_post_accepted(self):
-        # Phase 2: Net.post alone now compiles (no rejection), the
-        # positive control alongside Net.get.
         src = (
             "fun main(net: Net, stdio: Stdio)\n"
             "    match net.post(\"http://example.com/p\", \"body\")\n"
@@ -3268,7 +3272,10 @@ class TestWasiNetRejections(unittest.TestCase):
         blob = self._compile_wasi(src)
         self.assertIsInstance(blob, (bytes, bytearray))
 
-    def test_net_restrict_to_rejected(self):
+    def test_net_restrict_to_accepted_guest_side(self):
+        # Phase 3: Net.restrict_to compiles to a guest-side $Net_restrict_to
+        # wrapper (no capa:host/net import). The WAT carries the wrapper
+        # and the shared $Net_handle_allows membership helper.
         src = (
             "fun main(net: Net, stdio: Stdio)\n"
             "    let n2 = net.restrict_to(\"example.com\")\n"
@@ -3276,27 +3283,224 @@ class TestWasiNetRejections(unittest.TestCase):
             "        Ok(b) -> stdio.println(b)\n"
             "        Err(e) -> stdio.println(\"e\")\n"
         )
-        with self.assertRaises(Exception) as ctx:
-            self._compile_wasi(src)
-        self.assertIn("Net.restrict_to", str(ctx.exception))
+        wat = self._compile_wat(src)
+        self.assertIn("(func $Net_restrict_to", wat)
+        self.assertIn("(func $Net_handle_allows", wat)
+        # No capa:host/net import for the attenuators (guest-side).
+        self.assertNotIn('"capa:host/net" "restrict-to"', wat)
 
-    def test_net_allows_rejected(self):
+    def test_net_allows_accepted_guest_side(self):
         src = (
             "fun main(net: Net, stdio: Stdio)\n"
-            "    if net.allows(\"example.com\")\n"
+            "    let n2 = net.restrict_to(\"example.com\")\n"
+            "    if n2.allows(\"example.com\")\n"
             "        stdio.println(\"y\")\n"
             "    else\n"
             "        stdio.println(\"n\")\n"
         )
-        with self.assertRaises(Exception) as ctx:
-            self._compile_wasi(src)
-        self.assertIn("Net.allows", str(ctx.exception))
+        wat = self._compile_wat(src)
+        self.assertIn("(func $Net_allows", wat)
+        self.assertIn("(func $Net_handle_allows", wat)
+        self.assertNotIn('"capa:host/net" "allows"', wat)
 
     def test_net_get_accepted(self):
         # The positive control: Net.get alone compiles (no rejection).
         src = _net_get_src("example.com")
         blob = self._compile_wasi(src)
         self.assertIsInstance(blob, (bytes, bytearray))
+
+
+# Net fine attenuation (Phase 3): restrict_to(host) / allows(host) with
+# EXACT-HOSTNAME equality, intersection-monotonic narrowing, fail-closed
+# request gating layered on top of the static ceiling. The host permitted
+# in each scenario is the local server's 127.0.0.1; a different host is the
+# deny control. Parity is asserted byte-for-byte across the Python oracle,
+# the capa:host component backend, and the WASI component backend.
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasi_http(),
+    "wasm-tools and/or wasmtime-py with wasi:http not installed",
+)
+class TestWasiNetAttenuation(unittest.TestCase):
+    """End-to-end: Net.restrict_to / Net.allows guest-side Level 2 fine
+    attenuation in --wasi, byte-identical to the Python oracle and the
+    capa:host backend.
+
+    Confirms the oracle semantics replicated guest-side:
+    - restrict_to is INTERSECTION (``{host} & parent``): a chain to two
+      distinct hosts collapses to the empty allow-list (admits nothing).
+    - allows is EXACT-HOSTNAME equality, NOT substring / prefix
+      containment: a host that is a substring or super-domain of an
+      allowed host is denied (the security point).
+    - get / post FAIL CLOSED before touching the network on a host outside
+      the allow-list, layered on top of the static ceiling.
+    - the unrestricted root (handle 0) admits everything.
+    - deriving a narrower child never mutates the parent (isolation).
+    """
+
+    def test_allows_true_false_three_backends(self):
+        src = (
+            "fun show(stdio: Stdio, label: String, flag: Bool)\n"
+            "    if flag\n"
+            "        stdio.println(\"${label}=yes\")\n"
+            "    else\n"
+            "        stdio.println(\"${label}=no\")\n"
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let scoped = net.restrict_to(\"127.0.0.1\")\n"
+            "    show(stdio, \"allowed\", scoped.allows(\"127.0.0.1\"))\n"
+            "    show(stdio, \"denied\", scoped.allows(\"evil.example\"))\n"
+        )
+        py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        self.assertIn("allowed=yes", wasi)
+        self.assertIn("denied=no", wasi)
+
+    def test_exact_equality_not_substring_three_backends(self):
+        # The security point: a host that is a SUBSTRING or a SUPER-DOMAIN
+        # of an allowed host is NOT admitted (equality, not containment).
+        src = (
+            "fun show(stdio: Stdio, label: String, flag: Bool)\n"
+            "    if flag\n"
+            "        stdio.println(\"${label}=yes\")\n"
+            "    else\n"
+            "        stdio.println(\"${label}=no\")\n"
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let scoped = net.restrict_to(\"example.com\")\n"
+            "    show(stdio, \"exact\", scoped.allows(\"example.com\"))\n"
+            "    show(stdio, \"prefixed\", scoped.allows(\"evil-example.com\"))\n"
+            "    show(stdio, \"suffixed\", scoped.allows(\"example.com.evil.com\"))\n"
+            "    show(stdio, \"substr\", scoped.allows(\"example.co\"))\n"
+        )
+        py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        self.assertIn("exact=yes", wasi)
+        self.assertIn("prefixed=no", wasi)
+        self.assertIn("suffixed=no", wasi)
+        self.assertIn("substr=no", wasi)
+
+    def test_chaining_intersection_collapses_three_backends(self):
+        # restrict_to(A).restrict_to(B), A != B -> the intersection is the
+        # empty set, so even the originally-allowed host is denied.
+        src = (
+            "fun show(stdio: Stdio, label: String, flag: Bool)\n"
+            "    if flag\n"
+            "        stdio.println(\"${label}=yes\")\n"
+            "    else\n"
+            "        stdio.println(\"${label}=no\")\n"
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let a = net.restrict_to(\"127.0.0.1\")\n"
+            "    let ab = a.restrict_to(\"other.example\")\n"
+            "    show(stdio, \"first_in_chain\", ab.allows(\"127.0.0.1\"))\n"
+            "    show(stdio, \"second_in_chain\", ab.allows(\"other.example\"))\n"
+            "    show(stdio, \"parent_unaffected\", a.allows(\"127.0.0.1\"))\n"
+            "    let same = a.restrict_to(\"127.0.0.1\")\n"
+            "    show(stdio, \"same_host_chain\", same.allows(\"127.0.0.1\"))\n"
+        )
+        py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        self.assertIn("first_in_chain=no", wasi)    # narrowed out
+        self.assertIn("second_in_chain=no", wasi)   # never in parent {A}
+        self.assertIn("parent_unaffected=yes", wasi)  # isolation
+        self.assertIn("same_host_chain=yes", wasi)    # {A} & {A} = {A}
+
+    def test_unrestricted_root_allows_everything_three_backends(self):
+        src = (
+            "fun show(stdio: Stdio, label: String, flag: Bool)\n"
+            "    if flag\n"
+            "        stdio.println(\"${label}=yes\")\n"
+            "    else\n"
+            "        stdio.println(\"${label}=no\")\n"
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    show(stdio, \"root_a\", net.allows(\"127.0.0.1\"))\n"
+            "    show(stdio, \"root_b\", net.allows(\"anything.example\"))\n"
+        )
+        py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        self.assertIn("root_a=yes", wasi)
+        self.assertIn("root_b=yes", wasi)
+
+    def test_restrict_get_allowed_host_ok_three_backends(self):
+        # The allowed host (the local server) passes the fine gate AND the
+        # ceiling, so the GET reaches the server and returns its body.
+        with _LocalHttpServer(b"PONG") as authority:
+            host_only = authority.split(":")[0]  # "127.0.0.1"
+            src = (
+                "fun main(net: Net, stdio: Stdio)\n"
+                f"    let scoped = net.restrict_to(\"{host_only}\")\n"
+                f"    match scoped.get(\"http://{authority}/p\")\n"
+                "        Ok(b) -> stdio.println(\"[${b}]\")\n"
+                "        Err(e) -> stdio.println(\"ERR\")\n"
+            )
+            py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        self.assertIn("[PONG]", wasi)
+
+    def test_restrict_get_denied_host_fail_closed_three_backends(self):
+        # The receiver Net is restricted to a host the GET url does NOT
+        # name, so the fine gate denies BEFORE touching the network. The
+        # url's own host is in the ceiling (it is a literal), so the deny is
+        # the fine attenuation, not the ceiling. Identical Err on all three.
+        with _LocalHttpServer(b"PONG") as authority:
+            src = (
+                "fun main(net: Net, stdio: Stdio)\n"
+                "    let scoped = net.restrict_to(\"only.allowed.example\")\n"
+                f"    match scoped.get(\"http://{authority}/p\")\n"
+                "        Ok(b) -> stdio.println(\"[${b}]\")\n"
+                "        Err(e) -> stdio.println(\"DENIED\")\n"
+            )
+            py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        self.assertIn("DENIED", wasi)
+
+    def test_example_attenuation_program_runs(self):
+        # The shipped slice example, run against a live local server with
+        # its hardcoded 127.0.0.1:8080 authority rewritten to the ephemeral
+        # port. Asserts the allows / narrowing / isolation answers and the
+        # allowed-host get, byte-identical across the three backends.
+        from pathlib import Path
+        path = (
+            Path(__file__).resolve().parent.parent
+            / "examples" / "wasm" / "wasi_net_attenuation.capa"
+        )
+        src = path.read_text(encoding="utf-8")
+        with _LocalHttpServer(b"HELLO") as authority:
+            live = src.replace("127.0.0.1:8080", authority)
+            py, host, wasi = _run_net_program_three_ways(live)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        self.assertIn("allowed exact: yes", wasi)
+        self.assertIn("denied other: no", wasi)
+        self.assertIn("denied super-domain: no", wasi)
+        self.assertIn("root admits any: yes", wasi)
+        self.assertIn("narrowed first: no", wasi)
+        self.assertIn("parent unaffected: yes", wasi)
+        self.assertIn("get allowed-host ok: HELLO", wasi)
+        self.assertIn("get narrowed denied", wasi)
+
+    def test_restrict_post_allowed_and_denied_three_backends(self):
+        with _LocalPostServer(mode="fixed", fixed=b"ACK") as authority:
+            host_only = authority.split(":")[0]
+            src = (
+                "fun main(net: Net, stdio: Stdio)\n"
+                f"    let ok = net.restrict_to(\"{host_only}\")\n"
+                f"    match ok.post(\"http://{authority}/p\", \"payload\")\n"
+                "        Ok(b) -> stdio.println(\"post_ok=[${b}]\")\n"
+                "        Err(e) -> stdio.println(\"post_ok=ERR\")\n"
+                "    let no = net.restrict_to(\"only.allowed.example\")\n"
+                f"    match no.post(\"http://{authority}/p\", \"payload\")\n"
+                "        Ok(b) -> stdio.println(\"post_deny=[${b}]\")\n"
+                "        Err(e) -> stdio.println(\"post_deny=DENIED\")\n"
+            )
+            py, host, wasi = _run_net_program_three_ways(src)
+        self.assertEqual(py, host, "py/capa:host diverge")
+        self.assertEqual(py, wasi, "py/wasi diverge")
+        self.assertIn("post_ok=[ACK]", wasi)
+        self.assertIn("post_deny=DENIED", wasi)
 
 
 if __name__ == "__main__":

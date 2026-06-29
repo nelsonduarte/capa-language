@@ -1,0 +1,75 @@
+// Experimental WASI mode demo: Net FINE ATTENUATION via guest-side
+// Level 2 (capa --wasm --component --wasi). Phase 3, which CLOSES the Net
+// surface in --wasi: get / post (wasi:http) plus restrict_to / allows.
+//
+// Net.restrict_to(host) -> Net and Net.allows(host) -> Bool are the
+// fine host-set attenuators. Unlike the static Net CEILING (which is
+// guest-side because wasmtime's wasi:http C-API is allow-all and exposes
+// no allowed-hosts surface), the fine attenuation is a per-value
+// allow-list the guest threads with the Net handle:
+//
+//   - the root Net (from main) is UNRESTRICTED (handle sentinel 0): it
+//     admits every host the ceiling admits.
+//   - net.restrict_to(host) returns a NEW Net whose allow-list is the
+//     INTERSECTION of the parent's allow-list with { host } (monotonic:
+//     it only narrows, never widens) -- exactly the Python oracle's
+//     ``new = frozenset({host}); if parent: new = new & parent``.
+//   - net.allows(host) is true iff the Net is unrestricted OR host is in
+//     the allow-list by EXACT HOSTNAME EQUALITY ($str_eq), NOT prefix or
+//     substring containment (the Fs model). This is the security point:
+//     restrict_to("example.com") admits NEITHER "evil-example.com" NOR
+//     "example.com.evil.com" NOR "Example.com".
+//   - get / post FAIL CLOSED on a host outside the allow-list BEFORE
+//     building any request, layered ON TOP of the ceiling: a request
+//     passes only when the host is in the ceiling AND in the cap's fine
+//     allow-list.
+//
+// The intersection semantics mean chaining restrict_to to two DISTINCT
+// hosts collapses to the EMPTY allow-list (admits nothing). Deriving a
+// narrower child never mutates the parent (the Net value is immutable).
+//
+// Every yes/no answer and every Ok/Err is BYTE-IDENTICAL to the Python
+// backend and the capa:host component backend. Stdio stays on capa:host
+// (the hybrid coexistence this mode validates).
+// See docs/design/wasi_mode.md and docs/design/wasi-attenuation.md.
+//
+// Run against a LOCAL server (no external network) -- start a tiny HTTP
+// server on 127.0.0.1:8080 returning a known body, then:
+//
+//   capa --wasm --component --wasi --run examples/wasm/wasi_net_attenuation.capa
+//
+// (Adjust the literal urls below to the host:port your server listens on.)
+
+fun show(stdio: Stdio, label: String, flag: Bool)
+    if flag
+        stdio.println("${label}: yes")
+    else
+        stdio.println("${label}: no")
+
+fun main(net: Net, stdio: Stdio)
+    // Narrow the root Net to a single host.
+    let scoped = net.restrict_to("127.0.0.1")
+
+    // allows: exact equality, not containment.
+    show(stdio, "allowed exact", scoped.allows("127.0.0.1"))
+    show(stdio, "denied other", scoped.allows("evil.example"))
+    show(stdio, "denied super-domain", scoped.allows("127.0.0.1.evil"))
+
+    // Unrestricted root admits everything.
+    show(stdio, "root admits any", net.allows("anything.example"))
+
+    // Chaining to a DISTINCT host collapses to the empty set (intersection).
+    let narrowed = scoped.restrict_to("other.example")
+    show(stdio, "narrowed first", narrowed.allows("127.0.0.1"))
+    show(stdio, "narrowed second", narrowed.allows("other.example"))
+    // Isolation: the parent is unaffected by deriving a narrower child.
+    show(stdio, "parent unaffected", scoped.allows("127.0.0.1"))
+
+    // get through the scoped cap: the allowed host reaches the server;
+    // a host outside the allow-list fails closed before the network.
+    match scoped.get("http://127.0.0.1:8080/hello")
+        Ok(body) -> stdio.println("get allowed-host ok: ${body}")
+        Err(e) -> stdio.println("get allowed-host err: ${e}")
+    match narrowed.get("http://127.0.0.1:8080/hello")
+        Ok(body) -> stdio.println("get narrowed ok: ${body}")
+        Err(e) -> stdio.println("get narrowed denied")

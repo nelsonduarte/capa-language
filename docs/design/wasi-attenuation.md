@@ -317,32 +317,47 @@ the Python runtime (`capa/runtime/_capabilities.py:368-372`). In-program
 `restrict_to_keys` / `restrict_to` narrowings below the ceiling stay
 guest-side (Level 2).
 
-NET STATUS (2026-06-28): IMPLEMENTED for `Net.get` in the `--wasi` mode
-(Phase 1), GUEST-SIDE only. `Net.get` routes to `wasi:http`
-(`outgoing-handler.handle` + the outgoing-request / future-incoming-
-response / incoming-response / incoming-body resource chain) and
-`wasi:io` (`input-stream.blocking-read` for the body, `pollable.block`
-for the synchronous wait); the Ok(String) body is byte-identical to the
-Python `urlopen` oracle and the `capa:host` bridge, and `status >= 400`
-maps to Err to match the oracle's `HTTPError`. The ASYMMETRY with Fs /
-Env is the load-bearing honesty here: the Net ceiling is the set of
-HOSTS the program names as a string LITERAL in `net.get` (the static
-`NetCeiling`, `capa/ir/_net_ceiling.py`), and it is enforced by a
-COMPILER-GENERATED guest gate (`$Net_host_allowed`), NOT by the WASI
-host -- because wasmtime's `wasi:http` C-API is allow-all with no
-allowed-hosts surface in this release. A DYNAMIC `net.get` url is
-FAIL-CLOSED (the call site cannot split it into a wasi:http request, so
-it returns Err WITHOUT reaching the network), the same fail-closed
-policy a dynamic Fs path gets. So Net's ceiling is Level 2-style
-(compiler-proved + host-reinforced, not stock-host-enforced), in
-contrast to the Fs preopen and Env env-set Level 1 ceilings. The host
-links `wasi:http` (the C-ABI `add_wasi_http` + the obligatory
-`set_wasi_http`) ONLY when the program uses `Net.get`, so a non-Net
-program is a clean total deny. `Net.post` / `restrict_to` / `allows` are
-rejected at compile time under `--wasi` (Phases 2 and 3). Runtime
-enforcement of the Net ceiling under an ARBITRARY host depends on
-wasmtime exposing a `wasi:http` allowed-hosts configuration (or on
-component virtualisation); marked in section 9.
+NET STATUS (2026-06-29): COMPLETE in the `--wasi` mode -- `Net.get`
+(Phase 1), `Net.post` (Phase 2), and `Net.restrict_to` / `Net.allows`
+(Phase 3, the fine attenuation), GUEST-SIDE. `Net.get` / `Net.post`
+route to `wasi:http` (`outgoing-handler.handle` + the outgoing-request /
+future-incoming-response / incoming-response / incoming-body resource
+chain; post adds a flow-controlled outgoing-body write of the request
+body) and `wasi:io` (`input-stream.blocking-read` for the response body,
+`pollable.block` for the synchronous wait); the Ok(String) body is
+byte-identical to the Python `urlopen` oracle and the `capa:host` bridge,
+and `status >= 400` maps to Err to match the oracle's `HTTPError`. The
+ASYMMETRY with Fs / Env is the load-bearing honesty here: the static Net
+CEILING is the set of HOSTS the program names as a string LITERAL in
+`net.get` / `net.post` (the static `NetCeiling`,
+`capa/ir/_net_ceiling.py`), and it is enforced by a COMPILER-GENERATED
+guest gate (`$Net_host_allowed`), NOT by the WASI host -- because
+wasmtime's `wasi:http` C-API is allow-all with no allowed-hosts surface
+in this release. A DYNAMIC url is FAIL-CLOSED (the call site cannot split
+it into a wasi:http request, so it returns Err WITHOUT reaching the
+network), the same fail-closed policy a dynamic Fs path gets. So Net's
+ceiling is Level 2-style (compiler-proved + host-reinforced, not
+stock-host-enforced), in contrast to the Fs preopen and Env env-set Level
+1 ceilings.
+
+The FINE attenuation (`Net.restrict_to` / `Net.allows`, Phase 3) is a
+guest-side Level 2 layer ON TOP of the ceiling, the direct analogue of
+the Env guest-side attenuation but with EXACT-HOSTNAME equality
+(`$str_eq`) in place of Env's key equality: `restrict_to(host)` builds
+the INTERSECTION of the parent's allow-list with `{host}`
+(`capa/runtime/_capabilities.py:565-569`), `allows(host)` is byte-exact
+membership (NOT prefix / substring / case-folded containment -- the
+security point), and every Net request op consults BOTH gates
+(`$Net_host_allowed` then `$Net_handle_allows`) before building a
+request, fail-closing on a host outside either. The Net value's runtime
+`i32` handle (0 = unrestricted root) carries a `List<String>` allow-list
+(non-zero) exactly as the Env / Fs handles do, so a restricted Net keeps
+its restriction across function boundaries. The host links `wasi:http`
+(the C-ABI `add_wasi_http` + the obligatory `set_wasi_http`) ONLY when
+the program uses `Net.get` / `Net.post`, so a non-request Net program is
+a clean total deny. Runtime enforcement of the Net ceiling under an
+ARBITRARY host depends on wasmtime exposing a `wasi:http` allowed-hosts
+configuration (or on component virtualisation); marked in section 9.
 
 ENV STATUS (2026-06-27): IMPLEMENTED for the `--wasi` mode. The Env
 ceiling is the set of keys `main` can read through `Env.get`, computed

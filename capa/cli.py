@@ -1050,12 +1050,13 @@ def _main_dispatch() -> int:
         action="store_true",
         help=(
             "EXPERIMENTAL: with --wasm --component, migrate the "
-            "pure-reader touch-points of Random, Clock and Env to "
+            "supported touch-points of Random, Clock, Env, Fs and Net to "
             "import canonical WASI Preview 2 interfaces (wasi:random / "
-            "wasi:clocks / wasi:cli/environment) instead of the custom "
-            "capa:host ones. Every other capability (Stdio, etc.) stays "
-            "on capa:host (hybrid). Clock.sleep, Clock attenuation and "
-            "Env attenuation (restrict_to_keys / allows) are not "
+            "wasi:clocks / wasi:cli/environment / wasi:filesystem / "
+            "wasi:http) instead of the custom capa:host ones. Every other "
+            "capability (Stdio, etc.) stays on capa:host (hybrid). Env / "
+            "Fs / Net attenuation (restrict_to / allows) is supported "
+            "guest-side; Clock.sleep and Clock attenuation are not "
             "supported in this mode. Requires 'wasm-tools' on PATH; "
             "--run additionally needs wasmtime-py with WASI P2 support. "
             "The default capa:host path is unaffected."
@@ -1559,16 +1560,27 @@ def _main_dispatch() -> int:
                     fs_ceiling = compute_fs_ceiling(
                         module, types=result.types,
                     )
-                    # WASI Net Phase 1 (2026-06-28): compute the static
-                    # Net host ceiling ONLY when the program uses Net.get.
-                    # Passing it to the host is the signal to link wasi:http
-                    # (the FFI receipt); a program with no Net.get keeps
-                    # net_ceiling None so wasi:http is never linked (a clean
-                    # total deny, and it avoids the C-API context panic).
-                    # The ceiling is enforced guest-side (codegen); the host
-                    # records it for inspection only.
-                    used_caps = collect_used_capabilities(module)
-                    if "get" in used_caps.get("Net", set()):
+                    # WASI Net (2026-06-28 Phase 1 / Phase 2): compute the
+                    # static Net host ceiling ONLY when the program uses a
+                    # Net REQUEST op (get or post). Passing it to the host is
+                    # the signal to link wasi:http (the FFI receipt); a
+                    # program with no request op keeps net_ceiling None so
+                    # wasi:http is never linked (a clean total deny, and it
+                    # avoids the C-API context panic). A Net program that
+                    # only narrows / queries (restrict_to / allows, Phase 3)
+                    # builds no outgoing request, so it needs no wasi:http
+                    # either. The ceiling is enforced guest-side (codegen);
+                    # the host records it for inspection only.
+                    # ``collect_used_capabilities`` walks the CIR, so lower
+                    # the AST module first (the same lowering
+                    # ``compute_net_ceiling`` uses).
+                    from capa.ir._lower import Lowerer
+                    cir_for_caps = Lowerer(
+                        types=result.types or {},
+                    ).lower_module(module)
+                    used_caps = collect_used_capabilities(cir_for_caps)
+                    net_request_ops = used_caps.get("Net", set())
+                    if "get" in net_request_ops or "post" in net_request_ops:
                         net_ceiling = compute_net_ceiling(
                             module, types=result.types,
                         )

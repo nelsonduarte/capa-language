@@ -463,13 +463,16 @@ class _CapDispatchMixin:
         # WASI mode: Net.get (Phase 1) and Net.post (Phase 2) route to the
         # wasi:http guest wrappers, which build the outgoing request from
         # the url's compile-time-resolved scheme / authority / path and
-        # gate the host against the static Net ceiling guest-side. post
-        # additionally writes the request body through the outgoing-body
-        # output-stream before the handle. Checked BEFORE the capa:host Net
-        # branch so the same source compiles both ways. Net.restrict_to /
-        # allows are rejected by ``_validate_wasi_caps`` in --wasi (Phase 3
-        # pending), so they never reach this branch in WASI mode and stay on
-        # the capa:host path below.
+        # gate the host against the static Net ceiling AND the receiver
+        # cap's fine allow-list guest-side. post additionally writes the
+        # request body through the outgoing-body output-stream before the
+        # handle. Checked BEFORE the capa:host Net branch so the same source
+        # compiles both ways. Net.restrict_to / allows (Phase 3) are handled
+        # by the cap-agnostic restrict_to / allows branches near the top of
+        # this dispatch (``_emit_net_restrict_to`` /
+        # ``_emit_cap_allows_with_handle``); in --wasi those names bind to
+        # the guest-side ``$Net_restrict_to`` / ``$Net_allows`` wrappers (no
+        # capa:host import), so the same source compiles both ways there too.
         if self._wasi and cap == "Net" and method == "get":
             self._emit_wasi_net_get_call(instr)
             return

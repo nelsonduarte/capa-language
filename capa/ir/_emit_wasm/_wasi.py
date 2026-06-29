@@ -178,13 +178,23 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     # incoming-response / incoming-body resource chain) plus wasi:io/streams
     # (input-stream.blocking-read loop for the response; post ALSO writes
     # the request body via output-stream.blocking-write-and-flush) and
-    # wasi:io/poll (the synchronous pollable.block). Net.restrict_to /
-    # allows are NOT migrated yet (Phase 3); they are rejected at compile
-    # time in --wasi by ``_validate_wasi_caps``. Both get and post are
+    # wasi:io/poll (the synchronous pollable.block). Both get and post are
     # listed here so the import loop does NOT emit a capa:host/net import
     # for them (the host serves them through wasi:http instead).
     ("Net", "get"),
     ("Net", "post"),
+    # Net FINE ATTENUATION (2026-06-29, Phase 3): restrict_to / allows are
+    # implemented GUEST-SIDE (Level 2 of docs/design/wasi-attenuation.md),
+    # analogous to Env's restrict_to_keys / allows -- exact-hostname
+    # equality membership of a List<String> allow-list, sentinel 0 =
+    # unrestricted root. No capa:host/net import: their ``$Net_restrict_to``
+    # / ``$Net_allows`` bindings are emitted as guest WAT wrappers by
+    # ``_emit_wasi_wrappers``. Listed here so the import loop does NOT try
+    # to emit a capa:host/net import for them (the host provides no such
+    # function on the wasi path). This CLOSES the Net surface in --wasi
+    # (get / post / restrict_to / allows).
+    ("Net", "restrict_to"),
+    ("Net", "allows"),
 })
 
 
@@ -203,10 +213,12 @@ _WASI_IO_POLL = "wasi:io/poll@0.2.0"
 _WASI_HTTP_TYPES = "wasi:http/types@0.2.0"
 _WASI_HTTP_HANDLER = "wasi:http/outgoing-handler@0.2.0"
 
-# Net methods this WASI increment migrates (Phase 1: get; Phase 2: post).
-# ``restrict_to`` / ``allows`` (the fine host-set attenuators, Phase 3)
-# remain rejected.
-_WASI_NET_MIGRATED: frozenset[str] = frozenset({"get", "post"})
+# Net methods this WASI increment migrates (Phase 1: get; Phase 2: post;
+# Phase 3: restrict_to / allows, the fine host-set attenuators implemented
+# GUEST-SIDE, Level 2). The Net surface is now COMPLETE in --wasi.
+_WASI_NET_MIGRATED: frozenset[str] = frozenset(
+    {"get", "post", "restrict_to", "allows"}
+)
 
 # The size, in bytes, of each blocking-read chunk request on the Net
 # input-stream. One OS page; mirrors the Fs.read chunk. Net.post's REQUEST
@@ -313,17 +325,16 @@ class _WasiEmissionMixin:
                     f"use the default capa:host backend (drop --wasi)."
                 )
             if cap == "Net" and method not in _WASI_NET_MIGRATED:
-                # Phases 1 + 2 migrate Net.get and Net.post (the request-
-                # building ops; post adds an outgoing-body write loop over
-                # the request body before the handle). Net.restrict_to and
-                # Net.allows (the fine host-set attenuators, a guest-side
-                # Level 2 layer) are deferred to Phase 3; reject them loudly
-                # so a program never silently miscompiles.
+                # The Net surface is COMPLETE in --wasi (2026-06-29):
+                # get / post (the request-building ops over wasi:http) and
+                # restrict_to / allows (the fine host-set attenuators,
+                # guest-side Level 2 with exact-hostname equality). Any
+                # method outside this set is an analyzer addition we do not
+                # yet handle; reject it loudly so a program never silently
+                # miscompiles.
                 raise WasmEmissionError(
-                    f"Net.{method} is not supported in the WASI mode "
-                    f"yet (get and post are migrated; restrict_to / allows "
-                    f"are not); use the default capa:host backend (drop "
-                    f"--wasi)."
+                    f"Net.{method} is not supported in the WASI mode; "
+                    f"use the default capa:host backend (drop --wasi)."
                 )
         # Fail-closed proof obligation: if the program uses a migrated
         # Fs op (metadata or the stream-bearing read) but its static
@@ -383,19 +394,35 @@ class _WasiEmissionMixin:
         )
 
     def _wasi_net_needs_str_eq(self) -> bool:
-        """True when ``--wasi`` is active and the program reaches
-        ``Net.get`` or ``Net.post``, whose shared guest-side host gate
-        (``$Net_host_allowed``) scans the static ceiling hosts via
-        ``$str_eq``. The default path routes the host membership through
-        the capa:host bridge, so this gate is WASI-only; it ensures
-        ``$str_eq`` is emitted even when the program uses no other
-        String-equality operation. (An empty Net ceiling emits a gate with
-        no ``$str_eq`` call, but gating on a Net request op being present
-        is simpler and the unused helper is a few harmless bytes.)"""
-        return self._wasi and (
-            ("Net", "get") in self._used_caps
-            or ("Net", "post") in self._used_caps
+        """True when ``--wasi`` is active and the program reaches ANY Net
+        op, all of which scan a ``(ptr, len)`` host list via ``$str_eq``:
+        ``get`` / ``post`` (the static ceiling gate ``$Net_host_allowed``
+        AND the fine allow-list gate ``$Net_handle_allows``), ``allows``
+        (allow-list membership), and ``restrict_to`` (it consults the
+        parent's allow-list to compute the intersection). The default path
+        routes the host membership through the capa:host bridge, so this
+        gate is WASI-only; it ensures ``$str_eq`` is emitted even when the
+        program uses no other String-equality operation. (An empty Net
+        ceiling / allow-list emits a gate with no ``$str_eq`` call, but
+        gating on any Net op being present is simpler and the unused helper
+        is a few harmless bytes.)"""
+        return self._wasi and any(
+            c == "Net" for (c, _m) in self._used_caps
         )
+
+    def _wasi_net_uses_attenuation(self) -> bool:
+        """True when ``--wasi`` is active and the program reaches
+        ``Net.restrict_to`` (which allocates the fresh allow-list
+        ``List<String>`` header + data buffer for the narrowed Net value
+        via ``$alloc``). Gates the bump-allocator / heap-top emission so a
+        narrow-only Net program (no get / post and no other heap user)
+        still gets the allocator. ``allows`` alone does NOT allocate (it
+        only scans an existing allow-list), so it is not gated here; a
+        program that calls ``allows`` first called ``restrict_to`` to
+        obtain a restricted Net, which already pulls the allocator in.
+        ``get`` / ``post`` always pull ``$alloc`` through their
+        canonical-ABI ret areas, so they are not gated here either."""
+        return self._wasi and ("Net", "restrict_to") in self._used_caps
 
     def _wasi_fs_list_dir_needs_str_cmp(self) -> bool:
         """True when ``--wasi`` is active and the program reaches
@@ -920,10 +947,25 @@ class _WasiEmissionMixin:
             self._emit_wasi_fs_list_dir_wrapper()
         # Net.get (2026-06-28, Phase 1) / Net.post (2026-06-28, Phase 2):
         # the SHARED guest-side host ceiling gate plus the per-op wasi:http
-        # chain wrapper. Emit the gate once when either request op is used;
-        # emit each wrapper on its own touch-point.
+        # chain wrapper. Emit the ceiling gate once when either request op
+        # is used; emit each wrapper on its own touch-point.
         if ("Net", "get") in used or ("Net", "post") in used:
             self._emit_wasi_net_host_allowed_helper()
+        # Net fine attenuation (2026-06-29, Phase 3, Level 2 guest-side):
+        # the SHARED exact-hostname allow-list membership helper backs the
+        # ``allows`` body, the ``restrict_to`` intersection, AND the
+        # fail-closed fine gate every Net request op consults on top of the
+        # ceiling. Emit it once whenever ANY Net op is present: a program
+        # that receives a restricted Net from a CALLER and only ever reads
+        # through it (get / post) must still re-check the allow-list it
+        # carries, so the helper must be present whenever a request op is,
+        # not only when restrict_to / allows appear textually.
+        if any(c == "Net" for (c, _m) in used):
+            self._emit_wasi_net_handle_allows_helper()
+        if ("Net", "restrict_to") in used:
+            self._emit_wasi_net_restrict_to_wrapper()
+        if ("Net", "allows") in used:
+            self._emit_wasi_net_allows_wrapper()
         if ("Net", "get") in used:
             self._emit_wasi_net_get_wrapper()
         if ("Net", "post") in used:
@@ -1411,6 +1453,239 @@ class _WasiEmissionMixin:
         self._write("i32.const 0")
         self._write("i32.store offset=12")
         # Return the header pointer (the new restricted Env value).
+        self._write("local.get $header")
+        self._indent -= 1
+        self._write(")")
+
+    # ----- guest-side Net fine attenuation (Level 2, Phase 3) ----
+
+    def _emit_wasi_net_handle_allows_helper(self) -> None:
+        """``$Net_handle_allows (handle i32, host_ptr i32, host_len i32)
+        -> i32`` -> 1 iff the Net value ``handle`` admits ``host`` by the
+        FINE attenuation (``restrict_to``) allow-list.
+
+        The shared exact-hostname membership test behind both ``allows``
+        (its whole body) and every Net request op (its fail-closed gate,
+        layered ON TOP of the static ceiling ``$Net_host_allowed``):
+
+          handle == 0  -> 1 (unrestricted root Net: every host allowed)
+          else         -> handle is a pointer to a List<String> header
+                          (len@0, data_ptr@8) of the hostnames the
+                          ``restrict_to`` chain narrowed to. Scan the N
+                          packed ``(str_ptr, str_len)`` entries; return 1
+                          on the first ``$str_eq`` match, 0 if none match.
+
+        Mirrors ``Net.allows`` (``self._allowed is None or host in
+        self._allowed``) EXACTLY: membership is byte-exact equality
+        (``$str_eq``), NOT prefix / substring containment (the Fs model)
+        and NOT case-folding -- a host that is a substring or differing-
+        case of an allowed host does NOT pass, which is the security
+        point (``restrict_to("example.com")`` admits neither
+        ``evil-example.com`` nor ``example.com.evil.com`` nor
+        ``Example.com``). The oracle stores the ``restrict_to`` arg
+        VERBATIM and only ``get`` / ``post`` lowercase the URL host before
+        the membership test; this guest side matches because the
+        ``restrict_to`` arg bytes are interned verbatim and the request-op
+        gate passes the already-lowercased ``split_net_url`` host.
+
+        An EMPTY allow-list (a non-zero header with len 0, produced by a
+        ``restrict_to`` chain whose intersection collapsed, e.g.
+        ``restrict_to(A).restrict_to(B)`` with A != B) admits NOTHING:
+        the scan finds no entry and returns 0, matching the oracle's empty
+        ``frozenset``."""
+        self._write(
+            "(func $Net_handle_allows (param $handle i32) "
+            "(param $host_ptr i32) (param $host_len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $data i32)")
+        self._write("(local $count i32)")
+        self._write("(local $i i32)")
+        self._write("(local $entry i32)")
+        # Unrestricted root: handle 0 admits every host.
+        self._write("local.get $handle")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Restricted: scan the allow-list List<String> the handle points
+        # to. count = header.len@0; data = header.data_ptr@8.
+        self._write("local.get $handle")
+        self._write("i32.load offset=0")
+        self._write("local.set $count")
+        self._write("local.get $handle")
+        self._write("i32.load offset=8")
+        self._write("local.set $data")
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("(block $net_allow_done")
+        self._indent += 1
+        self._write("(loop $net_scan_hosts")
+        self._indent += 1
+        # if i >= count, break (no match).
+        self._write("local.get $i")
+        self._write("local.get $count")
+        self._write("i32.ge_u")
+        self._write("br_if $net_allow_done")
+        # entry = data + i*8 (packed (str_ptr@0, str_len@4)).
+        self._write("local.get $data")
+        self._write("local.get $i")
+        self._write("i32.const 8")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write("local.set $entry")
+        # str_eq(entry.ptr@0, entry.len@4, host_ptr, host_len) -> hit.
+        self._write("local.get $entry")
+        self._write("i32.load offset=0")
+        self._write("local.get $entry")
+        self._write("i32.load offset=4")
+        self._write("local.get $host_ptr")
+        self._write("local.get $host_len")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # i += 1; continue.
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $net_scan_hosts")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # No match.
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_net_allows_wrapper(self) -> None:
+        """``$Net_allows (handle i32, host_ptr i32, host_len i32) ->
+        i32`` -> the Bool result of ``net.allows(host)``.
+
+        Matches the call shape ``_emit_cap_allows_with_handle`` produces
+        (receiver handle + host (ptr, len) -> i32 Bool). Delegates
+        straight to the shared ``$Net_handle_allows`` so the query answer
+        is identical to the fine-attenuation gate every Net request op
+        consults (no guest-side divergence) and to the Python oracle.
+
+        Unlike ``get`` / ``post`` (which lowercase the URL host), this
+        query passes the arg through UNCHANGED, exactly as the oracle's
+        ``Net.allows`` does no case-folding on its argument: a query of a
+        differing-case host against a verbatim-stored allow-list entry
+        therefore returns false, byte-identical to the oracle."""
+        self._write(
+            "(func $Net_allows (param $handle i32) (param $host_ptr i32) "
+            "(param $host_len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("local.get $handle")
+        self._write("local.get $host_ptr")
+        self._write("local.get $host_len")
+        self._write("call $Net_handle_allows")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_net_restrict_to_wrapper(self) -> None:
+        """``$Net_restrict_to (handle i32, host_ptr i32, host_len i32) ->
+        i32`` -> a fresh Net value (pointer to a new ``List<String>``
+        allow-list holding the single admitted host, or a non-zero
+        zero-length header when the new host is NOT admitted by the
+        parent -- a restricted-to-nothing Net).
+
+        Matches the call shape ``_emit_net_restrict_to`` produces
+        (receiver handle + the host String as (ptr, len)).
+
+        Builds the INTERSECTION of the parent's allow-list with
+        ``{host}``, identical to ``Net.restrict_to``
+        (``new = frozenset({host}); if parent is not None: new = new &
+        parent``, ``capa/runtime/_capabilities.py:565-569``):
+
+          parent unrestricted (handle == 0): result = [host] (the root
+            admits every host, so the intersection is the new host).
+          parent restricted: result = [host] if the parent admits host
+            (``$Net_handle_allows``), else [] (an empty allow-list = a
+            Net that admits nothing). This is why a chain
+            ``restrict_to(A).restrict_to(B)`` with A != B collapses to the
+            empty set: B is not in the parent's ``{A}``, so the
+            intersection is empty -- exactly the oracle's
+            ``{B} & {A} == frozenset()``.
+
+        Allocates a 16-byte List<String> header + a data buffer for at
+        most ONE packed ``(str_ptr, str_len)`` entry. The host BYTES are
+        SHARED, not copied (the arg already lives in linear memory for the
+        program's lifetime); only the (ptr, len) pair is stored, VERBATIM
+        (no case-folding, so the verbatim-host membership semantics of
+        ``allows`` hold). The header is always non-zero (``$alloc`` never
+        returns 0; the heap starts above the static data region), so an
+        EMPTY intersection still yields a valid pointer to a zero-length
+        allow-list = a restricted Net distinct from the unrestricted 0
+        sentinel, matching the oracle's empty-but-not-None ``frozenset``.
+        The parent header is never mutated (a fresh header is always
+        allocated), so deriving a narrower child never affects the parent
+        (the oracle's immutable ``Net`` value)."""
+        self._write(
+            "(func $Net_restrict_to (param $handle i32) "
+            "(param $host_ptr i32) (param $host_len i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $header i32)")
+        self._write("(local $out_data i32)")
+        self._write("(local $out_n i32)")
+        # out_n = 1 iff the parent admits the new host, else 0. For an
+        # unrestricted parent ($handle == 0) $Net_handle_allows returns 1,
+        # so result = [host]; for a restricted parent it returns
+        # membership, so result = {host} & parent (the intersection the
+        # oracle computes).
+        self._write("local.get $handle")
+        self._write("local.get $host_ptr")
+        self._write("local.get $host_len")
+        self._write("call $Net_handle_allows")
+        self._write("local.set $out_n")
+        # Allocate the result header (16 bytes) + a data buffer sized for
+        # the single packed (ptr, len) entry (8 bytes). The over-
+        # allocation when out_n == 0 is harmless; the header.len records
+        # the actual count so the scan never reads past it.
+        self._write("i32.const 16")
+        self._write("call $alloc")
+        self._write("local.set $header")
+        self._write("i32.const 8")
+        self._write("call $alloc")
+        self._write("local.set $out_data")
+        # If admitted, store (host_ptr, host_len) as the single entry.
+        self._write("local.get $out_n")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $out_data")
+        self._write("local.get $host_ptr")
+        self._write("i32.store offset=0")
+        self._write("local.get $out_data")
+        self._write("local.get $host_len")
+        self._write("i32.store offset=4")
+        self._indent -= 1
+        self._write("end")
+        # Fill the List<String> header: len@0 = cap@4 = out_n,
+        # data_ptr@8 = out_data, pad@12 = 0.
+        self._write("local.get $header")
+        self._write("local.get $out_n")
+        self._write("i32.store offset=0")
+        self._write("local.get $header")
+        self._write("local.get $out_n")
+        self._write("i32.store offset=4")
+        self._write("local.get $header")
+        self._write("local.get $out_data")
+        self._write("i32.store offset=8")
+        self._write("local.get $header")
+        self._write("i32.const 0")
+        self._write("i32.store offset=12")
+        # Return the header pointer (the new restricted Net value).
         self._write("local.get $header")
         self._indent -= 1
         self._write(")")
@@ -3221,10 +3496,29 @@ class _WasiEmissionMixin:
                     "$buf_cap", "$buf_len", "$chunk_ptr", "$chunk_len",
                     "$need", "$newcap", "$newbuf"):
             self._write(f"(local {loc} i32)")
-        # Host gate.
+        # Host gate (static ceiling): a host the program never names as a
+        # literal is denied here.
         self._write("local.get $host_ptr")
         self._write("local.get $host_len")
         self._write("call $Net_host_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Fine attenuation gate (restrict_to allow-list): a host outside
+        # the receiver Net's allow-list is denied here, fail-closed, BEFORE
+        # any request is built. Layered ON TOP of the ceiling: the request
+        # passes only when the host is in the ceiling AND in the cap's fine
+        # allow-list (the handle 0 root admits all, so this is a no-op for
+        # an unrestricted Net). Mirrors the oracle's ``if not
+        # self.allows(host): return Err(IoError(...))`` prologue.
+        self._write("local.get $handle")
+        self._write("local.get $host_ptr")
+        self._write("local.get $host_len")
+        self._write("call $Net_handle_allows")
         self._write("i32.eqz")
         self._write("if")
         self._indent += 1
@@ -3611,6 +3905,21 @@ class _WasiEmissionMixin:
         self._write("local.get $host_ptr")
         self._write("local.get $host_len")
         self._write("call $Net_host_allowed")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._emit_wasi_net_err(msg_off, msg_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Fine attenuation gate (restrict_to allow-list; shared with get):
+        # a host outside the receiver Net's allow-list writes Err WITHOUT
+        # building any request, layered ON TOP of the ceiling. Handle 0
+        # (unrestricted root) admits all.
+        self._write("local.get $handle")
+        self._write("local.get $host_ptr")
+        self._write("local.get $host_len")
+        self._write("call $Net_handle_allows")
         self._write("i32.eqz")
         self._write("if")
         self._indent += 1
