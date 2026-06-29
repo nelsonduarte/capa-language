@@ -823,11 +823,16 @@ authority / path:
    resubscribe + block + retry; `some(err())` = already consumed -> Err;
    `some(ok(err(code)))` = transport error -> Err;
    `some(ok(ok(resp)))` = the response.
-6. `incoming-response.status()`; **`status >= 400` -> Err**, matching the
-   urllib oracle which raises `HTTPError` on `status >= 400` (the
-   wasi:http handler delivers `status >= 400` as `some(ok(ok(resp)))`
-   with a high status, NOT an `error-code`, so the wrapper checks the
-   status and converts).
+6. `incoming-response.status()`; **fail-closed on any non-2xx status**:
+   only `200..=299` yields `Ok(body)`; **any** other status (`3xx`
+   redirects, `<200`, and `4xx` / `5xx`) drops the response and returns
+   `Err` **without reading the body**. The wasi:http handler delivers a
+   `3xx` / `4xx` / `5xx` as `some(ok(ok(resp)))` with that status (NOT an
+   `error-code`), so the wrapper checks the status and converts. This is
+   a **deliberate, more-restrictive divergence** from the urllib oracle /
+   `capa:host` (which **follow** redirects via urllib and surface only
+   `4xx` / `5xx` as errors): the guest does **not** follow redirects. See
+   "Redirects are fail-closed (anti-SSRF)" below.
 7. `incoming-response.consume()` -> `incoming-body.stream()` -> a
    **loop** of `input-stream.blocking-read(chunk)` over `wasi:io/streams`,
    accumulating each chunk into a geometrically-grown heap buffer until
@@ -894,21 +899,72 @@ exactly like `Fs.write`.
 **Parity.** `Ok(String)` is **byte-identical** to the Python oracle's
 `urlopen(url).read().decode("utf-8")` and the `capa:host` bridge across
 small, empty, large-multi-chunk, and UTF-8 multi-byte bodies, fetched
-from a **local 127.0.0.1 server** (no external network); `status >= 400`
+from a **local 127.0.0.1 server** (no external network); `4xx` / `5xx`
 (404 / 500) and a connection-refused transport error are coherent `Err`
 on all three backends (the Err **message** differs -- the wrapper writes
 a fixed `HTTP GET failed` -- so parity is on the Result **discriminant**,
-as the Fs error paths already assert). `TestWasiNetGet` /
+as the Fs error paths already assert). `3xx` redirects are the **one
+deliberate divergence** (the `--wasi` guest fails closed where the oracle
+follows the redirect; see "Redirects are fail-closed (anti-SSRF)" below),
+so they are **not** asserted as three-backend parity. `TestWasiNetGet` /
 `TestWasiNetCeiling` / `TestWasiNetWitGeneration` / `TestWasiNetRejections`
 in `tests/test_wasi_mode.py`.
+
+### Redirects are fail-closed (anti-SSRF, security decision)
+
+In `--wasi` mode the guest **does not follow HTTP redirects**, and it
+treats **any** response that is not `2xx` (`200..=299`) as `Err` -- so a
+`3xx` (`301` / `302` / `303` / `307` / `308`, and a bodyless `304`) is a
+**fail-closed** `Err(IoError)`, the response is dropped without reading
+its body, and **no** redirect `Location` is fetched. The status gate in
+`$Net_get` / `$Net_post` is "status NOT in `[200,299]`", not the old
+"`status >= 400`".
+
+**This is a deliberate divergence from the oracle, in the more
+restrictive direction.** The Python oracle and the `capa:host` bridge use
+`urllib`, which **transparently follows** `3xx` redirects (and raises for
+a `3xx` without a `Location`), so neither ever hands a `3xx` back to the
+program -- they either follow it or raise. The `--wasi` guest instead
+**refuses** it. This is **not a bug**; it is a documented security choice
+("option B").
+
+**Why fail-closed and not follow.** Following a redirect implicitly would
+let an **allowed** host redirect the request to a host the program never
+named -- a host outside both the static `NetCeiling` and the fine
+`Net.restrict_to` allow-list. Because those gates are checked on the
+**original** request URL (the only URL the compiler can see), an
+auto-followed redirect would reach the redirect target **without** any
+host-authority check, an **SSRF / host-authority bypass** that would
+break Capa's central capability / host guarantee. Refusing `3xx`
+preserves that guarantee: the only hosts the guest ever contacts are the
+ones it statically named and is gated against. It is **secure-by-default**
+and gives **predictable, auditable** behaviour, aligned with **CRA**
+(secure-by-default) and **NIS2** (predictable / auditable handling).
+
+A program that genuinely needs to follow a redirect must do so
+**explicitly** -- read the (non-2xx) `Err`, derive the new URL itself, and
+issue a fresh `net.get` against it, which then passes through the host
+ceiling + allow-list gates like any other request. On the default
+`capa:host` backend the urllib auto-follow behaviour is unchanged; this
+divergence is **`--wasi`-only**.
+
+This is covered by `TestWasiNetRedirectFailClosed` in
+`tests/test_wasi_mode.py` (a local server returning `301` / `302` / `307`
+/ `308` with a `Location`, and a `304` without one, for both `Net.get`
+and `Net.post`); those are **fail-closed behaviour** tests, **not**
+three-backend parity tests (the oracle / `capa:host` intentionally
+diverge by following / raising), and are deliberately **excluded** from
+the Net parity harness.
 
 ### Net.post via wasi:http (Phase 2)
 
 `Net.post` **reuses the entire `$Net_get` chain** (host gate, the
 Fields -> OutgoingRequest -> set-* -> body -> finish -> handle -> future
 poll -> status -> consume -> stream -> input-stream read loop, the
-triple-result lift, the `status >= 400` mapping, and every resource drop)
-and changes only two things:
+triple-result lift, the **fail-closed non-2xx mapping** (only `200..=299`
+-> `Ok`; `3xx` redirects are **not** followed; see "Redirects are
+fail-closed (anti-SSRF)" above), and every resource drop) and changes
+only two things:
 
 1. **set-method sends `POST`** -- the `method` variant **discriminant 2**.
    No string is interned: a non-`other` method variant carries no payload,

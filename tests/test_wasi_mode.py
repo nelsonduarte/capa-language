@@ -2727,7 +2727,10 @@ class TestWasiNetGet(unittest.TestCase):
 
     def test_status_404_is_err_on_all_backends(self):
         # urllib raises HTTPError on status >= 400, so the oracle returns
-        # Err; the wasi wrapper maps status >= 400 to Err for parity.
+        # Err; the wasi wrapper fails closed on any non-2xx (404 included),
+        # so all three backends agree on Err here. (3xx redirects diverge
+        # by design and are covered separately by
+        # TestWasiNetRedirectFailClosed, NOT as parity.)
         with _LocalHttpServer(b"not found", status=404) as auth:
             out = self._assert_parity(auth)
         self.assertEqual(out, "ERR\n")
@@ -3505,6 +3508,170 @@ class TestWasiNetAttenuation(unittest.TestCase):
         self.assertEqual(py, wasi, "py/wasi diverge")
         self.assertIn("post_ok=[ACK]", wasi)
         self.assertIn("post_deny=DENIED", wasi)
+
+
+# ----- Net redirect fail-closed (anti-SSRF security decision) ----
+#
+# In --wasi mode the guest does NOT follow HTTP redirects and treats ANY
+# non-2xx response (3xx included) as a fail-closed Err WITHOUT reading the
+# body, DELIBERATELY diverging (in the more-restrictive direction) from the
+# urllib oracle / capa:host, which FOLLOW redirects. Reason: an implicit
+# redirect from an allowed host to a non-allowed host would bypass the Net
+# host ceiling + fine allow-list (an SSRF / host-authority bypass). See
+# docs/design/wasi_mode.md "Redirects are fail-closed (anti-SSRF)".
+#
+# These are FAIL-CLOSED BEHAVIOUR tests, NOT three-backend parity tests:
+# the Python oracle / capa:host follow the redirect (or raise on a 3xx
+# without a Location), so they DIVERGE from --wasi by design. They are
+# therefore asserted on the WASI backend ALONE and are deliberately kept
+# OUT of any Net parity harness (_run_net_program_three_ways).
+
+
+class _LocalRedirectServer:
+    """A 127.0.0.1 HTTP server that answers BOTH GET and POST with a 3xx
+    redirect. With ``location`` set it sends that ``Location`` header (the
+    common 301 / 302 / 307 / 308 case); with ``location=None`` it sends a
+    bodyless 3xx WITHOUT a Location (e.g. a 304 Not Modified). It never
+    serves a 2xx, so a client that FOLLOWS the redirect would loop or fail,
+    and a fail-closed client (--wasi) returns Err on the first response.
+
+    Context-manager: yields the ``host:port`` authority. Loopback-only, so
+    no external network is touched."""
+
+    def __init__(self, status: int, location: str | None):
+        self._status = status
+        self._location = location
+        self._srv = None
+        self._thread = None
+        self.port = None
+
+    def __enter__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        status = self._status
+        location = self._location
+
+        class _H(BaseHTTPRequestHandler):
+            def _respond(self):
+                self.send_response(status)
+                if location is not None:
+                    self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_GET(self):
+                self._respond()
+
+            def do_POST(self):
+                # Drain the request body so the connection closes cleanly.
+                te = self.headers.get("Transfer-Encoding", "")
+                if "chunked" in te.lower():
+                    while True:
+                        line = self.rfile.readline().strip()
+                        if not line:
+                            continue
+                        size = int(line, 16)
+                        if size == 0:
+                            self.rfile.readline()
+                            break
+                        self.rfile.read(size)
+                        self.rfile.readline()
+                else:
+                    n = int(self.headers.get("Content-Length", 0))
+                    if n:
+                        self.rfile.read(n)
+                self._respond()
+
+            def log_message(self, *a):
+                pass
+
+        self._srv = HTTPServer(("127.0.0.1", 0), _H)
+        self.port = self._srv.server_address[1]
+        self._thread = threading.Thread(
+            target=self._srv.serve_forever, daemon=True,
+        )
+        self._thread.start()
+        return f"127.0.0.1:{self.port}"
+
+    def __exit__(self, *exc):
+        if self._srv is not None:
+            self._srv.shutdown()
+            self._srv.server_close()
+        return False
+
+
+def _run_net_wasi_only(src: str) -> str:
+    """Build + run a Net program on the WASI component backend ALONE (with
+    the static Net host ceiling) and return its stdout.
+
+    Used for the redirect fail-closed tests, which are NOT parity tests:
+    the Python oracle / capa:host follow redirects and so diverge from
+    --wasi by design, so only the WASI backend's behaviour is asserted."""
+    from capa.ir import compile_wasm, compile_wit, compute_net_ceiling
+    from capa.cli import _wrap_as_component
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    module, result = _parse_analyze(src)
+    core = compile_wasm(module, types=result.types, wasi=True)
+    wit = compile_wit(module, types=result.types, wasi=True)
+    comp = _wrap_as_component(core, wit, wasi=True)
+    ceiling = compute_net_ceiling(module, types=result.types)
+    buf = io.StringIO()
+    saved = sys.stdout
+    sys.stdout = buf
+    try:
+        WasmComponentHost(wasi=True, net_ceiling=ceiling).run_main(comp)
+    finally:
+        sys.stdout = saved
+    return buf.getvalue()
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasi_http(),
+    "wasm-tools and/or wasmtime-py with wasi:http not installed",
+)
+class TestWasiNetRedirectFailClosed(unittest.TestCase):
+    """Security decision (anti-SSRF, "option B"): in --wasi mode the guest
+    does NOT follow HTTP redirects and fails closed on ANY non-2xx response.
+    A 3xx (301 / 302 / 307 / 308 with a Location, and a 304 without one) is
+    a coherent Err on the WASI backend for BOTH net.get and net.post -- the
+    response is dropped without reading the body and no Location is fetched.
+
+    This DELIBERATELY diverges from the urllib oracle / capa:host (which
+    follow redirects), so these are fail-closed BEHAVIOUR tests asserted on
+    the WASI backend ALONE, NOT three-backend parity tests, and are kept out
+    of the Net parity harness (the divergence is intentional, see
+    docs/design/wasi_mode.md)."""
+
+    # 3xx with a Location (the redirect-following vector) + a 304 without a
+    # Location (a bodyless 3xx). The Location points at a host the program
+    # never named, which is exactly the SSRF vector fail-closed defeats.
+    _REDIRECTS = (
+        (301, "http://evil.example/elsewhere"),
+        (302, "http://evil.example/elsewhere"),
+        (307, "http://evil.example/elsewhere"),
+        (308, "http://evil.example/elsewhere"),
+        (304, None),
+    )
+
+    def test_get_fails_closed_on_3xx(self):
+        for status, location in self._REDIRECTS:
+            with self.subTest(status=status):
+                with _LocalRedirectServer(status, location) as auth:
+                    out = _run_net_wasi_only(_net_get_src(auth))
+                self.assertEqual(
+                    out, "ERR\n",
+                    f"GET {status} should fail closed (no redirect follow)",
+                )
+
+    def test_post_fails_closed_on_3xx(self):
+        for status, location in self._REDIRECTS:
+            with self.subTest(status=status):
+                with _LocalRedirectServer(status, location) as auth:
+                    out = _run_net_wasi_only(_net_post_src(auth, "payload"))
+                self.assertEqual(
+                    out, "ERR\n",
+                    f"POST {status} should fail closed (no redirect follow)",
+                )
 
 
 if __name__ == "__main__":

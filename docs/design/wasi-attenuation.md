@@ -325,9 +325,18 @@ future-incoming-response / incoming-response / incoming-body resource
 chain; post adds a flow-controlled outgoing-body write of the request
 body) and `wasi:io` (`input-stream.blocking-read` for the response body,
 `pollable.block` for the synchronous wait); the Ok(String) body is
-byte-identical to the Python `urlopen` oracle and the `capa:host` bridge,
-and `status >= 400` maps to Err to match the oracle's `HTTPError`. The
-ASYMMETRY with Fs / Env is the load-bearing honesty here: the static Net
+byte-identical to the Python `urlopen` oracle and the `capa:host` bridge.
+The status gate is FAIL-CLOSED on any non-2xx: only `200..=299` yields
+`Ok(body)`; ANY other status (3xx redirects, <200, 4xx, 5xx) is `Err`
+WITHOUT reading the body, and the guest does NOT follow redirects. This is
+a DELIBERATE, more-restrictive DIVERGENCE from the urllib oracle /
+`capa:host` (which FOLLOW redirects and surface only 4xx/5xx as errors):
+following a redirect implicitly would let an allowed host redirect to a
+host outside the Net ceiling + allow-list (an SSRF / host-authority
+bypass), so refusing 3xx preserves the host/capability guarantee
+(secure-by-default; CRA / NIS2 aligned). See `docs/design/wasi_mode.md`,
+"Redirects are fail-closed (anti-SSRF)".
+The ASYMMETRY with Fs / Env is the load-bearing honesty here: the static Net
 CEILING is the set of HOSTS the program names as a string LITERAL in
 `net.get` / `net.post` (the static `NetCeiling`,
 `capa/ir/_net_ceiling.py`), and it is enforced by a COMPILER-GENERATED

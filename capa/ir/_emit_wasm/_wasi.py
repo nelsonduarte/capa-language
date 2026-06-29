@@ -3451,10 +3451,17 @@ class _WasiEmissionMixin:
              disc @+16, own<resp> @+24). none -> not ready: resubscribe,
              block, drop pollable, retry. some + outer Err -> already
              consumed -> Err. some + inner Err -> transport error -> Err.
-          9. resp.status(); if status >= 400 -> drop resp, write Err,
-             return (PARITY with the urllib oracle, which raises HTTPError
-             on status >= 400). Else consume() -> result<own<ibody>> @S+64
-             (value @+4); stream() -> result<own<istream>> @S+72 (@+4).
+          9. resp.status(); FAIL-CLOSED if status is NOT in [200,299] ->
+             drop resp, write Err, return WITHOUT reading the body. This is
+             a DELIBERATE, more-restrictive DIVERGENCE from the urllib
+             oracle / capa:host (which FOLLOW redirects via urllib): the
+             guest does NOT follow 3xx redirects, treating any non-2xx
+             (3xx, <200, 4xx, 5xx) as Err, because an implicit redirect
+             from an allowed host to a non-allowed one would bypass the
+             Net host ceiling + fine allow-list (an SSRF / host-authority
+             bypass). See docs/design/wasi_mode.md. Else consume() ->
+             result<own<ibody>> @S+64 (value @+4); stream() ->
+             result<own<istream>> @S+72 (@+4).
          10. LOOP input-stream.blocking-read(CHUNK) ->
              result<list<u8>, stream-error> @S+80, accumulating chunk bytes
              into a geometrically-grown heap buffer (identical to Fs.read).
@@ -3651,13 +3658,27 @@ class _WasiEmissionMixin:
         self._write("local.set $resp")
         self._write("local.get $future")
         self._write("call $wasi_http_drop_future")
-        # status >= 400 -> Err (parity with urllib HTTPError).
+        # FAIL-CLOSED on any non-2xx status. Only 200-299 yields Ok(body);
+        # ANY other status (3xx redirects, <200, and 4xx/5xx as before)
+        # drops the response and returns Err WITHOUT reading the body. This
+        # DELIBERATELY diverges (in the more restrictive direction) from the
+        # urllib oracle / capa:host, which FOLLOW redirects via urllib: the
+        # guest does NOT follow redirects, because an implicit redirect from
+        # an allowed host to a non-allowed host would bypass the static Net
+        # ceiling + the fine host allow-list (an SSRF / host-authority bypass
+        # vector). Refusing 3xx preserves the host/capability guarantee
+        # (secure-by-default; CRA / NIS2 aligned). See
+        # docs/design/wasi_mode.md. status NOT in [200,299] -> Err.
         self._write("local.get $resp")
         self._write("call $wasi_http_response_status")
         self._write("local.set $status")
         self._write("local.get $status")
-        self._write("i32.const 400")
-        self._write("i32.ge_u")
+        self._write("i32.const 200")
+        self._write("i32.lt_u")
+        self._write("local.get $status")
+        self._write("i32.const 299")
+        self._write("i32.gt_u")
+        self._write("i32.or")
         self._write("if")
         self._indent += 1
         self._write("local.get $resp")
@@ -3837,7 +3858,9 @@ class _WasiEmissionMixin:
         REUSES the entire ``$Net_get`` chain (the host gate, the
         Fields -> OutgoingRequest -> set-* -> body -> finish -> handle ->
         future poll -> status -> consume -> stream -> input-stream read
-        loop, the triple-result lift, the status>=400 mapping, and the
+        loop, the triple-result lift, the fail-closed non-2xx mapping
+        (only 200-299 -> Ok; 3xx redirects are NOT followed, any non-2xx
+        -> Err; see ``$Net_get``), and the
         resource drops on every exit path) and changes only TWO things:
 
           1. set-method sends POST (the ``method`` variant discriminant 2)
@@ -4202,13 +4225,27 @@ class _WasiEmissionMixin:
         self._write("local.set $resp")
         self._write("local.get $future")
         self._write("call $wasi_http_drop_future")
-        # status >= 400 -> Err (parity with urllib HTTPError).
+        # FAIL-CLOSED on any non-2xx status. Only 200-299 yields Ok(body);
+        # ANY other status (3xx redirects, <200, and 4xx/5xx as before)
+        # drops the response and returns Err WITHOUT reading the body. This
+        # DELIBERATELY diverges (in the more restrictive direction) from the
+        # urllib oracle / capa:host, which FOLLOW redirects via urllib: the
+        # guest does NOT follow redirects, because an implicit redirect from
+        # an allowed host to a non-allowed host would bypass the static Net
+        # ceiling + the fine host allow-list (an SSRF / host-authority bypass
+        # vector). Refusing 3xx preserves the host/capability guarantee
+        # (secure-by-default; CRA / NIS2 aligned). See
+        # docs/design/wasi_mode.md. status NOT in [200,299] -> Err.
         self._write("local.get $resp")
         self._write("call $wasi_http_response_status")
         self._write("local.set $status")
         self._write("local.get $status")
-        self._write("i32.const 400")
-        self._write("i32.ge_u")
+        self._write("i32.const 200")
+        self._write("i32.lt_u")
+        self._write("local.get $status")
+        self._write("i32.const 299")
+        self._write("i32.gt_u")
+        self._write("i32.or")
         self._write("if")
         self._indent += 1
         self._write("local.get $resp")

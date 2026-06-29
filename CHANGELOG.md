@@ -68,6 +68,28 @@ breaking changes and the discipline is still being shaped.
   end-to-end suite; the default test matrix has no toolchain, so its
   WASI tests skip cleanly.
 
+**Security.**
+
+- *`Net.get` / `Net.post` are fail-closed on redirects (anti-SSRF) under
+  `--wasi`.* The guest no longer follows HTTP redirects: only a `2xx`
+  status (`200..=299`) yields `Ok(body)`; any other response, including
+  every `3xx` (`301` / `302` / `303` / `307` / `308`, and a bodyless
+  `304`), drops the response and returns `Err` without reading the body
+  or fetching the `Location`. Previously the guest's gate was
+  `status >= 400`, which would have surfaced a `3xx` as `Ok(body)`.
+  Following a redirect implicitly would let an allowed host redirect the
+  request to a host the program never named -- one outside both the
+  static `Net` ceiling and the fine `restrict_to` allow-list -- an
+  SSRF / host-authority bypass that would defeat Capa's capability /
+  explicit-host guarantee. This is a *deliberate, documented divergence*
+  (in the more-restrictive direction) from the `urllib` oracle and the
+  `capa:host` backend, which transparently follow redirects; it is
+  `--wasi`-only and keeps the host authority explicit and auditable
+  (secure-by-default, aligned with CRA and NIS2). A program that needs a
+  redirect must follow it explicitly, re-passing the new URL through the
+  host gates. See `docs/design/wasi_mode.md`,
+  "Redirects are fail-closed (anti-SSRF)".
+
 ## [1.13.0], 2026-06-26
 
 **Capa 1.13.0.** A MINOR release: a batch of standard-library additions
