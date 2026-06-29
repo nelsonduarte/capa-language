@@ -3530,7 +3530,7 @@ class TestWasiNetAttenuation(unittest.TestCase):
 class _LocalRedirectServer:
     """A 127.0.0.1 HTTP server that answers BOTH GET and POST with a 3xx
     redirect. With ``location`` set it sends that ``Location`` header (the
-    common 301 / 302 / 307 / 308 case); with ``location=None`` it sends a
+    common 301 / 302 / 303 / 307 / 308 case); with ``location=None`` it sends a
     bodyless 3xx WITHOUT a Location (e.g. a 304 Not Modified). It never
     serves a 2xx, so a client that FOLLOWS the redirect would loop or fail,
     and a fail-closed client (--wasi) returns Err on the first response.
@@ -3632,7 +3632,7 @@ def _run_net_wasi_only(src: str) -> str:
 class TestWasiNetRedirectFailClosed(unittest.TestCase):
     """Security decision (anti-SSRF, "option B"): in --wasi mode the guest
     does NOT follow HTTP redirects and fails closed on ANY non-2xx response.
-    A 3xx (301 / 302 / 307 / 308 with a Location, and a 304 without one) is
+    A 3xx (301 / 302 / 303 / 307 / 308 with a Location, and a 304 without one) is
     a coherent Err on the WASI backend for BOTH net.get and net.post -- the
     response is dropped without reading the body and no Location is fetched.
 
@@ -3648,6 +3648,7 @@ class TestWasiNetRedirectFailClosed(unittest.TestCase):
     _REDIRECTS = (
         (301, "http://evil.example/elsewhere"),
         (302, "http://evil.example/elsewhere"),
+        (303, "http://evil.example/elsewhere"),
         (307, "http://evil.example/elsewhere"),
         (308, "http://evil.example/elsewhere"),
         (304, None),
