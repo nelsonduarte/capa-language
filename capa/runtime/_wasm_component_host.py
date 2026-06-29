@@ -198,6 +198,13 @@ class WasmComponentHost:
                 try:
                     sys.stdout.flush()
                 except Exception:
+                    # Best-effort flush: the bytes are already written
+                    # above, so a failed flush (closed stream raising
+                    # ValueError, an I/O OSError, or a quirk of a caller-
+                    # installed sys.stdout replacement) must NOT abort the
+                    # capture or the guest's write. Kept broad on purpose:
+                    # sys.stdout may be an arbitrary test double / redirect
+                    # whose flush() can raise outside ValueError/OSError.
                     pass
                 return None
 
@@ -207,6 +214,13 @@ class WasmComponentHost:
                 try:
                     sys.stderr.flush()
                 except Exception:
+                    # Best-effort flush: the bytes are already written
+                    # above, so a failed flush (closed stream raising
+                    # ValueError, an I/O OSError, or a quirk of a caller-
+                    # installed sys.stderr replacement) must NOT abort the
+                    # capture or the guest's write. Kept broad on purpose:
+                    # sys.stderr may be an arbitrary test double / redirect
+                    # whose flush() can raise outside ValueError/OSError.
                     pass
                 return None
 
