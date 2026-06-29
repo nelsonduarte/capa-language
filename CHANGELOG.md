@@ -9,7 +9,15 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
-### Fixed
+## [1.14.0], 2026-06-29
+
+**Capa 1.14.0.** A MINOR release: an experimental, opt-in `--wasi` mode
+targeting WASI Preview 2 (with guest-side capability attenuation), plus
+two correctness fixes (a reachability/manifest recursion on recursive
+types through `List`/tuple, and an information-flow false-positive on
+method-call results).
+
+**Fixed.**
 
 - *Information-flow no longer reports a false-positive leak on a method
   result that does not derive from a secret field of the receiver.* The
@@ -46,12 +54,6 @@ breaking changes and the discipline is still being shaped.
   fix only adds termination: the fun-bearing / capability result for
   every type that already terminated is unchanged, and no existing
   manifest or SBOM changes.
-
-### Proposed: 1.14.0 (experimental WASI Preview 2 mode)
-
-> **PROPOSAL.** The version number (`1.14.0`) and this wording are a
-> proposal for the maintainer to confirm before the release is cut. The
-> feature is opt-in and experimental; nothing on the default path changes.
 
 **Added.**
 
