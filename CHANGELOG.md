@@ -11,6 +11,25 @@ breaking changes and the discipline is still being shaped.
 
 ### Fixed
 
+- *Information-flow no longer reports a false-positive leak on a method
+  result that does not derive from a secret field of the receiver.* The
+  label of a method-call result followed the WHOLE-VALUE taint of the
+  receiver: a call such as `llm.send(prompt)` whose return is built from
+  its argument / a fresh response was nonetheless marked `@secret` merely
+  because the receiver `llm` carried a `@secret` field (e.g. an API key),
+  warning on a sink that handled only the response. The result label now
+  follows the method's RETURN-EFFECT (which sources actually flow into
+  the returned value) instead: the receiver contributes only when `self`
+  is in the return-effect, an argument only when its parameter is, and an
+  internal / declared-`@secret` source still taints unconditionally. Both
+  the intra-procedural label pass and the cross-function summary were
+  changed together (and the by-name over-approximation over candidate
+  impls preserved), so secret-laundering through a method return stays
+  closed: a method that returns a secret field directly, in an aggregate,
+  via a local, via a destructure, via a struct literal, or via a nested
+  method is still rejected at a sink, and a built-in method on a `@secret`
+  receiver still keeps its result secret.
+
 - *Manifest / reachability no longer recurses infinitely on a recursive
   sum type whose self-reference passes through a `List`/tuple.* The
   reachability walker `_contains_fun_via_structs` propagated its

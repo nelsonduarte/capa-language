@@ -926,5 +926,267 @@ class TestStrictPcDoesNotLeakAcrossFunctions(unittest.TestCase):
         self.assertEqual(self._strict_errors(r), [])
 
 
+def _sink_leak_warnings(r):
+    """Intra-procedural / call-result sink warnings: a @secret value
+    reaching a public sink (Stdio.eprintln, ...). Distinct from the
+    cross-function boundary wording matched by ``_crossfn_warnings``."""
+    return [
+        w for w in r.warnings
+        if "public sink that sends data out" in w.message
+    ]
+
+
+class TestMethodResultFollowsReturnEffect(unittest.TestCase):
+    """The result of a method call carries the method's RETURN-EFFECT
+    (which sources flow into the returned value), NOT the whole-value
+    taint of the receiver.
+
+    Pins, side by side, both directions of the fix:
+
+    * the FALSE-POSITIVE shape (``clean_send``): a method whose return
+      derives only from its argument / a response, called on a receiver
+      that holds a @secret field, then sunk -- must NOT warn; and
+    * the LAUNDERING shape (``leak_via_field``): a method that returns a
+      value derived from a @secret field of the receiver, then sunk --
+      must still be rejected.
+
+    Both are exercised intra-procedurally (Path B, ``_compute_label``)
+    and through a free-function helper (Path A, the cross-function
+    summary), since the fix touches both paths symmetrically."""
+
+    def test_clean_send_result_not_tainted_intra(self):
+        # FALSE POSITIVE (Path B): send returns its argument; the
+        # receiver holds a @secret field but the result does not derive
+        # from it, so sinking the result must NOT warn.
+        r = _analyze(
+            "type Llm { api_key: @secret String }\n"
+            "impl Llm\n"
+            "    fun send(self, p: String) -> String\n"
+            "        return p\n"
+            "fun main(stdio: Stdio)\n"
+            "    let llm = Llm { api_key: \"k\" }\n"
+            "    let resp = llm.send(\"hi\")\n"
+            "    stdio.eprintln(resp)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_sink_leak_warnings(r), [],
+                         [w.message for w in r.warnings])
+
+    def test_clean_send_result_not_tainted_via_helper(self):
+        # FALSE POSITIVE (Path A): a free-function helper calls send and
+        # returns its result; sinking the helper result must NOT warn.
+        r = _analyze(
+            "type Llm { api_key: @secret String }\n"
+            "impl Llm\n"
+            "    fun send(self, p: String) -> String\n"
+            "        return p\n"
+            "fun helper(llm: Llm, p: String) -> String\n"
+            "    return llm.send(p)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let llm = Llm { api_key: \"k\" }\n"
+            "    let resp = helper(llm, \"hi\")\n"
+            "    stdio.eprintln(resp)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_sink_leak_warnings(r), [])
+        self.assertEqual(_crossfn_warnings(r), [])
+
+    def test_leak_via_field_result_tainted_intra(self):
+        # LAUNDERING (Path B): leak returns the @secret field directly;
+        # sinking the result MUST be rejected.
+        r = _analyze(
+            "type Llm { api_key: @secret String }\n"
+            "impl Llm\n"
+            "    fun leak(self) -> String\n"
+            "        return self.api_key\n"
+            "fun main(stdio: Stdio)\n"
+            "    let llm = Llm { api_key: \"k\" }\n"
+            "    stdio.eprintln(llm.leak())\n"
+        )
+        self.assertEqual(len(_sink_leak_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_leak_via_field_result_tainted_via_helper(self):
+        # LAUNDERING (Path A): a helper returns the secret-field-derived
+        # method result; sinking it MUST be rejected.
+        r = _analyze(
+            "type Llm { api_key: @secret String }\n"
+            "impl Llm\n"
+            "    fun leak(self) -> String\n"
+            "        return self.api_key\n"
+            "fun helper(llm: Llm) -> String\n"
+            "    return llm.leak()\n"
+            "fun main(stdio: Stdio)\n"
+            "    let llm = Llm { api_key: \"k\" }\n"
+            "    stdio.eprintln(helper(llm))\n"
+        )
+        self.assertEqual(len(_sink_leak_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_leak_via_aggregate_return_tainted(self):
+        # A return that wraps the secret field in an aggregate
+        # (``[self.api_key, p]``) still taints the result.
+        r = _analyze(
+            "type Llm { api_key: @secret String }\n"
+            "impl Llm\n"
+            "    fun leak(self, p: String) -> List<String>\n"
+            "        return [self.api_key, p]\n"
+            "fun main(stdio: Stdio)\n"
+            "    let llm = Llm { api_key: \"k\" }\n"
+            "    let xs = llm.leak(\"q\")\n"
+            "    stdio.eprintln(xs.get(0).unwrap_or(\"x\"))\n"
+        )
+        self.assertEqual(len(_sink_leak_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_leak_via_local_indirect_tainted(self):
+        # The secret field copied through a local before return.
+        r = _analyze(
+            "type Llm { api_key: @secret String }\n"
+            "impl Llm\n"
+            "    fun leak(self) -> String\n"
+            "        let k = self.api_key\n"
+            "        return k\n"
+            "fun main(stdio: Stdio)\n"
+            "    let llm = Llm { api_key: \"k\" }\n"
+            "    stdio.eprintln(llm.leak())\n"
+        )
+        self.assertEqual(len(_sink_leak_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_leak_via_destructure_tainted(self):
+        # The secret field reached by destructuring the receiver.
+        r = _analyze(
+            "type Llm { api_key: @secret String }\n"
+            "impl Llm\n"
+            "    fun leak(self) -> String\n"
+            "        let Llm { api_key } = self\n"
+            "        return api_key\n"
+            "fun main(stdio: Stdio)\n"
+            "    let llm = Llm { api_key: \"k\" }\n"
+            "    stdio.eprintln(llm.leak())\n"
+        )
+        self.assertEqual(len(_sink_leak_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_leak_via_struct_literal_field_tainted(self):
+        # The secret field embedded into a returned struct literal.
+        r = _analyze(
+            "type Llm { api_key: @secret String }\n"
+            "type Box { v: String }\n"
+            "impl Llm\n"
+            "    fun leak(self) -> Box\n"
+            "        return Box { v: self.api_key }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let llm = Llm { api_key: \"k\" }\n"
+            "    let b = llm.leak()\n"
+            "    stdio.eprintln(b.v)\n"
+        )
+        self.assertEqual(len(_sink_leak_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_whole_value_secret_receiver_nested_method_tainted(self):
+        # A receiver whose whole value is secret-bearing: ``outer``
+        # returns ``self.inner()`` which returns the @secret field. The
+        # result must be tainted (nested method, receiver carries a
+        # declared-@secret field).
+        r = _analyze(
+            "type Llm { api_key: @secret String }\n"
+            "impl Llm\n"
+            "    fun inner(self) -> String\n"
+            "        return self.api_key\n"
+            "    fun outer(self) -> String\n"
+            "        return self.inner()\n"
+            "fun main(stdio: Stdio)\n"
+            "    let llm = Llm { api_key: \"k\" }\n"
+            "    stdio.eprintln(llm.outer())\n"
+        )
+        self.assertEqual(len(_sink_leak_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_builtin_method_on_secret_receiver_still_tainted(self):
+        # Fallback path: a built-in method (no user summary) on a @secret
+        # value keeps the result @secret (the conservative whole-value
+        # join), so the return-effect rule never under-taints a real
+        # secret read.
+        r = _analyze(
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    let s = env.get(\"K\").unwrap_or(\"d\")\n"
+            "    stdio.eprintln(s.to_upper())\n"
+        )
+        self.assertEqual(len(_sink_leak_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_builtin_get_not_narrowed_by_same_named_user_method(self):
+        # SOUNDNESS corner: a user struct defines a method named ``get``
+        # whose return-effect excludes ``self``. A REAL ``List.get`` on a
+        # @secret list -- colliding only BY NAME -- must NOT be narrowed by
+        # that user method's effect; the conservative whole-value join
+        # keeps it @secret, so the leak is still flagged. (Both the
+        # intra-procedural read and, in the helper variant below, the
+        # cross-function summary.)
+        r = _analyze(
+            "type Wrap { v: String }\n"
+            "impl Wrap\n"
+            "    fun get(self, p: Int) -> String\n"
+            "        return p.to_string()\n"
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    let s = env.get(\"K\").unwrap_or(\"d\")\n"
+            "    let xs = [s]\n"
+            "    stdio.eprintln(xs.get(0).unwrap_or(\"x\"))\n"
+        )
+        self.assertEqual(len(_sink_leak_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_builtin_get_collision_via_helper_summary_still_tainted(self):
+        # Path A form of the collision: a helper reads a @secret List
+        # param via the built-in ``get`` and returns it; a same-named user
+        # ``Wrap.get`` must not narrow the summary's result label.
+        r = _analyze(
+            "type Wrap { v: String }\n"
+            "impl Wrap\n"
+            "    fun get(self, p: Int) -> String\n"
+            "        return self.v\n"
+            "fun helper(xs: List<String>) -> String\n"
+            "    return xs.get(0).unwrap_or(\"x\")\n"
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    let s = env.get(\"K\").unwrap_or(\"d\")\n"
+            "    let xs = [s]\n"
+            "    stdio.eprintln(helper(xs))\n"
+        )
+        self.assertTrue(
+            _sink_leak_warnings(r) or _crossfn_warnings(r),
+            [w.message for w in r.warnings],
+        )
+
+    def test_trait_dispatch_union_keeps_leak_tainted(self):
+        # A trait-typed (dynamic-dispatch) receiver keeps the by-name
+        # UNION over impl methods: one impl returns its argument (clean),
+        # another returns a @secret field (leak). The union must taint the
+        # result so the leak is still flagged -- soundness must not be
+        # narrowed to a single impl for a dynamic receiver.
+        r = _analyze(
+            "trait Sender\n"
+            "    fun send(self, p: String) -> String\n"
+            "type A { k: @secret String }\n"
+            "type B { name: String }\n"
+            "impl Sender for A\n"
+            "    fun send(self, p: String) -> String\n"
+            "        return self.k\n"
+            "impl Sender for B\n"
+            "    fun send(self, p: String) -> String\n"
+            "        return p\n"
+            "fun use(s: Sender, p: String) -> String\n"
+            "    return s.send(p)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let a = A { k: \"x\" }\n"
+            "    stdio.eprintln(use(a, \"hi\"))\n"
+        )
+        self.assertTrue(
+            _sink_leak_warnings(r) or _crossfn_warnings(r),
+            [w.message for w in r.warnings],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

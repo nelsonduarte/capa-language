@@ -168,6 +168,14 @@ class _SummaryBuilder:
         # to the impl's owner type), so a field read off it can be
         # resolved to the field's declared label precisely.
         self.param_struct_types: dict = {}
+        # callable_key -> {param name: declared type name} for EVERY typed
+        # parameter (``self`` -> the impl owner type), regardless of
+        # whether the type has labelled fields. Used to tell, at a method
+        # call, whether the receiver is a USER-defined type (so the
+        # return-effect narrowing is applied) or a built-in container /
+        # primitive (so the conservative whole-value join governs and a
+        # same-named user method cannot under-taint the result).
+        self.param_type_names: dict = {}
         # method name -> list of method callable_keys (for the
         # receiver-type-unknown over-approximation at method calls).
         self.methods_by_name: dict[str, list] = {}
@@ -215,6 +223,9 @@ class _SummaryBuilder:
                 self.param_struct_types[key] = self._param_struct_types(
                     item.params,
                 )
+                self.param_type_names[key] = self._param_type_names(
+                    item.params,
+                )
             elif isinstance(item, A.ImplBlock):
                 for method in item.methods:
                     key = ("method", item.type_name, method.name)
@@ -231,6 +242,9 @@ class _SummaryBuilder:
                         self._secret_source_params(method.params)
                     )
                     self.param_struct_types[key] = self._param_struct_types(
+                        method.params, owner=item.type_name,
+                    )
+                    self.param_type_names[key] = self._param_type_names(
                         method.params, owner=item.type_name,
                     )
                     self.methods_by_name.setdefault(
@@ -251,6 +265,23 @@ class _SummaryBuilder:
             else:
                 tyname = getattr(te, "name", None) if te is not None else None
             if tyname is not None and tyname in self.struct_field_labels:
+                out[p.name] = tyname
+        return out
+
+    def _param_type_names(self, params, owner: str = None) -> dict:
+        """``{param name: declared type name}`` for every parameter with
+        a named type (``self`` -> the impl ``owner``). Unlike
+        ``_param_struct_types`` this is NOT restricted to labelled-field
+        structs: it is the general signal used to tell a user-typed
+        receiver from a built-in one at a method call."""
+        out: dict = {}
+        for p in params:
+            te = getattr(p, "type_expr", None)
+            if p.name == "self" and te is None and owner is not None:
+                tyname = owner
+            else:
+                tyname = getattr(te, "name", None) if te is not None else None
+            if tyname is not None:
                 out[p.name] = tyname
         return out
 
@@ -352,6 +383,7 @@ class _SummaryBuilder:
             key, set(),
         )
         self._cur_param_struct_types = self.param_struct_types.get(key, {})
+        self._cur_param_type_names = self.param_type_names.get(key, {})
         self._cur_effects = effects
         self._cur_returns = returns
         self._walk_block(decl.body, env, reaching)
@@ -804,11 +836,106 @@ class _SummaryBuilder:
                 effects, full_perm, full_args, full_srcs, env,
             )
 
-        # Result joins receiver + argument taints (conservative).
-        out = set(recv_src)
+        # Result label follows the RETURN-EFFECT of the candidate
+        # methods, not the whole-value taint of the receiver: the result
+        # carries source ``s`` iff ``s`` is in some candidate's
+        # ``return_effects``, mapped back to this call's taint. So a
+        # method whose return derives only from its arguments / a response
+        # does NOT inherit the receiver's secret fields (kills the
+        # false positive), while a method that returns a secret-derived
+        # value (a real param echoed back, ``self``, or an internal
+        # secret) still taints the result (laundering stays closed).
+        #
+        # UNION BY-NAME over every candidate impl (the same
+        # over-approximation ``_method_call_returns_secret`` uses): a
+        # receiver whose concrete type is unknown / dynamically dispatched
+        # contributes the union of every matching method's effect, so the
+        # result is never under-tainted.
+        return self._return_taint_of_method_call(
+            e, candidate_keys, recv_src, arg_srcs,
+        )
+
+    def _return_taint_of_method_call(
+        self, e: A.MethodCall, candidate_keys: list,
+        recv_src: set, arg_srcs: list,
+    ) -> set:
+        """The taint the RESULT of ``recv.m(args)`` carries, derived from
+        the candidate methods' return-effects (full param order: index 0
+        is ``self``, explicit params follow). For each source ``s`` in a
+        candidate's return-effect: ``INTERNAL_SECRET`` -> the sentinel
+        (result tainted unconditionally); ``0`` -> the receiver taint;
+        a real param ``s`` -> the taint of the argument bound to ``s``.
+        Union over every candidate (by-name over-approximation).
+
+        The narrowing is applied ONLY when the receiver's declared type
+        is provably a USER method owner: a parameter whose type has an
+        EXACT impl-method key for this call, or a parameter typed as a
+        TRAIT (dynamic dispatch, where the by-name union is sound). When
+        the receiver is a built-in container / primitive (``list.get`` /
+        ``str.to_upper``), a non-parameter local, or its type cannot be
+        resolved here, fall back to the conservative whole-value join of
+        the receiver + argument taints -- the original, sound rule -- so a
+        same-named user method cannot under-taint a built-in receiver's
+        result and a read off a secret-derived receiver stays tainted."""
+        full_srcs = [recv_src] + arg_srcs
+        conservative: set = set(recv_src)
         for s in arg_srcs:
-            out |= s
+            conservative |= s
+        keys = self._result_candidate_keys(e, candidate_keys)
+        if not keys:
+            return conservative
+        out: set = set()
+        for key in keys:
+            sources = self.return_effects.get(key)
+            if not sources:
+                continue
+            names, _decl, _is_method = self.callables[key]
+            full_perm, _full_args = self._method_full_perm(e, names)
+            for s in sources:
+                if s == INTERNAL_SECRET:
+                    out.add(INTERNAL_SECRET)
+                    continue
+                full_arg_idx = full_perm.get(s)
+                if full_arg_idx is not None and full_arg_idx < len(full_srcs):
+                    out |= full_srcs[full_arg_idx]
         return out
+
+    def _result_candidate_keys(self, e: A.MethodCall, by_name: list) -> tuple:
+        """The method keys whose return-effect may NARROW the result label
+        of ``e``, or ``()`` to fall back to the conservative whole-value
+        join. Narrowing requires the receiver's declared type to be a
+        provable user method owner in the current body:
+
+        * a parameter whose declared type has an EXACT impl-method key for
+          this call (``("method", tyname, e.method)``) -> that key; or
+        * a parameter typed as a TRAIT (dynamic dispatch) -> the by-name
+          union over every impl method of this name.
+
+        Any other receiver (a built-in container modelled as a struct such
+        as ``List``, a non-parameter local, an unresolved chain) yields
+        ``()`` so the conservative join governs -- so a same-named user
+        method cannot under-taint a built-in receiver's result."""
+        if not isinstance(e.receiver, A.Ident):
+            return ()
+        tyname = self._cur_param_type_names.get(e.receiver.name)
+        if tyname is None:
+            return ()
+        exact_key = ("method", tyname, e.method)
+        if exact_key in self.return_effects:
+            return (exact_key,)
+        if self._is_trait_type(tyname):
+            return tuple(by_name)
+        return ()
+
+    def _is_trait_type(self, type_name: str) -> bool:
+        """True if ``type_name`` resolves to a TRAIT (dynamic dispatch),
+        the only concrete case where the by-name union over impl methods
+        is justified for the result label; a built-in container modelled
+        as a struct (``List``) is NOT a trait, so it falls back to the
+        conservative join."""
+        from . import SymbolKind
+        sym = self.global_scope.lookup(type_name)
+        return sym is not None and sym.kind == SymbolKind.TRAIT
 
     def _method_full_perm(self, e: A.MethodCall, names: list[str]):
         """Full-order ``{param_idx: full_arg_idx}`` map and the matching

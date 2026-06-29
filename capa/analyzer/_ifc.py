@@ -696,13 +696,19 @@ class _IfcMixin:
             cap_name = getattr(recv_ty, "name", None)
             if cap_name is not None and (cap_name, e.method) in _SECRET_SOURCES:
                 return L.SECRET
-            base = L.join(
-                self._label_of(e.receiver),
-                L.join_all(self._label_of(a) for a in e.args),
-            )
+            # The result label follows the method's RETURN-EFFECT (which
+            # sources flow into the returned value), NOT the whole-value
+            # taint of the receiver: a method whose return derives only
+            # from its arguments / a fresh response must NOT inherit the
+            # receiver's secret fields (that was the false positive). The
+            # receiver label contributes ONLY when ``self`` (param 0) is in
+            # the return-effect, and an argument's label ONLY for a param
+            # in the return-effect. The unconditional / declared-@secret
+            # cases stay covered by ``_method_call_returns_secret`` ->
+            # SECRET below, so laundering remains closed.
             if self._method_call_returns_secret(e, recv_ty):
                 return L.SECRET
-            return base
+            return self._method_call_return_label(e, recv_ty)
 
         # Aggregate literals carry the join of the labels of the values
         # they hold, so a secret placed in a struct field / list / tuple
@@ -1526,6 +1532,83 @@ class _IfcMixin:
             if sources and self._return_sources_fire(sources, perm, full_args):
                 return True
         return False
+
+    def _is_trait_type(self, type_name: str) -> bool:
+        """True if ``type_name`` resolves to a TRAIT (a dynamic-dispatch
+        receiver). Only a trait receiver justifies the by-name union over
+        every impl method of this name for the result label: a concrete
+        receiver type (including a built-in container modelled as a
+        struct, e.g. ``List``) must match an EXACT user-method key or it
+        falls back to the conservative whole-value join, so a same-named
+        user method cannot under-taint a built-in receiver's result."""
+        from . import SymbolKind
+        sym = self.global_scope.lookup(type_name)
+        return sym is not None and sym.kind == SymbolKind.TRAIT
+
+    def _method_call_return_label(self, e: A.MethodCall, recv_ty) -> str:
+        """The result label of a USER method call, following the method's
+        RETURN-EFFECT instead of the whole-value taint of the receiver.
+
+        For each candidate method (by-name over-approximation, the same
+        set ``_method_call_returns_secret`` consults) the result carries:
+        the RECEIVER's label when ``self`` (param index 0) is in the
+        return-effect, and an ARGUMENT's label when that argument's
+        parameter index is in the return-effect. The unconditional /
+        declared-@secret (``INTERNAL_SECRET``) case is handled by
+        ``_method_call_returns_secret`` -> SECRET at the call site, so it
+        is not re-tested here. UNION over every candidate.
+
+        When the call resolves to NO user-method candidate (a built-in /
+        stdlib method on a resolved type, or an unknown receiver), fall
+        back to the conservative whole-value join of the receiver and all
+        argument labels -- the original, sound rule -- so e.g. a read off
+        a @secret container is still @secret."""
+        from ._ifc_summary import methods_by_name
+        conservative = L.join(
+            self._label_of(e.receiver),
+            L.join_all(self._label_of(a) for a in e.args),
+        )
+        recv_name = getattr(recv_ty, "name", None)
+        keys: tuple = ()
+        if recv_name is not None:
+            exact_key = ("method", recv_name, e.method)
+            if exact_key in self._ifc_return_effects:
+                # Resolved to a concrete user method: use its effect.
+                keys = (exact_key,)
+            elif self._is_trait_type(recv_name):
+                # A trait-typed (dynamic-dispatch) receiver: by-name union
+                # over every impl method of this name, the sound
+                # over-approximation. A concrete type WITHOUT an exact key
+                # (a built-in container / a struct with no such impl
+                # method) falls through to the conservative join below.
+                keys = tuple(
+                    methods_by_name(self._ifc_return_effects).get(
+                        e.method, (),
+                    )
+                )
+        # When the receiver is a BUILT-IN / non-user type (List, Map, Set,
+        # String, a capability, ...), a same-named user method must NOT
+        # narrow its result: the conservative whole-value join governs, so
+        # a read off a @secret built-in receiver stays @secret. Narrowing
+        # is applied only for a genuine user-method dispatch.
+        if not keys:
+            return conservative
+        # Full-order arg labels: index 0 is the receiver, explicit args
+        # follow (positional; the same approximation the return-secret
+        # check uses). ``self`` (param 0) -> receiver, param i+1 -> arg i.
+        full_labels = [self._label_of(e.receiver)] + [
+            self._label_of(a) for a in e.args
+        ]
+        label = L.PUBLIC
+        for key in keys:
+            sources = self._ifc_return_effects.get(key)
+            if not sources:
+                continue
+            for s in sources:
+                # INTERNAL_SECRET is already handled (-> SECRET) above.
+                if 0 <= s < len(full_labels):
+                    label = L.join(label, full_labels[s])
+        return label
 
     def _return_sources_fire(self, sources, perm, args) -> bool:
         """True if any return-secret source fires: the unconditional
