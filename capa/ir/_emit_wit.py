@@ -514,6 +514,17 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     ("Env", "allows"),
 })
 
+# Stdio methods routed to wasi:cli/stdout|stderr in --wasi (Phase 1,
+# 2026-06-29). UNLIKE the documentation-only ``_WASI_MIGRATED_METHODS``
+# above, this set IS consulted by ``_emit_wit_wasi``: a Stdio interface
+# is emitted on capa:host ONLY for methods outside this set (read_line,
+# still on capa:host), and these methods are filtered out of the
+# interface body. Keep in lockstep with
+# ``capa.ir._emit_wasm._wasi._WASI_STDIO_MIGRATED``.
+_WASI_STDIO_MIGRATED_METHODS: frozenset[str] = frozenset(
+    {"print", "println", "eprintln"}
+)
+
 
 def emit_wit(
     module: Module,
@@ -684,6 +695,17 @@ def _emit_wit_wasi(
         # net interface (mirroring Random / Clock / Env / Fs).
         if cap == "Net":
             continue
+        # Stdio output migration (Phase 1, 2026-06-29): print / println /
+        # eprintln route to wasi:cli/stdout|stderr (the world imports
+        # added below). read_line is NOT migrated (it stays on
+        # capa:host/stdio), so the capa:host stdio interface is emitted
+        # ONLY when read_line is reached -- a print-only program carries
+        # no capa:host stdio interface at all (100 % stock WASI for its
+        # output). The migrated methods are filtered out of the
+        # interface's method list (the loop below skips them).
+        stdio_migrated = _WASI_STDIO_MIGRATED_METHODS
+        if cap == "Stdio" and not (used[cap] - stdio_migrated):
+            continue
         lines.append(f"interface {cap.lower()} {{")
         gated = _METHODS_NEEDING_IO_ERROR.get(cap)
         emit_prelude = cap in _INTERFACE_TYPE_PRELUDE and (
@@ -696,6 +718,9 @@ def _emit_wit_wasi(
         guest_only = _GUEST_ONLY_METHODS.get(cap, frozenset())
         for method in sorted(used[cap]):
             if method in guest_only:
+                continue
+            if cap == "Stdio" and method in stdio_migrated:
+                # Migrated to wasi:cli/stdout|stderr; no capa:host method.
                 continue
             key = (cap, method)
             if key not in _WIT_SIGNATURES:
@@ -765,8 +790,35 @@ def _emit_wit_wasi(
         lines.append("  import wasi:io/streams@0.2.0;")
         lines.append("  import wasi:io/poll@0.2.0;")
         lines.append("  import wasi:io/error@0.2.0;")
+    # Stdio output (Phase 1, 2026-06-29): print / println route to
+    # wasi:cli/stdout (get-stdout), eprintln to wasi:cli/stderr
+    # (get-stderr); all three write through wasi:io/streams
+    # (output-stream.blocking-write-and-flush). Import stdout when
+    # print or println is used, stderr when eprintln is used, and
+    # wasi:io/streams whenever any of the three is (the trailing de-dup
+    # pass below removes a wasi:io/streams already imported by Fs / Net).
+    if "Stdio" in used:
+        stdio_methods = used["Stdio"]
+        if "print" in stdio_methods or "println" in stdio_methods:
+            lines.append("  import wasi:cli/stdout@0.2.0;")
+        if "eprintln" in stdio_methods:
+            lines.append("  import wasi:cli/stderr@0.2.0;")
+        if stdio_methods & _WASI_STDIO_MIGRATED_METHODS:
+            lines.append("  import wasi:io/streams@0.2.0;")
+            # The chunked write helper drops the ``error`` resource a
+            # last-operation-failed stream-error carries; wasi:io/error
+            # provides its resource-drop. The de-dup pass below prunes a
+            # duplicate already imported by an Fs / Net stream op.
+            lines.append("  import wasi:io/error@0.2.0;")
     # capa:host imports for the non-migrated caps (hybrid coexistence).
+    # Stdio is special-cased: its capa:host interface is imported ONLY
+    # when read_line is reached (print / println / eprintln are migrated
+    # to wasi:cli above). A print-only program imports no capa:host stdio.
     for cap in sorted(used.keys()):
+        if cap == "Stdio":
+            if used["Stdio"] - _WASI_STDIO_MIGRATED_METHODS:
+                lines.append("  import stdio;")
+            continue
         if cap in _KNOWN_CAPABILITIES and cap not in (
             "Random", "Clock", "Env", "Fs", "Net",
         ):

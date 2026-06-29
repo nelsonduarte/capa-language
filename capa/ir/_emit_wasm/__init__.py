@@ -597,6 +597,23 @@ class WasmEmitter(
                     # backing data segment.
                     self._intern_string("failed to list directory")
 
+        # Experimental WASI mode: Stdio output (Phase 1, 2026-06-29).
+        # ``println`` / ``eprintln`` append a trailing ``"\n"`` byte by
+        # writing the interned newline string as a second chunk through
+        # the same output-stream. Pre-intern it HERE, before the data
+        # segment is emitted below, for the same write-only-parity reason
+        # as the Fs / Net strings: a string interned later (at
+        # wrapper-emission time) gets a valid offset but no backing
+        # ``(data ...)`` block, so its byte would be undefined memory at
+        # runtime (the symptom that surfaced as a stray NUL printed in
+        # place of the newline). ``print`` writes no newline, so it does
+        # not pull the string in.
+        if self._wasi and any(
+            cap == "Stdio" and method in ("println", "eprintln")
+            for (cap, method) in self._used_caps
+        ):
+            self._intern_string("\n")
+
         # Experimental WASI mode: compute the static Net host ceiling so
         # the Net.get guest-side host gate (``$Net_host_allowed``) can
         # refuse any host the program does not name as a literal url
@@ -902,6 +919,32 @@ class WasmEmitter(
             )
             self._string_data_offset = (
                 self._wasi_net_scratch_offset + 192
+            )
+
+        # Experimental WASI mode: Stdio output (Phase 1, 2026-06-29). A
+        # 16-byte, 8-aligned scratch holding the single indirect return of
+        # output-stream.blocking-write-and-flush:
+        #   blocking-write-and-flush  result<_, stream-error>  @ +0  (12B)
+        # Each chunk write reuses this one slot (the writes are
+        # sequential, never overlapping). The text bytes are NOT here:
+        # they already live in linear memory (the String ``msg`` argument,
+        # or the interned "\n" for println / eprintln) and are handed to
+        # blocking-write-and-flush as ``(ptr, len)`` chunks straight
+        # through, no copy. This region is SEPARATE from every Fs / Env /
+        # Clock / Net scratch (disjoint offsets are belt-and-braces).
+        # Placed in the static data region like the other WASI scratch
+        # slots so the wrappers never depend on ``$alloc`` (a Stdio-only
+        # program touches no heap otherwise). 0 means "not reserved".
+        self._wasi_stdio_scratch_offset = 0
+        if self._wasi and any(
+            cap == "Stdio" and method in ("print", "println", "eprintln")
+            for (cap, method) in self._used_caps
+        ):
+            self._wasi_stdio_scratch_offset = _align_up(
+                self._string_data_offset, 8,
+            )
+            self._string_data_offset = (
+                self._wasi_stdio_scratch_offset + 16
             )
 
         # Stage 1: emit the (module ... ) header with imports and

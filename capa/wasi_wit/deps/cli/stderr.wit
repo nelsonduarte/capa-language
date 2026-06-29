@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Provenance: vendored from WebAssembly/wasi-cli, tag v0.2.0 (wit/stdio.wit).
+//
+// Vendored subset of the canonical WASI Preview 2 cli stderr
+// interface.
+//
+// Source: WebAssembly/wasi-cli, tag v0.2.0
+//   https://github.com/WebAssembly/wasi-cli/blob/v0.2.0/wit/stdio.wit
+//
+// Trimmed to the get-stderr() reader Capa's experimental --wasi mode
+// imports (Stdio.eprintln -> get-stderr ->
+// output-stream.blocking-write-and-flush loop). Split out of the
+// upstream stdio.wit (which declares stdin / stdout / stderr together)
+// into one file per interface so each is independently greppable; see
+// stdout.wit for the shared rationale. Same wasi:cli@0.2.0 package as
+// environment.wit / stdout.wit; wasm-tools merges the package's .wit
+// files when resolving deps/cli/.
+//
+// Canonical-ABI / unit conventions matching the host wasmtime
+// add_wasip2() provides:
+//   get-stderr -> output-stream : an OWNED output-stream handle the
+//     guest writes the program's standard error to (Stdio.eprintln),
+//     captured separately from stdout so the two streams stay distinct
+//     (the --wasi host installs a WasiConfig stderr_custom callback;
+//     see capa.runtime._wasm_component_host).
+//
+// The ``package wasi:cli@0.2.0;`` declaration lives ONLY in
+// environment.wit (the first cli file): wasm-tools merges every .wit
+// file in deps/cli/ into one package and rejects doc comments attached
+// to more than one ``package`` item, so this file omits the package
+// line and contributes only its interface to the shared package.
+
+interface stderr {
+  use wasi:io/streams@0.2.0.{output-stream};
+
+  get-stderr: func() -> output-stream;
+}

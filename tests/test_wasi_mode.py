@@ -77,6 +77,57 @@ def _build_wasi_component(src: str) -> bytes:
     return _wrap_as_component(core, wit, wasi=True)
 
 
+def _wasi_run_capture(host, comp) -> str:
+    """Run a built WASI component on ``host`` and return its STDOUT as a
+    str, read from ``host.captured_stdout()``.
+
+    Stdio Phase 1 (2026-06-29) centralisation: in --wasi the guest writes
+    print / println to wasi:cli/stdout (output-stream.blocking-write-and-
+    flush), captured by the host's WasiConfig stdout_custom callback --
+    NOT through ``sys.stdout``. Reading ``captured_stdout()`` is the
+    canonical capture point (the bytes are exactly what the guest wrote);
+    every WASI-mode test run funnels through here so the capture lives in
+    one place. The bytes are decoded as UTF-8 with surrogatepass (Capa
+    strings are WTF-8) so a valid string round-trips byte-for-byte.
+
+    The default (capa:host) and Python oracle runs keep their own
+    ``sys.stdout`` redirect: their Stdio output genuinely flows through
+    ``sys.stdout``, so they do not use this helper.
+
+    sys.stdout / sys.stderr are redirected to throwaway buffers for the
+    duration of the run only to SUPPRESS the host's live echo (the host
+    echoes captured bytes onward to the live streams for the CLI's
+    benefit and to preserve panic ordering); the test reads the captured
+    buffer, not the echo, so the redirect just keeps the test console
+    quiet without affecting what is asserted."""
+    so, se = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+    try:
+        host.run_main(comp)
+    finally:
+        sys.stdout, sys.stderr = so, se
+    return host.captured_stdout().decode("utf-8", errors="surrogatepass")
+
+
+def _wasi_run_capture_stderr(host, comp) -> tuple[str, str]:
+    """Like ``_wasi_run_capture`` but returns ``(stdout, stderr)``, both
+    read from the host's captured buffers. Used by the Stdio parity
+    tests that assert eprintln lands on a stream distinct from stdout.
+    Suppresses the live echo the same way ``_wasi_run_capture`` does
+    (throwaway redirect), reading the assertions from the captured
+    buffers."""
+    so, se = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+    try:
+        host.run_main(comp)
+    finally:
+        sys.stdout, sys.stderr = so, se
+    return (
+        host.captured_stdout().decode("utf-8", errors="surrogatepass"),
+        host.captured_stderr().decode("utf-8", errors="surrogatepass"),
+    )
+
+
 def _run_wasi_component(src: str, args: tuple = ()) -> str:
     """Build + run a program in WASI mode; capture stdout.
 
@@ -85,14 +136,9 @@ def _run_wasi_component(src: str, args: tuple = ()) -> str:
     argv this host sets, not the ``capa:host/env`` bridge)."""
     from capa.runtime._wasm_component_host import WasmComponentHost
     comp = _build_wasi_component(src)
-    buf = io.StringIO()
-    saved = sys.stdout
-    sys.stdout = buf
-    try:
-        WasmComponentHost(args=args, wasi=True).run_main(comp)
-    finally:
-        sys.stdout = saved
-    return buf.getvalue()
+    return _wasi_run_capture(
+        WasmComponentHost(args=args, wasi=True), comp,
+    )
 
 
 def _run_wasi_component_with_ceiling(src: str, args: tuple = ()):
@@ -115,14 +161,7 @@ def _run_wasi_component_with_ceiling(src: str, args: tuple = ()):
     comp = _wrap_as_component(core, wit, wasi=True)
     ceiling = compute_env_ceiling(module, types=result.types)
     host = WasmComponentHost(args=args, wasi=True, env_ceiling=ceiling)
-    buf = io.StringIO()
-    saved = sys.stdout
-    sys.stdout = buf
-    try:
-        host.run_main(comp)
-    finally:
-        sys.stdout = saved
-    return buf.getvalue(), host._wasi_env_applied
+    return _wasi_run_capture(host, comp), host._wasi_env_applied
 
 
 def _run_capa_host_component(src: str, args: tuple = ()) -> str:
@@ -320,11 +359,19 @@ class TestWasiWitGeneration(unittest.TestCase):
         self.assertIn("import wasi:clocks/monotonic-clock@0.2.0;", wit)
         self.assertIn("import wasi:clocks/wall-clock@0.2.0;", wit)
 
-    def test_stdio_stays_capa_host(self):
-        # Hybrid: Stdio keeps its capa:host interface + world import.
+    def test_stdio_output_migrates_to_wasi_cli(self):
+        # Stdio Phase 1 (2026-06-29): print / println / eprintln migrate
+        # to wasi:cli/stdout|stderr. _HYBRID_SRC uses println only, so the
+        # world imports wasi:cli/stdout (+ wasi:io/streams) and carries NO
+        # capa:host stdio interface (read_line, the only still-capa:host
+        # Stdio method, is absent here).
         wit = self._wit(_HYBRID_SRC)
-        self.assertIn("interface stdio {", wit)
-        self.assertIn("  import stdio;", wit)
+        self.assertIn("import wasi:cli/stdout@0.2.0;", wit)
+        self.assertIn("import wasi:io/streams@0.2.0;", wit)
+        self.assertNotIn("interface stdio {", wit)
+        self.assertNotIn("  import stdio;", wit)
+        # println writes to stdout, not stderr, so no get-stderr import.
+        self.assertNotIn("import wasi:cli/stderr@0.2.0;", wit)
 
     def test_no_capa_host_random_or_clock_interface(self):
         # The migrated caps must NOT also emit a capa:host interface
@@ -372,8 +419,11 @@ class TestWasiWitGeneration(unittest.TestCase):
         self.assertIn("import wasi:cli/environment@0.2.0;", wit)
         self.assertIn("import wasi:random/random@0.2.0;", wit)
         self.assertIn("import wasi:clocks/wall-clock@0.2.0;", wit)
-        # Stdio is the only capa:host interface left.
-        self.assertIn("interface stdio {", wit)
+        # Stdio Phase 1: println now routes to wasi:cli/stdout too, so the
+        # program imports NO capa:host interface at all (Random / Clock /
+        # Env / Stdio output are all on wasi:*); it is 100 % stock WASI.
+        self.assertIn("import wasi:cli/stdout@0.2.0;", wit)
+        self.assertNotIn("interface stdio {", wit)
 
 
 class TestWasiEmitterRejections(unittest.TestCase):
@@ -1087,9 +1137,13 @@ class TestWasiFsWitGeneration(unittest.TestCase):
         module, result = _parse_analyze(src)
         return compile_wit(module, types=result.types, wasi=True)
 
+    # Fs metadata only, NO Stdio: keeps the "metadata does not pull in
+    # io streams" assertion clean now that Stdio output (Phase 1) imports
+    # wasi:io/streams itself. The exists result is bound (not printed) so
+    # the program needs no Stdio capability at all.
     _FS_SRC = (
-        "fun main(fs: Fs, stdio: Stdio)\n"
-        "    stdio.println(\"${fs.exists(\\\"/d/f\\\")}\")\n"
+        "fun main(fs: Fs)\n"
+        "    let e = fs.exists(\"/d/f\")\n"
         "    let r = fs.mkdir(\"/d/sub\")\n"
     )
 
@@ -1097,7 +1151,10 @@ class TestWasiFsWitGeneration(unittest.TestCase):
         wit = self._wit(self._FS_SRC)
         self.assertIn("import wasi:filesystem/types@0.2.0;", wit)
         self.assertIn("import wasi:filesystem/preopens@0.2.0;", wit)
-        # Metadata-only program does NOT pull in the io stream imports.
+        # Metadata-only program (no Stdio output) does NOT pull in the io
+        # stream imports. With Stdio Phase 1, print / println / eprintln
+        # would import wasi:io/streams themselves, so this src omits Stdio
+        # to keep the assertion testing the Fs metadata path in isolation.
         self.assertNotIn("import wasi:io/streams@0.2.0;", wit)
         self.assertNotIn("import wasi:io/error@0.2.0;", wit)
 
@@ -1189,12 +1246,16 @@ class TestWasiFsRejections(unittest.TestCase):
         # ($str_cmp), the directory-entry-stream drop, and the shared
         # descriptor drop -- with no capa:host/fs import and no
         # wasi:io/streams (list_dir uses no streams).
+        # No Stdio: Stdio output (Phase 1) imports wasi:io/streams itself,
+        # so this src binds the list_dir result without printing to keep
+        # the "list_dir uses no streams" assertion below isolated to the
+        # Fs path. The match arms bind the payload (consumed, not printed).
         src = (
-            "fun main(fs: Fs, stdio: Stdio)\n"
+            "fun main(fs: Fs)\n"
             "    let r = fs.list_dir(\"/d\")\n"
             "    match r\n"
-            "        Ok(xs) -> stdio.println(\"ok\")\n"
-            "        Err(e) -> stdio.println(\"err\")\n"
+            "        Ok(xs) -> xs.length()\n"
+            "        Err(e) -> 0\n"
         )
         wat = self._compile(src)
         self.assertIn("(func $Fs_list_dir", wat)
@@ -1394,15 +1455,15 @@ def _run_fs_program_three_ways(src: str):
     host = _cap(
         lambda: WasmComponentHost(wasi=False).run_main(comp_h)
     )
-    # WASI component (with the Fs preopen ceiling)
+    # WASI component (with the Fs preopen ceiling). Stdio output goes to
+    # wasi:cli/stdout now, so read it from the host's captured buffer
+    # (the centralised capture point) rather than sys.stdout.
     core_w = compile_wasm(module, types=result.types, wasi=True)
     wit_w = compile_wit(module, types=result.types, wasi=True)
     comp_w = _wrap_as_component(core_w, wit_w, wasi=True)
     ceiling = compute_fs_ceiling(module, types=result.types)
-    wasi = _cap(
-        lambda: WasmComponentHost(
-            wasi=True, fs_ceiling=ceiling,
-        ).run_main(comp_w)
+    wasi = _wasi_run_capture(
+        WasmComponentHost(wasi=True, fs_ceiling=ceiling), comp_w,
     )
     return py, host, wasi
 
@@ -1833,10 +1894,8 @@ class TestWasiFsWrite(unittest.TestCase):
             wit = compile_wit(module, types=result.types, wasi=True)
             comp = _wrap_as_component(core, wit, wasi=True)
             ceiling = compute_fs_ceiling(module, types=result.types)
-            return _cap(
-                lambda: WasmComponentHost(
-                    wasi=True, fs_ceiling=ceiling,
-                ).run_main(comp)
+            return _wasi_run_capture(
+                WasmComponentHost(wasi=True, fs_ceiling=ceiling), comp,
             )
 
         return [("py", py), ("host", host), ("wasi", wasi)]
@@ -1928,16 +1987,9 @@ class TestWasiFsWrite(unittest.TestCase):
             closed=True,
             preopens=(FsPreopen(host_path=self._data, read_write=False),),
         )
-        buf = io.StringIO()
-        saved = sys.stdout
-        sys.stdout = buf
-        try:
-            WasmComponentHost(
-                wasi=True, fs_ceiling=ro_ceiling,
-            ).run_main(comp)
-        finally:
-            sys.stdout = saved
-        out = buf.getvalue()
+        out = _wasi_run_capture(
+            WasmComponentHost(wasi=True, fs_ceiling=ro_ceiling), comp,
+        )
         self.assertIn("W=err", out)
         self.assertFalse(
             os.path.exists(os.path.join(self._data, "ro.txt")),
@@ -2026,10 +2078,8 @@ class TestWasiFsWriteOnly(unittest.TestCase):
             wit = compile_wit(module, types=result.types, wasi=True)
             comp = _wrap_as_component(core, wit, wasi=True)
             ceiling = compute_fs_ceiling(module, types=result.types)
-            return _cap(
-                lambda: WasmComponentHost(
-                    wasi=True, fs_ceiling=ceiling,
-                ).run_main(comp)
+            return _wasi_run_capture(
+                WasmComponentHost(wasi=True, fs_ceiling=ceiling), comp,
             )
 
         return [("py", py), ("host", host), ("wasi", wasi)]
@@ -2140,16 +2190,9 @@ class TestWasiFsWriteOnly(unittest.TestCase):
             closed=True,
             preopens=(FsPreopen(host_path=self._data, read_write=False),),
         )
-        buf = io.StringIO()
-        saved = sys.stdout
-        sys.stdout = buf
-        try:
-            WasmComponentHost(
-                wasi=True, fs_ceiling=ro_ceiling,
-            ).run_main(comp)
-        finally:
-            sys.stdout = saved
-        out = buf.getvalue()
+        out = _wasi_run_capture(
+            WasmComponentHost(wasi=True, fs_ceiling=ro_ceiling), comp,
+        )
         self.assertEqual(out, "W=err\n")
         self.assertFalse(
             os.path.exists(os.path.join(self._data, "ro.txt")),
@@ -2312,14 +2355,9 @@ def _run_wasi_fs(src: str, data_dir: str) -> str:
     comp = _build_wasi_component(src)
     module, result = _parse_analyze(src)
     ceiling = compute_fs_ceiling(module, types=result.types)
-    buf = io.StringIO()
-    saved = sys.stdout
-    sys.stdout = buf
-    try:
-        WasmComponentHost(wasi=True, fs_ceiling=ceiling).run_main(comp)
-    finally:
-        sys.stdout = saved
-    return buf.getvalue()
+    return _wasi_run_capture(
+        WasmComponentHost(wasi=True, fs_ceiling=ceiling), comp,
+    )
 
 
 @unittest.skipUnless(
@@ -2655,10 +2693,10 @@ def _run_net_program_three_ways(src: str):
     wit_w = compile_wit(module, types=result.types, wasi=True)
     comp_w = _wrap_as_component(core_w, wit_w, wasi=True)
     ceiling = compute_net_ceiling(module, types=result.types)
-    wasi = _cap(
-        lambda: WasmComponentHost(
-            wasi=True, net_ceiling=ceiling,
-        ).run_main(comp_w)
+    # Stdio output goes to wasi:cli/stdout; read it from the host's
+    # captured buffer (the centralised capture point), not sys.stdout.
+    wasi = _wasi_run_capture(
+        WasmComponentHost(wasi=True, net_ceiling=ceiling), comp_w,
     )
     return py, host, wasi
 
@@ -2762,13 +2800,7 @@ class TestWasiNetGet(unittest.TestCase):
             comp = _wrap_as_component(core, wit, wasi=True)
             ceiling = compute_net_ceiling(module, types=result.types)
             host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
-            buf = io.StringIO()
-            saved = sys.stdout
-            sys.stdout = buf
-            try:
-                host.run_main(comp)
-            finally:
-                sys.stdout = saved
+            _wasi_run_capture(host, comp)
         self.assertTrue(host._wasi_http_linked)
 
     def test_no_net_program_does_not_link_wasi_http(self):
@@ -2807,14 +2839,7 @@ class TestWasiNetGet(unittest.TestCase):
             comp = _wrap_as_component(core, wit, wasi=True)
             ceiling = compute_net_ceiling(module, types=result.types)
             host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
-            buf = io.StringIO()
-            saved = sys.stdout
-            sys.stdout = buf
-            try:
-                host.run_main(comp)
-            finally:
-                sys.stdout = saved
-            out = buf.getvalue()
+            out = _wasi_run_capture(host, comp)
         # No ERR (every GET succeeded) and the program reached the end.
         self.assertNotIn("ERR", out)
         self.assertEqual(out, "done\n")
@@ -2858,14 +2883,7 @@ class TestWasiNetCeiling(unittest.TestCase):
             wit = compile_wit(module, types=result.types, wasi=True)
             comp = _wrap_as_component(core, wit, wasi=True)
             host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
-            buf = io.StringIO()
-            saved = sys.stdout
-            sys.stdout = buf
-            try:
-                host.run_main(comp)
-            finally:
-                sys.stdout = saved
-            out = buf.getvalue()
+            out = _wasi_run_capture(host, comp)
         self.assertEqual(out, "ERR\n")
 
     def test_ceiling_collects_literal_hosts(self):
@@ -3114,14 +3132,7 @@ class TestWasiNetPost(unittest.TestCase):
             comp = _wrap_as_component(core, wit, wasi=True)
             ceiling = compute_net_ceiling(module, types=result.types)
             host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
-            buf = io.StringIO()
-            saved = sys.stdout
-            sys.stdout = buf
-            try:
-                host.run_main(comp)
-            finally:
-                sys.stdout = saved
-            out = buf.getvalue()
+            out = _wasi_run_capture(host, comp)
         self.assertNotIn("ERR", out)
         self.assertEqual(out, "done\n")
 
@@ -3156,14 +3167,7 @@ class TestWasiNetPostCeiling(unittest.TestCase):
             wit = compile_wit(module, types=result.types, wasi=True)
             comp = _wrap_as_component(core, wit, wasi=True)
             host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
-            buf = io.StringIO()
-            saved = sys.stdout
-            sys.stdout = buf
-            try:
-                host.run_main(comp)
-            finally:
-                sys.stdout = saved
-            out = buf.getvalue()
+            out = _wasi_run_capture(host, comp)
         self.assertEqual(out, "ERR\n")
 
     def test_post_ceiling_collects_literal_hosts(self):
@@ -3615,14 +3619,9 @@ def _run_net_wasi_only(src: str) -> str:
     wit = compile_wit(module, types=result.types, wasi=True)
     comp = _wrap_as_component(core, wit, wasi=True)
     ceiling = compute_net_ceiling(module, types=result.types)
-    buf = io.StringIO()
-    saved = sys.stdout
-    sys.stdout = buf
-    try:
-        WasmComponentHost(wasi=True, net_ceiling=ceiling).run_main(comp)
-    finally:
-        sys.stdout = saved
-    return buf.getvalue()
+    return _wasi_run_capture(
+        WasmComponentHost(wasi=True, net_ceiling=ceiling), comp,
+    )
 
 
 @unittest.skipUnless(
@@ -3673,6 +3672,212 @@ class TestWasiNetRedirectFailClosed(unittest.TestCase):
                     out, "ERR\n",
                     f"POST {status} should fail closed (no redirect follow)",
                 )
+
+
+def _run_python_out_err(src: str) -> tuple[str, str]:
+    """Python oracle run capturing BOTH stdout and stderr (the eprintln
+    parity check needs the two streams distinct)."""
+    from capa import transpile
+    module, result = _parse_analyze(src)
+    code = transpile(module, types=result.types, bindings=result.bindings)
+    out, err = io.StringIO(), io.StringIO()
+    so, se = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+    try:
+        ns: dict = {"__name__": "__main__"}
+        exec(compile(code, "<wasi-stdio-parity>", "exec"), ns)
+    finally:
+        sys.stdout, sys.stderr = so, se
+    return out.getvalue(), err.getvalue()
+
+
+def _run_capa_host_out_err(src: str) -> tuple[str, str]:
+    """capa:host component run capturing BOTH stdout and stderr."""
+    from capa.ir import compile_wasm, compile_wit
+    from capa.cli import _wrap_as_component
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    module, result = _parse_analyze(src)
+    core = compile_wasm(module, types=result.types, wasi=False)
+    wit = compile_wit(module, types=result.types, wasi=False)
+    comp = _wrap_as_component(core, wit, wasi=False)
+    out, err = io.StringIO(), io.StringIO()
+    so, se = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+    try:
+        WasmComponentHost(wasi=False).run_main(comp)
+    finally:
+        sys.stdout, sys.stderr = so, se
+    return out.getvalue(), err.getvalue()
+
+
+def _run_wasi_out_err(src: str) -> tuple[str, str]:
+    """WASI component run capturing BOTH stdout and stderr from the host's
+    captured buffers (wasi:cli/stdout + wasi:cli/stderr)."""
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    comp = _build_wasi_component(src)
+    return _wasi_run_capture_stderr(WasmComponentHost(wasi=True), comp)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiStdioParity(unittest.TestCase):
+    """Stdio Phase 1 (2026-06-29): print / println / eprintln route to
+    wasi:cli/stdout (print / println) and wasi:cli/stderr (eprintln) over
+    wasi:io/streams (output-stream.blocking-write-and-flush in <= 4096-byte
+    chunks). The captured output is BYTE-IDENTICAL across the three
+    backends (Python oracle, capa:host component, WASI component) for valid
+    UTF-8 Capa strings, with stdout and stderr kept on distinct streams.
+
+    UTF-8 note: the Python oracle's ``_write_safe`` uses
+    ``errors='replace'`` only for terminal codecs that cannot encode a
+    character; for valid UTF-8 (which every Capa String literal is) the
+    WASI path's raw UTF-8 bytes and the oracle's text are identical. They
+    differ ONLY on genuinely invalid bytes, a case Capa strings do not
+    produce (so it is not exercised here)."""
+
+    def _assert_three_way(self, src: str):
+        py_out, py_err = _run_python_out_err(src)
+        host_out, host_err = _run_capa_host_out_err(src)
+        wasi_out, wasi_err = _run_wasi_out_err(src)
+        self.assertEqual(py_out, host_out, "py/host stdout diverge")
+        self.assertEqual(py_out, wasi_out, "py/wasi stdout diverge")
+        self.assertEqual(py_err, host_err, "py/host stderr diverge")
+        self.assertEqual(py_err, wasi_err, "py/wasi stderr diverge")
+        return wasi_out, wasi_err
+
+    def test_print_no_newline(self):
+        # print writes the text with NO trailing newline.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.print(\"a\")\n"
+            "    stdio.print(\"b\")\n"
+            "    stdio.print(\"c\")\n"
+        )
+        out, err = self._assert_three_way(src)
+        self.assertEqual(out, "abc")
+        self.assertEqual(err, "")
+
+    def test_println_appends_newline(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"line one\")\n"
+            "    stdio.println(\"line two\")\n"
+        )
+        out, err = self._assert_three_way(src)
+        self.assertEqual(out, "line one\nline two\n")
+        self.assertEqual(err, "")
+
+    def test_print_then_println(self):
+        # A print (no newline) followed by a println on the same stream:
+        # the bytes concatenate in order, then the newline lands.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.print(\"x=\")\n"
+            "    stdio.println(\"42\")\n"
+        )
+        out, _err = self._assert_three_way(src)
+        self.assertEqual(out, "x=42\n")
+
+    def test_eprintln_separate_stream(self):
+        # eprintln lands on STDERR, not stdout; the two are distinct.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"to stdout\")\n"
+            "    stdio.eprintln(\"to stderr\")\n"
+            "    stdio.println(\"stdout again\")\n"
+        )
+        out, err = self._assert_three_way(src)
+        self.assertEqual(out, "to stdout\nstdout again\n")
+        self.assertEqual(err, "to stderr\n")
+
+    def test_large_output_multichunk(self):
+        # A single println longer than one 4096-byte page forces the
+        # write loop to iterate (the WASI 0.2 single-write page bound; a
+        # one-shot write past it traps). The output must be COMPLETE, not
+        # truncated or duplicated. 10000 'z' + the newline = 10001 bytes,
+        # spanning three chunks (4096 + 4096 + 1808 + the \n in the last).
+        n = 10000
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    var s = \"\"\n"
+            "    var i = 0\n"
+            f"    while i < {n}\n"
+            "        s = s + \"z\"\n"
+            "        i = i + 1\n"
+            "    stdio.println(s)\n"
+        )
+        out, _err = self._assert_three_way(src)
+        self.assertEqual(out, ("z" * n) + "\n")
+        self.assertEqual(len(out), n + 1)
+
+    def test_utf8_multibyte(self):
+        # Multibyte UTF-8 (2-, 3- and 4-byte code points) round-trips
+        # byte-identically: the guest writes raw UTF-8, the oracle writes
+        # the same text, so for valid UTF-8 they match exactly.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"caf\\u{00e9} \\u{4e2d}\\u{6587} \\u{1f680}\")\n"
+        )
+        out, _err = self._assert_three_way(src)
+        self.assertEqual(out, "café 中文 \U0001f680\n")
+
+    def test_utf8_multibyte_spanning_chunk_boundary(self):
+        # A multibyte sequence that straddles the 4096-byte chunk boundary
+        # must not be split incorrectly: the write loop slices by BYTE
+        # offset, and the host reassembles the full byte stream before
+        # decoding, so the code point survives intact. Build a string of
+        # 3-byte chars long enough to cross 4096 bytes (1500 * 3 = 4500).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    var s = \"\"\n"
+            "    var i = 0\n"
+            "    while i < 1500\n"
+            "        s = s + \"\\u{4e2d}\"\n"
+            "        i = i + 1\n"
+            "    stdio.println(s)\n"
+        )
+        out, _err = self._assert_three_way(src)
+        self.assertEqual(out, ("中" * 1500) + "\n")
+
+    def test_stdio_only_program_is_stock_wasi(self):
+        # A print-only program (no panic, no read_line) imports NO
+        # capa:host interface: it is 100 % stock WASI for its output. The
+        # host's captured_stdout exposes exactly the guest's bytes.
+        from capa.ir import compile_wit
+        module, result = _parse_analyze(
+            "fun main(stdio: Stdio)\n    stdio.println(\"stock\")\n"
+        )
+        wit = compile_wit(module, types=result.types, wasi=True)
+        self.assertNotIn("capa:host", wit.split("world", 1)[1])
+        self.assertNotIn("import stdio;", wit)
+        self.assertNotIn("import panic;", wit)
+        out, err = _run_wasi_out_err(
+            "fun main(stdio: Stdio)\n    stdio.println(\"stock\")\n"
+        )
+        self.assertEqual(out, "stock\n")
+        self.assertEqual(err, "")
+
+    def test_coexists_with_env_and_random(self):
+        # Stdio output (wasi:cli) coexists with other wasi caps (Env +
+        # Random) in one component, all served by add_wasip2 alongside the
+        # capa:host panic (unused here). The seeded RNG keeps it
+        # deterministic for byte-parity; the env.get of an absent key is a
+        # deterministic None on every backend.
+        src = (
+            "fun main(stdio: Stdio, env: Env, rng: Random)\n"
+            "    let seeded = rng.with_seed(7)\n"
+            "    match env.get(\"CAPA_WASI_ABSENT_COEXIST_KEY_XYZ\")\n"
+            "        Some(_) -> stdio.println(\"env=set\")\n"
+            "        None -> stdio.println(\"env=none\")\n"
+            "    stdio.println(\"r=${seeded.int_range(0, 100)}\")\n"
+            "    stdio.eprintln(\"err line\")\n"
+        )
+        out, err = self._assert_three_way(src)
+        self.assertIn("env=none", out)
+        self.assertIn("r=", out)
+        self.assertEqual(err, "err line\n")
 
 
 if __name__ == "__main__":

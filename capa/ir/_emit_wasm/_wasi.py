@@ -126,6 +126,21 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     ("Random", "system_seed"),
     ("Clock", "now_secs"),
     ("Clock", "now_monotonic"),
+    # Stdio output migration (Phase 1, 2026-06-29): print / println /
+    # eprintln route to wasi:cli/stdout (print / println) and
+    # wasi:cli/stderr (eprintln) + wasi:io/streams. Each guest wrapper
+    # calls get-stdout / get-stderr -> output-stream, writes the text
+    # in <= 4096-byte chunks via blocking-write-and-flush, then drops
+    # the output-stream. println / eprintln append a trailing "\n"
+    # (matching the capa:host semantics, where the host wrote
+    # ``msg + "\n"``). Listed here so the import loop in
+    # ``WasmEmitter.emit`` does NOT emit a ``capa:host/stdio`` import for
+    # them; their ``$Stdio_*`` bindings are guest WAT wrappers emitted by
+    # ``_emit_wasi_wrappers``. read_line is NOT migrated in this phase
+    # (it stays on capa:host/stdio), so it is absent here.
+    ("Stdio", "print"),
+    ("Stdio", "println"),
+    ("Stdio", "eprintln"),
     ("Env", "get"),
     ("Env", "args"),
     # Guest-side attenuation (Level 2): no host import, but listed here
@@ -205,6 +220,8 @@ _WASI_RANDOM = "wasi:random/random@0.2.0"
 _WASI_MONOTONIC = "wasi:clocks/monotonic-clock@0.2.0"
 _WASI_WALL = "wasi:clocks/wall-clock@0.2.0"
 _WASI_ENVIRONMENT = "wasi:cli/environment@0.2.0"
+_WASI_CLI_STDOUT = "wasi:cli/stdout@0.2.0"
+_WASI_CLI_STDERR = "wasi:cli/stderr@0.2.0"
 _WASI_FS_TYPES = "wasi:filesystem/types@0.2.0"
 _WASI_FS_PREOPENS = "wasi:filesystem/preopens@0.2.0"
 _WASI_IO_STREAMS = "wasi:io/streams@0.2.0"
@@ -265,6 +282,25 @@ _WASI_FS_READ_CHUNK = 4096
 # (the simplest provably-correct write loop, the inverse of the read
 # loop's blocking-read(CHUNK) accumulation).
 _WASI_FS_WRITE_CHUNK = 4096
+
+# Stdio output methods this WASI increment migrates to wasi:cli (Phase 1,
+# 2026-06-29). print / println route to wasi:cli/stdout (get-stdout);
+# eprintln routes to wasi:cli/stderr (get-stderr); all three write via
+# wasi:io/streams (output-stream.blocking-write-and-flush). read_line is
+# NOT here (it stays on capa:host/stdio for now).
+_WASI_STDIO_MIGRATED: frozenset[str] = frozenset(
+    {"print", "println", "eprintln"}
+)
+
+# The maximum number of bytes handed to a single
+# ``output-stream.blocking-write-and-flush`` call on the stdout / stderr
+# stream. Identical bound and rationale to ``_WASI_FS_WRITE_CHUNK``: the
+# WASI 0.2 contract caps one blocking-write-and-flush at one OS page
+# (4096), and a single write past that TRAPS, so the wrapper loops in
+# <= 4096-byte chunks. blocking-write-and-flush self-limits AND flushes,
+# so no check-write permit window has to be tracked (stdout / stderr
+# drain on their own, unlike the flow-controlled wasi:http request body).
+_WASI_STDIO_WRITE_CHUNK = 4096
 
 
 class _WasiEmissionMixin:
@@ -880,6 +916,70 @@ class _WasiEmissionMixin:
                         f'"[resource-drop]output-stream" '
                         f'(func $wasi_io_drop_output_stream (param i32)))'
                     )
+        # Stdio output (Phase 1, 2026-06-29): print / println / eprintln.
+        # get-stdout / get-stderr return an OWNED output-stream; the
+        # wrappers write the text in <= 4096-byte chunks via
+        # blocking-write-and-flush and then drop the stream. The two
+        # wasi:io/streams imports (blocking-write-and-flush + the
+        # output-stream resource-drop) are SHARED with Fs.write and
+        # Net.post; emit each only if no earlier user already did, so the
+        # symbol exists EXACTLY once (a core module re-declaring the same
+        # import is rejected by wasm-tools).
+        stdio_out_used = any(
+            m in _WASI_STDIO_MIGRATED for (c, m) in used if c == "Stdio"
+        )
+        if stdio_out_used:
+            if any((c, m) in used for (c, m) in (
+                ("Stdio", "print"), ("Stdio", "println"),
+            )):
+                self._write(
+                    f'(import "{_WASI_CLI_STDOUT}" "get-stdout" '
+                    f'(func $wasi_cli_get_stdout (result i32)))'
+                )
+            if ("Stdio", "eprintln") in used:
+                self._write(
+                    f'(import "{_WASI_CLI_STDERR}" "get-stderr" '
+                    f'(func $wasi_cli_get_stderr (result i32)))'
+                )
+            # blocking-write-and-flush: imported ONLY by Fs.write (Net.post
+            # uses the FLOW-CONTROLLED write / flush, not the blocking
+            # variant, so it does NOT import blocking-write-and-flush).
+            # Emit it here unless Fs.write already did.
+            wbwf_already = ("Fs", "write") in used
+            if not wbwf_already:
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[method]output-stream.blocking-write-and-flush" '
+                    f'(func $wasi_io_blocking_write_and_flush '
+                    f'(param i32) (param i32) (param i32) (param i32)))'
+                )
+            # output-stream resource-drop: shared with Fs.write and
+            # Net.post (Net.post imports it only when Fs.write is absent).
+            drop_already = (
+                ("Fs", "write") in used or ("Net", "post") in used
+            )
+            if not drop_already:
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[resource-drop]output-stream" '
+                    f'(func $wasi_io_drop_output_stream (param i32)))'
+                )
+            # error resource-drop: the chunked write helper drops the
+            # ``error`` OWN handle a ``last-operation-failed`` stream-error
+            # carries before it traps. Shared with Fs.read / Fs.write AND
+            # Net.get / Net.post (the http chain imports it too); emit it
+            # only if NONE of those already did, so the symbol exists once.
+            err_drop_already = (
+                ("Fs", "read") in used
+                or ("Fs", "write") in used
+                or ("Net", "get") in used
+                or ("Net", "post") in used
+            )
+            if not err_drop_already:
+                self._write(
+                    f'(import "{_WASI_IO_ERROR}" "[resource-drop]error" '
+                    f'(func $wasi_io_drop_error (param i32)))'
+                )
 
     def _emit_wasi_wrappers(self) -> None:
         """Emit the ``$Cap_method`` adapter functions that bridge the
@@ -970,6 +1070,18 @@ class _WasiEmissionMixin:
             self._emit_wasi_net_get_wrapper()
         if ("Net", "post") in used:
             self._emit_wasi_net_post_wrapper()
+        # Stdio output (Phase 1, 2026-06-29). The shared 4096-chunk
+        # write loop helper backs all three wrappers; emit it once when
+        # any of print / println / eprintln is reached. Each wrapper then
+        # gets-stdout / gets-stderr, writes, and drops the stream.
+        if any(m in _WASI_STDIO_MIGRATED for (c, m) in used if c == "Stdio"):
+            self._emit_wasi_stdio_write_helper()
+        if ("Stdio", "print") in used:
+            self._emit_wasi_stdio_print_wrapper()
+        if ("Stdio", "println") in used:
+            self._emit_wasi_stdio_println_wrapper()
+        if ("Stdio", "eprintln") in used:
+            self._emit_wasi_stdio_eprintln_wrapper()
 
     # ----- adapter wrappers -------------------------------------
 
@@ -982,6 +1094,185 @@ class _WasiEmissionMixin:
         self._write("(func $Random_system_seed (result i64)")
         self._indent += 1
         self._write("call $wasi_random_u64")
+        self._indent -= 1
+        self._write(")")
+
+    # ----- Stdio output via wasi:cli/stdout|stderr + wasi:io/streams ----
+
+    def _emit_wasi_stdio_write_helper(self) -> None:
+        """``$__wasi_stdio_write (stream i32, ptr i32, len i32)``.
+
+        The shared chunked write loop backing print / println / eprintln:
+        writes ``len`` bytes at ``ptr`` to ``stream`` in <= 4096-byte
+        chunks via ``output-stream.blocking-write-and-flush`` (the WASI
+        0.2 one-OS-page bound; a single write past a page TRAPS, so the
+        loop is mandatory). blocking-write-and-flush self-limits AND
+        flushes, so no check-write permit window is tracked -- stdout /
+        stderr drain on their own (unlike the flow-controlled wasi:http
+        request body). A zero-length write runs the loop zero times.
+
+        Error handling: stdout / stderr essentially never fail, but on a
+        carried ``stream-error`` the helper drops the error resource (when
+        the variant is ``last-operation-failed``) and TRAPS via
+        ``unreachable``. The Capa surface is void (no Result to thread),
+        so a hard fault is the only honest signal -- mirroring the Python
+        oracle, where ``sys.stdout.write`` raising propagates as an
+        uncaught error. The OWNED stream is dropped by the CALLER (the
+        print / println / eprintln wrapper) on the success path; on the
+        trap path the store is torn down, so the un-dropped stream leaks
+        nothing observable."""
+        wf_ret = self._wasi_stdio_scratch_offset                # 12 bytes
+        chunk = _WASI_STDIO_WRITE_CHUNK
+        self._write(
+            "(func $__wasi_stdio_write (param $stream i32) "
+            "(param $ptr i32) (param $len i32)"
+        )
+        self._indent += 1
+        self._write("(local $cursor i32)")
+        self._write("(local $remaining i32)")
+        self._write("(local $n i32)")
+        self._write("i32.const 0")
+        self._write("local.set $cursor")
+        self._write("local.get $len")
+        self._write("local.set $remaining")
+        self._write("(block $write_done")
+        self._indent += 1
+        self._write("(loop $write_loop")
+        self._indent += 1
+        # if remaining == 0, done.
+        self._write("local.get $remaining")
+        self._write("i32.eqz")
+        self._write("br_if $write_done")
+        # n = min(remaining, CHUNK).
+        self._write("local.get $remaining")
+        self._write(f"i32.const {chunk}")
+        self._write("i32.lt_u")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $remaining")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write(f"i32.const {chunk}")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $n")
+        # blocking-write-and-flush(stream, ptr+cursor, n, wf_ret).
+        self._write("local.get $stream")
+        self._write("local.get $ptr")
+        self._write("local.get $cursor")
+        self._write("i32.add")
+        self._write("local.get $n")
+        self._write(f"i32.const {wf_ret}")
+        self._write("call $wasi_io_blocking_write_and_flush")
+        # if Err (disc @0 != 0): drop a carried error resource, trap.
+        self._write(f"i32.const {wf_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        # stream-error variant disc @+4: 0 = last-operation-failed (error
+        # OWN handle @+8 to drop), 1 = closed (no resource).
+        self._write(f"i32.const {wf_ret}")
+        self._write("i32.load offset=4")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"i32.const {wf_ret}")
+        self._write("i32.load offset=8")
+        self._write("call $wasi_io_drop_error")
+        self._indent -= 1
+        self._write("end")
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        # cursor += n; remaining -= n; continue.
+        self._write("local.get $cursor")
+        self._write("local.get $n")
+        self._write("i32.add")
+        self._write("local.set $cursor")
+        self._write("local.get $remaining")
+        self._write("local.get $n")
+        self._write("i32.sub")
+        self._write("local.set $remaining")
+        self._write("br $write_loop")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_stdio_print_wrapper(self) -> None:
+        """``$Stdio_print (msg_ptr i32, msg_len i32)``.
+
+        Matches the call shape the generic cap-call emitter produces for
+        a ``func(msg: string)`` method (two i32s, no result), so the call
+        site (``call $Stdio_print``) is byte-identical to the capa:host
+        path. get-stdout -> output-stream, write the text via the shared
+        chunked loop, drop the stream. No trailing newline (print)."""
+        self._write("(func $Stdio_print (param $msg_ptr i32) (param $msg_len i32)")
+        self._indent += 1
+        self._write("(local $stream i32)")
+        self._write("call $wasi_cli_get_stdout")
+        self._write("local.set $stream")
+        self._write("local.get $stream")
+        self._write("local.get $msg_ptr")
+        self._write("local.get $msg_len")
+        self._write("call $__wasi_stdio_write")
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_output_stream")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_stdio_println_wrapper(self) -> None:
+        """``$Stdio_println (msg_ptr i32, msg_len i32)``.
+
+        Same as print plus a trailing ``"\\n"`` byte (the capa:host
+        println wrote ``msg + "\\n"`` host-side; here the guest appends
+        it), written as a second 1-byte chunk through the SAME stream
+        before the drop. The newline lives in the interned-string data
+        segment (a one-byte literal), so no allocation is needed."""
+        nl_off, nl_len = self._intern_string("\n")
+        self._write("(func $Stdio_println (param $msg_ptr i32) (param $msg_len i32)")
+        self._indent += 1
+        self._write("(local $stream i32)")
+        self._write("call $wasi_cli_get_stdout")
+        self._write("local.set $stream")
+        self._write("local.get $stream")
+        self._write("local.get $msg_ptr")
+        self._write("local.get $msg_len")
+        self._write("call $__wasi_stdio_write")
+        self._write("local.get $stream")
+        self._write(f"i32.const {nl_off}")
+        self._write(f"i32.const {nl_len}")
+        self._write("call $__wasi_stdio_write")
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_output_stream")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_stdio_eprintln_wrapper(self) -> None:
+        """``$Stdio_eprintln (msg_ptr i32, msg_len i32)``.
+
+        Like println but on STDERR (get-stderr), keeping standard error
+        a stream distinct from standard output. Appends a trailing
+        ``"\\n"`` byte (matching capa:host's ``msg + "\\n"``)."""
+        nl_off, nl_len = self._intern_string("\n")
+        self._write("(func $Stdio_eprintln (param $msg_ptr i32) (param $msg_len i32)")
+        self._indent += 1
+        self._write("(local $stream i32)")
+        self._write("call $wasi_cli_get_stderr")
+        self._write("local.set $stream")
+        self._write("local.get $stream")
+        self._write("local.get $msg_ptr")
+        self._write("local.get $msg_len")
+        self._write("call $__wasi_stdio_write")
+        self._write("local.get $stream")
+        self._write(f"i32.const {nl_off}")
+        self._write(f"i32.const {nl_len}")
+        self._write("call $__wasi_stdio_write")
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_output_stream")
         self._indent -= 1
         self._write(")")
 

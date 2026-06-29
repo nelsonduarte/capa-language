@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Provenance: vendored from WebAssembly/wasi-cli, tag v0.2.0 (wit/stdio.wit).
+//
+// Vendored subset of the canonical WASI Preview 2 cli stdout
+// interface.
+//
+// Source: WebAssembly/wasi-cli, tag v0.2.0
+//   https://github.com/WebAssembly/wasi-cli/blob/v0.2.0/wit/stdio.wit
+//
+// Trimmed to the get-stdout() reader Capa's experimental --wasi mode
+// imports (Stdio.print / Stdio.println -> get-stdout ->
+// output-stream.blocking-write-and-flush loop). The upstream stdio.wit
+// declares stdin / stdout / stderr in one file; here stdout and stderr
+// are split into one file each (this file + stderr.wit) so each
+// interface is independently greppable, and stdin is omitted because
+// Stdio.read_line still travels the capa:host/stdio bridge (not yet
+// migrated). All three interfaces belong to the same wasi:cli@0.2.0
+// package as environment.wit; wasm-tools merges the package's .wit
+// files when resolving deps/cli/.
+//
+// Canonical-ABI / unit conventions matching the host wasmtime
+// add_wasip2() provides:
+//   get-stdout -> output-stream : an OWNED output-stream handle the
+//     guest writes the program's standard output to (via
+//     output-stream.blocking-write-and-flush in <= 4096-byte chunks,
+//     the one-OS-page bound a single blocking-write-and-flush honours),
+//     then drops. The host renders / captures the bytes (in --wasi the
+//     Capa host installs a WasiConfig stdout_custom callback that
+//     accumulates them; see capa.runtime._wasm_component_host).
+//
+// The ``package wasi:cli@0.2.0;`` declaration lives ONLY in
+// environment.wit (the first cli file): wasm-tools merges every .wit
+// file in deps/cli/ into one package and rejects doc comments attached
+// to more than one ``package`` item, so this file omits the package
+// line and contributes only its interface to the shared package.
+
+interface stdout {
+  use wasi:io/streams@0.2.0.{output-stream};
+
+  get-stdout: func() -> output-stream;
+}

@@ -31,6 +31,18 @@ breaking changes and the discipline is still being shaped.
   - `Net` -> `wasi:http` (`outgoing-handler.handle` + the outgoing /
     incoming request-response chain, body I/O over `wasi:io/streams`)
     for `get` and `post`.
+  - `Stdio` output (`print` / `println` / `eprintln`) -> `wasi:cli/stdout`
+    (`print` / `println`) and `wasi:cli/stderr` (`eprintln`) over
+    `wasi:io/streams` (`output-stream.blocking-write-and-flush` looped in
+    `<=4096`-byte chunks). `println` / `eprintln` append the trailing
+    newline guest-side, matching the prior `capa:host` semantics; the
+    output is byte-identical to the Python oracle and the `capa:host`
+    backend across all three backends for valid UTF-8. `Stdio.read_line`
+    and the `panic` builtin are **not** migrated in this batch: they
+    still travel `capa:host/stdio` (`read-line`) and `capa:host/panic`,
+    coexisting in the same component. A program whose only `Stdio` use is
+    output (no `read_line`, no `panic`) imports no `capa:host` interface
+    at all -- it is 100 % stock WASI for its I/O.
   Interfaces not yet migrated (e.g. `Clock.sleep` and Clock
   `restrict_to_after`) are rejected at compile time in WASI mode with a
   clear error, so the flag never silently degrades a capability.

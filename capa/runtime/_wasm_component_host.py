@@ -151,10 +151,67 @@ class WasmComponentHost:
         # the hybrid coexistence the PoC proves. Default (False) keeps
         # the all-``capa:host`` behaviour untouched.
         self._wasi = wasi
+        # WASI stdout / stderr capture (Stdio Phase 1, 2026-06-29). In
+        # --wasi the guest writes print / println to wasi:cli/stdout and
+        # eprintln to wasi:cli/stderr (output-stream.blocking-write-and-
+        # flush), which add_wasip2 serves from this WasiConfig. Rather
+        # than inherit the host process fds (which would bypass any
+        # sys.stdout redirection a caller / test installs), the config
+        # installs custom-output callbacks that do TWO things per chunk:
+        #
+        #  1. ECHO the bytes onward, decoded, to the live ``sys.stdout`` /
+        #     ``sys.stderr`` through the SAME ``_write_safe`` writer the
+        #     capa:host bridge used pre-migration. This keeps the
+        #     observable output byte-identical to the default backend
+        #     (and to the pre-migration capa:host path), keeps the CLI
+        #     ``--run --wasi`` output visible with no CLI change, and
+        #     preserves panic ORDERING: the panic host import flushes
+        #     ``sys.stdout`` before writing its stderr line, and program
+        #     output has already reached ``sys.stdout`` here.
+        #  2. ACCUMULATE the raw UTF-8 bytes so ``captured_stdout()`` /
+        #     ``captured_stderr()`` expose exactly what the guest wrote,
+        #     for tests / callers that prefer reading the buffer over
+        #     redirecting ``sys.stdout``.
+        #
+        # The streams are read at CALL time (``sys.stdout`` each chunk),
+        # so a redirect installed AFTER construction still captures, like
+        # the core host's deferred-lookup stdio. The decode mirrors the
+        # core host: WTF-8 (surrogatepass) with a replace fallback for
+        # genuinely invalid bytes, so a Capa string with a lone surrogate
+        # prints identically across backends. The callbacks return None,
+        # signalling "all bytes consumed" to the custom-output contract.
+        self._captured_stdout = bytearray()
+        self._captured_stderr = bytearray()
         if wasi:
             wasi_cfg = wasmtime.WasiConfig()
-            wasi_cfg.inherit_stdout()
-            wasi_cfg.inherit_stderr()
+
+            def _decode_wtf8(data: bytes) -> str:
+                raw = bytes(data)
+                try:
+                    return raw.decode("utf-8", errors="surrogatepass")
+                except UnicodeDecodeError:
+                    return raw.decode("utf-8", errors="replace")
+
+            def _capture_stdout(data: bytes):
+                self._captured_stdout.extend(data)
+                _write_safe(sys.stdout, _decode_wtf8(data))
+                try:
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                return None
+
+            def _capture_stderr(data: bytes):
+                self._captured_stderr.extend(data)
+                _write_safe(sys.stderr, _decode_wtf8(data))
+                try:
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                return None
+
+            wasi_cfg.stdout_custom = _capture_stdout
+            wasi_cfg.stderr_custom = _capture_stderr
             # Env migration (2026-06-27): in WASI mode ``Env.get`` /
             # ``Env.args`` read ``wasi:cli/environment`` (get-environment
             # / get-arguments), which ``add_wasip2()`` serves from this
@@ -257,6 +314,22 @@ class WasmComponentHost:
         self.panicked = False
         self._register_all()
 
+    def captured_stdout(self) -> bytes:
+        """The raw UTF-8 bytes the guest wrote to wasi:cli/stdout
+        (Stdio.print / Stdio.println) so far, in --wasi mode. Empty in
+        the default (non-wasi) path, where Stdio output goes straight to
+        ``sys.stdout`` through the capa:host bridge. Accumulates across a
+        run; a caller that reuses the host should snapshot it per run."""
+        return bytes(self._captured_stdout)
+
+    def captured_stderr(self) -> bytes:
+        """The raw UTF-8 bytes the guest wrote to wasi:cli/stderr
+        (Stdio.eprintln) so far, in --wasi mode. Does NOT include the
+        ``panic: <msg>`` line, which the host writes to ``sys.stderr``
+        directly (panic stays on capa:host/panic in this phase), not
+        through wasi:cli/stderr."""
+        return bytes(self._captured_stderr)
+
     def _apply_fs_preopens(self, wasi_cfg) -> None:
         """Register the Fs ceiling's preopened directories on the
         WasiConfig (WASI mode only).
@@ -353,6 +426,17 @@ class WasmComponentHost:
 
     def _register_stdio(self, root: wc.LinkerInstance) -> None:
         stdio = root.add_instance("capa:host/stdio")
+        # Stdio output migration (Phase 1, 2026-06-29): in --wasi the
+        # guest routes print / println / eprintln to wasi:cli/stdout |
+        # wasi:cli/stderr (satisfied by add_wasip2 + the WasiConfig
+        # stdout_custom / stderr_custom capture callbacks installed in
+        # __init__), so the capa:host/stdio print / println / eprintln
+        # methods are NOT registered here in WASI mode -- the component
+        # imports none of them. read_line is NOT migrated (still
+        # capa:host/stdio below) and panic stays on capa:host/panic. In
+        # the DEFAULT (non-wasi) path all three writers are registered as
+        # before, forwarding to sys.stdout / sys.stderr.
+        #
         # Stdio has no handle threading (no attenuation surface);
         # signatures stay (msg) -> () like the core host.
         # Wrap each writer in ``_write_safe`` so a non-cp1252 char on a
@@ -360,18 +444,19 @@ class WasmComponentHost:
         # the program. Same convention applied to the Python runtime
         # and the core Wasm host so the three backends print identical
         # bytes on a terminal that cannot encode the source character.
-        stdio.add_func(
-            "print",
-            lambda _store, msg: _write_safe(sys.stdout, msg),
-        )
-        stdio.add_func(
-            "println",
-            lambda _store, msg: _write_safe(sys.stdout, msg + "\n"),
-        )
-        stdio.add_func(
-            "eprintln",
-            lambda _store, msg: _write_safe(sys.stderr, msg + "\n"),
-        )
+        if not self._wasi:
+            stdio.add_func(
+                "print",
+                lambda _store, msg: _write_safe(sys.stdout, msg),
+            )
+            stdio.add_func(
+                "println",
+                lambda _store, msg: _write_safe(sys.stdout, msg + "\n"),
+            )
+            stdio.add_func(
+                "eprintln",
+                lambda _store, msg: _write_safe(sys.stderr, msg + "\n"),
+            )
 
         def stdio_read_line(_store):
             # result<string, io-error>: dispatch by Python type.
