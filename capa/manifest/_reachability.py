@@ -81,6 +81,14 @@ def _contains_fun_via_structs(
     ``known_fun_bearing`` short-circuits names already proven Fun-bearing
     by the fixpoint; ``_seen`` guards against recursive definitions."""
     sums = sum_payloads_by_name or {}
+    # Single visited-set shared by the WHOLE traversal: forwarding the
+    # current ``_seen`` through every recursive branch (tuple elements
+    # and type arguments included, not only struct fields and sum
+    # payloads) is what guarantees termination on a recursive sum whose
+    # self-reference passes through a ``List<Self>``/tuple. Resetting it
+    # to empty on those branches (the prior bug) caused infinite
+    # recursion (RecursionError) without ever revisiting the guard.
+    seen = _seen if _seen is not None else set()
     if t is None:
         return False
     if isinstance(t, A.FunType):
@@ -88,21 +96,20 @@ def _contains_fun_via_structs(
     if isinstance(t, A.TupleType):
         return any(
             _contains_fun_via_structs(
-                e, structs_by_name, known_fun_bearing, sums,
+                e, structs_by_name, known_fun_bearing, sums, seen,
             )
             for e in t.elements
         )
     if isinstance(t, A.TypeName):
         if any(
             _contains_fun_via_structs(
-                a, structs_by_name, known_fun_bearing, sums,
+                a, structs_by_name, known_fun_bearing, sums, seen,
             )
             for a in (t.args or ())
         ):
             return True
         if t.name in known_fun_bearing:
             return True
-        seen = _seen if _seen is not None else set()
         if t.name in seen:
             return False
         td = structs_by_name.get(t.name)

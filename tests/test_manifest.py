@@ -116,6 +116,84 @@ class TestFilenamePropagation(unittest.TestCase):
         self.assertEqual(m["filename"], "<input>")
 
 
+class TestRecursiveTypeReachability(unittest.TestCase):
+    """Regression: ``compute_reachability`` (and thus ``build_manifest``)
+    must TERMINATE on a recursive sum type whose self-reference passes
+    through a ``List<Self>`` or a tuple, not only through a direct
+    payload.
+
+    Before the fix, ``_contains_fun_via_structs`` forwarded its
+    ``_seen`` visited-set only when recursing into named struct fields
+    and named sum payloads, but reset it to empty when recursing into
+    type ARGUMENTS (``List<Tree>``) and TUPLE ELEMENTS. A recursive sum
+    whose self-reference went through ``List<Self>`` (as in the
+    downstream policy-eval ``AllOf(List<Condition>)``) therefore looped
+    forever -> RecursionError, taking down ``--manifest`` and the Wasm
+    backend (both build the manifest), while ``--check`` was unaffected.
+
+    These cases assert termination AND that the fun-bearing /
+    capability result is unchanged (these data-only recursive types
+    reach no caps and are not unprovable)."""
+
+    def _reach(self, source: str):
+        from capa.manifest._reachability import compute_reachability
+
+        module = _analysed(source)
+        return compute_reachability(module, user_cap_names=set())
+
+    def test_recursive_sum_via_list_terminates(self):
+        reachable, unprovable = self._reach(
+            "type Tree =\n"
+            "    Leaf\n"
+            "    Node(List<Tree>)\n"
+            "fun count(t: Tree) -> Int\n"
+            "    return 0\n"
+        )
+        # Data-only recursive type: reaches no built-in caps, not
+        # Fun-bearing (so not unprovable).
+        self.assertEqual(reachable.get("Tree"), set())
+        self.assertNotIn("Tree", unprovable)
+
+    def test_recursive_sum_via_tuple_terminates(self):
+        reachable, unprovable = self._reach(
+            "type Pair =\n"
+            "    Nil\n"
+            "    Cons((Pair, Int))\n"
+            "fun walk(p: Pair) -> Int\n"
+            "    return 0\n"
+        )
+        self.assertEqual(reachable.get("Pair"), set())
+        self.assertNotIn("Pair", unprovable)
+
+    def test_directly_recursive_sum_terminates(self):
+        reachable, unprovable = self._reach(
+            "type T =\n"
+            "    A\n"
+            "    B(T)\n"
+            "fun f(x: T) -> Int\n"
+            "    return 0\n"
+        )
+        self.assertEqual(reachable.get("T"), set())
+        self.assertNotIn("T", unprovable)
+
+    def test_build_manifest_handles_recursive_sum_via_list(self):
+        # End-to-end: the manifest builder (used by --manifest and the
+        # Wasm backend) must not blow the stack on the policy-eval shape.
+        m = build_manifest(
+            _analysed(
+                "type Condition =\n"
+                "    PathExists(String, Bool)\n"
+                "    AllOf(List<Condition>)\n"
+                "    AnyOf(List<Condition>)\n"
+                "    NotMatch(Condition)\n"
+                "fun eval(c: Condition) -> Bool\n"
+                "    return true\n"
+            )
+        )
+        names = {fn["name"] for fn in m["functions"]}
+        self.assertIn("eval", names)
+
+
 class TestTopLevelShape(unittest.TestCase):
     """Contract: every manifest carries the documented keys.
     Consumers that rely on the shape (capa-language.com/manifest.html,

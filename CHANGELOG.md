@@ -9,6 +9,25 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+### Fixed
+
+- *Manifest / reachability no longer recurses infinitely on a recursive
+  sum type whose self-reference passes through a `List`/tuple.* The
+  reachability walker `_contains_fun_via_structs` propagated its
+  cycle-guard (the visited-type set) only when recursing into named
+  struct fields and named sum-variant payloads, but reset it to empty
+  when recursing into type arguments (`List<Self>`) and tuple elements.
+  A recursive sum whose self-reference went through `List<Self>` or a
+  tuple (for example `type Condition = ... | AllOf(List<Condition>)`)
+  therefore looped forever and raised `RecursionError`, taking down
+  `build_manifest` and everything built on it: `--manifest` and the Wasm
+  backend (`compile_wat`) both crashed, while `--check` was unaffected
+  because it does not build the manifest. The guard is now forwarded
+  through every recursive branch, so the traversal terminates. The
+  fix only adds termination: the fun-bearing / capability result for
+  every type that already terminated is unchanged, and no existing
+  manifest or SBOM changes.
+
 ### Proposed: 1.14.0 (experimental WASI Preview 2 mode)
 
 > **PROPOSAL.** The version number (`1.14.0`) and this wording are a
