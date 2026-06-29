@@ -136,11 +136,20 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     # ``msg + "\n"``). Listed here so the import loop in
     # ``WasmEmitter.emit`` does NOT emit a ``capa:host/stdio`` import for
     # them; their ``$Stdio_*`` bindings are guest WAT wrappers emitted by
-    # ``_emit_wasi_wrappers``. read_line is NOT migrated in this phase
-    # (it stays on capa:host/stdio), so it is absent here.
+    # ``_emit_wasi_wrappers``.
     ("Stdio", "print"),
     ("Stdio", "println"),
     ("Stdio", "eprintln"),
+    # Stdio.read_line migration (Phase 2, 2026-06-29): read_line routes to
+    # wasi:cli/stdin (get-stdin -> input-stream) + wasi:io/streams
+    # (input-stream.blocking-read, byte-at-a-time until "\n" or EOF). It
+    # reuses Fs.read's blocking-read / accumulation / input-stream-drop
+    # machinery but stops at the first "\n" (not at EOF). Listed here so
+    # the import loop in ``WasmEmitter.emit`` does NOT emit a
+    # ``capa:host/stdio`` import for it; its ``$Stdio_read_line`` binding
+    # is a guest WAT wrapper emitted by ``_emit_wasi_wrappers``. With this
+    # phase, ONLY ``panic`` remains on capa:host for a --wasi program.
+    ("Stdio", "read_line"),
     ("Env", "get"),
     ("Env", "args"),
     # Guest-side attenuation (Level 2): no host import, but listed here
@@ -222,6 +231,7 @@ _WASI_WALL = "wasi:clocks/wall-clock@0.2.0"
 _WASI_ENVIRONMENT = "wasi:cli/environment@0.2.0"
 _WASI_CLI_STDOUT = "wasi:cli/stdout@0.2.0"
 _WASI_CLI_STDERR = "wasi:cli/stderr@0.2.0"
+_WASI_CLI_STDIN = "wasi:cli/stdin@0.2.0"
 _WASI_FS_TYPES = "wasi:filesystem/types@0.2.0"
 _WASI_FS_PREOPENS = "wasi:filesystem/preopens@0.2.0"
 _WASI_IO_STREAMS = "wasi:io/streams@0.2.0"
@@ -980,6 +990,61 @@ class _WasiEmissionMixin:
                     f'(import "{_WASI_IO_ERROR}" "[resource-drop]error" '
                     f'(func $wasi_io_drop_error (param i32)))'
                 )
+        # Stdio.read_line (Phase 2, 2026-06-29): get-stdin returns an OWNED
+        # input-stream; the wrapper reads it BYTE-AT-A-TIME via
+        # input-stream.blocking-read(1) until it sees "\n" or EOF, then
+        # drops the stream. The three wasi:io/streams + wasi:io/error
+        # imports (blocking-read, the input-stream resource-drop, and the
+        # error resource-drop) are SHARED with Fs.read and Net.get; emit
+        # each only if no earlier user already did, so the symbol exists
+        # EXACTLY once (a core module re-declaring the same import is
+        # rejected by wasm-tools). The position of the underlying stdin is
+        # owned by the host descriptor, NOT the input-stream resource, so a
+        # fresh get-stdin + drop per read_line preserves the read cursor
+        # across calls (proven by the oracle spike: three successive
+        # read_line over "a\nb\nc\n" yield a, b, c with no byte lost or
+        # repeated).
+        if ("Stdio", "read_line") in used:
+            self._write(
+                f'(import "{_WASI_CLI_STDIN}" "get-stdin" '
+                f'(func $wasi_cli_get_stdin (result i32)))'
+            )
+            # blocking-read + input-stream drop: imported by Fs.read and
+            # (when Fs.read is absent) Net.get. Emit here only if neither
+            # already did.
+            br_already = (
+                ("Fs", "read") in used or ("Net", "get") in used
+            )
+            if not br_already:
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[method]input-stream.blocking-read" '
+                    f'(func $wasi_io_blocking_read '
+                    f'(param i32) (param i64) (param i32)))'
+                )
+                self._write(
+                    f'(import "{_WASI_IO_STREAMS}" '
+                    f'"[resource-drop]input-stream" '
+                    f'(func $wasi_io_drop_input_stream (param i32)))'
+                )
+            # error resource-drop: shared with Fs.read / Fs.write, Net.get /
+            # Net.post, AND the Stdio-output chunked-write helper. Emit only
+            # if none of those already did.
+            stdio_out_used_local = any(
+                m in _WASI_STDIO_MIGRATED for (c, m) in used if c == "Stdio"
+            )
+            err_drop_already_rl = (
+                ("Fs", "read") in used
+                or ("Fs", "write") in used
+                or ("Net", "get") in used
+                or ("Net", "post") in used
+                or stdio_out_used_local
+            )
+            if not err_drop_already_rl:
+                self._write(
+                    f'(import "{_WASI_IO_ERROR}" "[resource-drop]error" '
+                    f'(func $wasi_io_drop_error (param i32)))'
+                )
 
     def _emit_wasi_wrappers(self) -> None:
         """Emit the ``$Cap_method`` adapter functions that bridge the
@@ -1082,6 +1147,11 @@ class _WasiEmissionMixin:
             self._emit_wasi_stdio_println_wrapper()
         if ("Stdio", "eprintln") in used:
             self._emit_wasi_stdio_eprintln_wrapper()
+        # Stdio.read_line (Phase 2, 2026-06-29): get-stdin -> input-stream,
+        # read byte-at-a-time until "\n" / EOF, drop the stream, build the
+        # Result<String, IoError>.
+        if ("Stdio", "read_line") in used:
+            self._emit_wasi_stdio_read_line_wrapper()
 
     # ----- adapter wrappers -------------------------------------
 
@@ -1275,6 +1345,296 @@ class _WasiEmissionMixin:
         self._write("call $wasi_io_drop_output_stream")
         self._indent -= 1
         self._write(")")
+
+    def _emit_wasi_stdio_read_line_wrapper(self) -> None:
+        """``$Stdio_read_line (ret_area i32)`` -> writes a
+        ``result<string, io-error>`` (20-byte canonical-ABI shape) into
+        ``ret_area``.
+
+        Matches the call shape ``_cap_method_wasm_sig`` produces for
+        ``Stdio.read_line`` (a single ret_area i32, no args), so the
+        existing ``result_string_io_error`` materialiser lifts the result
+        into a Capa ``Result<String, IoError>`` unchanged, exactly as the
+        capa:host read_line does.
+
+        Sequence (convention confirmed empirically by the oracle spike
+        BEFORE this WAT, against wasm-tools 1.249.0 / wasmtime 44.0.0;
+        see docs/design/wasi_mode.md):
+
+          1. ``get-stdin()`` -> an OWNED input-stream.
+          2. LOOP ``blocking-read(stream, 1)`` ->
+             result<list<u8>, stream-error>:
+               * Ok with 1 byte:
+                   - if the byte is ``"\\n"`` (0x0a): the line terminator
+                     -- STOP without storing it (the "\\n" is NOT part of
+                     the result, matching the oracle's ``rstrip("\\n")``).
+                   - else: append the byte to a heap accumulation buffer,
+                     continue.
+                 (A spurious Ok of 0 bytes just continues.)
+               * Err(stream-error): disc @+4 == 1 is ``closed`` = EOF.
+                 If NOTHING was accumulated, this is a true end of input
+                 -> drop the stream, write ``Err(IoError("end of input"))``
+                 and return (byte-identical, on the Result discriminant
+                 and the message, to the Python oracle's EOF
+                 ``Err(IoError("end of input"))``). If a partial line WAS
+                 accumulated (last line with no trailing "\\n"), STOP and
+                 build the String from it (next read_line then hits EOF).
+                 disc @+4 == 0 is ``last-operation-failed`` -> drop the
+                 carried error handle (@+8), drop the stream, write Err,
+                 return.
+          3. strip a SINGLE trailing ``"\\r"`` (0x0d) from the accumulated
+             bytes: stdin under the Python oracle is TEXT MODE (universal
+             newlines), which translates ``"\\r\\n"`` -> ``"\\n"`` BEFORE
+             ``rstrip("\\n")``, so the oracle never sees the ``"\\r"``. The
+             WASI byte stream is RAW, so a Windows ``"abc\\r\\n"`` line read
+             up to ``"\\n"`` leaves ``"abc\\r"``; dropping the trailing
+             ``"\\r"`` restores byte-parity with the oracle for BOTH
+             ``"\\n"`` and ``"\\r\\n"`` line endings (confirmed by the
+             spike). A lone ``"\\r"`` with no following ``"\\n"`` is NOT a
+             line break here (it would need lookahead that risks
+             over-consuming the next line); that exotic old-Mac case is the
+             one documented divergence from the oracle's universal-newline
+             text mode and is not produced by terminals or pipes.
+          4. drop the input-stream and write Ok(String) = (buffer ptr,
+             buffer length). The accumulated bytes are the raw line bytes;
+             the Capa String is UTF-8 by construction, matching the
+             oracle.
+
+        The input-stream is dropped on EVERY exit path (EOF, partial-line
+        EOF, last-operation-failed, and the Ok/"\\n"-terminated path) so no
+        OWN handle leaks. The underlying stdin POSITION is owned by the
+        host descriptor, not the input-stream resource, so a fresh
+        get-stdin + drop per read_line preserves the read cursor across
+        calls (the spike read three lines via three successive read_line
+        with a per-call get-stdin + drop and lost / repeated no bytes).
+        The accumulation buffer grows geometrically (realloc + copy on
+        overflow) reusing ``$alloc`` + ``memory.copy``, exactly like
+        Fs.read."""
+        br_ret = self._wasi_stdin_scratch_offset                # 12 bytes
+        eof_off, eof_len = self._intern_string("end of input")
+        self._write("(func $Stdio_read_line (param $ret_area i32)")
+        self._indent += 1
+        self._write("(local $stream i32)")
+        self._write("(local $buf i32)")
+        self._write("(local $buf_cap i32)")
+        self._write("(local $buf_len i32)")
+        self._write("(local $byte i32)")
+        self._write("(local $newcap i32)")
+        self._write("(local $newbuf i32)")
+        # get-stdin() -> input-stream.
+        self._write("call $wasi_cli_get_stdin")
+        self._write("local.set $stream")
+        # Accumulation buffer: start empty (a zero-size alloc gives a
+        # stable non-overlapping heap pointer, like Fs.read).
+        self._write("i32.const 0")
+        self._write("call $alloc")
+        self._write("local.set $buf")
+        self._write("i32.const 0")
+        self._write("local.set $buf_cap")
+        self._write("i32.const 0")
+        self._write("local.set $buf_len")
+        # Loop blocking-read(stream, 1, br_ret).
+        self._write("(block $line_done")
+        self._indent += 1
+        self._write("(loop $read_loop")
+        self._indent += 1
+        self._write("local.get $stream")
+        self._write("i64.const 1")
+        self._write(f"i32.const {br_ret}")
+        self._write("call $wasi_io_blocking_read")
+        # if Ok (disc @0 == 0): handle the byte; else stream-error.
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        # bytes read = br_ret.len @8; if 0, spurious -> continue.
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load offset=8")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("br $read_loop")
+        self._indent -= 1
+        self._write("end")
+        # byte = *(br_ret.data_ptr @4).
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load offset=4")
+        self._write("i32.load8_u")
+        self._write("local.set $byte")
+        # if byte == 0x0a ("\n"): line terminator, stop (do not store).
+        self._write("local.get $byte")
+        self._write("i32.const 10")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("br $line_done")
+        self._indent -= 1
+        self._write("end")
+        # Grow the buffer if buf_len + 1 > buf_cap.
+        self._write("local.get $buf_len")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.get $buf_cap")
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        # newcap = max(buf_cap*2, buf_len+1, 16); geometric growth so a
+        # long line does not realloc once per byte.
+        self._write("local.get $buf_cap")
+        self._write("i32.const 1")
+        self._write("i32.shl")
+        self._write("local.set $newcap")
+        self._write("local.get $newcap")
+        self._write("i32.const 16")
+        self._write("i32.lt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("i32.const 16")
+        self._write("local.set $newcap")
+        self._indent -= 1
+        self._write("end")
+        # newbuf = alloc(newcap); copy old bytes; buf = newbuf.
+        self._write("local.get $newcap")
+        self._write("call $alloc")
+        self._write("local.set $newbuf")
+        self._write("local.get $newbuf")
+        self._write("local.get $buf")
+        self._write("local.get $buf_len")
+        self._write("memory.copy")
+        self._write("local.get $newbuf")
+        self._write("local.set $buf")
+        self._write("local.get $newcap")
+        self._write("local.set $buf_cap")
+        self._indent -= 1
+        self._write("end")
+        # *(buf + buf_len) = byte; buf_len += 1; continue.
+        self._write("local.get $buf")
+        self._write("local.get $buf_len")
+        self._write("i32.add")
+        self._write("local.get $byte")
+        self._write("i32.store8")
+        self._write("local.get $buf_len")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $buf_len")
+        self._write("br $read_loop")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # Err(stream-error): disc @+4. 1 == closed (EOF). 0 ==
+        # last-operation-failed(error) -> drop the carried error handle.
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load offset=4")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        # last-operation-failed: drop the error resource.
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load offset=8")
+        self._write("call $wasi_io_drop_error")
+        # EOF (after a possible partial line) OR a hard failure both end
+        # the read; if NOTHING accumulated, write Err("end of input")
+        # below (the EOF arm), else build the partial line. Fall through
+        # to $line_done; the post-loop tail distinguishes by buf_len.
+        self._indent -= 1
+        self._write("end")
+        self._write("br $line_done")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # Out of the loop. If buf_len == 0 AND we exited via EOF (an Ok
+        # "\n" terminator leaves buf_len possibly 0 too, e.g. an empty
+        # line "\n" -> Ok("")). Distinguish EOF-with-nothing from an empty
+        # "\n" line using a re-check is not needed: the loop only reaches
+        # here on "\n" (Ok) or stream-error (Err). We must tell those
+        # apart. Re-read the discriminant of the LAST blocking-read: disc
+        # @0 == 0 means the last op was Ok (the "\n" terminator) -> always
+        # build the String (possibly empty). disc @0 != 0 means the last
+        # op was a stream-error -> EOF: build the String IF a partial line
+        # was accumulated, else write Err("end of input").
+        self._write(f"i32.const {br_ret}")
+        self._write("i32.load8_u offset=0")
+        self._write("if")
+        self._indent += 1
+        # Last op was a stream-error (EOF / failure). If buf_len == 0 ->
+        # Err("end of input"); else build the partial-line String.
+        self._write("local.get $buf_len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_input_stream")
+        self._emit_wasi_read_line_err(eof_off, eof_len)
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Build Ok(String): strip a SINGLE trailing "\r" (0x0d) for
+        # text-mode parity (a "\r\n" line read to "\n" leaves "...\r").
+        self._write("local.get $buf_len")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $buf")
+        self._write("local.get $buf_len")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 13")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $buf_len")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $buf_len")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # drop the input-stream.
+        self._write("local.get $stream")
+        self._write("call $wasi_io_drop_input_stream")
+        # Ok(String): tag=0, ptr=buf @4, len=buf_len @8.
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write("local.get $buf")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write("local.get $buf_len")
+        self._write("i32.store offset=8")
+        self._indent -= 1
+        self._write(")")
+
+    def _emit_wasi_read_line_err(self, msg_off: int, msg_len: int) -> None:
+        """Write an ``Err(IoError)`` into ``$ret_area`` for the
+        ``result_string_io_error`` 20-byte shape: tag@0 = 1, message = the
+        interned fixed string (m_ptr@4, m_len@8), empty cause (c_ptr@12 =
+        0, c_len@16 = 0). ``$ret_area`` is in scope (the wrapper's param).
+        Same shape as ``_emit_wasi_fs_read_err``; the message here is the
+        oracle's ``"end of input"`` so the Err arm is byte-identical."""
+        self._write("local.get $ret_area")
+        self._write("i32.const 1")
+        self._write("i32.store offset=0")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_off}")
+        self._write("i32.store offset=4")
+        self._write("local.get $ret_area")
+        self._write(f"i32.const {msg_len}")
+        self._write("i32.store offset=8")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=12")
+        self._write("local.get $ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=16")
 
     def _emit_wasi_monotonic_wrapper(self) -> None:
         """``$Clock_now_monotonic (handle i32) -> f64``.

@@ -10,13 +10,12 @@
 // Trimmed to the get-stdout() reader Capa's experimental --wasi mode
 // imports (Stdio.print / Stdio.println -> get-stdout ->
 // output-stream.blocking-write-and-flush loop). The upstream stdio.wit
-// declares stdin / stdout / stderr in one file; here stdout and stderr
-// are split into one file each (this file + stderr.wit) so each
-// interface is independently greppable, and stdin is omitted because
-// Stdio.read_line still travels the capa:host/stdio bridge (not yet
-// migrated). All three interfaces belong to the same wasi:cli@0.2.0
-// package as environment.wit; wasm-tools merges the package's .wit
-// files when resolving deps/cli/.
+// declares stdin / stdout / stderr in one file; here stdout, stderr and
+// stdin are split into one file each (this file + stderr.wit + stdin.wit)
+// so each interface is independently greppable. stdin.wit (Stdio.read_line
+// -> get-stdin, Phase 2, 2026-06-29) joins the same package. All four
+// interfaces belong to the same wasi:cli@0.2.0 package as environment.wit;
+// wasm-tools merges the package's .wit files when resolving deps/cli/.
 //
 // Canonical-ABI / unit conventions matching the host wasmtime
 // add_wasip2() provides:

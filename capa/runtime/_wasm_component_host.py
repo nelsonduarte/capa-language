@@ -87,8 +87,23 @@ class WasmComponentHost:
         env_ceiling: Optional["object"] = None,
         fs_ceiling: Optional["object"] = None,
         net_ceiling: Optional["object"] = None,
+        stdin: Optional[bytes] = None,
     ):
         self._args = list(args)
+        # WASI Stdio.read_line Phase 2 (2026-06-29): the bytes to feed the
+        # component's standard input, or None to inherit the host process
+        # stdin. In --wasi the guest reads ``Stdio.read_line`` from
+        # ``wasi:cli/stdin`` (get-stdin -> input-stream.blocking-read),
+        # which add_wasip2() serves from this WasiConfig's stdin source.
+        # When provided, the bytes are written to a temp file installed as
+        # ``WasiConfig.stdin_file`` (the wasmtime-py stdin setter takes a
+        # path); the temp file is cleaned up when the host is closed /
+        # garbage-collected. Only consulted in --wasi mode; the default
+        # capa:host path reads ``sys.stdin`` directly in the read-line
+        # host bridge. ``b""`` means an EMPTY stdin (immediate EOF), which
+        # is distinct from ``None`` (inherit the host stdin).
+        self._stdin = stdin
+        self._stdin_tmp_path: Optional[str] = None
         # WASI Fs Phase 0 (2026-06-27): the statically-computed Fs
         # preopen ceiling (``capa.ir.FsCeiling``) for the program being
         # run, or None when not computed. When the ceiling is CLOSED,
@@ -226,6 +241,28 @@ class WasmComponentHost:
 
             wasi_cfg.stdout_custom = _capture_stdout
             wasi_cfg.stderr_custom = _capture_stderr
+            # Stdio.read_line Phase 2 (2026-06-29): standard input source.
+            # When the caller supplied explicit bytes, write them to a
+            # temp file and install it as the component's stdin (the
+            # wasmtime-py ``WasiConfig.stdin_file`` setter takes a path,
+            # not a buffer). The guest's wasi:cli/stdin get-stdin then
+            # reads from these bytes via input-stream.blocking-read; an
+            # empty buffer yields immediate EOF (the guest's read_line
+            # returns Err("end of input")). When no bytes were supplied
+            # (the common CLI case), inherit the host process stdin so an
+            # interactive / piped program reads the real terminal. The
+            # temp file lives until the host is closed (see ``close`` /
+            # ``__del__``) so wasmtime can read it lazily during the run.
+            if self._stdin is not None:
+                import tempfile
+                fd, self._stdin_tmp_path = tempfile.mkstemp(
+                    prefix="capa-wasi-stdin-",
+                )
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(self._stdin)
+                wasi_cfg.stdin_file = self._stdin_tmp_path
+            else:
+                wasi_cfg.inherit_stdin()
             # Env migration (2026-06-27): in WASI mode ``Env.get`` /
             # ``Env.args`` read ``wasi:cli/environment`` (get-environment
             # / get-arguments), which ``add_wasip2()`` serves from this
@@ -327,6 +364,17 @@ class WasmComponentHost:
         # cannot carry a stale latch from one program into the next.
         self.panicked = False
         self._register_all()
+
+    def __del__(self):
+        # Remove the WASI stdin temp file (Phase 2) when the host is
+        # collected. Best-effort: a missing file or an OS quirk on
+        # interpreter shutdown must not raise from a finalizer.
+        path = getattr(self, "_stdin_tmp_path", None)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     def captured_stdout(self) -> bytes:
         """The raw UTF-8 bytes the guest wrote to wasi:cli/stdout
@@ -446,10 +494,15 @@ class WasmComponentHost:
         # stdout_custom / stderr_custom capture callbacks installed in
         # __init__), so the capa:host/stdio print / println / eprintln
         # methods are NOT registered here in WASI mode -- the component
-        # imports none of them. read_line is NOT migrated (still
-        # capa:host/stdio below) and panic stays on capa:host/panic. In
-        # the DEFAULT (non-wasi) path all three writers are registered as
-        # before, forwarding to sys.stdout / sys.stderr.
+        # imports none of them. read_line is ALSO migrated in WASI mode
+        # now (Phase 2, 2026-06-29): the guest routes it to wasi:cli/stdin
+        # (get-stdin -> input-stream.blocking-read), served by add_wasip2 +
+        # the WasiConfig stdin source installed in __init__, so the
+        # capa:host/stdio read-line method is NOT registered here in WASI
+        # mode either. Only ``panic`` stays on capa:host/panic. In the
+        # DEFAULT (non-wasi) path all three writers AND read-line are
+        # registered as before, forwarding to sys.stdout / sys.stderr /
+        # sys.stdin.
         #
         # Stdio has no handle threading (no attenuation surface);
         # signatures stay (msg) -> () like the core host.
@@ -472,22 +525,23 @@ class WasmComponentHost:
                 lambda _store, msg: _write_safe(sys.stderr, msg + "\n"),
             )
 
-        def stdio_read_line(_store):
-            # result<string, io-error>: dispatch by Python type.
-            # Return str on Ok, IoErrorRecord on Err (EOF, OS
-            # error). Mirrors the Python runtime's
-            # ``sys.stdin.readline().rstrip("\n")`` shape.
-            try:
-                line = sys.stdin.readline()
-            except OSError as e:
-                return IoErrorRecord(
-                    message="read failed", cause=str(e),
-                )
-            if not line:
-                return IoErrorRecord(message="end of input")
-            return line.rstrip("\n")
+        if not self._wasi:
+            def stdio_read_line(_store):
+                # result<string, io-error>: dispatch by Python type.
+                # Return str on Ok, IoErrorRecord on Err (EOF, OS
+                # error). Mirrors the Python runtime's
+                # ``sys.stdin.readline().rstrip("\n")`` shape.
+                try:
+                    line = sys.stdin.readline()
+                except OSError as e:
+                    return IoErrorRecord(
+                        message="read failed", cause=str(e),
+                    )
+                if not line:
+                    return IoErrorRecord(message="end of input")
+                return line.rstrip("\n")
 
-        stdio.add_func("read-line", stdio_read_line)
+            stdio.add_func("read-line", stdio_read_line)
         stdio.close()
 
     def _register_panic(self, root: wc.LinkerInstance) -> None:

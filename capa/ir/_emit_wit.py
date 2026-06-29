@@ -514,15 +514,20 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     ("Env", "allows"),
 })
 
-# Stdio methods routed to wasi:cli/stdout|stderr in --wasi (Phase 1,
-# 2026-06-29). UNLIKE the documentation-only ``_WASI_MIGRATED_METHODS``
-# above, this set IS consulted by ``_emit_wit_wasi``: a Stdio interface
-# is emitted on capa:host ONLY for methods outside this set (read_line,
-# still on capa:host), and these methods are filtered out of the
-# interface body. Keep in lockstep with
-# ``capa.ir._emit_wasm._wasi._WASI_STDIO_MIGRATED``.
+# Stdio methods migrated off capa:host/stdio in --wasi. UNLIKE the
+# documentation-only ``_WASI_MIGRATED_METHODS`` above, this set IS
+# consulted by ``_emit_wit_wasi``: a Stdio interface is emitted on
+# capa:host ONLY for methods outside this set, and these methods are
+# filtered out of the interface body. With Phase 2 (2026-06-29) it covers
+# the WHOLE Stdio surface -- the output ops (print / println / eprintln ->
+# wasi:cli/stdout|stderr, Phase 1) AND read_line (-> wasi:cli/stdin +
+# wasi:io/streams, Phase 2) -- so a program using only Stdio carries NO
+# capa:host stdio interface at all (only ``panic`` may remain on capa:host
+# in --wasi). Keep in lockstep with
+# ``capa.ir._emit_wasm._wasi._WASI_STDIO_MIGRATED`` (the output ops) plus
+# the migrated ``read_line``.
 _WASI_STDIO_MIGRATED_METHODS: frozenset[str] = frozenset(
-    {"print", "println", "eprintln"}
+    {"print", "println", "eprintln", "read_line"}
 )
 
 
@@ -803,17 +808,30 @@ def _emit_wit_wasi(
             lines.append("  import wasi:cli/stdout@0.2.0;")
         if "eprintln" in stdio_methods:
             lines.append("  import wasi:cli/stderr@0.2.0;")
+        # read_line (Phase 2, 2026-06-29): get-stdin -> input-stream, read
+        # byte-at-a-time via wasi:io/streams.input-stream.blocking-read
+        # until "\n" / EOF. Imports wasi:cli/stdin plus wasi:io/streams (+
+        # wasi:io/error for the resource-drop of an error a failed
+        # blocking-read carries), the same io interfaces the output ops
+        # use, so the de-dup pass below collapses them to one import each.
+        if "read_line" in stdio_methods:
+            lines.append("  import wasi:cli/stdin@0.2.0;")
         if stdio_methods & _WASI_STDIO_MIGRATED_METHODS:
             lines.append("  import wasi:io/streams@0.2.0;")
-            # The chunked write helper drops the ``error`` resource a
+            # The chunked write helper (output) and the byte read loop
+            # (read_line) both drop the ``error`` resource a
             # last-operation-failed stream-error carries; wasi:io/error
             # provides its resource-drop. The de-dup pass below prunes a
             # duplicate already imported by an Fs / Net stream op.
             lines.append("  import wasi:io/error@0.2.0;")
     # capa:host imports for the non-migrated caps (hybrid coexistence).
-    # Stdio is special-cased: its capa:host interface is imported ONLY
-    # when read_line is reached (print / println / eprintln are migrated
-    # to wasi:cli above). A print-only program imports no capa:host stdio.
+    # Stdio is special-cased: the WHOLE Stdio surface is now migrated off
+    # capa:host in --wasi -- print / println / eprintln to wasi:cli/stdout|
+    # stderr (Phase 1) and read_line to wasi:cli/stdin (Phase 2) -- so a
+    # Stdio-only program imports NO capa:host stdio interface. The guard
+    # below (``used["Stdio"] - _WASI_STDIO_MIGRATED_METHODS`` non-empty)
+    # is now always empty for the built-in Stdio methods; it is kept so a
+    # future un-migrated Stdio method would re-pull the capa:host import.
     for cap in sorted(used.keys()):
         if cap == "Stdio":
             if used["Stdio"] - _WASI_STDIO_MIGRATED_METHODS:

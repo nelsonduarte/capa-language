@@ -614,6 +614,20 @@ class WasmEmitter(
         ):
             self._intern_string("\n")
 
+        # Experimental WASI mode: Stdio.read_line (Phase 2, 2026-06-29).
+        # ``read_line`` returns ``Err(IoError("end of input"))`` at EOF
+        # (input fully consumed). The wrapper writes that fixed message
+        # into the Err arm, so it must be pre-interned HERE -- before the
+        # data segment is emitted below -- for the same write-only-parity
+        # reason the Fs / Net Err strings follow: a string interned later
+        # (at $Stdio_read_line emission time) gets a valid offset but no
+        # backing ``(data ...)`` block, so its bytes would be undefined
+        # memory at runtime. The message matches the Python oracle's
+        # ``Err(IoError("end of input"))`` (capa/runtime/_capabilities.py
+        # read_line) byte-for-byte.
+        if self._wasi and ("Stdio", "read_line") in self._used_caps:
+            self._intern_string("end of input")
+
         # Experimental WASI mode: compute the static Net host ceiling so
         # the Net.get guest-side host gate (``$Net_host_allowed``) can
         # refuse any host the program does not name as a literal url
@@ -947,6 +961,27 @@ class WasmEmitter(
                 self._wasi_stdio_scratch_offset + 16
             )
 
+        # Experimental WASI mode: Stdio.read_line (Phase 2, 2026-06-29). A
+        # 16-byte, 8-aligned scratch holding the single indirect return of
+        # input-stream.blocking-read:
+        #   blocking-read  result<list<u8>, stream-error>  @ +0  (12B)
+        # Each 1-byte read reuses this one slot (the reads are sequential,
+        # never overlapping). The byte the host yields lands in its own
+        # canonical-ABI-allocated memory (cabi_realloc / $alloc); the
+        # wrapper copies it into a geometrically-grown heap accumulation
+        # buffer via $alloc + memory.copy, exactly like Fs.read. This
+        # region is SEPARATE from every Fs / Env / Clock / Net / Stdio-out
+        # scratch (disjoint offsets are belt-and-braces). 0 means "not
+        # reserved".
+        self._wasi_stdin_scratch_offset = 0
+        if self._wasi and ("Stdio", "read_line") in self._used_caps:
+            self._wasi_stdin_scratch_offset = _align_up(
+                self._string_data_offset, 8,
+            )
+            self._string_data_offset = (
+                self._wasi_stdin_scratch_offset + 16
+            )
+
         # Stage 1: emit the (module ... ) header with imports and
         # memory.
         body_lines: list[str] = []
@@ -1076,6 +1111,7 @@ class WasmEmitter(
             or self._wasi_env_uses_get_or_args()
             or self._wasi_net_uses_attenuation()
             or self._wasi_fs_uses_preopens
+            or (self._wasi and ("Stdio", "read_line") in self._used_caps)
         ):
             heap_start = _align_up(self._string_data_offset, 8)
             self._write(

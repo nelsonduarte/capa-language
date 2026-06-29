@@ -225,10 +225,21 @@ world program {
 ```
 
 Note that no `capa:host` `random` / `clock` interface is emitted; the
-migrated caps move entirely to `wasi:*`. Stdio keeps its `capa:host`
-interface and world import. The `export main: func(clock: u32)`
+migrated caps move entirely to `wasi:*`. The `export main: func(clock: u32)`
 handle param is still present because the core module un-erases Clock
 into an `i32` handle slot (the WASI wrappers simply ignore it).
+
+> **Update (2026-06-29):** Stdio no longer keeps a `capa:host` interface
+> in `--wasi`. Its **output** ops (`print` / `println` / `eprintln`)
+> migrated to `wasi:cli/stdout` | `wasi:cli/stderr` (Phase 1), and
+> `read_line` migrated to `wasi:cli/stdin` + `wasi:io/streams`
+> (`input-stream.blocking-read`, byte-at-a-time until `"\n"` / EOF;
+> Phase 2). `read_line` strips a single trailing `"\r"` for `"\r\n"`
+> text-mode parity with the Python oracle, and relies on the underlying
+> stdin position being owned by the host descriptor (so a fresh
+> `get-stdin` + drop per call preserves the read cursor). Only the
+> `panic` builtin (`capa:host/panic`) now remains on `capa:host` for a
+> `--wasi` program.
 
 ## Unit conversion (guest-side, in WAT)
 

@@ -363,8 +363,10 @@ class TestWasiWitGeneration(unittest.TestCase):
         # Stdio Phase 1 (2026-06-29): print / println / eprintln migrate
         # to wasi:cli/stdout|stderr. _HYBRID_SRC uses println only, so the
         # world imports wasi:cli/stdout (+ wasi:io/streams) and carries NO
-        # capa:host stdio interface (read_line, the only still-capa:host
-        # Stdio method, is absent here).
+        # capa:host stdio interface. (As of Phase 2 the WHOLE Stdio surface
+        # is migrated off capa:host -- read_line too, to wasi:cli/stdin --
+        # so no built-in Stdio method ever pulls a capa:host stdio
+        # interface; read_line is simply absent from this program.)
         wit = self._wit(_HYBRID_SRC)
         self.assertIn("import wasi:cli/stdout@0.2.0;", wit)
         self.assertIn("import wasi:io/streams@0.2.0;", wit)
@@ -658,6 +660,27 @@ class TestWasiWitLicenseHeaders(unittest.TestCase):
         self.assertIn("wasi-cli", text)
         self.assertIn("get-environment", text)
         self.assertIn("get-arguments", text)
+
+    def test_cli_stdin_spdx_header(self):
+        # Phase 2 (2026-06-29): the vendored wasi:cli/stdin interface
+        # (Stdio.read_line -> get-stdin) carries the same SPDX + provenance
+        # header as the other cli files, and omits the package declaration
+        # (which lives only in environment.wit).
+        text = self._wit("cli", "stdin.wit")
+        self.assertIn(
+            "SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception", text
+        )
+        self.assertIn("wasi-cli", text)
+        self.assertIn("get-stdin", text)
+        # No actual ``package`` DECLARATION line (the package lives only in
+        # environment.wit; the comment text mentioning the package name is
+        # fine). A declaration line is a non-comment line starting with
+        # ``package``.
+        decl_lines = [
+            ln for ln in text.splitlines()
+            if ln.strip().startswith("package ")
+        ]
+        self.assertEqual(decl_lines, [])
 
 
 @unittest.skipUnless(
@@ -3878,6 +3901,242 @@ class TestWasiStdioParity(unittest.TestCase):
         self.assertIn("env=none", out)
         self.assertIn("r=", out)
         self.assertEqual(err, "err line\n")
+
+
+def _run_python_stdin(src: str, stdin_bytes: bytes) -> str:
+    """Python oracle run with ``stdin_bytes`` fed as standard input,
+    capturing stdout. ``sys.stdin`` is replaced by a TextIOWrapper over
+    the bytes in TEXT MODE with universal newlines (``newline=None``) so
+    it behaves exactly like the real interpreter's ``sys.stdin`` -- the
+    same text-mode that translates ``\\r\\n`` -> ``\\n`` before the
+    runtime's ``readline().rstrip("\\n")``. This is the parity reference
+    the WASI byte reader's trailing-``\\r`` strip is calibrated against."""
+    from capa import transpile
+    module, result = _parse_analyze(src)
+    code = transpile(module, types=result.types, bindings=result.bindings)
+    out = io.StringIO()
+    so, si = sys.stdout, sys.stdin
+    sys.stdout = out
+    sys.stdin = io.TextIOWrapper(
+        io.BytesIO(stdin_bytes), encoding="utf-8", newline=None,
+    )
+    try:
+        ns: dict = {"__name__": "__main__"}
+        exec(compile(code, "<wasi-stdin-parity>", "exec"), ns)
+    finally:
+        sys.stdout, sys.stdin = so, si
+    return out.getvalue()
+
+
+def _run_capa_host_stdin(src: str, stdin_bytes: bytes) -> str:
+    """capa:host (default, non-wasi) component run with ``stdin_bytes`` fed
+    as standard input, capturing stdout. The capa:host read-line bridge
+    reads ``sys.stdin.readline()``, so the bytes are wrapped in a
+    text-mode ``sys.stdin`` (universal newlines) for the duration of the
+    run, identical to the Python oracle's stdin."""
+    from capa.ir import compile_wasm, compile_wit
+    from capa.cli import _wrap_as_component
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    module, result = _parse_analyze(src)
+    core = compile_wasm(module, types=result.types, wasi=False)
+    wit = compile_wit(module, types=result.types, wasi=False)
+    comp = _wrap_as_component(core, wit, wasi=False)
+    out = io.StringIO()
+    so, si = sys.stdout, sys.stdin
+    sys.stdout = out
+    sys.stdin = io.TextIOWrapper(
+        io.BytesIO(stdin_bytes), encoding="utf-8", newline=None,
+    )
+    try:
+        WasmComponentHost(wasi=False).run_main(comp)
+    finally:
+        sys.stdout, sys.stdin = so, si
+    return out.getvalue()
+
+
+def _run_wasi_stdin(src: str, stdin_bytes: bytes) -> str:
+    """WASI component run with ``stdin_bytes`` fed through the host's
+    WasiConfig stdin source (Stdio.read_line -> wasi:cli/stdin), capturing
+    stdout from the host's captured buffer (wasi:cli/stdout)."""
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    comp = _build_wasi_component(src)
+    host = WasmComponentHost(wasi=True, stdin=stdin_bytes)
+    return _wasi_run_capture(host, comp)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiStdinReadLine(unittest.TestCase):
+    """Stdio.read_line Phase 2 (2026-06-29): read_line routes to
+    wasi:cli/stdin (get-stdin -> input-stream) + wasi:io/streams
+    (input-stream.blocking-read, byte-at-a-time until "\\n" or EOF). The
+    Result<String, IoError> is BYTE-IDENTICAL across the three backends
+    (Python oracle, capa:host component, WASI component) for the same
+    stdin: a line yields Ok(text) without the trailing "\\n"; EOF yields
+    Err(IoError("end of input")). The WASI byte reader strips a single
+    trailing "\\r" so "\\r\\n" lines reach parity with the oracle's
+    universal-newline text mode.
+
+    panic stays on capa:host/panic; this phase leaves ONLY panic on
+    capa:host for a --wasi program."""
+
+    # A read-all loop: read lines until Err, emit each as ``[line]\n``,
+    # then a terminator. Reconstructs the input (minus the "\n"s) and lets
+    # us compare the full transcript across backends.
+    _READ_ALL = (
+        "fun main(stdio: Stdio)\n"
+        "    var go = true\n"
+        "    while go\n"
+        "        match stdio.read_line()\n"
+        "            Ok(line) -> stdio.println(\"[${line}]\")\n"
+        "            Err(e) -> go = false\n"
+        "    stdio.println(\"<END>\")\n"
+    )
+
+    # A single read_line that reports Ok / Err distinctly. The Err arm
+    # prints a fixed marker (the builtin IoError exposes no source-level
+    # field; the "end of input" message parity is proven at the wrapper /
+    # pre-interning level and host-side, and the Err DISCRIMINANT parity
+    # is what the three-way equality below asserts).
+    _ONE = (
+        "fun main(stdio: Stdio)\n"
+        "    match stdio.read_line()\n"
+        "        Ok(line) -> stdio.println(\"ok:${line}\")\n"
+        "        Err(e) -> stdio.println(\"err:eof\")\n"
+    )
+
+    def _assert_three_way(self, src: str, stdin_bytes: bytes) -> str:
+        py = _run_python_stdin(src, stdin_bytes)
+        host = _run_capa_host_stdin(src, stdin_bytes)
+        wasi = _run_wasi_stdin(src, stdin_bytes)
+        self.assertEqual(py, host, "py/host read_line diverge")
+        self.assertEqual(py, wasi, "py/wasi read_line diverge")
+        return wasi
+
+    def test_single_line(self):
+        out = self._assert_three_way(self._ONE, b"abc\n")
+        self.assertEqual(out, "ok:abc\n")
+
+    def test_multiple_lines_in_order(self):
+        # Three successive read_line over three lines return line1, line2,
+        # line3 in order, no byte lost or repeated (the stdin position
+        # persists across the per-call get-stdin + drop).
+        out = self._assert_three_way(self._READ_ALL, b"one\ntwo\nthree\n")
+        self.assertEqual(out, "[one]\n[two]\n[three]\n<END>\n")
+
+    def test_empty_line(self):
+        # A bare "\n" yields Ok("") (an empty line), distinct from EOF.
+        out = self._assert_three_way(self._READ_ALL, b"a\n\nb\n")
+        self.assertEqual(out, "[a]\n[]\n[b]\n<END>\n")
+
+    def test_crlf_parity(self):
+        # "\r\n" line endings reach parity with "\n": the trailing "\r" is
+        # stripped, so the line content matches the oracle's text mode.
+        out = self._assert_three_way(self._READ_ALL, b"x\r\ny\r\n")
+        self.assertEqual(out, "[x]\n[y]\n<END>\n")
+
+    def test_lf_and_crlf_same_result(self):
+        # The SAME logical input with "\n" vs "\r\n" endings produces the
+        # identical transcript on the WASI backend (the \r-strip is what
+        # makes them converge).
+        lf = _run_wasi_stdin(self._READ_ALL, b"alpha\nbeta\n")
+        crlf = _run_wasi_stdin(self._READ_ALL, b"alpha\r\nbeta\r\n")
+        self.assertEqual(lf, crlf)
+        self.assertEqual(lf, "[alpha]\n[beta]\n<END>\n")
+
+    def test_last_line_without_newline(self):
+        # A final line with no trailing "\n" is still returned; the NEXT
+        # read_line then hits EOF.
+        out = self._assert_three_way(self._READ_ALL, b"abc\ndef")
+        self.assertEqual(out, "[abc]\n[def]\n<END>\n")
+
+    def test_empty_input_is_eof(self):
+        # Empty stdin -> the first read_line is Err (the EOF marker), the
+        # SAME discriminant on every backend.
+        out = self._assert_three_way(self._ONE, b"")
+        self.assertEqual(out, "err:eof\n")
+
+    def test_eof_message_pre_interned(self):
+        # The WASI wrapper writes the oracle's "end of input" message into
+        # the Err arm; it must be pre-interned (present in the data segment
+        # with a backing ``(data ...)`` block), else its bytes would be
+        # undefined memory. Assert the literal appears in the emitted WAT
+        # data segment for a read_line program.
+        from capa.ir import compile_wasm
+        module, result = _parse_analyze(self._ONE)
+        core = compile_wasm(module, types=result.types, wasi=True)
+        self.assertIn(b"end of input", core)
+
+    def test_utf8_multibyte_line(self):
+        # A line with 2-, 3- and 4-byte UTF-8 code points round-trips
+        # byte-identically through the byte reader.
+        data = "café 中文 🚀\n".encode("utf-8")
+        out = self._assert_three_way(self._ONE, data)
+        self.assertEqual(out, "ok:café 中文 🚀\n")
+
+    def test_read_all_reconstructs_input(self):
+        # The read-all loop reconstructs the exact input (minus the "\n"s)
+        # identically on all three backends, including a long run of lines.
+        lines = [f"line-{i}" for i in range(50)]
+        data = ("\n".join(lines) + "\n").encode("utf-8")
+        out = self._assert_three_way(self._READ_ALL, data)
+        expected = "".join(f"[{ln}]\n" for ln in lines) + "<END>\n"
+        self.assertEqual(out, expected)
+
+    def test_long_line_multibyte_accumulation(self):
+        # A single line longer than the initial buffer capacity forces the
+        # geometric realloc + copy path; the full line must survive intact.
+        long_line = "z" * 5000
+        out = self._assert_three_way(
+            self._ONE, (long_line + "\n").encode("utf-8"),
+        )
+        self.assertEqual(out, f"ok:{long_line}\n")
+
+    def test_read_line_only_program_is_stock_wasi(self):
+        # A read_line-only program (no panic) imports NO capa:host
+        # interface: only wasi:cli/stdin + wasi:cli/stdout + wasi:io/* .
+        from capa.ir import compile_wit
+        module, result = _parse_analyze(self._ONE)
+        wit = compile_wit(module, types=result.types, wasi=True)
+        self.assertIn("import wasi:cli/stdin@0.2.0;", wit)
+        self.assertNotIn("interface stdio {", wit)
+        self.assertNotIn("  import stdio;", wit)
+        self.assertNotIn("import panic;", wit)
+
+    def test_coexists_with_fs_read_dedups_imports(self):
+        # read_line + Fs.read in one program share the wasi:io/streams
+        # input-stream blocking-read + resource-drop and the wasi:io/error
+        # resource-drop. Each shared import must appear EXACTLY once in the
+        # emitted core module (a core module re-declaring the same import is
+        # rejected by wasm-tools). The combined component must also build.
+        from capa.ir import compile_wasm, compile_wit
+        from capa.cli import _wrap_as_component
+        src = (
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    match fs.read(\"/tmp/capa-coexist.txt\")\n"
+            "        Ok(c) -> stdio.println(\"fsok\")\n"
+            "        Err(e) -> stdio.println(\"fserr\")\n"
+            "    match stdio.read_line()\n"
+            "        Ok(line) -> stdio.println(\"rl:${line}\")\n"
+            "        Err(e) -> stdio.println(\"rlerr\")\n"
+        )
+        module, result = _parse_analyze(src)
+        core = compile_wasm(module, types=result.types, wasi=True)
+        for sym in (
+            b"[method]input-stream.blocking-read",
+            b"[resource-drop]input-stream",
+            b"[resource-drop]error",
+            b"get-stdin",
+        ):
+            self.assertEqual(
+                core.count(sym), 1, f"{sym!r} not imported exactly once",
+            )
+        wit = compile_wit(module, types=result.types, wasi=True)
+        # The component links (the shared imports resolve, the world
+        # imports both wasi:cli/stdin and wasi:filesystem).
+        _wrap_as_component(core, wit, wasi=True)
 
 
 if __name__ == "__main__":

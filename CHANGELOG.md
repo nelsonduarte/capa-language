@@ -37,12 +37,24 @@ breaking changes and the discipline is still being shaped.
     `<=4096`-byte chunks). `println` / `eprintln` append the trailing
     newline guest-side, matching the prior `capa:host` semantics; the
     output is byte-identical to the Python oracle and the `capa:host`
-    backend across all three backends for valid UTF-8. `Stdio.read_line`
-    and the `panic` builtin are **not** migrated in this batch: they
-    still travel `capa:host/stdio` (`read-line`) and `capa:host/panic`,
-    coexisting in the same component. A program whose only `Stdio` use is
-    output (no `read_line`, no `panic`) imports no `capa:host` interface
-    at all -- it is 100 % stock WASI for its I/O.
+    backend across all three backends for valid UTF-8.
+  - `Stdio.read_line` -> `wasi:cli/stdin` (`get-stdin`) + `wasi:io/streams`
+    (`input-stream.blocking-read`, read byte-at-a-time until `"\n"` or
+    EOF), reusing `Fs.read`'s blocking-read / accumulation / input-stream
+    drop machinery but stopping at the first newline rather than at EOF.
+    The result is byte-identical to the Python oracle and the `capa:host`
+    backend: a line yields `Ok(text)` without the trailing `"\n"`, and EOF
+    yields `Err(IoError("end of input"))`. The byte reader strips a single
+    trailing `"\r"` so `"\r\n"` (Windows) line endings reach parity with
+    the oracle's universal-newline text mode (which translates `"\r\n"` ->
+    `"\n"` before `rstrip`). The underlying stdin read cursor is owned by
+    the host descriptor, so a fresh `get-stdin` + drop per `read_line`
+    preserves the position across successive calls (no buffering between
+    calls). Only the `panic` builtin now remains on `capa:host`
+    (`capa:host/panic`) for a `--wasi` program; a program whose only
+    capabilities are `Stdio` (output and/or `read_line`) and the migrated
+    readers imports no `capa:host` interface at all -- it is 100 % stock
+    WASI for its I/O.
   Interfaces not yet migrated (e.g. `Clock.sleep` and Clock
   `restrict_to_after`) are rejected at compile time in WASI mode with a
   clear error, so the flag never silently degrades a capability.
