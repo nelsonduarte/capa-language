@@ -349,6 +349,19 @@ class _WasiEmissionMixin:
         (``_WASI_FS_REJECTED`` is now empty); the fail-closed preopen
         ceiling obligation below still applies to any op that touches the
         filesystem.
+
+        Net (``get`` / ``post``) is supported in WASI mode over wasi:http,
+        but ONLY when every url is a string literal, so the static
+        allowed-host ceiling can be materialised. A dynamic / interpolated
+        url is REJECTED here (2026-06-29), SYMMETRIC with the Fs
+        dynamic-path rule: previously a dynamic url compiled to a runtime
+        fail-closed (an ``Err(IoError)`` without touching the network) that
+        an ``Err(_) -> ()`` arm could swallow silently, degrading output
+        with no warning. Rejecting at compile time makes the problem
+        visible. The runtime fail-closed in the call-site emitter is kept
+        as defence-in-depth. (Env is the one capability that stays at
+        Level 2 inherit_env on a dynamic key and is intentionally NOT
+        aligned with this fail-closed rule.)
         """
         for cap, method in self._used_caps:
             if cap == "Clock" and method not in (
@@ -397,6 +410,31 @@ class _WasiEmissionMixin:
                 "string literal (the static preopen ceiling must be "
                 "closed); this program passes a dynamic path to an Fs "
                 "operation, so no preopen can be derived (fail-closed). "
+                "Use the default capa:host backend (drop --wasi)."
+            )
+        # Fail-closed proof obligation for Net, SYMMETRIC with Fs above: if
+        # the program uses a request-building Net op (``get`` / ``post``)
+        # but its static host ceiling is NOT closed (a dynamic / interpolated
+        # url reaches get/post), the allowed-host ceiling cannot be
+        # materialised. Reject at COMPILE time with a clear message rather
+        # than emit a call site that always FAILS CLOSED at runtime (an
+        # ``Err(IoError)`` without touching the network): a program that
+        # swallows that Err (``Err(_) -> ()``) would otherwise degrade its
+        # output SILENTLY with no warning. This mirrors the Fs rule exactly
+        # (a dynamic Fs path rejects); the runtime fail-closed in the
+        # call-site emitter is RETAINED as defence-in-depth but is no longer
+        # the normal path for a dynamic url. (Env stays at Level 2
+        # inherit_env and is intentionally NOT aligned here.)
+        if any(
+            cap == "Net" and method in ("get", "post")
+            for cap, method in self._used_caps
+        ) and self._net_ceiling is not None and not self._net_ceiling.closed:
+            raise WasmEmissionError(
+                "Net in WASI mode requires every URL passed to get/post to "
+                "be a string literal so the allowed-host ceiling can be "
+                "materialised; this program passes a dynamic URL (a local, "
+                "parameter, interpolated or computed value) to a Net "
+                "operation, so no host ceiling can be derived (fail-closed). "
                 "Use the default capa:host backend (drop --wasi)."
             )
 

@@ -9,6 +9,27 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Changed.**
+
+- *In the experimental `--wasi` mode, a dynamic (non-literal) URL passed
+  to `Net.get` / `Net.post` is now REJECTED at compile time, symmetric
+  with the existing `Fs` dynamic-path rule.* Previously a dynamic /
+  interpolated URL (e.g. `net.get("http://api/?q=${name}")` or a URL
+  taken from a parameter or `let`-bound local) compiled to a runtime
+  fail-closed (an `Err(IoError)` produced without touching the network),
+  which a program with an `Err(_) -> ()` arm could swallow silently,
+  degrading its output with no warning. Because the static allowed-host
+  ceiling cannot be materialised from a non-literal URL, the compiler now
+  raises a clear `WasmEmissionError` so the problem is visible to the
+  programmer, exactly as it already does for a dynamic `Fs` path. The
+  runtime fail-closed in the call-site emitter is retained as
+  defence-in-depth. This is a BEHAVIOUR change: a `--wasi` program that
+  passed a dynamic URL and previously "ran" (with the silent fail-closed)
+  no longer compiles under `--wasi`; make the URL a string literal or use
+  the default `capa:host` backend (drop `--wasi`). `Env` is unchanged (it
+  stays at Level 2 `inherit_env` on a dynamic key and is intentionally not
+  aligned with this fail-closed rule).
+
 ## [1.14.0], 2026-06-29
 
 **Capa 1.14.0.** A MINOR release: an experimental, opt-in `--wasi` mode

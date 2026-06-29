@@ -1421,6 +1421,106 @@ class TestWasiFsRejections(unittest.TestCase):
         self.assertIn("literal", str(cm.exception))
 
 
+class TestWasiNetDynamicUrlRejections(unittest.TestCase):
+    """A DYNAMIC Net url (not a string literal) reaching get / post is
+    rejected at COMPILE time in --wasi (2026-06-29), SYMMETRIC with the Fs
+    dynamic-path rejection above. Before this, a dynamic url compiled to a
+    runtime fail-closed (Err without touching the network) that an
+    ``Err(_) -> ()`` arm could swallow silently; now the program does not
+    compile under --wasi, making the problem visible to the programmer.
+    The rejection is a pure-Python compile-time check (no wasm-tools /
+    wasmtime needed), so this class is not gated like the end-to-end ones.
+    A LITERAL url still compiles (covered by TestWasiNetRejections)."""
+
+    def _compile(self, src: str):
+        from capa.ir import compile_wat
+        module, result = _parse_analyze(src)
+        return compile_wat(module, types=result.types, wasi=True)
+
+    def _assert_rejected(self, src: str):
+        with self.assertRaises(Exception) as cm:
+            self._compile(src)
+        msg = str(cm.exception)
+        self.assertIn("WASI mode", msg)
+        self.assertIn("literal", msg)
+        # The message names get/post and points at the host ceiling, so the
+        # programmer knows precisely what to fix (make the url a literal).
+        self.assertIn("get/post", msg)
+        return msg
+
+    def test_get_interpolated_url_rejected(self):
+        # An interpolated url (the capa_governance_pack shape) is dynamic:
+        # rejected at compile (was: silent runtime fail-closed).
+        src = (
+            "fun main(net: Net, stdio: Stdio, name: String)\n"
+            "    match net.get(\"http://api.example/?q=${name}\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        self._assert_rejected(src)
+
+    def test_get_param_url_rejected(self):
+        # A url taken straight from a parameter is dynamic: rejected.
+        src = (
+            "fun main(net: Net, stdio: Stdio, u: String)\n"
+            "    match net.get(u)\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        self._assert_rejected(src)
+
+    def test_get_let_bound_literal_rejected(self):
+        # A literal bound through a let appears as a local at the call site,
+        # so it is conservatively dynamic (the ceiling does not fold
+        # constants): rejected, matching the Fs let-bound rule.
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let u = \"http://api.example/x\"\n"
+            "    match net.get(u)\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        self._assert_rejected(src)
+
+    def test_post_param_url_rejected(self):
+        # post is symmetric with get: a dynamic url is rejected.
+        src = (
+            "fun main(net: Net, stdio: Stdio, u: String)\n"
+            "    match net.post(u, \"body\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        self._assert_rejected(src)
+
+    def test_literal_get_still_compiles(self):
+        # The positive control alongside the rejections: a literal url
+        # compiles to the $Net_get wrapper (the host-literal Net tests stay
+        # green).
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    match net.get(\"http://api.example/x\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        wat = self._compile(src)
+        self.assertIn("(func $Net_get", wat)
+
+    def test_mixed_literal_and_dynamic_rejected(self):
+        # Even ONE dynamic url among otherwise-literal calls opens the
+        # ceiling and rejects the whole program (the ceiling is closed only
+        # when EVERY get/post url is literal).
+        src = (
+            "fun main(net: Net, stdio: Stdio, u: String)\n"
+            "    match net.get(\"http://api.example/x\")\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+            "    match net.get(u)\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+        )
+        self._assert_rejected(src)
+
+
 class TestWasiFsWitLicenseHeaders(unittest.TestCase):
     """The vendored wasi:filesystem / wasi:io WIT carry SPDX +
     provenance headers (no wasm-tools needed)."""
@@ -2880,34 +2980,29 @@ class TestWasiNetCeiling(unittest.TestCase):
     coarser ceiling than the Python oracle's unrestricted Net), so they
     are asserted on the WASI backend alone."""
 
-    def test_dynamic_url_is_fail_closed(self):
+    def test_dynamic_url_is_rejected_at_compile(self):
         # A url built from a local (not a literal) cannot be resolved to a
-        # wasi:http request at compile time, so the call site fail-closes
-        # to Err WITHOUT reaching the network -- even though the local
-        # server is live and the url is well-formed.
-        from capa.ir import (
-            compile_wasm, compile_wit, compute_net_ceiling,
+        # wasi:http request, so the allowed-host ceiling cannot be
+        # materialised. SYMMETRIC with Fs (2026-06-29): the program is now
+        # REJECTED at compile time with a clear message rather than emitting
+        # a call site that fail-closes silently at runtime (which a
+        # ``Err(_) -> ()`` would swallow). The ceiling is NOT closed.
+        from capa.ir import compile_wasm, compute_net_ceiling
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let u = \"http://host.example/p\"\n"
+            "    match net.get(u)\n"
+            "        Ok(b) -> stdio.println(\"[${b}]\")\n"
+            "        Err(e) -> stdio.println(\"ERR\")\n"
         )
-        from capa.cli import _wrap_as_component
-        from capa.runtime._wasm_component_host import WasmComponentHost
-        with _LocalHttpServer(b"should-not-be-seen") as auth:
-            src = (
-                "fun main(net: Net, stdio: Stdio)\n"
-                f"    let u = \"http://{auth}/p\"\n"
-                "    match net.get(u)\n"
-                "        Ok(b) -> stdio.println(\"[${b}]\")\n"
-                "        Err(e) -> stdio.println(\"ERR\")\n"
-            )
-            module, result = _parse_analyze(src)
-            # The ceiling is NOT closed (a dynamic url).
-            ceiling = compute_net_ceiling(module, types=result.types)
-            self.assertFalse(ceiling.closed)
-            core = compile_wasm(module, types=result.types, wasi=True)
-            wit = compile_wit(module, types=result.types, wasi=True)
-            comp = _wrap_as_component(core, wit, wasi=True)
-            host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
-            out = _wasi_run_capture(host, comp)
-        self.assertEqual(out, "ERR\n")
+        module, result = _parse_analyze(src)
+        # The ceiling is NOT closed (a dynamic url).
+        ceiling = compute_net_ceiling(module, types=result.types)
+        self.assertFalse(ceiling.closed)
+        with self.assertRaises(Exception) as cm:
+            compile_wasm(module, types=result.types, wasi=True)
+        self.assertIn("WASI mode", str(cm.exception))
+        self.assertIn("literal", str(cm.exception))
 
     def test_ceiling_collects_literal_hosts(self):
         from capa.ir import compute_net_ceiling
@@ -3169,29 +3264,26 @@ class TestWasiNetPostCeiling(unittest.TestCase):
     not name as a literal net.post url is denied, and a DYNAMIC url (built
     at runtime) is fail-closed WITHOUT reaching the network."""
 
-    def test_post_dynamic_url_is_fail_closed(self):
-        from capa.ir import (
-            compile_wasm, compile_wit, compute_net_ceiling,
+    def test_post_dynamic_url_is_rejected_at_compile(self):
+        # SYMMETRIC with Fs and with Net.get (2026-06-29): a dynamic post
+        # url cannot materialise the allowed-host ceiling, so the program is
+        # REJECTED at compile time rather than fail-closing silently at
+        # runtime.
+        from capa.ir import compile_wasm, compute_net_ceiling
+        src = (
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    let u = \"http://host.example/p\"\n"
+            "    match net.post(u, \"body\")\n"
+            "        Ok(b) -> stdio.println(\"[${b}]\")\n"
+            "        Err(e) -> stdio.println(\"ERR\")\n"
         )
-        from capa.cli import _wrap_as_component
-        from capa.runtime._wasm_component_host import WasmComponentHost
-        with _LocalPostServer("echo") as auth:
-            src = (
-                "fun main(net: Net, stdio: Stdio)\n"
-                f"    let u = \"http://{auth}/p\"\n"
-                "    match net.post(u, \"body\")\n"
-                "        Ok(b) -> stdio.println(\"[${b}]\")\n"
-                "        Err(e) -> stdio.println(\"ERR\")\n"
-            )
-            module, result = _parse_analyze(src)
-            ceiling = compute_net_ceiling(module, types=result.types)
-            self.assertFalse(ceiling.closed)
-            core = compile_wasm(module, types=result.types, wasi=True)
-            wit = compile_wit(module, types=result.types, wasi=True)
-            comp = _wrap_as_component(core, wit, wasi=True)
-            host = WasmComponentHost(wasi=True, net_ceiling=ceiling)
-            out = _wasi_run_capture(host, comp)
-        self.assertEqual(out, "ERR\n")
+        module, result = _parse_analyze(src)
+        ceiling = compute_net_ceiling(module, types=result.types)
+        self.assertFalse(ceiling.closed)
+        with self.assertRaises(Exception) as cm:
+            compile_wasm(module, types=result.types, wasi=True)
+        self.assertIn("WASI mode", str(cm.exception))
+        self.assertIn("literal", str(cm.exception))
 
     def test_post_ceiling_collects_literal_hosts(self):
         from capa.ir import compute_net_ceiling
