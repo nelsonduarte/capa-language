@@ -1390,11 +1390,31 @@ class _WasiEmissionMixin:
              up to ``"\\n"`` leaves ``"abc\\r"``; dropping the trailing
              ``"\\r"`` restores byte-parity with the oracle for BOTH
              ``"\\n"`` and ``"\\r\\n"`` line endings (confirmed by the
-             spike). A lone ``"\\r"`` with no following ``"\\n"`` is NOT a
-             line break here (it would need lookahead that risks
-             over-consuming the next line); that exotic old-Mac case is the
-             one documented divergence from the oracle's universal-newline
-             text mode and is not produced by terminals or pipes.
+             spike).
+
+             DELIBERATE DIVERGENCE (lone ``"\\r"``, documented, not a bug).
+             This wrapper recognises ONLY ``"\\n"`` and ``"\\r\\n"`` as line
+             terminators (the modern terminal / pipe / file endings). It does
+             NOT implement full universal-newlines: a lone ``"\\r"`` -- a CR
+             that is NOT immediately followed by ``"\\n"`` -- is treated as an
+             ORDINARY byte at ANY position, never as a line break. The Python
+             oracle's text mode, by contrast, breaks a line on ANY isolated
+             ``"\\r"``. So this wrapper and the oracle diverge whenever the
+             input contains an embedded or terminal lone CR, EVEN when the
+             input also ends in ``"\\n"``. Examples (oracle -> --wasi):
+
+               * ``"a\\rb\\n"``      -> oracle: ["a", "b"]; --wasi: ["a\\rb"]
+               * ``"x\\ry\\rz\\r"``  -> oracle: ["x","y","z"]; --wasi:
+                 ["x\\ry\\rz"]  (classic pre-2001 Mac line endings)
+
+             We ACCEPT this divergence rather than emit the lookahead a
+             correct lone-CR split would need (it risks over-consuming the
+             next line's first byte across a blocking-read boundary). The
+             lone-CR text format is the legacy Mac OS (pre-2001) convention,
+             practically extinct on terminals, pipes and files; the byte
+             parity claim for read_line is qualified to ``"\\n"`` and
+             ``"\\r\\n"`` inputs accordingly (see CHANGELOG.md and
+             docs/design/wasi_mode.md, "read_line lone-CR divergence").
           4. drop the input-stream and write Ok(String) = (buffer ptr,
              buffer length). The accumulated bytes are the raw line bytes;
              the Capa String is UTF-8 by construction, matching the

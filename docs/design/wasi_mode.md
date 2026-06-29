@@ -237,9 +237,45 @@ into an `i32` handle slot (the WASI wrappers simply ignore it).
 > Phase 2). `read_line` strips a single trailing `"\r"` for `"\r\n"`
 > text-mode parity with the Python oracle, and relies on the underlying
 > stdin position being owned by the host descriptor (so a fresh
-> `get-stdin` + drop per call preserves the read cursor). Only the
-> `panic` builtin (`capa:host/panic`) now remains on `capa:host` for a
-> `--wasi` program.
+> `get-stdin` + drop per call preserves the read cursor). It recognises
+> only `"\n"` and `"\r\n"` as line terminators; a lone `"\r"` (CR not
+> followed by `"\n"`) is a deliberate, documented divergence from the
+> oracle's universal-newline text mode (see "read_line lone-CR
+> divergence" below). Only the `panic` builtin (`capa:host/panic`) now
+> remains on `capa:host` for a `--wasi` program.
+>
+> #### read_line lone-CR divergence (deliberate, documented)
+>
+> The `--wasi` `read_line` reaches **byte-identical** parity with the
+> Python oracle and the `capa:host` backend for input whose line
+> terminators are `"\n"` or `"\r\n"` (the modern terminal / pipe / file
+> endings) -- that is the calibrated, tested case. It does **not**
+> implement full universal-newlines. The Python oracle reads stdin in
+> text mode (`sys.stdin.readline()`), which treats **any** isolated
+> `"\r"` as a line break; the `--wasi` reader breaks only on `"\n"`
+> (stripping a single trailing `"\r"` to absorb `"\r\n"`), so an isolated
+> `"\r"` -- a CR **not** immediately followed by `"\n"`, at **any**
+> position -- is kept as an ordinary byte rather than a terminator. The
+> two therefore diverge whenever the input carries an embedded or
+> terminal lone CR, **even when the input also ends in `"\n"`**:
+>
+> | input | oracle / `capa:host` | `--wasi` |
+> | --- | --- | --- |
+> | `"a\rb\n"` | `["a", "b"]` | `["a\rb"]` |
+> | `"abc\rdef\rghi\r"` (classic pre-2001 Mac) | `["abc", "def", "ghi"]` | `["abc\rdef\rghi"]` |
+>
+> This is a **deliberate** decision, not a bug: a correct lone-CR split
+> would need lookahead across a `blocking-read` boundary that risks
+> over-consuming the next line's first byte, and the lone-CR text format
+> is the legacy Mac OS (pre-2001) convention, practically extinct on
+> terminals, pipes and files. The read_line / stdin byte-parity claim is
+> accordingly **qualified to `"\n"` and `"\r\n"` inputs**; the lone-CR
+> case is the documented exception. (This qualification touches **only**
+> read_line / stdin: the byte-parity of every other migrated capability
+> -- Fs / Net / Env / Stdio output -- is unaffected.) The lone-CR case is
+> asserted in the test suite only as the **expected `--wasi` behaviour**
+> (`tests/test_wasi_mode.py::TestWasiStdinReadLine::test_lone_cr_is_not_a_line_break_wasi_divergence`),
+> never inside a three-backend parity assertion.
 
 ## Unit conversion (guest-side, in WAT)
 

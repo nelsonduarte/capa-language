@@ -251,8 +251,9 @@ class WasmComponentHost:
             # returns Err("end of input")). When no bytes were supplied
             # (the common CLI case), inherit the host process stdin so an
             # interactive / piped program reads the real terminal. The
-            # temp file lives until the host is closed (see ``close`` /
-            # ``__del__``) so wasmtime can read it lazily during the run.
+            # temp file lives until the host is finalized (see ``__del__``,
+            # which unlinks it) so wasmtime can read it lazily during the
+            # run.
             if self._stdin is not None:
                 import tempfile
                 fd, self._stdin_tmp_path = tempfile.mkstemp(

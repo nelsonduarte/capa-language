@@ -42,12 +42,25 @@ breaking changes and the discipline is still being shaped.
     (`input-stream.blocking-read`, read byte-at-a-time until `"\n"` or
     EOF), reusing `Fs.read`'s blocking-read / accumulation / input-stream
     drop machinery but stopping at the first newline rather than at EOF.
-    The result is byte-identical to the Python oracle and the `capa:host`
-    backend: a line yields `Ok(text)` without the trailing `"\n"`, and EOF
-    yields `Err(IoError("end of input"))`. The byte reader strips a single
-    trailing `"\r"` so `"\r\n"` (Windows) line endings reach parity with
-    the oracle's universal-newline text mode (which translates `"\r\n"` ->
-    `"\n"` before `rstrip`). The underlying stdin read cursor is owned by
+    For input whose line terminators are `"\n"` or `"\r\n"` the result is
+    byte-identical to the Python oracle and the `capa:host` backend: a line
+    yields `Ok(text)` without the trailing `"\n"`, and EOF yields
+    `Err(IoError("end of input"))`. The byte reader strips a single trailing
+    `"\r"` so `"\r\n"` (Windows) line endings reach parity with the oracle's
+    universal-newline text mode (which translates `"\r\n"` -> `"\n"` before
+    `rstrip`). *Lone-CR divergence (deliberate, documented).* The wrapper
+    recognises only `"\n"` and `"\r\n"` as line terminators; it does NOT
+    implement full universal-newlines, so an isolated `"\r"` (a CR not
+    immediately followed by `"\n"`), at any position, is kept as an ordinary
+    byte rather than treated as a line break. The Python oracle's text mode
+    breaks on any isolated `"\r"`, so the two diverge for such input even
+    when it also ends in `"\n"` (e.g. `"a\rb\n"` -> oracle `["a", "b"]`,
+    `--wasi` `["a\rb"]`; classic pre-2001 Mac `"x\ry\rz\r"` -> oracle
+    `["x","y","z"]`, `--wasi` `["x\ry\rz"]`). This is the practically
+    extinct legacy Mac line ending; the read_line byte-parity claim is
+    qualified to `"\n"` / `"\r\n"` inputs accordingly, and the lone-CR case
+    is asserted only as the documented `--wasi` behaviour, not as
+    three-backend parity. The underlying stdin read cursor is owned by
     the host descriptor, so a fresh `get-stdin` + drop per `read_line`
     preserves the position across successive calls (no buffering between
     calls). Only the `panic` builtin now remains on `capa:host`

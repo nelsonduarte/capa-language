@@ -3973,11 +3973,20 @@ class TestWasiStdinReadLine(unittest.TestCase):
     wasi:cli/stdin (get-stdin -> input-stream) + wasi:io/streams
     (input-stream.blocking-read, byte-at-a-time until "\\n" or EOF). The
     Result<String, IoError> is BYTE-IDENTICAL across the three backends
-    (Python oracle, capa:host component, WASI component) for the same
-    stdin: a line yields Ok(text) without the trailing "\\n"; EOF yields
-    Err(IoError("end of input")). The WASI byte reader strips a single
-    trailing "\\r" so "\\r\\n" lines reach parity with the oracle's
-    universal-newline text mode.
+    (Python oracle, capa:host component, WASI component) for input whose
+    line terminators are "\\n" or "\\r\\n": a line yields Ok(text) without
+    the trailing "\\n"; EOF yields Err(IoError("end of input")). The WASI
+    byte reader strips a single trailing "\\r" so "\\r\\n" lines reach
+    parity with the oracle's universal-newline text mode.
+
+    DELIBERATE DIVERGENCE (lone CR). The --wasi reader recognises only
+    "\\n" / "\\r\\n" as line terminators, NOT full universal-newlines, so
+    an isolated "\\r" (CR not followed by "\\n") is kept as an ordinary
+    byte while the oracle's text mode breaks the line on it. The
+    three-way parity asserts therefore use only "\\n" / "\\r\\n" input;
+    the lone-CR case is pinned separately as the documented --wasi
+    behaviour (test_lone_cr_is_not_a_line_break_wasi_divergence), NOT as
+    parity. See docs/design/wasi_mode.md "read_line lone-CR divergence".
 
     panic stays on capa:host/panic; this phase leaves ONLY panic on
     capa:host for a --wasi program."""
@@ -4045,6 +4054,32 @@ class TestWasiStdinReadLine(unittest.TestCase):
         crlf = _run_wasi_stdin(self._READ_ALL, b"alpha\r\nbeta\r\n")
         self.assertEqual(lf, crlf)
         self.assertEqual(lf, "[alpha]\n[beta]\n<END>\n")
+
+    def test_lone_cr_is_not_a_line_break_wasi_divergence(self):
+        # DOCUMENTED, DELIBERATE divergence (NOT three-backend parity): the
+        # --wasi reader breaks lines only on "\n" / "\r\n", so a lone "\r"
+        # (a CR not followed by "\n") is kept as an ordinary byte, EVEN with
+        # a trailing "\n". The Python oracle's text mode, by contrast,
+        # treats any isolated "\r" as a line break. We assert the EXPECTED
+        # --wasi behaviour directly (no oracle comparison), pinning the
+        # accepted divergence. See docs/design/wasi_mode.md "read_line
+        # lone-CR divergence" and the $Stdio_read_line docstring.
+        #
+        # "a\rb\n": the whole "a\rb" is one line on --wasi (the embedded
+        # "\r" is not a terminator); the oracle would yield ["a", "b"].
+        wasi = _run_wasi_stdin(self._READ_ALL, b"a\rb\n")
+        self.assertEqual(wasi, "[a\rb]\n<END>\n")
+        # Classic pre-2001 Mac line endings "x\ry\rz\r": one --wasi line
+        # "x\ry\rz" (the final lone "\r" is stripped as a trailing CR, the
+        # embedded ones are kept); the oracle would yield ["x", "y", "z"].
+        wasi_mac = _run_wasi_stdin(self._READ_ALL, b"x\ry\rz\r")
+        self.assertEqual(wasi_mac, "[x\ry\rz]\n<END>\n")
+        # Sanity: the oracle genuinely DOES split on the lone "\r" here, so
+        # this case is a real divergence and rightly excluded from the
+        # three-backend parity asserts above.
+        oracle = _run_python_stdin(self._READ_ALL, b"a\rb\n")
+        self.assertEqual(oracle, "[a]\n[b]\n<END>\n")
+        self.assertNotEqual(wasi, oracle)
 
     def test_last_line_without_newline(self):
         # A final line with no trailing "\n" is still returned; the NEXT
