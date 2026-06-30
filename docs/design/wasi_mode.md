@@ -34,7 +34,7 @@ see the WAT) rewrites the migrated touch-points:
 | `Env.restrict_to_keys` | `capa:host/env.restrict-to-keys` (host handle table) | guest-side allow-list intersection (no host) |
 | `Env.allows` | `capa:host/env.allows` (host handle table) | guest-side allow-list membership (no host) |
 | `Fs.restrict_to` | `capa:host/fs.restrict-to` (host handle table) | guest-side prefix allow-list union (no host) |
-| `Fs.allows` | `capa:host/fs.allows` (host handle table) | guest-side lexical prefix containment (no host) |
+| `Fs.allows` | `capa:host/fs.allows` (host handle table) | guest-side prefix containment with lexical `.`/`..` normalisation (no host; symlinks unresolved) |
 | `Net.get` | `capa:host/net.get` (host handle table) | `wasi:http/outgoing-handler.handle` + the wasi:http request/response chain + `wasi:io/streams` body read, gated guest-side by the static ceiling **and** the fine allow-list |
 | `Net.post` | `capa:host/net.post` (host handle table) | the Net.get chain + `wasi:io/streams` flow-controlled outgoing-body **write** of the request body before the handle, same two guest-side gates |
 | `Net.restrict_to` | `capa:host/net.restrict-to` (host handle table) | guest-side host allow-list intersection (no host) |
@@ -805,22 +805,33 @@ exactly like Env:
   `write` / `mkdir` therefore leaves **nothing** on disk -- the gate
   fires before the file is opened.
 
-**Path containment (LEXICAL, not realpath).** The oracle canonicalises
-both the prefix and the queried path with `os.path.realpath` (resolving
-`..` / `.` / symlinks) before the `is_relative_to` boundary check. The
-guest has **no realpath syscall**, so `$Fs_path_contained` does a
-**lexical** path-segment containment: strip trailing `/` from both, then
-the path is contained iff its first `len(prefix)` bytes equal the prefix
-AND the next byte is `/` or the path IS the prefix (the segment boundary
-that stops `data/ab` matching `data/a`). **For CANONICAL paths** (no `.`
-/ `..` segments, no symlinks, no repeated slashes) this is
-**byte-identical** to the oracle: `realpath` prepends the SAME process
-CWD to a relative path and its relative prefix (so the CWD cancels in the
-containment) and leaves a canonical absolute path unchanged. **For
-NON-CANONICAL paths or symlinks** the lexical check may **diverge** from
-the realpath oracle -- the honest, documented **TOCTOU / symlink loss**
-of Level 2. The migrated tests use canonical absolute literals, where
-parity holds byte-for-byte across all three backends.
+**Path containment (LEXICAL `.`/`..` normalisation, symlinks not
+resolved).** The oracle canonicalises both the prefix and the queried
+path with `os.path.realpath` (resolving `..` / `.` / symlinks) before the
+`is_relative_to` boundary check. The guest has **no realpath syscall**,
+so `$Fs_path_contained` **lexically normalises** the `.` and `..`
+segments of BOTH the path and the prefix FIRST (via `$__fs_normalize`,
+the `os.path.normpath`-style collapse that preserves a leading `..` so an
+escape stays an escape), and only then does the path-segment containment:
+strip trailing `/` from both, then the path is contained iff its first
+`len(prefix)` bytes equal the prefix AND the next byte is `/` or the path
+IS the prefix (the segment boundary that stops `data/ab` matching
+`data/a`). The `.`/`..` normalisation reproduces what `realpath` does for
+those segments in the no-symlink case, so a dynamic path such as
+`sub/../secret.txt` normalises to `secret.txt` (NOT contained in `sub` ->
+**denied**, matching the oracle), while `sub/../sub/ok.txt` normalises to
+`sub/ok.txt` (contained -> **allowed**). The `$__fs_normalize` rule is
+validated byte-for-byte against `os.path.normpath` and over a 9331-input
+segment fuzz (see the scratchpad reference behind
+`TestWasiFsDynamicPreopen.test_restricted_fs_dynamic_path_dotdot_normalized`).
+`realpath` also prepends the SAME process CWD to a relative path and its
+relative prefix (so the CWD cancels in the containment) and leaves a
+canonical absolute path unchanged, so for non-symlink paths the result is
+**byte-identical** to the oracle. **SYMLINKS are still NOT resolved** --
+the gate is lexical, so a symlink inside a prefix that points outside it
+is admitted by the guest (and caught only by the Level-1 preopen
+ceiling). That symlink (TOCTOU) loss is the **only** remaining Level-2
+divergence from the realpath oracle; `.` and `..` are now handled.
 
 **Interaction Level 1 + Level 2.** The guest-side allow-list (fine,
 Level 2) operates ON TOP OF the preopen (the Level-1 ceiling): the fine

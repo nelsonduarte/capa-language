@@ -1544,6 +1544,31 @@ class TestWasiFsDynamicPreopenCompile(unittest.TestCase):
         self.assertIn("(func $Fs_write", wat)
         self.assertIn("(func $Fs_list_dir", wat)
 
+    def test_mixed_literal_and_dynamic_path_clear_message(self):
+        # A program that mixes a LITERAL Fs path and a DYNAMIC one under
+        # --preopen fails closed (no index misalignment), but with a CLEAR
+        # message naming the b1 limitation and the flag, not the internal
+        # "no closed preopen ceiling" wording.
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let args = env.args()\n"
+            "    match fs.read(\"fixed.txt\")\n"
+            "        Ok(c) -> stdio.println(c)\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            match fs.read(p)\n"
+            "                Ok(c) -> stdio.println(c)\n"
+            "                Err(e) -> stdio.println(\"err\")\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        with self.assertRaises(Exception) as cm:
+            self._compile(src, dynamic_fs=True)
+        msg = str(cm.exception)
+        self.assertIn("--preopen", msg)
+        self.assertIn("MIXING", msg)
+        self.assertNotIn("has no closed preopen ceiling", msg)
+
     def test_operator_preopen_index_is_zero_when_ceiling_open(self):
         # b1 index rule: with no derived preopens (dynamic ceiling) the
         # operator preopen is index 0, the constant the dynamic call site
@@ -3014,6 +3039,85 @@ class TestWasiFsDynamicPreopen(unittest.TestCase):
             self.assertEqual(results["wasi"], expect, arg)
             self.assertEqual(results["wasi"], results["py"], arg)
             self.assertEqual(results["wasi"], results["host"], arg)
+
+    def test_restricted_fs_dynamic_path_dotdot_normalized(self):
+        # CRITICAL parity: a DYNAMIC path with '.' / '..' must be LEXICALLY
+        # normalised before the fine-attenuation containment check, so a
+        # path that escapes the restrict_to subtree via '..' is DENIED
+        # (matching the realpath oracle), and one that stays inside after
+        # normalisation is ADMITTED. Without normalisation the lexical
+        # prefix "sub/" would match "sub/../secret.txt" and LEAK a sibling.
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let r = fs.restrict_to(\"sub\")\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            match r.read(p)\n"
+            "                Ok(c) -> stdio.println(\"READ:${c}\")\n"
+            "                Err(e) -> stdio.println(\"DENIED\")\n"
+            "        None -> stdio.println(\"NOARG\")\n"
+        )
+        # (arg, expected). The oracle (os.path.realpath + is_relative_to)
+        # produces exactly this table; the WASI guest must match it.
+        table = [
+            ("sub/ok.txt", "READ:SUB-OK\n"),       # inside -> read
+            ("sub/../secret.txt", "DENIED\n"),     # escapes -> denied
+            ("sub/../sub2/x.txt", "DENIED\n"),     # escapes -> denied
+            ("secret.txt", "DENIED\n"),            # outside -> denied
+            ("sub/../sub/ok.txt", "READ:SUB-OK\n"),  # normalises inside
+            ("sub/./ok.txt", "READ:SUB-OK\n"),     # '.' inside
+        ]
+        for arg, expect in table:
+            results = {}
+            for be in ("wasi", "py", "host"):
+                d = self._fresh_dir(f"{be}-dd")
+                os.makedirs(os.path.join(d, "sub"))
+                os.makedirs(os.path.join(d, "sub2"))
+                with open(os.path.join(d, "sub", "ok.txt"), "w") as f:
+                    f.write("SUB-OK")
+                with open(os.path.join(d, "secret.txt"), "w") as f:
+                    f.write("TOP-SECRET")
+                with open(os.path.join(d, "sub2", "x.txt"), "w") as f:
+                    f.write("SIBLING")
+                if be == "wasi":
+                    results[be] = _run_wasi_dynamic_fs(src, d, args=(arg,))
+                elif be == "py":
+                    results[be] = _run_python_in_cwd(src, d, args=(arg,))
+                else:
+                    results[be] = _run_capa_host_in_cwd(src, d, args=(arg,))
+            self.assertEqual(results["wasi"], expect, arg)
+            self.assertEqual(results["wasi"], results["py"], arg)
+            self.assertEqual(results["wasi"], results["host"], arg)
+
+    def test_dynamic_dotdot_confined_to_preopen_when_unrestricted(self):
+        # LEVEL-1 confinement is NOT regressed: an UNRESTRICTED Fs (handle
+        # 0, no restrict_to) with a dynamic '..' path that tries to escape
+        # the operator preopen is denied by WASMTIME (the preopen ceiling),
+        # not by the guest gate. A decoy file sits OUTSIDE the preopen.
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            match fs.read(p)\n"
+            "                Ok(c) -> stdio.println(\"READ:${c}\")\n"
+            "                Err(e) -> stdio.println(\"DENIED\")\n"
+            "        None -> stdio.println(\"NOARG\")\n"
+        )
+        outer = self._fresh_dir("confine")
+        preopen = os.path.join(outer, "preopen")
+        os.makedirs(preopen)
+        with open(os.path.join(outer, "decoy.txt"), "w") as f:
+            f.write("OUTSIDE-DECOY")
+        with open(os.path.join(preopen, "in.txt"), "w") as f:
+            f.write("INSIDE-OK")
+        # An escape attempt -> wasmtime denies (Err), not the decoy leaked.
+        esc = _run_wasi_dynamic_fs(src, preopen, args=("../decoy.txt",))
+        self.assertEqual(esc, "DENIED\n")
+        # The in-preopen read still works.
+        ok = _run_wasi_dynamic_fs(src, preopen, args=("in.txt",))
+        self.assertEqual(ok, "READ:INSIDE-OK\n")
 
     def test_operator_preopen_registered_at_index_zero(self):
         # The host installs exactly the operator preopen (index 0) for a

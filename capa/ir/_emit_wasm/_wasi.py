@@ -188,8 +188,9 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
     ("Fs", "list_dir"),
     # Fs FINE ATTENUATION (2026-06-28): restrict_to / allows are
     # implemented GUEST-SIDE (Level 2 of docs/design/wasi-attenuation.md),
-    # analogous to Env's restrict_to_keys / allows but with LEXICAL path
-    # containment in place of key equality. No capa:host/fs import: their
+    # analogous to Env's restrict_to_keys / allows but with path-prefix
+    # containment (with lexical ``.``/``..`` normalisation; symlinks
+    # unresolved) in place of key equality. No capa:host/fs import: their
     # ``$Fs_restrict_to`` / ``$Fs_allows`` bindings are emitted as guest
     # WAT wrappers by ``_emit_wasi_wrappers``. Listed here so the import
     # loop does NOT try to emit a capa:host/fs import for them (the host
@@ -343,9 +344,10 @@ class _WasiEmissionMixin:
         read-directory enumeration -> guest-side sort) over
         wasi:io/streams, AND the fine-grained attenuators ``restrict_to``
         / ``allows`` implemented GUEST-SIDE (Level 2 of
-        ``docs/design/wasi-attenuation.md``), with LEXICAL path
-        containment in place of the oracle's realpath (the honest TOCTOU
-        / symlink loss documented there). No Fs method is rejected here
+        ``docs/design/wasi-attenuation.md``), with path-prefix containment
+        that lexically normalises ``.``/``..`` (oracle parity for those)
+        but does NOT resolve symlinks (the honest TOCTOU / symlink loss
+        documented there). No Fs method is rejected here
         (``_WASI_FS_REJECTED`` is now empty); the fail-closed preopen
         ceiling obligation below still applies to any op that touches the
         filesystem.
@@ -1141,6 +1143,7 @@ class _WasiEmissionMixin:
         # migrated Fs op AND the ``restrict_to`` / ``allows`` wrappers;
         # emit them once when any Fs op (or attenuator) is present.
         if self._wasi_fs_uses_attenuation():
+            self._emit_wasi_fs_normalize_helper()
             self._emit_wasi_fs_path_contained_helper()
             self._emit_wasi_fs_path_allowed_helper()
         if ("Fs", "restrict_to") in used:
@@ -2418,28 +2421,456 @@ class _WasiEmissionMixin:
 
     # ----- guest-side Fs attenuation (Level 2) -------------------
 
+    def _emit_wasi_fs_normalize_helper(self) -> None:
+        """``$__fs_normalize (src_ptr i32, src_len i32, dst_ptr i32) ->
+        i32`` -> writes the LEXICALLY normalised path into ``[dst_ptr,
+        dst_ptr+ret)`` and returns its length ``ret``.
+
+        Collapses ``.`` and ``..`` segments the way ``os.path.realpath``
+        does for the NO-SYMLINK case (the lexical part the guest can
+        reproduce without a kernel walk), so the containment gate matches
+        the Python oracle (``Fs.allows``, which canonicalises via
+        ``realpath``) for ``.`` / ``..``. Symlinks are still NOT resolved
+        -- that remains the documented Level-2 loss
+        (``docs/design/wasi_mode.md``).
+
+        Rules (validated byte-for-byte against ``os.path.normpath`` and a
+        9331-input fuzz of the segment reference, scratchpad
+        ``wat_sim2.py``):
+          - split on ``/``; drop empty segments (``//``, trailing ``/``)
+            and ``.``;
+          - ``..`` POPS the previous emitted segment when one exists AND
+            it is not itself a (locked) leading ``..``; otherwise, for an
+            ABSOLUTE path it is dropped (cannot escape root), for a
+            RELATIVE path it is KEPT (a leading ``..`` escapes the prefix,
+            so containment must fail);
+          - an absolute path keeps its single leading ``/``; a relative
+            path that normalises to empty becomes ``.``.
+        The output is never longer than the input, so the caller sizes the
+        destination buffer at ``max(src_len, 1)``.
+
+        WAT-local helpers are inlined: segment append (prepend ``/`` when
+        ``dst_len > 0``) and the ``..`` pop / last-segment-is-``..`` test
+        (scan back from ``dst_len`` to the previous ``/`` or to 0)."""
+        self._write(
+            "(func $__fs_normalize (param $src_ptr i32) "
+            "(param $src_len i32) (param $dst_ptr i32) (result i32)"
+        )
+        self._indent += 1
+        self._write("(local $is_abs i32)")
+        self._write("(local $i i32)")
+        self._write("(local $dst_len i32)")
+        self._write("(local $seg_start i32)")
+        self._write("(local $seg_len i32)")
+        self._write("(local $last_start i32)")
+        self._write("(local $j i32)")
+        # is_abs = src_len > 0 && src[0] == '/'.
+        self._write("local.get $src_len")
+        self._write("i32.const 0")
+        self._write("i32.gt_u")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("local.get $src_ptr")
+        self._write("i32.load8_u")
+        self._write("i32.const 47")
+        self._write("i32.eq")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $is_abs")
+        # If absolute, the leading '/' is emitted at the end; dst here
+        # holds only the RELATIVE remainder (so the pop / leading-'..'
+        # logic never crosses the root slash). dst_len starts at 0.
+        self._write("i32.const 0")
+        self._write("local.set $dst_len")
+        self._write("i32.const 0")
+        self._write("local.set $i")
+        self._write("(block $scan_done")
+        self._indent += 1
+        self._write("(loop $scan")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("local.get $src_len")
+        self._write("i32.ge_u")
+        self._write("br_if $scan_done")
+        # skip a '/' run.
+        self._write("local.get $src_ptr")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 47")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $scan")
+        self._indent -= 1
+        self._write("end")
+        # segment = [seg_start, i) until next '/' or end.
+        self._write("local.get $i")
+        self._write("local.set $seg_start")
+        self._write("(block $seg_done")
+        self._indent += 1
+        self._write("(loop $seg")
+        self._indent += 1
+        self._write("local.get $i")
+        self._write("local.get $src_len")
+        self._write("i32.ge_u")
+        self._write("br_if $seg_done")
+        self._write("local.get $src_ptr")
+        self._write("local.get $i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 47")
+        self._write("i32.eq")
+        self._write("br_if $seg_done")
+        self._write("local.get $i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $i")
+        self._write("br $seg")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        self._write("local.get $i")
+        self._write("local.get $seg_start")
+        self._write("i32.sub")
+        self._write("local.set $seg_len")
+        # '.' (len 1, byte '.') -> drop.
+        self._write("local.get $seg_len")
+        self._write("i32.const 1")
+        self._write("i32.eq")
+        self._write("local.get $src_ptr")
+        self._write("local.get $seg_start")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 46")
+        self._write("i32.eq")
+        self._write("i32.and")
+        self._write("if")
+        self._indent += 1
+        self._write("br $scan")
+        self._indent -= 1
+        self._write("end")
+        # '..' (len 2, both bytes '.') -> pop / drop / keep.
+        self._write("local.get $seg_len")
+        self._write("i32.const 2")
+        self._write("i32.eq")
+        self._write("local.get $src_ptr")
+        self._write("local.get $seg_start")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 46")
+        self._write("i32.eq")
+        self._write("i32.and")
+        self._write("local.get $src_ptr")
+        self._write("local.get $seg_start")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 46")
+        self._write("i32.eq")
+        self._write("i32.and")
+        self._write("if")
+        self._indent += 1
+        # last_start = start of the last emitted segment in dst: scan back
+        # from dst_len for the previous '/'; 0 if none.
+        self._write("i32.const 0")
+        self._write("local.set $last_start")
+        self._write("local.get $dst_len")
+        self._write("local.set $j")
+        self._write("(block $back_done")
+        self._indent += 1
+        self._write("(loop $back")
+        self._indent += 1
+        self._write("local.get $j")
+        self._write("i32.eqz")
+        self._write("br_if $back_done")
+        self._write("local.get $dst_ptr")
+        self._write("local.get $j")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 47")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $j")
+        self._write("local.set $last_start")
+        self._write("br $back_done")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $j")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $j")
+        self._write("br $back")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # can_pop = dst_len > 0 AND last segment != '..'. The last segment
+        # is '..' iff (dst_len - last_start == 2) and both its bytes are
+        # '.'. Compute "last_is_dotdot".
+        # If dst_len == 0 -> not poppable.
+        self._write("local.get $dst_len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        # empty dst: absolute drops, relative keeps '..'.
+        self._write("local.get $is_abs")
+        self._write("if")
+        self._indent += 1
+        self._write("br $scan")
+        self._indent -= 1
+        self._write("end")
+        # relative + empty: append '..' (no leading '/').
+        self._write("local.get $dst_ptr")
+        self._write("i32.const 46")
+        self._write("i32.store8")
+        self._write("local.get $dst_ptr")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("i32.const 46")
+        self._write("i32.store8")
+        self._write("i32.const 2")
+        self._write("local.set $dst_len")
+        self._write("br $scan")
+        self._indent -= 1
+        self._write("end")
+        # dst_len > 0: is the last segment exactly '..'?
+        self._write("local.get $dst_len")
+        self._write("local.get $last_start")
+        self._write("i32.sub")
+        self._write("i32.const 2")
+        self._write("i32.eq")
+        self._write("local.get $dst_ptr")
+        self._write("local.get $last_start")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 46")
+        self._write("i32.eq")
+        self._write("i32.and")
+        self._write("local.get $dst_ptr")
+        self._write("local.get $last_start")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 46")
+        self._write("i32.eq")
+        self._write("i32.and")
+        self._write("if")
+        self._indent += 1
+        # last segment is a locked leading '..': absolute can't happen here
+        # (a leading '..' is only kept for relative), so keep another '..'.
+        self._write("local.get $is_abs")
+        self._write("if")
+        self._indent += 1
+        self._write("br $scan")
+        self._indent -= 1
+        self._write("end")
+        # append '/..' (dst_len > 0 so prepend a separator).
+        self._write("local.get $dst_ptr")
+        self._write("local.get $dst_len")
+        self._write("i32.add")
+        self._write("i32.const 47")
+        self._write("i32.store8")
+        self._write("local.get $dst_ptr")
+        self._write("local.get $dst_len")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("i32.add")
+        self._write("i32.const 46")
+        self._write("i32.store8")
+        self._write("local.get $dst_ptr")
+        self._write("local.get $dst_len")
+        self._write("i32.const 2")
+        self._write("i32.add")
+        self._write("i32.add")
+        self._write("i32.const 46")
+        self._write("i32.store8")
+        self._write("local.get $dst_len")
+        self._write("i32.const 3")
+        self._write("i32.add")
+        self._write("local.set $dst_len")
+        self._write("br $scan")
+        self._indent -= 1
+        self._write("end")
+        # poppable: truncate dst to last_start (drop the '/segment').
+        # last_start is the byte AFTER the separator, so the new length is
+        # last_start - 1 when last_start > 0 (drop the separator too), or 0.
+        self._write("local.get $last_start")
+        self._write("i32.eqz")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $last_start")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $dst_len")
+        self._write("br $scan")
+        self._indent -= 1
+        self._write("end")
+        # normal segment: append it (prepend '/' when dst_len > 0).
+        self._write("local.get $dst_len")
+        self._write("i32.const 0")
+        self._write("i32.gt_u")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $dst_ptr")
+        self._write("local.get $dst_len")
+        self._write("i32.add")
+        self._write("i32.const 47")
+        self._write("i32.store8")
+        self._write("local.get $dst_len")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $dst_len")
+        self._indent -= 1
+        self._write("end")
+        # copy seg_len bytes src[seg_start..] -> dst[dst_len..].
+        self._write("i32.const 0")
+        self._write("local.set $j")
+        self._write("(block $copy_done")
+        self._indent += 1
+        self._write("(loop $copy")
+        self._indent += 1
+        self._write("local.get $j")
+        self._write("local.get $seg_len")
+        self._write("i32.ge_u")
+        self._write("br_if $copy_done")
+        self._write("local.get $dst_ptr")
+        self._write("local.get $dst_len")
+        self._write("i32.add")
+        self._write("local.get $src_ptr")
+        self._write("local.get $seg_start")
+        self._write("i32.add")
+        self._write("local.get $j")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.store8")
+        self._write("local.get $dst_len")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $dst_len")
+        self._write("local.get $j")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $j")
+        self._write("br $copy")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        self._write("br $scan")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        # Post-loop: build the final layout.
+        # Absolute: shift the relative remainder one byte right and write a
+        # leading '/'. dst currently holds [0, dst_len) of the relative
+        # remainder; we move it up so index 0 is '/'.
+        self._write("local.get $is_abs")
+        self._write("if")
+        self._indent += 1
+        # shift bytes right by 1, from the top down (no overlap clobber).
+        self._write("local.get $dst_len")
+        self._write("local.set $j")
+        self._write("(block $shift_done")
+        self._indent += 1
+        self._write("(loop $shift")
+        self._indent += 1
+        self._write("local.get $j")
+        self._write("i32.eqz")
+        self._write("br_if $shift_done")
+        self._write("local.get $dst_ptr")
+        self._write("local.get $j")
+        self._write("i32.add")
+        self._write("local.get $dst_ptr")
+        self._write("local.get $j")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.store8")
+        self._write("local.get $j")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write("local.set $j")
+        self._write("br $shift")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        self._write("local.get $dst_ptr")
+        self._write("i32.const 47")
+        self._write("i32.store8")
+        self._write("local.get $dst_len")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        # Relative + empty result -> '.'.
+        self._write("local.get $dst_len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $dst_ptr")
+        self._write("i32.const 46")
+        self._write("i32.store8")
+        self._write("i32.const 1")
+        self._write("return")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $dst_len")
+        self._indent -= 1
+        self._write(")")
+
     def _emit_wasi_fs_path_contained_helper(self) -> None:
         """``$Fs_path_contained (path_ptr i32, path_len i32,
         pre_ptr i32, pre_len i32) -> i32`` -> 1 iff ``path`` is the
-        directory/file ``prefix`` itself or lies under it, by LEXICAL
-        path-segment containment.
+        directory/file ``prefix`` itself or lies under it, by path-segment
+        containment AFTER lexical ``.``/``..`` normalisation.
 
         This is the guest-side analogue of the Python oracle's
         ``Path(os.path.realpath(path)).is_relative_to(
         os.path.realpath(prefix))`` (``Fs.allows``,
         ``capa/runtime/_capabilities.py:173-183``). The guest cannot
-        ``realpath`` (no kernel syscall), so the containment is LEXICAL:
-        it compares the literal path strings. For CANONICAL paths (no
-        ``.`` / ``..`` segments, no symlinks, no repeated slashes) the
-        lexical result is BYTE-IDENTICAL to the oracle, because
-        ``realpath`` prepends the SAME process CWD to a relative path and
-        its relative prefix (so the CWD cancels in the containment) and
-        leaves a canonical absolute path unchanged. For NON-CANONICAL
-        paths the lexical check may diverge from ``realpath`` -- the
-        honest, documented Level-2 loss (TOCTOU / symlink) in
-        ``docs/design/wasi-attenuation.md``.
+        ``realpath`` (no kernel syscall), but it FIRST normalises ``.`` and
+        ``..`` in BOTH the path and the prefix lexically (``$__fs_normalize``,
+        the ``os.path.normpath``-style collapse), reproducing what
+        ``realpath`` does for those segments in the no-symlink case. So
+        ``sub/../secret.txt`` normalises to ``secret.txt`` (NOT contained
+        in ``sub`` -> denied, matching the oracle) and ``sub/../sub/ok.txt``
+        normalises to ``sub/ok.txt`` (contained -> allowed). For paths
+        whose ONLY non-canonical feature is ``.``/``..`` the result is now
+        BYTE-IDENTICAL to the oracle (``realpath`` also prepends the SAME
+        process CWD to a relative path and its relative prefix, so the CWD
+        cancels in the containment). SYMLINKS are still NOT resolved -- a
+        symlink inside the prefix that points outside it is admitted here
+        (caught only by the Level-1 preopen ceiling); that is the only
+        remaining Level-2 loss (TOCTOU / symlink) in
+        ``docs/design/wasi_mode.md``.
 
-        Algorithm (matching the segment-aware ``is_relative_to``):
+        Algorithm (matching the segment-aware ``is_relative_to``), run on
+        the NORMALISED path / prefix:
 
           1. strip trailing ``/`` from both path and prefix (keep a lone
              ``/`` as ``/``), so ``dir/`` and ``dir`` compare equal.
@@ -2460,6 +2891,54 @@ class _WasiEmissionMixin:
         self._write("(local $pl i32)")
         self._write("(local $ql i32)")
         self._write("(local $i i32)")
+        self._write("(local $npath_ptr i32)")
+        self._write("(local $npath_len i32)")
+        self._write("(local $npre_ptr i32)")
+        self._write("(local $npre_len i32)")
+        # LEXICAL normalisation of '.' / '..' FIRST, on BOTH path and
+        # prefix, so the containment matches the oracle (which canonicalises
+        # both via realpath). e.g. "sub/../secret.txt" normalises to
+        # "secret.txt" (NOT contained in "sub" -> denied), while
+        # "sub/../sub/ok.txt" normalises to "sub/ok.txt" (contained ->
+        # allowed). Each output is <= its input length; allocate
+        # max(len, 1) so an empty input still has a 1-byte buffer for the
+        # '.' result. Symlinks are NOT resolved (the documented Level-2
+        # loss); only '.' / '..' are collapsed.
+        self._write("local.get $path_len")
+        self._write("i32.const 1")
+        self._write("local.get $path_len")
+        self._write("i32.const 0")
+        self._write("i32.gt_u")
+        self._write("select")
+        self._write("call $alloc")
+        self._write("local.set $npath_ptr")
+        self._write("local.get $path_ptr")
+        self._write("local.get $path_len")
+        self._write("local.get $npath_ptr")
+        self._write("call $__fs_normalize")
+        self._write("local.set $npath_len")
+        self._write("local.get $pre_len")
+        self._write("i32.const 1")
+        self._write("local.get $pre_len")
+        self._write("i32.const 0")
+        self._write("i32.gt_u")
+        self._write("select")
+        self._write("call $alloc")
+        self._write("local.set $npre_ptr")
+        self._write("local.get $pre_ptr")
+        self._write("local.get $pre_len")
+        self._write("local.get $npre_ptr")
+        self._write("call $__fs_normalize")
+        self._write("local.set $npre_len")
+        # From here the compare runs on the NORMALISED buffers.
+        self._write("local.get $npath_ptr")
+        self._write("local.set $path_ptr")
+        self._write("local.get $npath_len")
+        self._write("local.set $path_len")
+        self._write("local.get $npre_ptr")
+        self._write("local.set $pre_ptr")
+        self._write("local.get $npre_len")
+        self._write("local.set $pre_len")
         # pl = strip_trailing_slash_len(path); ql = ...(prefix). A
         # trailing '/' is dropped unless the string is a lone '/'.
         self._write("local.get $path_ptr")

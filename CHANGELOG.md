@@ -58,6 +58,32 @@ breaking changes and the discipline is still being shaped.
   stays at Level 2 `inherit_env` on a dynamic key and is intentionally not
   aligned with this fail-closed rule).
 
+**Fixed.**
+
+- *In the experimental `--wasi` mode, the guest-side fine attenuation gate
+  (`restrict_to` / `allows`) now lexically normalises `.` and `..` path
+  segments before its containment check, closing a bypass on a dynamic
+  path.* Previously the gate did a PURELY lexical prefix comparison: a
+  dynamic path such as `sub/../secret.txt` (reachable since `--preopen`
+  began admitting dynamic `Fs` paths) starts lexically with the allowed
+  prefix `sub/`, so it PASSED the gate and read a sibling OUTSIDE the
+  `restrict_to("sub")` subtree, while the Python oracle (which
+  canonicalises with `os.path.realpath`) correctly DENIED it. The gate now
+  normalises `.`/`..` in both the path and the stored prefixes first
+  (`$__fs_normalize`, an `os.path.normpath`-style collapse that preserves
+  a leading `..` so an escape stays an escape), restoring byte-for-byte
+  three-backend parity (Python oracle == `capa:host` == WASI): `sub/ok.txt`
+  is admitted, `sub/../secret.txt` and `sub/../sub2/x.txt` are denied, and
+  `sub/../sub/ok.txt` (which normalises back inside) is admitted. SYMLINKS
+  are still not resolved by the lexical gate -- that remains the documented
+  Level-2 loss, now the ONLY divergence from the realpath oracle (`.`/`..`
+  are handled). The Level-1 preopen ceiling (enforced by wasmtime) is
+  unchanged and still confines an unrestricted `Fs` to the granted
+  directory regardless of `..`. A program that MIXES a literal `Fs` path
+  and a dynamic one under `--preopen` still fails closed (layer b1 does not
+  yet support mixing), now with a clear message that names the limitation
+  and the flag instead of an internal "no closed preopen ceiling" wording.
+
 ## [1.14.0], 2026-06-29
 
 **Capa 1.14.0.** A MINOR release: an experimental, opt-in `--wasi` mode

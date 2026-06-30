@@ -117,6 +117,37 @@ _CANONICAL_INDIRECT_RETURN: dict[tuple[str, str], tuple[int, str]] = {
 
 
 class _CapDispatchMixin:
+    def _wasi_fs_no_ceiling_error(self) -> "WasmEmissionError":
+        """The error raised when a LITERAL Fs path reaches a call site but
+        the static preopen ceiling is not closed.
+
+        With ``--preopen`` (``self._wasi_dynamic_fs``) this is reached ONLY
+        for the literal path of a program that ALSO passes a DYNAMIC path
+        to an Fs op: the dynamic path opens the ceiling, so the literal can
+        no longer be resolved to a derived preopen index. Layer b1 does not
+        yet support MIXING literal and dynamic Fs paths in one program;
+        fail closed with a message that names the limitation and the flag,
+        rather than the internal ceiling wording. Without ``--preopen`` the
+        generic no-ceiling message stands."""
+        if self._wasi_dynamic_fs:
+            return WasmEmissionError(
+                "WASI --preopen mode (Fs layer b1) does not yet support "
+                "MIXING a string-literal Fs path and a dynamic Fs path in "
+                "the same program: the dynamic path opens the static "
+                "preopen ceiling, so the literal path can no longer be "
+                "resolved to a derived preopen (fail-closed). Use only "
+                "dynamic paths (resolved against the single --preopen "
+                "directory), or only literal paths (drop --preopen), or "
+                "fall back to the default capa:host backend (drop --wasi)."
+            )
+        return WasmEmissionError(
+            "Fs in WASI mode requires a closed static preopen ceiling "
+            "(every filesystem path a string literal); this program has "
+            "no closed ceiling, so no preopen can be derived (fail-closed). "
+            "Grant a directory with --preopen <dir> to admit dynamic "
+            "paths, or use the default capa:host backend (drop --wasi)."
+        )
+
     def _cap_method_wasm_sig(
         self, cap: str, method: str,
     ) -> tuple[list[str], str]:
@@ -662,9 +693,7 @@ class _CapDispatchMixin:
             )
         ceiling = self._fs_ceiling
         if ceiling is None or not ceiling.closed:
-            raise WasmEmissionError(
-                "Fs in WASI mode has no closed preopen ceiling"
-            )
+            raise self._wasi_fs_no_ceiling_error()
         idx, rel = resolve_fs_call(ceiling, arg.literal)
         # The FULL original literal path is interned for the guest-side
         # fail-closed attenuation gate (``$Fs_path_allowed``): the
@@ -770,9 +799,7 @@ class _CapDispatchMixin:
             )
         ceiling = self._fs_ceiling
         if ceiling is None or not ceiling.closed:
-            raise WasmEmissionError(
-                "Fs in WASI mode has no closed preopen ceiling"
-            )
+            raise self._wasi_fs_no_ceiling_error()
         idx, rel = resolve_fs_call(ceiling, arg.literal)
         rel_off, rel_len = self._intern_string(rel)
         # Full original literal + receiver handle for the guest-side
@@ -835,9 +862,7 @@ class _CapDispatchMixin:
             )
         ceiling = self._fs_ceiling
         if ceiling is None or not ceiling.closed:
-            raise WasmEmissionError(
-                "Fs in WASI mode has no closed preopen ceiling"
-            )
+            raise self._wasi_fs_no_ceiling_error()
         idx, rel = resolve_fs_call(ceiling, arg.literal)
         rel_off, rel_len = self._intern_string(rel)
         # Full original literal + receiver handle for the guest-side
@@ -898,9 +923,7 @@ class _CapDispatchMixin:
             )
         ceiling = self._fs_ceiling
         if ceiling is None or not ceiling.closed:
-            raise WasmEmissionError(
-                "Fs in WASI mode has no closed preopen ceiling"
-            )
+            raise self._wasi_fs_no_ceiling_error()
         idx, rel = resolve_fs_call(ceiling, arg.literal)
         rel_off, rel_len = self._intern_string(rel)
         # Full original literal + receiver handle for the guest-side

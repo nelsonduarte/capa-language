@@ -1156,6 +1156,7 @@ class WasmEmitter(
             or self._wasi_env_uses_get_or_args()
             or self._wasi_net_uses_attenuation()
             or self._wasi_fs_uses_preopens
+            or self._wasi_fs_uses_attenuation()
             or (self._wasi and ("Stdio", "read_line") in self._used_caps)
         ):
             heap_start = _align_up(self._string_data_offset, 8)
