@@ -1081,6 +1081,20 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--wasi-surface",
+        action="store_true",
+        help=(
+            "print the WASI path-arg surface: the argv (env.args()) "
+            "arguments the compiler PROVES reach an Fs / Net / Env sink, "
+            "and whether read or write (e.g. 'argv[0] -> Fs.read "
+            "(read-only)'). A compiler-derived, by-construction audit fact "
+            "(distinct from operator-declared grants); read-only, does not "
+            "compile or run the program. A sound over-approximation: no "
+            "reaching argument is omitted, and argv[*] denotes an argument "
+            "that reaches a sink at a statically-indeterminate index."
+        ),
+    )
+    parser.add_argument(
         "--wasm-memory-cap",
         type=int,
         default=None,
@@ -1198,10 +1212,14 @@ def _main_dispatch() -> int:
         or args.spdx or args.vex or args.provenance or args.doc
         or args.wit or args.wasm
     )
+    # --wasi-surface needs the loader-linked AST (so imported helpers are
+    # inlined and the argv -> sink surface sees the whole program) but no
+    # full semantic analysis: it is a read-only static inspection.
+    needs_link = needs_analysis or bool(getattr(args, "wasi_surface", False))
     linked = None
-    if args.parse or args.transpile or needs_analysis:
+    if args.parse or args.transpile or needs_link:
         try:
-            if needs_analysis or args.transpile:
+            if needs_link or args.transpile:
                 # Resolve transitive imports before analysis. The
                 # loader does its own lex + parse of the root file
                 # so all source positions are consistent; imported
@@ -1233,6 +1251,26 @@ def _main_dispatch() -> int:
             else:
                 print(e.format(), file=sys.stderr)
             return 1
+
+    # --wasi-surface: read-only inspection of the proven argv -> sink
+    # path-arg surface. No semantic analysis / compilation; prints the
+    # facts (or a clear "no argv argument reaches a sink" line) and exits.
+    if getattr(args, "wasi_surface", False):
+        from capa.ir._wasi_path_arg_surface import compute_path_arg_surface
+        surface = compute_path_arg_surface(module)
+        if surface.is_empty():
+            print(
+                f"{filename}: no argv (env.args()) argument is proven to "
+                f"reach an Fs / Net / Env sink"
+            )
+        else:
+            print(
+                f"{filename}: WASI path-arg surface "
+                f"(compiler-derived, by-construction):"
+            )
+            for line in surface.describe_lines():
+                print(f"  {line}")
+        return 0
 
     result = None
     if (args.check or args.run or args.manifest or args.cyclonedx

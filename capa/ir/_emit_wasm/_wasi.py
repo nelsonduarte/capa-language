@@ -422,8 +422,12 @@ class _WasiEmissionMixin:
                 "Fs in WASI mode requires every filesystem path to be a "
                 "string literal (the static preopen ceiling must be "
                 "closed); this program passes a dynamic path to an Fs "
-                "operation, so no preopen can be derived (fail-closed). "
-                "Use the default capa:host backend (drop --wasi)."
+                "operation, so no preopen can be derived (fail-closed)."
+                + self._path_arg_hint("Fs")
+                + " Run with --preopen <dir> to grant the component "
+                "filesystem authority over the directory containing that "
+                "path (the operator-declared WASI --dir model), or use the "
+                "default capa:host backend (drop --wasi)."
             )
         # Fail-closed proof obligation for Net, SYMMETRIC with Fs above: if
         # the program uses a request-building Net op (``get`` / ``post``)
@@ -447,9 +451,36 @@ class _WasiEmissionMixin:
                 "be a string literal so the allowed-host ceiling can be "
                 "materialised; this program passes a dynamic URL (a local, "
                 "parameter, interpolated or computed value) to a Net "
-                "operation, so no host ceiling can be derived (fail-closed). "
-                "Use the default capa:host backend (drop --wasi)."
+                "operation, so no host ceiling can be derived (fail-closed)."
+                + self._path_arg_hint("Net")
+                + " Use the default capa:host backend (drop --wasi)."
             )
+
+    def _path_arg_hint(self, cap: str) -> str:
+        """A trailing sentence naming the proven argv -> sink facts for
+        ``cap`` (WASI Layer 1), so the fail-closed message is ACTIONABLE:
+        the operator sees exactly which argv argument reaches the sink and
+        with what access. Empty string when the surface proves no argv ->
+        ``cap`` flow (the dynamic path came from elsewhere) or the AST is
+        unavailable."""
+        module = getattr(self, "_wasi_ast_module", None)
+        if module is None:
+            return ""
+        try:
+            from .._wasi_path_arg_surface import compute_path_arg_surface
+            surface = compute_path_arg_surface(module)
+        except Exception:
+            # The hint is best-effort; never let surface computation turn
+            # a clean fail-closed rejection into a crash.
+            return ""
+        facts = [f for f in surface.facts if f.cap == cap]
+        if not facts:
+            return ""
+        joined = "; ".join(f.describe() for f in facts)
+        return (
+            f" The compiler proved this program routes argv (env.args()) "
+            f"to {cap}: {joined}."
+        )
 
     def _wasi_env_uses_get_or_args(self) -> bool:
         """True when ``--wasi`` is active and the program reaches an

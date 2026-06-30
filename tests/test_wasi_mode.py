@@ -5108,5 +5108,104 @@ class TestWasiStdinReadLine(unittest.TestCase):
         _wrap_as_component(core, wit, wasi=True)
 
 
+class TestWasiPathArgSurface(unittest.TestCase):
+    """WASI Layer 1 path-arg surface: the ``--wasi-surface`` inspection
+    command, the compiler-derived SBOM block, and the actionable
+    fail-closed message. None of these need the Wasm toolchain except the
+    message test, which exercises the emitter's validation directly."""
+
+    _ARGV_PROG = (
+        "fun main(fs: Fs, env: Env)\n"
+        "    let path = match env.args().get(0) "
+        "{ None -> \"\", Some(p) -> p }\n"
+        "    let out  = match env.args().get(1) "
+        "{ None -> \"o\", Some(p) -> p }\n"
+        "    let _ = match fs.read(path) { Err(_) -> \"\", Ok(s) -> s }\n"
+        "    let _ = fs.write(out, \"x\")\n"
+    )
+
+    _NO_ARGV = (
+        "fun main(fs: Fs)\n"
+        "    let _ = match fs.read(\"static.json\") "
+        "{ Err(_) -> \"\", Ok(s) -> s }\n"
+    )
+
+    def _run_cli(self, argv, src):
+        import tempfile
+        from pathlib import Path
+        from capa.cli import main
+        out, err = io.StringIO(), io.StringIO()
+        old_out, old_err, old_argv = sys.stdout, sys.stderr, sys.argv
+        sys.stdout, sys.stderr = out, err
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "p.capa"
+            f.write_text(src, encoding="utf-8")
+            sys.argv = ["capa", *argv, str(f)]
+            try:
+                code = main()
+            finally:
+                sys.stdout, sys.stderr, sys.argv = old_out, old_err, old_argv
+        return code, out.getvalue(), err.getvalue()
+
+    def test_wasi_surface_command_reports_facts(self):
+        code, out, _err = self._run_cli(["--wasi-surface"], self._ARGV_PROG)
+        self.assertEqual(code, 0)
+        self.assertIn("compiler-derived", out)
+        self.assertIn("argv[0] -> Fs.read (read-only)", out)
+        self.assertIn("argv[1] -> Fs.write (writes)", out)
+
+    def test_wasi_surface_command_empty_when_no_argv(self):
+        code, out, _err = self._run_cli(["--wasi-surface"], self._NO_ARGV)
+        self.assertEqual(code, 0)
+        self.assertIn("no argv", out)
+
+    def test_manifest_surface_block_is_compiler_derived(self):
+        import json
+        code, out, _err = self._run_cli(["--manifest"], self._ARGV_PROG)
+        self.assertEqual(code, 0)
+        m = json.loads(out)
+        block = m["compiler_derived_path_arg_surface"]
+        self.assertEqual(block["trust_level"], "compiler-derived")
+        # Distinct from the operator-declared grants block.
+        self.assertEqual(
+            m["operator_declared_grants"]["trust_level"], "operator-declared",
+        )
+        facts = {
+            (a["arg_index"], a["capability"], a["method"], a["access"])
+            for a in block["arguments"]
+        }
+        self.assertIn((0, "Fs", "read", "read"), facts)
+        self.assertIn((1, "Fs", "write", "write"), facts)
+
+    def test_cyclonedx_surface_property_present(self):
+        import json
+        code, out, _err = self._run_cli(["--cyclonedx"], self._ARGV_PROG)
+        self.assertEqual(code, 0)
+        sbom = json.loads(out)
+        props = {
+            p["name"]: p["value"]
+            for p in sbom["metadata"]["properties"]
+        }
+        self.assertEqual(
+            props.get("capa:compiler_derived_path_arg_surface:trust_level"),
+            "compiler-derived",
+        )
+
+    def test_actionable_failclosed_message_names_arg_to_sink(self):
+        from capa import Lexer, analyze
+        from capa.ir import compile_wat
+        from capa.loader import ModuleLoader
+        src = self._ARGV_PROG
+        linked = ModuleLoader().load_root(src, "p.capa")
+        module = linked.module
+        result = analyze(module, source=src, filename="p.capa")
+        with self.assertRaises(Exception) as cm:
+            compile_wat(module, types=result.types, wasi=True)
+        msg = str(cm.exception)
+        # Names the proven argv -> sink and suggests --preopen.
+        self.assertIn("argv[0] -> Fs.read", msg)
+        self.assertIn("--preopen", msg)
+
+
 if __name__ == "__main__":
     unittest.main()

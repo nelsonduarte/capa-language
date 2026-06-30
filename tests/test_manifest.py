@@ -267,6 +267,10 @@ class TestTopLevelShape(unittest.TestCase):
         # always present (empty when none declared), distinct from the
         # compiler-derived surface.
         "operator_declared_grants",
+        # WASI Layer 1: compiler-derived, program-proven argv -> sink
+        # path-arg surface, always present (empty when nothing proven),
+        # the opposite trust level to operator_declared_grants.
+        "compiler_derived_path_arg_surface",
         "summary",
     }
 

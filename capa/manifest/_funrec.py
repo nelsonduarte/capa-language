@@ -264,6 +264,52 @@ def build_operator_declared_grants(
     }
 
 
+def build_path_arg_surface(module: A.Module) -> dict[str, Any]:
+    """Build the ``compiler_derived_path_arg_surface`` manifest block: the
+    COMPILER-PROVEN facts about which ``argv`` (``env.args()``) arguments
+    reach which Fs / Net / Env sinks, and whether the access is read or
+    write (WASI Layer 1, 2026-06-30).
+
+    This is a DERIVED / PROVEN-BY-CONSTRUCTION fact, the OPPOSITE trust
+    level to ``operator_declared_grants``: the compiler PROVED, by a sound
+    over-approximating static analysis, that these argv elements flow to
+    these sinks. A regulator reads it as a machine-verifiable property of
+    the program text, not as an operator's declared trust. Each entry is
+    ``{"arg_index": int | "*", "capability": "Fs"|"Net"|"Env", "method":
+    str, "access": "read"|"write"}``; ``arg_index`` is ``"*"`` when an argv
+    element provably reaches the sink but which one is not statically
+    determinate (the sound widening). The block is always present so the
+    field shape is stable for consumers; an empty ``arguments`` list means
+    "no argv argument was proven to reach any Fs / Net / Env sink"."""
+    from ..ir._wasi_path_arg_surface import compute_path_arg_surface, ANY_INDEX
+    surface = compute_path_arg_surface(module)
+    arguments = [
+        {
+            "arg_index": "*" if f.arg_index is ANY_INDEX else f.arg_index,
+            "capability": f.cap,
+            "method": f.method,
+            "access": f.access,
+        }
+        for f in surface.facts
+    ]
+    return {
+        # The honest label a regulator-facing consumer keys on: this IS
+        # compiler-derived / program-proven authority surface, DISTINCT
+        # from the operator-declared grants.
+        "trust_level": "compiler-derived",
+        "note": (
+            "argv (env.args()) arguments the compiler PROVED reach an Fs / "
+            "Net / Env sink, and whether read or write. A sound "
+            "over-approximation (no reaching argument omitted; arg_index "
+            "'*' when the concrete index is not statically determinate). "
+            "This does NOT grant authority -- a dynamic Fs/Net path still "
+            "fail-closes in --wasi without --preopen; it is an auditable "
+            "fact, distinct from operator_declared_grants."
+        ),
+        "arguments": arguments,
+    }
+
+
 def build_manifest(
     module: A.Module,
     *,
@@ -442,6 +488,10 @@ def build_manifest(
             if operator_declared_grants is not None
             else build_operator_declared_grants()
         ),
+        # WASI Layer 1: compiler-DERIVED, program-PROVEN argv -> sink
+        # surface, the opposite trust level to operator_declared_grants
+        # above. Always present (empty ``arguments`` when nothing proven).
+        "compiler_derived_path_arg_surface": build_path_arg_surface(module),
         "summary": summary,
     }
 

@@ -320,6 +320,10 @@ class WasmEmitter(
         # fail-closed check) and by the Fs metadata call-site emitter
         # (literal-path -> preopen-index + basename resolution).
         self._fs_ceiling = None
+        # Set in ``emit()`` (WASI Layer 1): the original AST module carried
+        # by the CIR, used to compute the argv -> sink path-arg surface for
+        # the actionable fail-closed message. None outside ``--wasi``.
+        self._wasi_ast_module = None
         # Set in ``emit()``: True when a migrated Fs metadata op needs
         # the wasi:filesystem preopen machinery (scratch + globals).
         self._wasi_fs_uses_preopens = False
@@ -528,6 +532,12 @@ class WasmEmitter(
                 compute_fs_ceiling_from_cir, mkdir_prefixes,
                 resolve_fs_call,
             )
+            # The original AST (the loader-linked module, before lowering)
+            # carried alongside the CIR so the actionable fail-closed
+            # message in ``_validate_wasi_caps`` can name the argv -> sink
+            # path-arg surface (the AST is where ``env.args()`` + the call
+            # chain survive; the CIR has lowered them away).
+            self._wasi_ast_module = getattr(module, "ast_module", None)
             self._fs_ceiling = compute_fs_ceiling_from_cir(module)
             # Pre-intern every WASI-Fs string the wrappers / call sites
             # reference, BEFORE the data segment is emitted below. The

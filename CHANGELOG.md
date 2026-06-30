@@ -11,6 +11,34 @@ breaking changes and the discipline is still being shaped.
 
 **Added.**
 
+- *The `--wasi` mode now PROVES and EXPOSES a by-construction "path-arg
+  surface": which `argv` (`env.args()`) arguments reach which `Fs` / `Net`
+  / `Env` sinks, read or write.* The dominant ecosystem pattern is a CLI
+  tool that takes paths in `argv` and feeds them to `fs.read` / `fs.write`;
+  such a path is a COMPUTED value at the sink, so `--wasi` rightly
+  fail-closes (the operator still uses the existing `--preopen <dir>` to
+  grant access). This new layer does NOT unblock the program automatically
+  (it does not move the trust frontier or derive preopens from `argv`).
+  Instead it turns that fail-closed point into an AUDITABLE, machine-
+  verifiable fact: a sound static over-approximation forward-taints the
+  result of `env.args()` through bindings, struct fields, helper calls /
+  returns and interpolation, and records every argv argument that reaches
+  an `Fs` / `Net` / `Env` sink, with its access (read / write) and -- when
+  statically determinate -- its concrete index (else `argv[*]`). The
+  analysis NEVER omits a reaching argument and NEVER reports an index
+  narrower than proved (verified by a dedicated soundness harness with a
+  hand-written ground-truth corpus). The surface drives three things: (1)
+  a new `compiler_derived_path_arg_surface` SBOM block (manifest,
+  CycloneDX, SPDX), labelled `compiler-derived` -- the OPPOSITE trust level
+  to `operator_declared_grants`, the Capa "proven by construction" mark
+  applied to the CLI pattern; (2) an ACTIONABLE `--wasi` rejection message
+  that names the offending arg -> sink (e.g. `argv[0] -> Fs.read`) and
+  suggests `--preopen <dir>`; and (3) a read-only `capa --wasi-surface
+  <prog>` inspection command that prints the surface without compiling or
+  running the program. The existing const-prop literal resolution and the
+  static ceilings are unchanged -- the surface is a READ-only provenance
+  extension.
+
 - *The static `--wasi` authority ceilings now propagate string literals
   INTER-PROCEDURALLY, closing idiomatic helper-routed paths / urls / keys
   without an operator grant.* Until now the `Fs` preopen ceiling, the

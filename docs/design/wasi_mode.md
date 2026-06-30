@@ -1263,8 +1263,75 @@ property (see `tests/test_wasi_mode.py`):
   buffer and the second `is_dir` trapped with "unknown handle index" on
   a corrupted preopen descriptor.
 
+## Path-arg surface (Layer 1: by-construction, transparent)
+
+The dominant ecosystem pattern is a CLI tool that receives paths in
+`argv` (`env.args()`) and feeds them to `fs.read` / `fs.write` (or
+`net.get` / `env.get`). Such a path is a COMPUTED value at the sink, so
+the static preopen / host / key ceiling cannot be derived and `--wasi`
+fail-closes (rightly: an operator still uses `--preopen <dir>` to grant
+access; see the layer b1 section). Layer 1 does **not** unblock that
+program automatically and does **not** move the trust frontier (deriving
+preopens from `argv` would be a separate Layer 2, out of scope). Instead
+it turns the fail-closed point into an **auditable, machine-verifiable
+fact**: the compiler PROVES which `argv` arguments reach which `Fs` /
+`Net` / `Env` sinks, read or write.
+
+**The analysis** (`capa/ir/_wasi_path_arg_surface.py`,
+`compute_path_arg_surface`) is a sound, REACHABILITY-BLIND, forward
+argv-taint fixpoint, reusing the const-prop's callable collection +
+argument binding. It seeds on the result of `env.args()` and propagates
+taint through `let` / `var` bindings, destructure patterns (`match
+args.get(0) { Some(p) -> p }`), every operation on a tainted value (field
+read, index, interpolation, method call), struct / list / tuple
+construction with a tainted member, function arguments (to the callee
+parameter) and function returns (to the call result). When a tainted
+value lands in a built-in `Fs` / `Net` / `Env` sink slot, it records
+`(arg_index_or_any, capability, method, access)`. Sink recognition is
+broadened beyond the const-prop's param-only rule to include a sink whose
+receiver is `self.<field>` for a cap-typed struct field (e.g. the
+`ReadOnlyFsImpl { fs: Fs }` shape whose `read` does `self.fs.read(path)`)
+and a local aliasing a cap parameter, so a built-in sink reached through a
+wrapper cap is never omitted.
+
+**Soundness** (verified by `tests/test_wasi_path_arg_surface_soundness.py`
+against a hand-written ground-truth corpus): it is a CORRECT OVER-
+APPROXIMATION -- it NEVER omits an `argv` argument that can reach a sink,
+and NEVER reports an index narrower than statically proved. A concrete
+index is emitted only when the sink slot resolves to a single argv index
+in its own frame (`args.get(<lit>)` / `args[<lit>]` / `args.first()`,
+directly or via a `let path = match args.get(0) { Some(p) -> p }`
+destructure); in every other case (a struct field, a helper return, a
+computed index, a loop) the index is `argv[*]`.
+
+**Three consumers:**
+
+1. **SBOM** -- a `compiler_derived_path_arg_surface` block in the manifest
+   (`capa/manifest/_funrec.py::build_path_arg_surface`), surfaced in
+   CycloneDX (`capa:compiler_derived:path_arg_surface` properties) and
+   SPDX (`compiler_derived:path_arg_surface` annotations). It is labelled
+   `compiler-derived` -- the OPPOSITE trust level to
+   `operator_declared_grants`. An auditor reads it as a property the
+   compiler PROVED, not as an operator's declared trust.
+2. **Actionable rejection** -- the `--wasi` fail-closed message for a
+   dynamic `Fs` / `Net` path (`_validate_wasi_caps`) now NAMES the proven
+   arg -> sink (e.g. `argv[0] -> Fs.read (read-only)`) and suggests
+   `--preopen <dir>`.
+3. **Inspection** -- `capa --wasi-surface <prog>` prints the surface
+   without compiling or running the program (read-only). Output reads e.g.
+   `argv[0] -> Fs.read (read-only)`.
+
+The existing const-prop literal resolution and the static ceilings are
+unchanged: the surface is a READ-only provenance extension, never altering
+which literals resolve or what the ceilings materialise.
+
 ## Files
 
+- `capa/ir/_wasi_path_arg_surface.py` - the Layer 1 path-arg surface
+  analysis (`compute_path_arg_surface`, `PathArgSurface`, `PathArgFact`):
+  the forward argv-taint fixpoint + read/write classification + concrete-
+  index provenance, reused by the SBOM, the actionable message, and
+  `--wasi-surface`.
 - `capa/ir/_emit_wasm/_wasi.py` - WASI import + adapter-wrapper
   emission (Random / Clock / Env readers + guest-side Env attenuation
   `$Env_restrict_to_keys` / `$Env_allows` / `$Env_key_allowed`; the Fs
@@ -1296,9 +1363,13 @@ property (see `tests/test_wasi_mode.py`):
   in ceiling order with derived perms, fail-closed for a non-closed
   ceiling; passes `0` as the Env and Fs roots; records the installed
   env-set / preopens in `_wasi_env_applied` / `_wasi_fs_applied`).
-- `capa/cli.py` - the `--wasi` flag, the WASI-deps embed path, and the
+- `capa/cli.py` - the `--wasi` flag, the WASI-deps embed path, the
   Env + Fs ceiling computation handed to the host on
-  `--wasi --component --run`.
+  `--wasi --component --run`, and the read-only `--wasi-surface`
+  inspection command (Layer 1).
+- `capa/manifest/_funrec.py` - `build_path_arg_surface`, the
+  `compiler_derived_path_arg_surface` SBOM block (Layer 1), surfaced in
+  `capa/manifest/_cyclonedx.py` + `capa/manifest/_spdx.py`.
 - `capa/wasi_wit/` - vendored WASI P2 WIT subset (random / clocks /
   cli-environment / filesystem / io).
 - `examples/wasm/wasi_random_clock.capa` - the Random + Clock demo.

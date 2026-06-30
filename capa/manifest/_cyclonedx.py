@@ -147,6 +147,29 @@ def build_cyclonedx(
                 ),
             })
 
+    # WASI Layer 1: surface the COMPILER-DERIVED, program-PROVEN argv ->
+    # sink path-arg surface as top-level metadata properties, explicitly
+    # labelled compiler-derived (the OPPOSITE trust level to the
+    # operator-declared grants above) so an SBOM consumer reads it as a
+    # machine-verifiable fact, not an operator declaration. One
+    # ``capa:compiler_derived:path_arg_surface`` property per proven fact.
+    _surface = inner.get("compiler_derived_path_arg_surface") or {}
+    _args = _surface.get("arguments") or []
+    if _args:
+        metadata_properties.append({
+            "name": "capa:compiler_derived_path_arg_surface:trust_level",
+            "value": str(_surface.get("trust_level", "compiler-derived")),
+        })
+        for _a in _args:
+            metadata_properties.append({
+                "name": "capa:compiler_derived:path_arg_surface",
+                "value": (
+                    f"argv[{_a.get('arg_index', '*')}] -> "
+                    f"{_a.get('capability', '')}.{_a.get('method', '')} "
+                    f"({_a.get('access', '')})"
+                ),
+            })
+
     metadata = {
         "timestamp": timestamp,
         "tools": {

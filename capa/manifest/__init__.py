@@ -40,7 +40,7 @@ from __future__ import annotations
 from ._cyclonedx import CYCLONEDX_SPEC_VERSION, build_cyclonedx
 from ._funrec import (
     SCHEMA_VERSION, build_manifest, build_operator_declared_grants,
-    display_filename,
+    build_path_arg_surface, display_filename,
 )
 from ._provenance import (
     CAPA_BUILD_TYPE, CAPA_BUILDER_ID, SLSA_PREDICATE_TYPE,
@@ -61,6 +61,7 @@ __all__ = [
     "SLSA_PREDICATE_TYPE",
     "build_manifest",
     "build_operator_declared_grants",
+    "build_path_arg_surface",
     "build_cyclonedx",
     "build_spdx",
     "build_vex_document",

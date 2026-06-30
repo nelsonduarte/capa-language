@@ -174,6 +174,25 @@ def build_spdx(
                 timestamp, "operator_declared_grant:preopen",
                 f"{_pre.get('host_dir', '')} [{_pre.get('permission', 'rw')}]",
             ))
+    # WASI Layer 1: compiler-DERIVED, program-PROVEN argv -> sink surface
+    # as program-package annotations, labelled compiler-derived (the
+    # OPPOSITE trust level to the operator-declared grants above) so an
+    # SPDX consumer reads it as a machine-verifiable fact, not an operator
+    # declaration. One annotation per proven argv -> sink fact.
+    _surface = inner.get("compiler_derived_path_arg_surface") or {}
+    _args = _surface.get("arguments") or []
+    if _args:
+        program_annotations.append(_annot(
+            timestamp, "compiler_derived_path_arg_surface:trust_level",
+            str(_surface.get("trust_level", "compiler-derived")),
+        ))
+        for _a in _args:
+            program_annotations.append(_annot(
+                timestamp, "compiler_derived:path_arg_surface",
+                f"argv[{_a.get('arg_index', '*')}] -> "
+                f"{_a.get('capability', '')}.{_a.get('method', '')} "
+                f"({_a.get('access', '')})",
+            ))
     program_pkg = {
         "SPDXID": program_id,
         "name": bom_basename,
