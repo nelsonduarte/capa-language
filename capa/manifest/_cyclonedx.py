@@ -72,6 +72,7 @@ def build_cyclonedx(
     source: Optional[str] = None,
     sources: Optional[dict[str, str]] = None,
     expr_labels: Optional[dict[int, str]] = None,
+    operator_declared_grants: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build a CycloneDX 1.5 SBOM with embedded Capa capability metadata.
 
@@ -88,6 +89,7 @@ def build_cyclonedx(
     inner = build_manifest(
         module, filename=filename, capa_version=capa_version,
         expr_labels=expr_labels,
+        operator_declared_grants=operator_declared_grants,
     )
 
     if timestamp is None:
@@ -122,6 +124,28 @@ def build_cyclonedx(
         {"name": "capa:summary:functions_crossing_unsafe",
          "value": str(inner["summary"]["functions_crossing_unsafe"])},
     ]
+
+    # WASI Fs layer b1: surface operator-DECLARED grants (e.g. --preopen)
+    # as top-level metadata properties, clearly namespaced + labelled as
+    # operator-declared (Level 2) so an SBOM consumer never mistakes them
+    # for the program-proven, compiler-derived capability surface. The
+    # trust_level property states the framing in-band; one
+    # ``capa:operator_declared_grant:preopen`` property per granted dir.
+    _grants = inner.get("operator_declared_grants") or {}
+    _preopens = _grants.get("preopens") or []
+    if _preopens:
+        metadata_properties.append({
+            "name": "capa:operator_declared_grants:trust_level",
+            "value": str(_grants.get("trust_level", "operator-declared")),
+        })
+        for _pre in _preopens:
+            metadata_properties.append({
+                "name": "capa:operator_declared_grant:preopen",
+                "value": (
+                    f"{_pre.get('host_dir', '')}"
+                    f" [{_pre.get('permission', 'rw')}]"
+                ),
+            })
 
     metadata = {
         "timestamp": timestamp,

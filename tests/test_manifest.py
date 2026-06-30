@@ -263,6 +263,10 @@ class TestTopLevelShape(unittest.TestCase):
         "user_defined_capabilities",
         "typestates",
         "functions",
+        # WASI Fs layer b1: operator-declared authority (e.g. --preopen),
+        # always present (empty when none declared), distinct from the
+        # compiler-derived surface.
+        "operator_declared_grants",
         "summary",
     }
 

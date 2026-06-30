@@ -647,9 +647,15 @@ class _CapDispatchMixin:
             )
         arg = instr.args[0]
         if arg.kind != "lit_str" or not isinstance(arg.literal, str):
-            # Defensive: the ceiling fail-closed check should have
-            # rejected this already, but never emit a wrapper call with
-            # an unresolved path.
+            # WASI Fs layer b1 (operator preopen): a DYNAMIC path is
+            # admitted when the operator declared ``--preopen`` -- it is
+            # resolved at RUNTIME relative to the single operator preopen.
+            if self._wasi_dynamic_fs:
+                self._emit_wasi_fs_dynamic_metadata_call(instr, method)
+                return
+            # Defensive: without an operator preopen the ceiling
+            # fail-closed check should have rejected this already, but
+            # never emit a wrapper call with an unresolved path.
             raise WasmEmissionError(
                 f"Fs.{method} in WASI mode requires a string-literal "
                 f"path (the preopen ceiling must be closed)"
@@ -753,6 +759,11 @@ class _CapDispatchMixin:
             )
         arg = instr.args[0]
         if arg.kind != "lit_str" or not isinstance(arg.literal, str):
+            # WASI Fs layer b1 (operator preopen): a DYNAMIC path resolves
+            # at runtime relative to the single operator ``--preopen`` dir.
+            if self._wasi_dynamic_fs:
+                self._emit_wasi_fs_dynamic_read_call(instr)
+                return
             raise WasmEmissionError(
                 "Fs.read in WASI mode requires a string-literal path "
                 "(the preopen ceiling must be closed)"
@@ -813,6 +824,11 @@ class _CapDispatchMixin:
             )
         arg = instr.args[0]
         if arg.kind != "lit_str" or not isinstance(arg.literal, str):
+            # WASI Fs layer b1 (operator preopen): a DYNAMIC path resolves
+            # at runtime relative to the single operator ``--preopen`` dir.
+            if self._wasi_dynamic_fs:
+                self._emit_wasi_fs_dynamic_write_call(instr)
+                return
             raise WasmEmissionError(
                 "Fs.write in WASI mode requires a string-literal path "
                 "(the preopen ceiling must be closed)"
@@ -871,6 +887,11 @@ class _CapDispatchMixin:
             )
         arg = instr.args[0]
         if arg.kind != "lit_str" or not isinstance(arg.literal, str):
+            # WASI Fs layer b1 (operator preopen): a DYNAMIC path resolves
+            # at runtime relative to the single operator ``--preopen`` dir.
+            if self._wasi_dynamic_fs:
+                self._emit_wasi_fs_dynamic_list_dir_call(instr)
+                return
             raise WasmEmissionError(
                 "Fs.list_dir in WASI mode requires a string-literal path "
                 "(the preopen ceiling must be closed)"
@@ -894,6 +915,156 @@ class _CapDispatchMixin:
         self._write(f"i32.const {idx}")
         self._write(f"i32.const {rel_off}")
         self._write(f"i32.const {rel_len}")
+        self._write("local.get $_ret_area")
+        self._write("call $Fs_list_dir")
+        self._emit_cap_indirect_materialise(
+            "result_list_string_io_error", instr.dst,
+        )
+
+    # ---- WASI Fs layer b1: DYNAMIC path call sites --------------
+    #
+    # A dynamic (non-literal) Fs path is admitted ONLY when the operator
+    # declared ``--preopen <dir>`` (``self._wasi_dynamic_fs``). The path
+    # is NOT resolvable at compile time, so the call site addresses the
+    # single operator preopen (``_wasi_operator_preopen_index()``) and
+    # hands the path's runtime ``(ptr, len)`` to the wrapper as BOTH the
+    # FULL path (for the guest-side fail-closed attenuation gate
+    # ``$Fs_path_allowed``, against which a restricted Fs's prefixes are
+    # compared) AND the RELATIVE path (wasmtime resolves it relative to
+    # the operator preopen descriptor). The wrappers are UNCHANGED -- only
+    # the operands differ (runtime ``(ptr, len)`` + ``idx`` const, the
+    # Fs.write content-arg push pattern), so there is ZERO new WAT here.
+
+    def _push_wasi_dynamic_fs_path(self, arg) -> None:
+        """Push a DYNAMIC Fs path argument's ``(ptr, len)`` for a layer-b1
+        call site. The path must be a String LOCAL or PARAM (the lowerer
+        flattens an Fs path argument to a local / param before the
+        MethodCall, so a side-effecting re-evaluation never occurs); a
+        bare ``(local.get _ptr; local.get _len)`` pair is emitted, safe to
+        repeat for the full + relative operands. Anything else is a shape
+        the b1 increment does not handle and is rejected loudly."""
+        is_string_local = (
+            arg.kind == "local" and self._is_string_local(arg.name)
+        )
+        is_string_param = (
+            arg.kind == "param" and self._param_is_string(arg.name)
+        )
+        if not (is_string_local or is_string_param):
+            raise WasmEmissionError(
+                "Fs dynamic path under --preopen must be a String local "
+                f"or param (b1), got {arg.kind!r}"
+            )
+        self._push_string_arg(arg)
+
+    def _emit_wasi_fs_dynamic_metadata_call(
+        self, instr: MethodCall, method: str,
+    ) -> None:
+        """Dynamic-path ``fs.exists / is_dir / mkdir`` under ``--preopen``.
+
+        Mirrors ``_emit_wasi_fs_metadata_call`` but with the operator
+        preopen index + the runtime path (ptr, len). ``mkdir`` keeps full
+        ``os.makedirs(exist_ok=True)`` parity: the dynamic relative path
+        may be multi-segment and its segments are not known at compile
+        time, so it routes to the runtime recursive sequencer
+        ``$Fs_mkdir_recursive`` (which walks the path's ``/`` boundaries
+        and calls the single-segment ``$Fs_mkdir`` per cumulative prefix,
+        short-circuiting on a genuine Err) -- byte-parity with the literal
+        path's compile-time prefix unrolling and with the oracle."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Fs.{method} expected 1 arg, got {len(instr.args)}"
+            )
+        arg = instr.args[0]
+        idx = self._wasi_operator_preopen_index()
+        if method == "mkdir":
+            self._write("i32.const 20")
+            self._write("call $alloc")
+            self._write("local.set $_ret_area")
+            self._push_fs_handle(instr.receiver)
+            self._push_wasi_dynamic_fs_path(arg)   # full (ptr, len)
+            self._write(f"i32.const {idx}")
+            self._push_wasi_dynamic_fs_path(arg)   # rel (ptr, len) == full
+            self._write("local.get $_ret_area")
+            self._write("call $Fs_mkdir_recursive")
+            self._emit_cap_indirect_materialise(
+                "result_unit_io_error", instr.dst,
+            )
+            return
+        self._push_fs_handle(instr.receiver)
+        self._push_wasi_dynamic_fs_path(arg)       # full (ptr, len)
+        self._write(f"i32.const {idx}")
+        self._push_wasi_dynamic_fs_path(arg)       # rel (ptr, len) == full
+        self._write(f"call $Fs_{method}")
+        if instr.dst is not None:
+            self._write(f"local.set ${instr.dst}")
+
+    def _emit_wasi_fs_dynamic_read_call(self, instr: MethodCall) -> None:
+        """Dynamic-path ``fs.read`` under ``--preopen``. Mirrors
+        ``_emit_wasi_fs_read_call`` with the operator preopen index + the
+        runtime path (ptr, len)."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Fs.read expected 1 arg, got {len(instr.args)}"
+            )
+        arg = instr.args[0]
+        idx = self._wasi_operator_preopen_index()
+        self._write("i32.const 20")
+        self._write("call $alloc")
+        self._write("local.set $_ret_area")
+        self._push_fs_handle(instr.receiver)
+        self._push_wasi_dynamic_fs_path(arg)
+        self._write(f"i32.const {idx}")
+        self._push_wasi_dynamic_fs_path(arg)
+        self._write("local.get $_ret_area")
+        self._write("call $Fs_read")
+        self._emit_cap_indirect_materialise(
+            "result_string_io_error", instr.dst,
+        )
+
+    def _emit_wasi_fs_dynamic_write_call(self, instr: MethodCall) -> None:
+        """Dynamic-path ``fs.write(path, content)`` under ``--preopen``.
+        The PATH (arg[0]) is the dynamic runtime (ptr, len); the CONTENT
+        (arg[1]) is any String pushed the usual way (its bytes already
+        live in linear memory). Mirrors ``_emit_wasi_fs_write_call``."""
+        if len(instr.args) != 2:
+            raise WasmEmissionError(
+                f"Fs.write expected 2 args (path, content), got "
+                f"{len(instr.args)}"
+            )
+        arg = instr.args[0]
+        idx = self._wasi_operator_preopen_index()
+        self._write("i32.const 20")
+        self._write("call $alloc")
+        self._write("local.set $_ret_area")
+        self._push_fs_handle(instr.receiver)
+        self._push_wasi_dynamic_fs_path(arg)
+        self._write(f"i32.const {idx}")
+        self._push_wasi_dynamic_fs_path(arg)
+        # content (ptr, len) - already in linear memory.
+        self._push_string_arg(instr.args[1])
+        self._write("local.get $_ret_area")
+        self._write("call $Fs_write")
+        self._emit_cap_indirect_materialise(
+            "result_unit_io_error", instr.dst,
+        )
+
+    def _emit_wasi_fs_dynamic_list_dir_call(self, instr: MethodCall) -> None:
+        """Dynamic-path ``fs.list_dir`` under ``--preopen``. Mirrors
+        ``_emit_wasi_fs_list_dir_call`` with the operator preopen index +
+        the runtime path (ptr, len)."""
+        if len(instr.args) != 1:
+            raise WasmEmissionError(
+                f"Fs.list_dir expected 1 arg, got {len(instr.args)}"
+            )
+        arg = instr.args[0]
+        idx = self._wasi_operator_preopen_index()
+        self._write("i32.const 20")
+        self._write("call $alloc")
+        self._write("local.set $_ret_area")
+        self._push_fs_handle(instr.receiver)
+        self._push_wasi_dynamic_fs_path(arg)
+        self._write(f"i32.const {idx}")
+        self._push_wasi_dynamic_fs_path(arg)
         self._write("local.get $_ret_area")
         self._write("call $Fs_list_dir")
         self._emit_cap_indirect_materialise(

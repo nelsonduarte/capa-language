@@ -201,6 +201,7 @@ class WasmEmitter(
         memory_cap_pages: Optional[int] = MEMORY_CAP_DEFAULT_PAGES,
         manifest_json: Optional[str] = None,
         wasi: bool = False,
+        wasi_dynamic_fs: bool = False,
     ):
         # Experimental opt-in (2026-06-27): when True, Random.system_seed
         # and Clock.now_secs / now_monotonic import canonical WASI
@@ -211,6 +212,29 @@ class WasmEmitter(
         # untouched all-``capa:host`` behaviour. See
         # ``docs/design/wasi_mode.md``.
         self._wasi: bool = wasi
+        # WASI Fs layer b1 (operator preopen, 2026-06-30): True when the
+        # operator declared ``--preopen <dir>`` for this run, granting the
+        # component filesystem authority over that directory and so
+        # UNBLOCKING dynamic (non-literal) Fs paths under ``--wasi``. A
+        # dynamic path is resolved at RUNTIME relative to the single
+        # operator preopen (the WASI ``--dir`` model, wasmtime's
+        # convention), framed honestly as a LEVEL-2 operator-DECLARED
+        # grant (see ``docs/design/wasi-attenuation.md``), distinct from
+        # the COMPILER-DERIVED preopen ceiling. When False (the default),
+        # a dynamic Fs path is REJECTED at compile time exactly as before
+        # -- this flag is the ONLY thing that suppresses that rejection.
+        #
+        # b1 INDEX RULE (emitter <-> host agreement): the operator preopen
+        # is the LAST preopen the host registers, AFTER every
+        # compiler-derived ceiling preopen, so it never shifts an existing
+        # literal call site's index. In the dynamic case the derived
+        # ceiling is NOT closed and so contributes NO preopens, leaving
+        # the operator preopen at index 0; the dynamic call-site emitter
+        # therefore addresses it with the constant
+        # ``_wasi_operator_preopen_index`` (0 whenever the ceiling is open,
+        # i.e. exactly the dynamic case). The host computes the same index
+        # (len(derived preopens)) so the two never disagree.
+        self._wasi_dynamic_fs: bool = wasi_dynamic_fs
         self._lines: List[str] = []
         self._indent = 0
         self._unit = indent_unit
@@ -310,6 +334,27 @@ class WasmEmitter(
         # Offset of the Net.get indirect-return scratch (the wasi:http
         # chain's result areas), 0 when Net.get is not used.
         self._wasi_net_scratch_offset = 0
+
+    # ----- WASI operator-preopen (layer b1) ----------------------
+
+    def _wasi_operator_preopen_index(self) -> int:
+        """The preopen INDEX the operator ``--preopen`` directory occupies
+        on the host, for the dynamic-Fs-path call-site emitter to address.
+
+        b1 index rule: the host registers the operator preopen AFTER every
+        compiler-derived ceiling preopen, so its index is the number of
+        derived preopens. A dynamic Fs path (the only thing that reaches
+        the operator preopen) requires a NOT-CLOSED ceiling, which
+        contributes NO derived preopens, so this is 0 in the dynamic case.
+        For a fully-literal program (closed ceiling) the operator preopen
+        sits at ``len(ceiling.preopens)`` and is unused by the guest (no
+        dynamic call site), but still registered + recorded for honesty;
+        the constant returned here matches the host's registration order
+        either way."""
+        ceiling = self._fs_ceiling
+        if ceiling is None or not getattr(ceiling, "closed", False):
+            return 0
+        return len(ceiling.preopens)
 
     # ----- public ------------------------------------------------
 

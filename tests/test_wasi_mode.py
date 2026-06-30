@@ -526,6 +526,66 @@ class TestWasiFlagGuards(unittest.TestCase):
         self.assertIn("--wasi requires --component", err)
 
 
+class TestWasiPreopenFlagGuards(unittest.TestCase):
+    """``--preopen`` (layer b1) guards: it requires --wasi (or an SBOM
+    command) and b1 supports a single preopen for dynamic paths. These
+    fail before any Wasm toolchain is needed."""
+
+    def _run_cli(self, argv, src):
+        import tempfile
+        from pathlib import Path
+        from capa.cli import main
+        err = io.StringIO()
+        old_err, old_out, old_argv = sys.stderr, sys.stdout, sys.argv
+        sys.stderr = err
+        sys.stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "p.capa"
+            f.write_text(src, encoding="utf-8")
+            sys.argv = ["capa", *argv, str(f)]
+            try:
+                code = main()
+            finally:
+                sys.stderr, sys.stdout, sys.argv = old_err, old_out, old_argv
+        return code, err.getvalue()
+
+    _DYN = (
+        "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+        "    let args = env.args()\n"
+        "    match args.get(0)\n"
+        "        Some(p) ->\n"
+        "            match fs.read(p)\n"
+        "                Ok(c) -> stdio.println(c)\n"
+        "                Err(e) -> stdio.println(\"err\")\n"
+        "        None -> stdio.println(\"none\")\n"
+    )
+
+    def test_preopen_without_wasi_rejected(self):
+        code, err = self._run_cli(
+            ["--wasm", "--component", "--run", "--preopen", "/tmp/x"],
+            self._DYN,
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--preopen requires --wasi", err)
+
+    def test_multiple_preopen_rejected(self):
+        code, err = self._run_cli(
+            ["--wasm", "--component", "--wasi", "--run",
+             "--preopen", "/tmp/a", "--preopen", "/tmp/b"],
+            self._DYN,
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("single --preopen", err)
+
+    def test_preopen_allowed_with_manifest(self):
+        # --preopen is accepted alongside an SBOM/--manifest command (it
+        # records the operator grant). No --wasi needed there.
+        code, err = self._run_cli(
+            ["--manifest", "--preopen", "/data:ro"], self._DYN,
+        )
+        self.assertEqual(code, 0, err)
+
+
 class TestWasiEnvCeilingAnalysis(unittest.TestCase):
     """Static Env authority-ceiling analysis (Level 1 pre-requisite).
 
@@ -1419,6 +1479,170 @@ class TestWasiFsRejections(unittest.TestCase):
             self._compile(src)
         self.assertIn("WASI mode", str(cm.exception))
         self.assertIn("literal", str(cm.exception))
+
+
+class TestWasiFsDynamicPreopenCompile(unittest.TestCase):
+    """WASI Fs layer b1: the operator ``--preopen`` flag UNBLOCKS a
+    DYNAMIC Fs path at compile time (suppressing the dynamic-path
+    rejection) and records the grant in the SBOM. Pure-Python checks (no
+    wasm-tools / wasmtime), so this class is not gated."""
+
+    _DYN_SRC = (
+        "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+        "    let args = env.args()\n"
+        "    match args.get(0)\n"
+        "        Some(p) ->\n"
+        "            match fs.read(p)\n"
+        "                Ok(c) -> stdio.println(c)\n"
+        "                Err(e) -> stdio.println(\"err\")\n"
+        "        None -> stdio.println(\"none\")\n"
+    )
+
+    def _compile(self, src: str, *, dynamic_fs: bool):
+        from capa.ir import compile_wat
+        module, result = _parse_analyze(src)
+        return compile_wat(
+            module, types=result.types, wasi=True,
+            wasi_dynamic_fs=dynamic_fs,
+        )
+
+    def test_without_preopen_still_rejected(self):
+        # NO regression: without the operator preopen the dynamic path is
+        # still rejected at compile time exactly as before.
+        with self.assertRaises(Exception) as cm:
+            self._compile(self._DYN_SRC, dynamic_fs=False)
+        self.assertIn("WASI mode", str(cm.exception))
+        self.assertIn("literal", str(cm.exception))
+
+    def test_with_preopen_compiles(self):
+        # With the operator preopen the dynamic path compiles: the Fs.read
+        # wrapper + the preopen resolver are emitted, no capa:host/fs.
+        wat = self._compile(self._DYN_SRC, dynamic_fs=True)
+        self.assertIn("(func $Fs_read", wat)
+        self.assertIn("(func $__wasi_fs_preopen_desc", wat)
+        self.assertNotIn('"capa:host/fs"', wat)
+
+    def test_dynamic_metadata_and_streams_compile(self):
+        # exists / is_dir / mkdir / write / list_dir all admit a dynamic
+        # path under the operator preopen.
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            stdio.println(\"${fs.exists(p)}\")\n"
+            "            stdio.println(\"${fs.is_dir(p)}\")\n"
+            "            let m = fs.mkdir(p)\n"
+            "            let w = fs.write(p, \"x\")\n"
+            "            let l = fs.list_dir(p)\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        wat = self._compile(src, dynamic_fs=True)
+        self.assertIn("(func $Fs_exists", wat)
+        self.assertIn("(func $Fs_is_dir", wat)
+        self.assertIn("(func $Fs_mkdir", wat)
+        self.assertIn("(func $Fs_write", wat)
+        self.assertIn("(func $Fs_list_dir", wat)
+
+    def test_operator_preopen_index_is_zero_when_ceiling_open(self):
+        # b1 index rule: with no derived preopens (dynamic ceiling) the
+        # operator preopen is index 0, the constant the dynamic call site
+        # addresses.
+        from capa.ir import compile_wat  # noqa: F401
+        from capa.ir._emit_wasm import WasmEmitter
+        from capa.ir._lower import Lowerer
+        module, result = _parse_analyze(self._DYN_SRC)
+        cir = Lowerer(types=result.types or {}).lower_module(module)
+        em = WasmEmitter(wasi=True, wasi_dynamic_fs=True)
+        em.emit(cir)
+        self.assertEqual(em._wasi_operator_preopen_index(), 0)
+
+    def test_grant_recorded_in_manifest(self):
+        # The operator grant is surfaced in the manifest as a Level-2
+        # operator-DECLARED block, distinct from the derived surface.
+        from capa.manifest import (
+            build_manifest, build_operator_declared_grants,
+        )
+        module, result = _parse_analyze(self._DYN_SRC)
+        grants = build_operator_declared_grants([
+            {"kind": "fs", "host_dir": "/data", "permission": "rw"},
+        ])
+        man = build_manifest(
+            module, operator_declared_grants=grants,
+        )
+        block = man["operator_declared_grants"]
+        self.assertEqual(block["trust_level"], "operator-declared")
+        self.assertEqual(block["preopens"][0]["host_dir"], "/data")
+        self.assertEqual(block["preopens"][0]["permission"], "rw")
+
+    def test_grant_recorded_in_cyclonedx_and_spdx(self):
+        from capa.manifest import (
+            build_cyclonedx, build_spdx, build_operator_declared_grants,
+        )
+        module, result = _parse_analyze(self._DYN_SRC)
+        grants = build_operator_declared_grants([
+            {"kind": "fs", "host_dir": "/data", "permission": "ro"},
+        ])
+        cdx = build_cyclonedx(
+            module, timestamp="2026-06-30T00:00:00Z",
+            operator_declared_grants=grants,
+        )
+        props = {p["name"]: p["value"] for p in cdx["metadata"]["properties"]}
+        self.assertEqual(
+            props["capa:operator_declared_grants:trust_level"],
+            "operator-declared",
+        )
+        self.assertIn(
+            "capa:operator_declared_grant:preopen", props,
+        )
+        self.assertIn("/data", props["capa:operator_declared_grant:preopen"])
+        spdx = build_spdx(
+            module, timestamp="2026-06-30T00:00:00Z",
+            operator_declared_grants=grants,
+        )
+        comments = [
+            a["comment"] for a in spdx["packages"][0]["annotations"]
+        ]
+        self.assertTrue(any(
+            "operator_declared_grant:preopen" in c for c in comments
+        ))
+
+    def test_empty_grant_block_present_by_default(self):
+        # The block is always present (empty preopens) so consumers can
+        # rely on the shape even when no operator grant is declared.
+        from capa.manifest import build_manifest
+        module, result = _parse_analyze(
+            "fun main(stdio: Stdio)\n    stdio.println(\"hi\")\n"
+        )
+        man = build_manifest(module)
+        self.assertEqual(man["operator_declared_grants"]["preopens"], [])
+
+
+class TestWasiPreopenSpecParse(unittest.TestCase):
+    """The CLI ``--preopen <dir>[:ro|:rw]`` spec parser (pure Python)."""
+
+    def test_default_is_read_write(self):
+        from capa.cli import _parse_preopen_spec
+        self.assertEqual(_parse_preopen_spec("/data"), ("/data", True))
+
+    def test_ro_suffix(self):
+        from capa.cli import _parse_preopen_spec
+        self.assertEqual(_parse_preopen_spec("/data:ro"), ("/data", False))
+
+    def test_rw_suffix(self):
+        from capa.cli import _parse_preopen_spec
+        self.assertEqual(_parse_preopen_spec("/data:rw"), ("/data", True))
+
+    def test_colon_in_path_preserved(self):
+        from capa.cli import _parse_preopen_spec
+        # Only a trailing :ro / :rw is a permission suffix; a Windows
+        # drive colon (or any other colon) is preserved.
+        self.assertEqual(
+            _parse_preopen_spec("C:/data"), ("C:/data", True),
+        )
+        self.assertEqual(
+            _parse_preopen_spec("C:/data:ro"), ("C:/data", False),
+        )
 
 
 class TestWasiNetDynamicUrlRejections(unittest.TestCase):
@@ -2481,6 +2705,325 @@ def _run_wasi_fs(src: str, data_dir: str) -> str:
     return _wasi_run_capture(
         WasmComponentHost(wasi=True, fs_ceiling=ceiling), comp,
     )
+
+
+def _build_wasi_dynamic_fs_component(src: str) -> bytes:
+    """Build a --wasi component with the operator-preopen flag set, so a
+    DYNAMIC Fs path is admitted (layer b1). The compiler suppresses its
+    dynamic-path rejection because an operator preopen is declared."""
+    from capa.ir import compile_wasm, compile_wit
+    from capa.cli import _wrap_as_component
+    module, result = _parse_analyze(src)
+    core = compile_wasm(
+        module, types=result.types, wasi=True, wasi_dynamic_fs=True,
+    )
+    wit = compile_wit(module, types=result.types, wasi=True)
+    return _wrap_as_component(core, wit, wasi=True)
+
+
+def _run_wasi_dynamic_fs(
+    src: str, preopen_dir: str, *, read_write: bool = True,
+    args: tuple = (),
+) -> str:
+    """Build + run a DYNAMIC-path Fs program in WASI mode under a single
+    operator ``--preopen`` directory; capture stdout. The dynamic path is
+    resolved at runtime relative to ``preopen_dir`` (the operator grant)."""
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    comp = _build_wasi_dynamic_fs_component(src)
+    host = WasmComponentHost(
+        args=args, wasi=True,
+        fs_operator_preopen=(preopen_dir, read_write),
+    )
+    return _wasi_run_capture(host, comp)
+
+
+def _run_python_in_cwd(src: str, cwd: str, args: tuple = ()) -> str:
+    """Run a program on the Python oracle with ``cwd`` as the working
+    directory and ``args`` as ``sys.argv[1:]`` (so ``env.args()`` and a
+    relative Fs path resolve the same way the WASI operator preopen makes
+    them resolve: relative to the granted directory)."""
+    from capa import transpile
+    module, result = _parse_analyze(src)
+    code = transpile(module, types=result.types, bindings=result.bindings)
+    buf = io.StringIO()
+    saved_out, saved_argv, saved_cwd = sys.stdout, list(sys.argv), os.getcwd()
+    sys.stdout = buf
+    sys.argv = ["prog"] + list(args)
+    os.chdir(cwd)
+    try:
+        ns: dict = {"__name__": "__main__"}
+        exec(compile(code, "<wasi-dyn-parity>", "exec"), ns)
+    finally:
+        sys.stdout = saved_out
+        sys.argv = saved_argv
+        os.chdir(saved_cwd)
+    return buf.getvalue()
+
+
+def _run_capa_host_in_cwd(src: str, cwd: str, args: tuple = ()) -> str:
+    """Run a program on the default capa:host component backend with
+    ``cwd`` as the working directory and ``args`` as the program argv, so
+    a relative dynamic Fs path resolves identically to the WASI operator
+    preopen and the Python oracle."""
+    from capa.ir import compile_wasm, compile_wit
+    from capa.cli import _wrap_as_component
+    from capa.runtime._wasm_component_host import WasmComponentHost
+    module, result = _parse_analyze(src)
+    core = compile_wasm(module, types=result.types, wasi=False)
+    wit = compile_wit(module, types=result.types, wasi=False)
+    comp = _wrap_as_component(core, wit, wasi=False)
+    buf = io.StringIO()
+    saved_out, saved_cwd = sys.stdout, os.getcwd()
+    sys.stdout = buf
+    os.chdir(cwd)
+    try:
+        WasmComponentHost(args=args, wasi=False).run_main(comp)
+    finally:
+        sys.stdout = saved_out
+        os.chdir(saved_cwd)
+    return buf.getvalue()
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_wasip2(),
+    "wasm-tools and/or wasmtime-py with WASI P2 not installed",
+)
+class TestWasiFsDynamicPreopen(unittest.TestCase):
+    """End-to-end WASI Fs layer b1: a genuine DYNAMIC Fs path (sourced
+    from ``env.args()``) compiles + runs under a single operator
+    ``--preopen`` directory, resolving at runtime relative to it, with
+    three-way byte-parity (Python oracle == capa:host backend == WASI
+    backend) on both output and filesystem effect. The dynamic path makes
+    the static ceiling NOT closed, so the operator preopen is the sole
+    preopen (index 0)."""
+
+    def setUp(self):
+        import tempfile
+        self._td = tempfile.mkdtemp(prefix="capa-wasi-dynfs-")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _fresh_dir(self, name):
+        import tempfile
+        d = tempfile.mkdtemp(prefix=f"capa-{name}-", dir=self._td)
+        return d
+
+    def test_read_dynamic_three_backend_parity(self):
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            match fs.read(p)\n"
+            "                Ok(c) -> stdio.println(c)\n"
+            "                Err(e) -> stdio.println(\"ERR\")\n"
+            "        None -> stdio.println(\"NOARG\")\n"
+        )
+        # One controlled directory PER backend so each reads its own copy.
+        outs = []
+        for be in ("wasi", "py", "host"):
+            d = self._fresh_dir(be)
+            with open(os.path.join(d, "hello.txt"), "w") as f:
+                f.write("DYNAMIC-READ-OK")
+            if be == "wasi":
+                outs.append(_run_wasi_dynamic_fs(
+                    src, d, args=("hello.txt",),
+                ))
+            elif be == "py":
+                outs.append(_run_python_in_cwd(src, d, args=("hello.txt",)))
+            else:
+                outs.append(_run_capa_host_in_cwd(
+                    src, d, args=("hello.txt",),
+                ))
+        self.assertEqual(outs[0], "DYNAMIC-READ-OK\n")
+        self.assertEqual(outs[0], outs[1])
+        self.assertEqual(outs[0], outs[2])
+
+    def test_write_dynamic_three_backend_parity_and_effect(self):
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            match fs.write(p, \"CONTENT-XYZ\")\n"
+            "                Ok(u) -> stdio.println(\"WROTE\")\n"
+            "                Err(e) -> stdio.println(\"ERR\")\n"
+            "        None -> stdio.println(\"NOARG\")\n"
+        )
+        results = {}
+        effects = {}
+        for be in ("wasi", "py", "host"):
+            d = self._fresh_dir(be)
+            if be == "wasi":
+                results[be] = _run_wasi_dynamic_fs(src, d, args=("o.txt",))
+            elif be == "py":
+                results[be] = _run_python_in_cwd(src, d, args=("o.txt",))
+            else:
+                results[be] = _run_capa_host_in_cwd(src, d, args=("o.txt",))
+            with open(os.path.join(d, "o.txt")) as f:
+                effects[be] = f.read()
+        self.assertEqual(results["wasi"], "WROTE\n")
+        self.assertEqual(results["wasi"], results["py"])
+        self.assertEqual(results["wasi"], results["host"])
+        self.assertEqual(effects["wasi"], "CONTENT-XYZ")
+        self.assertEqual(effects["wasi"], effects["py"])
+        self.assertEqual(effects["wasi"], effects["host"])
+
+    def test_exists_is_dir_dynamic_parity(self):
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            stdio.println(\"e=${fs.exists(p)}\")\n"
+            "            stdio.println(\"d=${fs.is_dir(p)}\")\n"
+            "        None -> stdio.println(\"NOARG\")\n"
+        )
+        for arg, mk in (("there.txt", "file"), ("adir", "dir"),
+                        ("nope", None)):
+            results = {}
+            for be in ("wasi", "py", "host"):
+                d = self._fresh_dir(f"{be}-{arg}")
+                with open(os.path.join(d, "there.txt"), "w") as f:
+                    f.write("x")
+                os.makedirs(os.path.join(d, "adir"))
+                if be == "wasi":
+                    results[be] = _run_wasi_dynamic_fs(src, d, args=(arg,))
+                elif be == "py":
+                    results[be] = _run_python_in_cwd(src, d, args=(arg,))
+                else:
+                    results[be] = _run_capa_host_in_cwd(src, d, args=(arg,))
+            self.assertEqual(results["wasi"], results["py"], arg)
+            self.assertEqual(results["wasi"], results["host"], arg)
+
+    def test_mkdir_dynamic_parity_and_effect(self):
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            match fs.mkdir(p)\n"
+            "                Ok(u) -> stdio.println(\"MK=ok\")\n"
+            "                Err(e) -> stdio.println(\"MK=err\")\n"
+            "            stdio.println(\"d=${fs.is_dir(p)}\")\n"
+            "        None -> stdio.println(\"NOARG\")\n"
+        )
+        results = {}
+        for be in ("wasi", "py", "host"):
+            d = self._fresh_dir(be)
+            if be == "wasi":
+                results[be] = _run_wasi_dynamic_fs(src, d, args=("newdir",))
+            elif be == "py":
+                results[be] = _run_python_in_cwd(src, d, args=("newdir",))
+            else:
+                results[be] = _run_capa_host_in_cwd(src, d, args=("newdir",))
+            self.assertTrue(os.path.isdir(os.path.join(d, "newdir")), be)
+        self.assertEqual(results["wasi"], results["py"])
+        self.assertEqual(results["wasi"], results["host"])
+
+    def test_mkdir_dynamic_multi_segment_parity_and_effect(self):
+        # A MULTI-segment dynamic mkdir replicates os.makedirs(exist_ok)
+        # at runtime ($Fs_mkdir_recursive over $Fs_mkdir per prefix), so a
+        # missing-parent tree is created and the Result matches the oracle.
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            match fs.mkdir(p)\n"
+            "                Ok(u) -> stdio.println(\"MK=ok\")\n"
+            "                Err(e) -> stdio.println(\"MK=err\")\n"
+            "            stdio.println(\"d=${fs.is_dir(p)}\")\n"
+            "        None -> stdio.println(\"NOARG\")\n"
+        )
+        results = {}
+        for be in ("wasi", "py", "host"):
+            d = self._fresh_dir(be)
+            if be == "wasi":
+                results[be] = _run_wasi_dynamic_fs(src, d, args=("a/b/c",))
+            elif be == "py":
+                results[be] = _run_python_in_cwd(src, d, args=("a/b/c",))
+            else:
+                results[be] = _run_capa_host_in_cwd(src, d, args=("a/b/c",))
+            self.assertTrue(os.path.isdir(os.path.join(d, "a", "b", "c")), be)
+        self.assertEqual(results["wasi"], "MK=ok\nd=true\n")
+        self.assertEqual(results["wasi"], results["py"])
+        self.assertEqual(results["wasi"], results["host"])
+
+    def test_list_dir_dynamic_parity(self):
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) ->\n"
+            "            match fs.list_dir(p)\n"
+            "                Ok(names) ->\n"
+            "                    for n in names\n"
+            "                        stdio.println(n)\n"
+            "                Err(e) -> stdio.println(\"ERR\")\n"
+            "        None -> stdio.println(\"NOARG\")\n"
+        )
+        results = {}
+        for be in ("wasi", "py", "host"):
+            d = self._fresh_dir(be)
+            sub = os.path.join(d, "ld")
+            os.makedirs(sub)
+            for nm in ("b.txt", "a.txt", "c.txt"):
+                with open(os.path.join(sub, nm), "w") as f:
+                    f.write("")
+            if be == "wasi":
+                results[be] = _run_wasi_dynamic_fs(src, d, args=("ld",))
+            elif be == "py":
+                results[be] = _run_python_in_cwd(src, d, args=("ld",))
+            else:
+                results[be] = _run_capa_host_in_cwd(src, d, args=("ld",))
+        self.assertEqual(results["wasi"], "a.txt\nb.txt\nc.txt\n")
+        self.assertEqual(results["wasi"], results["py"])
+        self.assertEqual(results["wasi"], results["host"])
+
+    def test_restricted_fs_plus_dynamic_path_mitigation(self):
+        # The fine attenuation gate ($Fs_path_allowed) still works with a
+        # DYNAMIC path: a restrict_to'd Fs denies a runtime path outside
+        # the prefix and admits one inside, byte-parity with the oracle.
+        src = (
+            "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
+            "    let r = fs.restrict_to(\"allowed\")\n"
+            "    let args = env.args()\n"
+            "    match args.get(0)\n"
+            "        Some(p) -> stdio.println(\"${r.exists(p)}\")\n"
+            "        None -> stdio.println(\"NOARG\")\n"
+        )
+        for arg, expect in (("allowed/ok.txt", "true\n"),
+                            ("secret.txt", "false\n")):
+            results = {}
+            for be in ("wasi", "py", "host"):
+                d = self._fresh_dir(f"{be}-r")
+                os.makedirs(os.path.join(d, "allowed"))
+                with open(os.path.join(d, "allowed", "ok.txt"), "w") as f:
+                    f.write("INSIDE")
+                with open(os.path.join(d, "secret.txt"), "w") as f:
+                    f.write("SECRET")
+                if be == "wasi":
+                    results[be] = _run_wasi_dynamic_fs(src, d, args=(arg,))
+                elif be == "py":
+                    results[be] = _run_python_in_cwd(src, d, args=(arg,))
+                else:
+                    results[be] = _run_capa_host_in_cwd(src, d, args=(arg,))
+            self.assertEqual(results["wasi"], expect, arg)
+            self.assertEqual(results["wasi"], results["py"], arg)
+            self.assertEqual(results["wasi"], results["host"], arg)
+
+    def test_operator_preopen_registered_at_index_zero(self):
+        # The host installs exactly the operator preopen (index 0) for a
+        # dynamic-path program (no derived ceiling).
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        d = self._fresh_dir("idx")
+        host = WasmComponentHost(
+            wasi=True, fs_operator_preopen=(d, True),
+        )
+        self.assertEqual(host._wasi_fs_applied, [(d, "operator-rw")])
 
 
 @unittest.skipUnless(

@@ -152,6 +152,7 @@ def emit_wat(
     memory_cap_pages: int | None = ...,  # type: ignore[assignment]
     manifest_json: str | None = None,
     wasi: bool = False,
+    wasi_dynamic_fs: bool = False,
 ) -> str:
     """Emit WebAssembly text format (WAT) from a CIR module.
 
@@ -178,6 +179,7 @@ def emit_wat(
         memory_cap_pages=memory_cap_pages,
         manifest_json=manifest_json,
         wasi=wasi,
+        wasi_dynamic_fs=wasi_dynamic_fs,
     ).emit(ir_module)
 
 
@@ -189,6 +191,7 @@ def compile_wat(
     filename: str = "<input>",
     embed_manifest: bool = True,
     wasi: bool = False,
+    wasi_dynamic_fs: bool = False,
 ) -> str:
     """End-to-end AST -> CIR -> WAT convenience helper. Mirrors
     :func:`compile` but targets the Wasm Component Model text form
@@ -244,6 +247,7 @@ def compile_wat(
         memory_cap_pages=memory_cap_pages,
         manifest_json=manifest_json,
         wasi=wasi,
+        wasi_dynamic_fs=wasi_dynamic_fs,
     )
 
 
@@ -329,6 +333,7 @@ def compile_wasm(
     filename: str = "<input>",
     embed_manifest: bool = True,
     wasi: bool = False,
+    wasi_dynamic_fs: bool = False,
 ) -> bytes:
     """End-to-end AST -> CIR -> WAT -> binary Wasm assembly.
 
@@ -350,6 +355,7 @@ def compile_wasm(
         filename=filename,
         embed_manifest=embed_manifest,
         wasi=wasi,
+        wasi_dynamic_fs=wasi_dynamic_fs,
     )
     proc = subprocess.run(
         [wasm_tools_path, "parse", "-"],

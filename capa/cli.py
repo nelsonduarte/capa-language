@@ -24,6 +24,7 @@ from capa import (
 from capa import __version__ as _CAPA_VERSION
 from capa.manifest import (
     build_manifest, build_cyclonedx, build_spdx,
+    build_operator_declared_grants,
     build_vex_document, build_provenance,
     resolve_build_timestamp, SourceDateEpochError,
 )
@@ -1063,6 +1064,23 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--preopen",
+        action="append",
+        default=None,
+        metavar="<dir>[:ro|:rw]",
+        help=(
+            "with --wasi, grant the component filesystem authority over "
+            "<dir> as an OPERATOR-DECLARED preopen (Level 2, the WASI "
+            "--dir model), unblocking DYNAMIC (non-literal) Fs paths that "
+            "the compiler cannot derive a preopen for. The path is "
+            "resolved at runtime relative to <dir>. Append ':ro' for "
+            "read-only or ':rw' for read-write (default: rw). Recorded in "
+            "the SBOM as a declared grant, distinct from the "
+            "compiler-derived capability surface. This increment (b1) "
+            "supports a SINGLE --preopen for dynamic paths."
+        ),
+    )
+    parser.add_argument(
         "--wasm-memory-cap",
         type=int,
         default=None,
@@ -1276,11 +1294,18 @@ def _main_dispatch() -> int:
             else:
                 print(msg, file=sys.stderr)
             return 1
+        # WASI Fs layer b1: the operator-declared grant block (--preopen),
+        # surfaced in the manifest / CycloneDX / SPDX as Level-2
+        # operator-declared authority, distinct from the derived surface.
+        _operator_grants = _operator_grants_from_args(
+            getattr(args, "preopen", None)
+        )
         if args.manifest:
             import json
             manifest = build_manifest(
                 module, filename=filename,
                 expr_labels=result.expr_labels,
+                operator_declared_grants=_operator_grants,
             )
             emit_artifact(json.dumps(manifest, indent=2))
             return 0
@@ -1308,6 +1333,7 @@ def _main_dispatch() -> int:
                 sources=linked.sources if linked is not None else None,
                 timestamp=build_ts,
                 expr_labels=result.expr_labels,
+                operator_declared_grants=_operator_grants,
             )
             emit_artifact(json.dumps(sbom, indent=2))
             return 0
@@ -1318,6 +1344,7 @@ def _main_dispatch() -> int:
                 sources=linked.sources if linked is not None else None,
                 timestamp=build_ts,
                 expr_labels=result.expr_labels,
+                operator_declared_grants=_operator_grants,
             )
             emit_artifact(json.dumps(sbom, indent=2))
             return 0
@@ -1415,6 +1442,31 @@ def _main_dispatch() -> int:
             print(msg, file=sys.stderr)
         return 1
 
+    # ``--preopen`` (layer b1) is meaningful in --wasi mode (the
+    # operator-declared filesystem grant that unblocks dynamic Fs paths)
+    # AND when emitting an SBOM / manifest (it records the same grant as
+    # operator-declared authority, distinct from the derived surface).
+    # Reject it on any OTHER invocation with an actionable message rather
+    # than silently ignore it.
+    _emitting_sbom = bool(
+        getattr(args, "manifest", False) or getattr(args, "cyclonedx", False)
+        or getattr(args, "spdx", False)
+    )
+    if (getattr(args, "preopen", None)
+            and not bool(getattr(args, "wasi", False))
+            and not _emitting_sbom):
+        msg = (
+            "capa: --preopen requires --wasi (or an SBOM / --manifest "
+            "command): it is the operator-declared filesystem grant for "
+            "the WASI mode, recorded in the SBOM; it has no effect on the "
+            "default execution backend"
+        )
+        if use_color:
+            print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+        else:
+            print(msg, file=sys.stderr)
+        return 1
+
     if (
         args.run and not args.wasm and prefer_wasm
         and _wasm_tooling_available()
@@ -1463,6 +1515,29 @@ def _main_dispatch() -> int:
             else:
                 print(msg, file=sys.stderr)
             return 1
+        # WASI Fs layer b1: parse the operator ``--preopen``. b1 supports a
+        # SINGLE preopen for dynamic-path resolution; reject more than one
+        # with a clear message rather than silently picking one. The
+        # presence of a preopen is the signal (``wasi_dynamic_fs``) that
+        # suppresses the compiler's dynamic-Fs-path rejection, and the
+        # parsed ``(host_dir, read_write)`` is the host grant.
+        fs_operator_preopen = None
+        wasi_dynamic_fs = False
+        preopen_specs = getattr(args, "preopen", None) or []
+        if preopen_specs:
+            if len(preopen_specs) > 1:
+                msg = (
+                    "capa: --preopen: this increment (b1) supports a "
+                    "single --preopen for dynamic Fs paths; got "
+                    f"{len(preopen_specs)}"
+                )
+                if use_color:
+                    print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+                else:
+                    print(msg, file=sys.stderr)
+                return 1
+            fs_operator_preopen = _parse_preopen_spec(preopen_specs[0])
+            wasi_dynamic_fs = True
         if result is None:
             result = analyze(module, source=source, filename=filename)
         try:
@@ -1472,6 +1547,7 @@ def _main_dispatch() -> int:
                     memory_cap_pages=wasm_memory_cap,
                     filename=filename,
                     wasi=wasi_mode,
+                    wasi_dynamic_fs=wasi_dynamic_fs,
                 )
                 print(wat)
                 return 0
@@ -1480,6 +1556,7 @@ def _main_dispatch() -> int:
                 memory_cap_pages=wasm_memory_cap,
                 filename=filename,
                 wasi=wasi_mode,
+                wasi_dynamic_fs=wasi_dynamic_fs,
             )
         except Exception as e:
             msg = f"capa: --wasm: {e}"
@@ -1589,6 +1666,7 @@ def _main_dispatch() -> int:
                     wasi=wasi_mode,
                     env_ceiling=env_ceiling,
                     fs_ceiling=fs_ceiling,
+                    fs_operator_preopen=fs_operator_preopen,
                     net_ceiling=net_ceiling,
                 )
                 host.run_main(component_blob)
@@ -1761,6 +1839,48 @@ def _main_dispatch() -> int:
             print(f"{pos}  {kind_name:<14}  {text_repr}{value_repr}")
 
     return 0
+
+
+def _parse_preopen_spec(spec: str) -> tuple[str, bool]:
+    """Parse one ``--preopen`` value ``<dir>[:ro|:rw]`` into
+    ``(host_dir, read_write)``.
+
+    The default permission is READ_WRITE (``rw``), the WASI ``--dir``
+    default; an explicit ``:ro`` suffix makes it READ_ONLY and ``:rw`` is
+    READ_WRITE. Only a trailing ``:ro`` / ``:rw`` is treated as a
+    permission suffix, so a directory name that itself contains a colon
+    (or a Windows drive ``C:\\...``) is preserved -- the split is on the
+    LAST ``:`` and only when the tail is exactly ``ro`` / ``rw``."""
+    read_write = True
+    host_dir = spec
+    if ":" in spec:
+        head, _, tail = spec.rpartition(":")
+        if tail in ("ro", "rw") and head:
+            host_dir = head
+            read_write = tail == "rw"
+    return (host_dir, read_write)
+
+
+def _operator_grants_from_args(preopen_specs) -> dict | None:
+    """Build the SBOM ``operator_declared_grants`` block from the
+    ``--preopen`` specs, or None when none were declared.
+
+    Each spec ``<dir>[:ro|:rw]`` becomes a preopen entry; the block is
+    honestly labelled operator-declared (Level 2) by
+    :func:`capa.manifest.build_operator_declared_grants`, distinct from
+    the compiler-derived surface."""
+    specs = preopen_specs or []
+    if not specs:
+        return None
+    preopens = []
+    for spec in specs:
+        host_dir, read_write = _parse_preopen_spec(spec)
+        preopens.append({
+            "kind": "fs",
+            "host_dir": host_dir,
+            "permission": "rw" if read_write else "ro",
+        })
+    return build_operator_declared_grants(preopens)
 
 
 def _wrap_as_component(

@@ -230,12 +230,47 @@ def _demangle_type_text(s: str) -> str:
     return _MANGLE_INLINE_RE.sub(r"\1", s)
 
 
+def build_operator_declared_grants(
+    preopens: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Build the ``operator_declared_grants`` manifest block (WASI Fs
+    layer b1, 2026-06-30).
+
+    This block records authority the OPERATOR declared at build / run
+    time (e.g. ``--preopen <dir>``), as DISTINCT from the
+    compiler-DERIVED capability surface that the rest of the manifest
+    proves. A regulator MUST read it as Level-2 operator-DECLARED
+    authority, NOT as program-proven: the compiler could not derive
+    these grants (that is precisely why the operator had to declare
+    them), so they are an explicit trust the operator placed in the
+    deployment, not a property the type system established.
+
+    ``preopens`` is a list of ``{"host_dir": str, "permission":
+    "ro"|"rw", "kind": "fs"}`` entries (or None / empty when no operator
+    grant was declared). The block is always present so a consumer can
+    rely on its shape; an empty ``preopens`` means "no operator grant
+    was declared"."""
+    return {
+        # The honest label a regulator-facing consumer keys on: this is
+        # NOT derived/proven authority.
+        "trust_level": "operator-declared",
+        "note": (
+            "Authority declared by the operator at build/run time "
+            "(e.g. --preopen). DISTINCT from the compiler-derived, "
+            "program-proven capability surface; the compiler could not "
+            "derive these grants."
+        ),
+        "preopens": list(preopens or []),
+    }
+
+
 def build_manifest(
     module: A.Module,
     *,
     filename: str = "<input>",
     capa_version: Optional[str] = None,
     expr_labels: Optional[dict[int, str]] = None,
+    operator_declared_grants: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build a manifest dict from an analysed module.
 
@@ -249,6 +284,12 @@ def build_manifest(
     @public`` bridges, dropping no-op declassifies of already-public
     values. When omitted, every syntactic declassify is counted (the
     historical, analysis-free behaviour).
+
+    ``operator_declared_grants`` (WASI Fs layer b1, 2026-06-30): the
+    block produced by :func:`build_operator_declared_grants` recording
+    operator-DECLARED authority (e.g. ``--preopen``), clearly distinct
+    from the derived surface. When None, an EMPTY grants block is
+    recorded so the field shape is stable for consumers.
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -393,6 +434,14 @@ def build_manifest(
         "user_defined_capabilities": user_caps,
         "typestates": protocol_states,
         "functions": functions,
+        # WASI Fs layer b1: operator-declared authority (e.g. --preopen),
+        # honestly labelled Level-2 / operator-declared, distinct from the
+        # derived surface above. Always present (empty when none declared).
+        "operator_declared_grants": (
+            operator_declared_grants
+            if operator_declared_grants is not None
+            else build_operator_declared_grants()
+        ),
         "summary": summary,
     }
 

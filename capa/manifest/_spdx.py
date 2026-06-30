@@ -105,6 +105,7 @@ def build_spdx(
     source: Optional[str] = None,
     sources: Optional[dict[str, str]] = None,
     expr_labels: Optional[dict[int, str]] = None,
+    operator_declared_grants: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build an SPDX 2.3 document with embedded Capa capability metadata.
 
@@ -121,6 +122,7 @@ def build_spdx(
     inner = build_manifest(
         module, filename=filename, capa_version=capa_version,
         expr_labels=expr_labels,
+        operator_declared_grants=operator_declared_grants,
     )
 
     if timestamp is None:
@@ -157,6 +159,21 @@ def build_spdx(
         _annot(timestamp, "summary:functions_crossing_unsafe",
                str(inner["summary"]["functions_crossing_unsafe"])),
     ]
+    # WASI Fs layer b1: operator-DECLARED grants (e.g. --preopen) as
+    # program-package annotations, labelled operator-declared (Level 2)
+    # so an SPDX consumer does not read them as program-proven authority.
+    _grants = inner.get("operator_declared_grants") or {}
+    _preopens = _grants.get("preopens") or []
+    if _preopens:
+        program_annotations.append(_annot(
+            timestamp, "operator_declared_grants:trust_level",
+            str(_grants.get("trust_level", "operator-declared")),
+        ))
+        for _pre in _preopens:
+            program_annotations.append(_annot(
+                timestamp, "operator_declared_grant:preopen",
+                f"{_pre.get('host_dir', '')} [{_pre.get('permission', 'rw')}]",
+            ))
     program_pkg = {
         "SPDXID": program_id,
         "name": bom_basename,

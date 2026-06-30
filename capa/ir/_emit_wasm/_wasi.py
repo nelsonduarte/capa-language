@@ -401,10 +401,21 @@ class _WasiEmissionMixin:
         # preopen to address and the wrapper cannot run. Reject at
         # compile time with a clear message rather than emit code that
         # always denies at runtime.
+        #
+        # WASI Fs layer b1 (operator preopen, 2026-06-30): when the
+        # operator declared ``--preopen <dir>`` (``self._wasi_dynamic_fs``),
+        # the dynamic path is RESOLVED AT RUNTIME relative to that single
+        # operator preopen (the WASI ``--dir`` model). The rejection is
+        # SUPPRESSED -- the operator has explicitly granted the authority
+        # the compiler could not derive, a LEVEL-2 operator-DECLARED grant
+        # (recorded in the SBOM, distinct from the derived surface). Without
+        # ``--preopen`` the rejection stands exactly as before (the prior
+        # behaviour is intentionally preserved).
         if any(
             cap == "Fs" and method in (_WASI_FS_METADATA | _WASI_FS_STREAM)
             for cap, method in self._used_caps
-        ) and self._fs_ceiling is not None and not self._fs_ceiling.closed:
+        ) and self._fs_ceiling is not None and not self._fs_ceiling.closed \
+                and not self._wasi_dynamic_fs:
             raise WasmEmissionError(
                 "Fs in WASI mode requires every filesystem path to be a "
                 "string literal (the static preopen ceiling must be "
@@ -1142,6 +1153,12 @@ class _WasiEmissionMixin:
             self._emit_wasi_fs_is_dir_wrapper()
         if ("Fs", "mkdir") in used:
             self._emit_wasi_fs_mkdir_wrapper()
+            # Layer b1: a DYNAMIC mkdir path cannot be unrolled into
+            # cumulative prefixes at compile time, so emit the runtime
+            # recursive sequencer (over the existing single-segment
+            # ``$Fs_mkdir``) when an operator preopen admits dynamic paths.
+            if self._wasi_dynamic_fs:
+                self._emit_wasi_fs_mkdir_recursive_helper()
         if ("Fs", "read") in used:
             self._emit_wasi_fs_read_wrapper()
         if ("Fs", "write") in used:
@@ -3099,6 +3116,98 @@ class _WasiEmissionMixin:
         self._write("local.get $ret_area")
         self._write("i32.const 0")
         self._write("i32.store offset=16")
+
+    def _emit_wasi_fs_mkdir_recursive_helper(self) -> None:
+        """``$Fs_mkdir_recursive (handle, full_ptr, full_len, idx,
+        rel_ptr, rel_len, ret_area)`` -> recursive ``mkdir`` over a
+        RUNTIME relative path (WASI Fs layer b1, dynamic ``--preopen``).
+
+        A dynamic ``fs.mkdir(path)`` path is not known at compile time, so
+        the literal call site's cumulative-prefix unrolling cannot run.
+        This helper replicates ``os.makedirs(exist_ok=True)`` AT RUNTIME:
+        it scans the relative path for ``/`` separators and calls the
+        existing single-segment ``$Fs_mkdir`` once per cumulative prefix
+        (``a`` then ``a/b`` then ``a/b/c``), in order, each idempotent
+        (``$Fs_mkdir`` maps ``exist`` to Ok). It SHORT-CIRCUITS the
+        moment a prefix writes a genuine ``Err`` (ret_area tag@0 != 0),
+        leaving that Err in ``ret_area`` for the materialiser -- exactly
+        the literal path's behaviour, so a multi-segment dynamic mkdir is
+        byte-parity with the oracle. The FULL path is passed unchanged to
+        every ``$Fs_mkdir`` call so the fine-attenuation gate sees the
+        same full path each time (a denied target denies the first
+        prefix). ``$Fs_mkdir`` is REUSED verbatim; this helper only
+        sequences the prefixes a runtime path cannot pre-enumerate."""
+        self._write(
+            "(func $Fs_mkdir_recursive (param $handle i32) "
+            "(param $full_ptr i32) (param $full_len i32) (param $idx i32) "
+            "(param $rel_ptr i32) (param $rel_len i32) (param $ret_area i32)"
+        )
+        self._indent += 1
+        self._write("(local $k i32)")
+        # Walk k = 1 .. rel_len; at each k that is either a '/' boundary
+        # (rel[k] == '/') or the end (k == rel_len), mkdir the prefix
+        # rel[0:k]. A leading '/' yields a zero-length first prefix the
+        # boundary loop never emits (k starts at 1 and rel[0]=='/' is a
+        # boundary that mkdirs rel[0:1] == "/", which $Fs_mkdir handles).
+        self._write("i32.const 1")
+        self._write("local.set $k")
+        self._write("(block $done")
+        self._indent += 1
+        self._write("(loop $seg")
+        self._indent += 1
+        # if k > rel_len -> done.
+        self._write("local.get $k")
+        self._write("local.get $rel_len")
+        self._write("i32.gt_u")
+        self._write("br_if $done")
+        # boundary = (k == rel_len) OR (rel[k] == '/'). Guard the load
+        # behind the end check so k == rel_len never reads out of range.
+        self._write("local.get $k")
+        self._write("local.get $rel_len")
+        self._write("i32.eq")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $rel_ptr")
+        self._write("local.get $k")
+        self._write("i32.add")
+        self._write("i32.load8_u offset=0")
+        self._write("i32.const 47")  # '/'
+        self._write("i32.eq")
+        self._indent -= 1
+        self._write("end")
+        self._write("if")
+        self._indent += 1
+        # mkdir(prefix = rel[0:k]).
+        self._write("local.get $handle")
+        self._write("local.get $full_ptr")
+        self._write("local.get $full_len")
+        self._write("local.get $idx")
+        self._write("local.get $rel_ptr")    # prefix ptr = rel_ptr
+        self._write("local.get $k")          # prefix len = k
+        self._write("local.get $ret_area")
+        self._write("call $Fs_mkdir")
+        # Short-circuit on a genuine Err (tag@0 != 0).
+        self._write("local.get $ret_area")
+        self._write("i32.load8_u offset=0")
+        self._write("br_if $done")
+        self._indent -= 1
+        self._write("end")
+        # k += 1; continue.
+        self._write("local.get $k")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $k")
+        self._write("br $seg")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
+        self._indent -= 1
+        self._write(")")
 
     # ----- Fs.read via wasi:filesystem + wasi:io/streams ---------
 

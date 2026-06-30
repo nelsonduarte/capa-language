@@ -9,6 +9,34 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Added.**
+
+- *A `--preopen <dir>[:ro|:rw]` flag for the experimental `--wasi` mode
+  unblocks DYNAMIC (non-literal) `Fs` paths.* Until now a `Fs` path that
+  the compiler cannot prove is a string literal (one taken from a
+  parameter, `env.args()`, or any computed value) was REJECTED at compile
+  time under `--wasi`, because no static preopen ceiling could be derived
+  for it. `--preopen` lets the OPERATOR explicitly declare filesystem
+  authority over a single directory; the compiler then admits the dynamic
+  path and the guest resolves it AT RUNTIME relative to that directory
+  (the WASI `--dir` model, as in wasmtime). This is framed honestly as a
+  LEVEL-2 operator-DECLARED grant (analogous to `inherit_env`), NOT
+  program-proven authority: the compiler could not derive it, which is
+  precisely why the operator had to declare it. The grant is recorded in
+  the SBOM (manifest, CycloneDX, SPDX) under a dedicated
+  `operator_declared_grants` block, clearly labelled `operator-declared`
+  and kept DISTINCT from the compiler-derived capability surface so a
+  regulator never reads it as program-proven. Read / write / exists /
+  is_dir / mkdir / list_dir all work with a dynamic path under
+  `--preopen`, with byte-for-byte parity across the Python, `capa:host`
+  and WASI backends, and the guest-side fine attenuation (`restrict_to` /
+  `allows`) still gates the dynamic path lexically. WITHOUT `--preopen`,
+  a dynamic `Fs` path continues to be rejected at compile time exactly as
+  before (no regression); literal paths continue to resolve via the
+  compiler-derived ceiling. This increment supports a SINGLE `--preopen`
+  for dynamic-path resolution; passing more than one is rejected with a
+  clear message.
+
 **Changed.**
 
 - *In the experimental `--wasi` mode, a dynamic (non-literal) URL passed

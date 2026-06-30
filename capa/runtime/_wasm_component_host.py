@@ -86,6 +86,7 @@ class WasmComponentHost:
         wasi: bool = False,
         env_ceiling: Optional["object"] = None,
         fs_ceiling: Optional["object"] = None,
+        fs_operator_preopen: Optional[tuple] = None,
         net_ceiling: Optional["object"] = None,
         stdin: Optional[bytes] = None,
     ):
@@ -118,6 +119,21 @@ class WasmComponentHost:
         # already rejected such a program in --wasi mode, so this is
         # belt-and-braces. Only consulted in ``--wasi`` mode.
         self._fs_ceiling = fs_ceiling
+        # WASI Fs layer b1 (operator preopen, 2026-06-30): an OPERATOR-
+        # DECLARED filesystem grant, ``(host_dir, read_write)`` or None.
+        # When the operator passes ``--preopen <dir>[:ro|:rw]`` the host
+        # registers that directory as a preopen AFTER every
+        # compiler-derived ceiling preopen, so its guest index is
+        # ``len(ceiling.preopens)``. In the dynamic-path case the derived
+        # ceiling is NOT closed (no derived preopens), so the operator
+        # preopen lands at index 0 -- the constant the dynamic-path
+        # call-site emitter addresses. This is the WASI ``--dir`` model
+        # (wasmtime's ``--dir``): authority DECLARED by the operator
+        # (Level 2), distinct from the COMPILER-DERIVED ceiling. It is the
+        # ONLY thing that lets a dynamic Fs path resolve at runtime; the
+        # compiler suppresses its dynamic-path rejection symmetrically
+        # (``--wasi-dynamic-fs``). Only consulted in ``--wasi`` mode.
+        self._fs_operator_preopen = fs_operator_preopen
         # Records the preopens actually installed on the WasiConfig in
         # WASI mode (a list of (host_path, "ro"|"rw") tuples), exposed
         # for tests / diagnostics so the ceiling guarantee is
@@ -420,7 +436,11 @@ class WasmComponentHost:
         through a READ_ONLY preopen, independent of guest behaviour."""
         ceiling = self._fs_ceiling
         if ceiling is None or not getattr(ceiling, "closed", False):
-            self._wasi_fs_applied = []
+            # No derived preopens. In layer b1 an OPERATOR ``--preopen``
+            # may still grant authority for dynamic paths: register it
+            # alone (at index 0, matching the dynamic call-site emitter's
+            # ``_wasi_operator_preopen_index() == 0`` for an open ceiling).
+            self._wasi_fs_applied = self._apply_operator_preopen(wasi_cfg, 0)
             return
         # ``get-directories`` returns descriptors ONLY for the preopens
         # actually registered, in registration order, so EVERY ceiling
@@ -469,7 +489,47 @@ class WasmComponentHost:
             wasi_cfg.preopen_dir(
                 host_path, guest_path, dir_perms, file_perms,
             )
+        # Layer b1: append the operator ``--preopen`` AFTER the derived
+        # preopens so it never shifts a derived index (index ==
+        # len(ceiling.preopens)). For an all-literal program this preopen
+        # is registered + recorded but unused by the guest (no dynamic
+        # call site); the grant stays honest in the SBOM regardless.
+        applied += self._apply_operator_preopen(
+            wasi_cfg, len(ceiling.preopens),
+        )
         self._wasi_fs_applied = applied
+
+    def _apply_operator_preopen(self, wasi_cfg, index: int):
+        """Register the operator ``--preopen`` directory (layer b1) at the
+        given guest preopen ``index`` and return the list of applied
+        records (empty when no operator preopen was declared).
+
+        The operator preopen is an explicit Level-2 operator grant: the
+        directory is mounted READ_WRITE or READ_ONLY per its declared
+        permission. A non-existent host directory is skipped (no record),
+        so a dynamic path resolved against a missing preopen sees no
+        descriptor at ``index`` and fails fail-closed-as-absent, matching
+        the derived-ceiling convention."""
+        grant = self._fs_operator_preopen
+        if not grant:
+            return []
+        host_dir, read_write = grant[0], bool(grant[1])
+        if not os.path.isdir(host_dir):
+            return []
+        guest_path = f"/capa-preopen-{index}"
+        if read_write:
+            wasi_cfg.preopen_dir(
+                host_dir, guest_path,
+                wasmtime.DirPerms.READ_WRITE,
+                wasmtime.FilePerms.READ_WRITE,
+            )
+            return [(host_dir, "operator-rw")]
+        wasi_cfg.preopen_dir(
+            host_dir, guest_path,
+            wasmtime.DirPerms.READ_ONLY,
+            wasmtime.FilePerms.READ_ONLY,
+        )
+        return [(host_dir, "operator-ro")]
 
     def _register_all(self) -> None:
         root = self._linker.root()
