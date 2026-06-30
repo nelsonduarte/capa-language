@@ -144,6 +144,18 @@ def compute_net_ceiling(
 
     Convenience wrapper over :func:`compute_net_ceiling_from_cir` that
     runs the same lowering the Wasm pipeline uses (so the ceiling is
-    computed from the exact instruction tree that will be emitted)."""
+    computed from the exact instruction tree that will be emitted),
+    INCLUDING the inter-procedural const-prop substitution
+    (``substitute_resolved_sink_literals``) the Wasm lowering applies in
+    ``--wasi`` mode: a helper-routed single-literal Net url is rewritten
+    to a literal at the sink slot, so the host-side ceiling computed here
+    matches the guest-side host gate the emitter derives. A multi-literal
+    / computed url is left dynamic (the ceiling is then not closed,
+    fail-closed). Mutates ``module`` + ``types`` in place (the substitution
+    is idempotent and the Wasm pipeline applies the identical rewrite), so
+    the ceiling computed here and the host gate the emitter derives agree
+    on the same tree."""
+    from ._wasi_const_prop import substitute_resolved_sink_literals
+    substitute_resolved_sink_literals(module, types=types)
     cir = Lowerer(types=types or {}).lower_module(module)
     return compute_net_ceiling_from_cir(cir)

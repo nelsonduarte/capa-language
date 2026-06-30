@@ -11,6 +11,36 @@ breaking changes and the discipline is still being shaped.
 
 **Added.**
 
+- *The static `--wasi` authority ceilings now propagate string literals
+  INTER-PROCEDURALLY, closing idiomatic helper-routed paths / urls / keys
+  without an operator grant.* Until now the `Fs` preopen ceiling, the
+  `Net` host ceiling, and the `Env` env-set ceiling were
+  *literal-at-sink-slot* analyses: a path / url / key counted only when it
+  was a string literal AT the exact `fs.read` / `net.get` / `env.get` call
+  site. Idiomatic code that routes the literal through a helper -- a
+  `read_json(fs, path)` doing `fs.read(path)` with `path` a PARAMETER and
+  the literal named several frames away in `main`, or a `write_log(fs,
+  path, ...)` -- was treated as dynamic and fail-closed (`Fs` / `Net`
+  rejected at compile time, `Env` degraded to `inherit_env`). A new
+  inter-procedural const-propagation pass walks the sink's path/url/key
+  slot BACKWARDS over the call graph (honouring named arguments, with a
+  cycle guard for recursion) and resolves the reaching literals, plus a
+  local fold for a `let` / module `const` bound to a literal in the sink's
+  own frame. A sink whose slot provably equals exactly one literal on
+  every reaching path is rewritten to carry that literal directly, so the
+  existing ceiling + codegen materialises the right preopen / host / key
+  with no new runtime path resolver. The pass is FAIL-CLOSED, never
+  fail-open: a genuinely COMPUTED value (interpolation with a
+  substitution, concatenation, a function result, a field read), a
+  multi-literal union at one sink, a method-routed path, or an
+  externally-supplied parameter all stay DYNAMIC, so `Fs` / `Net` still
+  reject at compile time and `Env` still degrades to `inherit_env` exactly
+  as before -- it only ever turns a provably-constant slot into its
+  constant, never invents authority. A directly-literal program is byte
+  unchanged. The capability surface the developer sees (analyzer, SBOM)
+  is computed from the original source; only the emitted code is
+  tightened.
+
 - *A `--preopen <dir>[:ro|:rw]` flag for the experimental `--wasi` mode
   unblocks DYNAMIC (non-literal) `Fs` paths.* Until now a `Fs` path that
   the compiler cannot prove is a string literal (one taken from a

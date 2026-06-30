@@ -135,6 +135,19 @@ def compute_env_ceiling(
     runs the same lowering the Wasm pipeline uses (so the ceiling is
     computed from the exact instruction tree that will be emitted),
     without the monomorphise / char-normalise passes, which do not
-    affect ``env.get`` literal arguments."""
+    affect ``env.get`` literal arguments.
+
+    INCLUDES the inter-procedural const-prop substitution
+    (``substitute_resolved_sink_literals``) the Wasm lowering applies in
+    ``--wasi`` mode: a helper-routed single-literal Env key is rewritten
+    to a literal at the ``env.get`` slot, so the host-side env-set
+    computed here matches the keys the guest can read. A multi-literal /
+    computed key is left dynamic (the ceiling is then not closed, and the
+    host falls back to ``inherit_env``). Mutates ``module`` + ``types`` in
+    place (the substitution is idempotent and the Wasm pipeline applies
+    the identical rewrite), so the env-set computed here and the keys the
+    guest can read agree on the same tree."""
+    from ._wasi_const_prop import substitute_resolved_sink_literals
+    substitute_resolved_sink_literals(module, types=types)
     cir = Lowerer(types=types or {}).lower_module(module)
     return compute_env_ceiling_from_cir(cir)

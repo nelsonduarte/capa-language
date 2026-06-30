@@ -626,11 +626,12 @@ class TestWasiEnvCeilingAnalysis(unittest.TestCase):
         ceiling = self._ceiling(src)
         self.assertFalse(ceiling.closed)
 
-    def test_let_bound_literal_is_conservatively_dynamic(self):
-        # A literal routed through an intermediate `let` appears as a
-        # local at the call site; the simple literal scan treats it as
-        # dynamic (conservative: falls back to inherit_env, never
-        # under-delivers a key the program reads).
+    def test_let_bound_literal_folds_and_closes(self):
+        # A literal routed through an intermediate `let` is now FOLDED by
+        # the inter-procedural const-prop (the (a) local-fold case): the
+        # ceiling closes on the resolved key, materialising it via env-set
+        # instead of degrading to inherit_env. Sound: the key genuinely
+        # reaches env.get, so folding is exact, never an over-grant.
         src = (
             "fun main(stdio: Stdio, env: Env)\n"
             "    let key = \"CAPA_PUBLIC\"\n"
@@ -638,7 +639,8 @@ class TestWasiEnvCeilingAnalysis(unittest.TestCase):
             "    stdio.println(\"done\")\n"
         )
         ceiling = self._ceiling(src)
-        self.assertFalse(ceiling.closed)
+        self.assertTrue(ceiling.closed)
+        self.assertEqual(ceiling.keys, frozenset({"CAPA_PUBLIC"}))
 
     def test_args_and_attenuators_do_not_widen_ceiling(self):
         # env.args reads argv (no key); restrict_to_keys / allows only
@@ -1096,6 +1098,189 @@ def _fs_ceiling(src: str):
     from capa.ir import compute_fs_ceiling
     module, result = _parse_analyze(src)
     return compute_fs_ceiling(module, types=result.types)
+
+
+class TestWasiCeilingConstProp(unittest.TestCase):
+    """Inter-procedural const-propagation of the static authority
+    ceilings (helper-routed literals). Pure-Python ceiling checks, so
+    this class is not gated on wasm-tools / wasmtime."""
+
+    def _fs(self, src: str):
+        from capa.ir import compute_fs_ceiling
+        module, result = _parse_analyze(src)
+        return compute_fs_ceiling(module, types=result.types)
+
+    def _net(self, src: str):
+        from capa.ir import compute_net_ceiling
+        module, result = _parse_analyze(src)
+        return compute_net_ceiling(module, types=result.types)
+
+    def _env(self, src: str):
+        from capa.ir import compute_env_ceiling
+        module, result = _parse_analyze(src)
+        return compute_env_ceiling(module, types=result.types)
+
+    def test_fs_single_helper_routing_closes(self):
+        # The motivating case: a literal routed through one helper frame.
+        src = (
+            "fun read_one(fs: Fs, path: String, stdio: Stdio)\n"
+            "    match fs.read(path)\n"
+            "        Ok(c) -> stdio.println(c)\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    read_one(fs, \"conf/app.json\", stdio)\n"
+        )
+        ceiling = self._fs(src)
+        self.assertTrue(ceiling.closed)
+        self.assertEqual(
+            tuple(p.host_path for p in ceiling.preopens), ("conf",),
+        )
+
+    def test_fs_multi_level_chain_closes(self):
+        # main -> run -> parse -> read_one -> fs.read.
+        src = (
+            "fun read_one(fs: Fs, path: String, stdio: Stdio)\n"
+            "    match fs.read(path)\n"
+            "        Ok(c) -> stdio.println(c)\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+            "fun parse(fs: Fs, p: String, stdio: Stdio)\n"
+            "    read_one(fs, p, stdio)\n"
+            "fun run(fs: Fs, q: String, stdio: Stdio)\n"
+            "    parse(fs, q, stdio)\n"
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    let path = \"data/sample.json\"\n"
+            "    run(fs, path, stdio)\n"
+        )
+        ceiling = self._fs(src)
+        self.assertTrue(ceiling.closed)
+        self.assertEqual(
+            tuple(p.host_path for p in ceiling.preopens), ("data",),
+        )
+
+    def test_fs_multi_literal_at_one_sink_stays_open(self):
+        # Two call sites route TWO distinct literals through the SAME
+        # helper into the SAME sink. The analysis resolves the union (no
+        # dynamic value reaches the sink), but the const-substitution only
+        # materialises a sink whose slot is provably ONE literal -- a
+        # multi-literal slot would need a runtime preopen resolver this
+        # increment does not add, so it is left dynamic and the ceiling
+        # stays NOT closed (fail-closed, never an over-grant). A program
+        # in this shape compiles by giving each sink its own helper /
+        # literal, or by dropping --wasi.
+        src = (
+            "fun read_one(fs: Fs, path: String, stdio: Stdio)\n"
+            "    match fs.read(path)\n"
+            "        Ok(c) -> stdio.println(c)\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    read_one(fs, \"one/a.json\", stdio)\n"
+            "    read_one(fs, \"two/b.json\", stdio)\n"
+        )
+        ceiling = self._fs(src)
+        self.assertFalse(ceiling.closed)
+        self.assertEqual(ceiling.preopens, ())
+
+    def test_fs_two_sinks_two_literals_close(self):
+        # Two DISTINCT sinks, each with its own single literal (no shared
+        # multi-literal slot): both resolve and both preopens materialise.
+        src = (
+            "fun read_a(fs: Fs, path: String, stdio: Stdio)\n"
+            "    match fs.read(path)\n"
+            "        Ok(c) -> stdio.println(c)\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+            "fun read_b(fs: Fs, path: String, stdio: Stdio)\n"
+            "    match fs.read(path)\n"
+            "        Ok(c) -> stdio.println(c)\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    read_a(fs, \"one/a.json\", stdio)\n"
+            "    read_b(fs, \"two/b.json\", stdio)\n"
+        )
+        ceiling = self._fs(src)
+        self.assertTrue(ceiling.closed)
+        self.assertEqual(
+            tuple(p.host_path for p in ceiling.preopens), ("one", "two"),
+        )
+
+    def test_fs_mixed_literal_and_dynamic_stays_open(self):
+        # A sink reached by both a literal and a genuinely dynamic value
+        # stays NOT closed (fail-closed): no preopen is materialised.
+        src = (
+            "fun read_one(fs: Fs, path: String, stdio: Stdio)\n"
+            "    match fs.read(path)\n"
+            "        Ok(c) -> stdio.println(c)\n"
+            "        Err(e) -> stdio.println(\"err\")\n"
+            "fun main(fs: Fs, stdio: Stdio, x: String)\n"
+            "    read_one(fs, \"a.json\", stdio)\n"
+            "    read_one(fs, x, stdio)\n"
+        )
+        ceiling = self._fs(src)
+        self.assertFalse(ceiling.closed)
+        self.assertEqual(ceiling.preopens, ())
+
+    def test_net_helper_routing_closes(self):
+        src = (
+            "fun fetch(net: Net, url: String, stdio: Stdio)\n"
+            "    match net.get(url)\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+            "fun main(net: Net, stdio: Stdio)\n"
+            "    fetch(net, \"https://api.example.com/v1\", stdio)\n"
+        )
+        ceiling = self._net(src)
+        self.assertTrue(ceiling.closed)
+        self.assertEqual(ceiling.hosts, frozenset({"api.example.com"}))
+
+    def test_net_dynamic_helper_routing_stays_open(self):
+        src = (
+            "fun fetch(net: Net, url: String, stdio: Stdio)\n"
+            "    match net.get(url)\n"
+            "        Ok(b) -> stdio.println(b)\n"
+            "        Err(e) -> stdio.println(\"e\")\n"
+            "fun main(net: Net, stdio: Stdio, host: String)\n"
+            "    fetch(net, \"https://${host}/v1\", stdio)\n"
+        )
+        ceiling = self._net(src)
+        self.assertFalse(ceiling.closed)
+
+    def test_env_helper_routing_closes(self):
+        src = (
+            "fun lookup(env: Env, key: String) -> String\n"
+            "    return match env.get(key) { None -> \"\", Some(v) -> v }\n"
+            "fun main(env: Env, stdio: Stdio)\n"
+            "    let v = lookup(env, \"HOME\")\n"
+            "    stdio.println(v)\n"
+        )
+        ceiling = self._env(src)
+        self.assertTrue(ceiling.closed)
+        self.assertEqual(ceiling.keys, frozenset({"HOME"}))
+
+    def test_env_dynamic_helper_routing_degrades(self):
+        src = (
+            "fun lookup(env: Env, key: String) -> String\n"
+            "    return match env.get(key) { None -> \"\", Some(v) -> v }\n"
+            "fun main(env: Env, stdio: Stdio, k: String)\n"
+            "    let v = lookup(env, k)\n"
+            "    stdio.println(v)\n"
+        )
+        ceiling = self._env(src)
+        self.assertFalse(ceiling.closed)
+
+    def test_method_routed_path_stays_open(self):
+        # A path routed through a method is conservatively dynamic.
+        src = (
+            "type Reader { tag: Int }\n"
+            "impl Reader\n"
+            "    fun load(self, fs: Fs, path: String, stdio: Stdio)\n"
+            "        match fs.read(path)\n"
+            "            Ok(c) -> stdio.println(c)\n"
+            "            Err(e) -> stdio.println(\"err\")\n"
+            "fun main(fs: Fs, stdio: Stdio)\n"
+            "    let r = Reader { tag: 0 }\n"
+            "    r.load(fs, \"via_method.json\", stdio)\n"
+        )
+        ceiling = self._fs(src)
+        self.assertFalse(ceiling.closed)
 
 
 class TestWasiFsCeilingAnalysis(unittest.TestCase):
@@ -1718,10 +1903,13 @@ class TestWasiNetDynamicUrlRejections(unittest.TestCase):
         )
         self._assert_rejected(src)
 
-    def test_get_let_bound_literal_rejected(self):
-        # A literal bound through a let appears as a local at the call site,
-        # so it is conservatively dynamic (the ceiling does not fold
-        # constants): rejected, matching the Fs let-bound rule.
+    def test_get_let_bound_literal_folds_and_compiles(self):
+        # A literal bound through a let is now FOLDED by the const-prop
+        # (the (a) local-fold case): the host ceiling closes on the
+        # resolved host, so the program COMPILES (previously rejected as
+        # conservatively dynamic). Sound: the url genuinely reaches
+        # net.get, so the derived host is exact.
+        from capa.ir import compute_net_ceiling
         src = (
             "fun main(net: Net, stdio: Stdio)\n"
             "    let u = \"http://api.example/x\"\n"
@@ -1729,7 +1917,10 @@ class TestWasiNetDynamicUrlRejections(unittest.TestCase):
             "        Ok(b) -> stdio.println(b)\n"
             "        Err(e) -> stdio.println(\"e\")\n"
         )
-        self._assert_rejected(src)
+        module, result = _parse_analyze(src)
+        ceiling = compute_net_ceiling(module, types=result.types)
+        self.assertTrue(ceiling.closed)
+        self.assertEqual(ceiling.hosts, frozenset({"api.example"}))
 
     def test_post_param_url_rejected(self):
         # post is symmetric with get: a dynamic url is rejected.
@@ -3628,22 +3819,25 @@ class TestWasiNetCeiling(unittest.TestCase):
     are asserted on the WASI backend alone."""
 
     def test_dynamic_url_is_rejected_at_compile(self):
-        # A url built from a local (not a literal) cannot be resolved to a
-        # wasi:http request, so the allowed-host ceiling cannot be
-        # materialised. SYMMETRIC with Fs (2026-06-29): the program is now
-        # REJECTED at compile time with a clear message rather than emitting
-        # a call site that fail-closes silently at runtime (which a
-        # ``Err(_) -> ()`` would swallow). The ceiling is NOT closed.
+        # A GENUINELY dynamic url (interpolated from a runtime value)
+        # cannot be resolved to a wasi:http request, so the allowed-host
+        # ceiling cannot be materialised. SYMMETRIC with Fs (2026-06-29):
+        # the program is REJECTED at compile time with a clear message
+        # rather than emitting a call site that fail-closes silently at
+        # runtime (which a ``Err(_) -> ()`` would swallow). The ceiling is
+        # NOT closed. (A let-bound LITERAL, by contrast, is now folded by
+        # the inter-procedural const-prop and compiles -- see
+        # ``TestWasiNetDynamicUrlRejections.test_get_let_bound_literal_folds_and_compiles``.)
         from capa.ir import compile_wasm, compute_net_ceiling
         src = (
-            "fun main(net: Net, stdio: Stdio)\n"
-            "    let u = \"http://host.example/p\"\n"
+            "fun main(net: Net, stdio: Stdio, host: String)\n"
+            "    let u = \"http://${host}/p\"\n"
             "    match net.get(u)\n"
             "        Ok(b) -> stdio.println(\"[${b}]\")\n"
             "        Err(e) -> stdio.println(\"ERR\")\n"
         )
         module, result = _parse_analyze(src)
-        # The ceiling is NOT closed (a dynamic url).
+        # The ceiling is NOT closed (a genuinely computed url).
         ceiling = compute_net_ceiling(module, types=result.types)
         self.assertFalse(ceiling.closed)
         with self.assertRaises(Exception) as cm:
@@ -3912,14 +4106,15 @@ class TestWasiNetPostCeiling(unittest.TestCase):
     at runtime) is fail-closed WITHOUT reaching the network."""
 
     def test_post_dynamic_url_is_rejected_at_compile(self):
-        # SYMMETRIC with Fs and with Net.get (2026-06-29): a dynamic post
-        # url cannot materialise the allowed-host ceiling, so the program is
-        # REJECTED at compile time rather than fail-closing silently at
-        # runtime.
+        # SYMMETRIC with Fs and with Net.get (2026-06-29): a GENUINELY
+        # dynamic post url (interpolated from a runtime value) cannot
+        # materialise the allowed-host ceiling, so the program is REJECTED
+        # at compile time rather than fail-closing silently at runtime. (A
+        # let-bound LITERAL is now folded by the const-prop and compiles.)
         from capa.ir import compile_wasm, compute_net_ceiling
         src = (
-            "fun main(net: Net, stdio: Stdio)\n"
-            "    let u = \"http://host.example/p\"\n"
+            "fun main(net: Net, stdio: Stdio, host: String)\n"
+            "    let u = \"http://${host}/p\"\n"
             "    match net.post(u, \"body\")\n"
             "        Ok(b) -> stdio.println(\"[${b}]\")\n"
             "        Err(e) -> stdio.println(\"ERR\")\n"

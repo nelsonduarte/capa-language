@@ -218,6 +218,32 @@ def compile_wat(
     from ._emit_wasm import MEMORY_CAP_DEFAULT_PAGES
     if memory_cap_pages is ...:
         memory_cap_pages = MEMORY_CAP_DEFAULT_PAGES
+    # Build the capability manifest from the ORIGINAL source AST (before
+    # any --wasi const-prop substitution below), so the embedded SBOM /
+    # capability surface reflects what the developer wrote, not the
+    # post-substitution tree.
+    manifest_json: str | None = None
+    if embed_manifest:
+        manifest_json = _build_wasm_capa_manifest_json(
+            module, filename=filename,
+        )
+    if wasi:
+        # Inter-procedural const-propagation for the static authority
+        # ceilings (``--wasi``): rewrite a helper-routed sink whose
+        # path/url/key slot the analysis proves is exactly one literal so
+        # the slot carries that literal directly. After this the existing
+        # literal-at-slot ceiling + codegen machinery materialises the
+        # right preopen / host / key with NO new codegen and NO runtime
+        # path resolver. The rewrite is sound (single-literal slots only,
+        # the value the slot provably equals on every reaching path) and
+        # fail-closed (a multi-literal union or a computed slot is left
+        # dynamic, so its ceiling refuses). No-op when no sink slot
+        # const-folds, so a directly-literal program is byte unchanged.
+        # Mutates the AST + the analyzer ``types`` map in place (both are
+        # this compile's own, terminal use); the manifest above already
+        # captured the original surface.
+        from ._wasi_const_prop import substitute_resolved_sink_literals
+        substitute_resolved_sink_literals(module, types=types)
     ir_mod = lower(module, types=types)
     inject_into(ir_mod)
     # Specialise every generic free function per concrete
@@ -237,11 +263,6 @@ def compile_wat(
     # monomorphise so specialised clones (e.g. ``first<Char>``) are
     # normalized too.
     normalize_char_to_string(ir_mod)
-    manifest_json: str | None = None
-    if embed_manifest:
-        manifest_json = _build_wasm_capa_manifest_json(
-            module, filename=filename,
-        )
     return emit_wat(
         ir_mod,
         memory_cap_pages=memory_cap_pages,
