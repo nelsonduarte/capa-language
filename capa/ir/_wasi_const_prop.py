@@ -25,6 +25,23 @@ genuinely COMPUTED value can reach it. Any uncertainty resolves to
 DYNAMIC -> fail-closed. An over-grant (an extra preopen / host / key)
 silently WIDENS authority, which is worse than a refusal.
 
+REACHABILITY-BLIND BY DESIGN -- the analysis does NO dead-code pruning
+and NO reachability filtering. A literal used as a path / url / key in a
+statically DEAD block (``if false { fs.read("dead.json") }``) or in a
+function that is NEVER called still contributes its preopen / host / key
+to the ceiling. This is DELIBERATE and SOUND: it is a conservative
+over-approximation (fail-closed -- the ceiling never materialises a
+literal that is ABSENT from a sink slot in the program text, but it does
+not try to prove a present-in-text literal unreachable). The property is
+identical to the pre-existing direct-literal ceiling and to the
+SBOM / manifest, both of which scan the whole program rather than only
+its reachable subset; const-prop just extends the same whole-program
+literal accounting across the call chain. An auditor should therefore NOT
+expect dead-code pruning here: a literal that appears at a sink slot
+anywhere in the source is in scope for the ceiling, whether or not that
+code can run. (Over-approximating the ceiling can only WIDEN the declared
+authority surface, never under-declare it, so it stays fail-closed.)
+
 The analysis runs on the AST (``Module.items``), where named arguments
 survive (the CIR loses argument names) and the same argument-binding
 machinery the IFC cross-function summaries use
@@ -252,7 +269,7 @@ class _ConstPropagator:
     def _collect_callables(self) -> None:
         for item in self.module.items:
             if isinstance(item, A.FunDecl):
-                key = ("fun", item.name)
+                key: tuple[str, ...] = ("fun", item.name)
                 self.callables[key] = _Callable(
                     key=key,
                     names=[p.name for p in item.params],
@@ -285,7 +302,7 @@ class _ConstPropagator:
         for p in params:
             te = getattr(p, "type_expr", None)
             if p.name == "self" and te is None and owner is not None:
-                tyname = owner
+                tyname: str | None = owner
             else:
                 tyname = getattr(te, "name", None) if te is not None else None
             if tyname in _SINK_METHODS:
