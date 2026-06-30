@@ -1090,8 +1090,10 @@ def _main_dispatch() -> int:
             "(read-only)'). A compiler-derived, by-construction audit fact "
             "(distinct from operator-declared grants); read-only, does not "
             "compile or run the program. A sound over-approximation: no "
-            "reaching argument is omitted, and argv[*] denotes an argument "
-            "that reaches a sink at a statically-indeterminate index."
+            "reaching argument is omitted (a closure that escapes its frame "
+            "has its param-fed sinks reported conservatively at argv[*]), "
+            "and argv[*] denotes an argument that reaches a sink at a "
+            "statically-indeterminate index."
         ),
     )
     parser.add_argument(
@@ -1270,6 +1272,12 @@ def _main_dispatch() -> int:
             )
             for line in surface.describe_lines():
                 print(f"  {line}")
+            print(
+                "  (sound over-approximation: no reaching argv argument is "
+                "omitted; argv[*] = a reaching argument at an indeterminate "
+                "index, including a sink inside a closure that escapes its "
+                "frame)"
+            )
         return 0
 
     result = None

@@ -336,6 +336,87 @@ fun main(fs: Fs, env: Env)
     [G(ANY_INDEX, FS_CAP, "read", "read")],
 )
 
+# --- a NAMED closure passed BY NAME to a higher-order over argv
+# (``let rd = fun (a) => ...; args.map(rd)``). Pre-fix the higher-order
+# branch only tainted INLINE LambdaExpr args, so a closure referenced by
+# name was omitted and the surface falsely reported EMPTY. Each argv
+# element is bound to ``rd``'s parameter -> ANY index.
+_case(
+    "argv_named_closure_to_higher_order",
+    """
+fun main(fs: Fs, env: Env)
+    let rd = fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+    let _ = env.args().map(rd)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE (A-i): a closure passed to a GENERIC helper that invokes it
+# (``apply(fun (a) => ..., p)``), with an argv-tainted value also passed.
+# The surface cannot follow where ``apply`` binds the closure's param, so
+# to stay never-omit it reports the body's param sink at ``argv[*]``.
+# (Pre-fix: omitted -- the lambda was neither an argv higher-order arg nor
+# a name called directly with argv, so its param stayed untainted.)
+_case(
+    "argv_escape_to_helper_apply",
+    """
+fun apply(f: Fun(String) -> String, x: String) -> String
+    return f(x)
+fun main(fs: Fs, env: Env)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let _ = apply(fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s }, p)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE (A-ii): a closure RETURNED from a function, then invoked with
+# argv in the caller. The closure escapes ``make``'s frame; its param is
+# bound by an unknown caller (here argv), so the body's sink is reported
+# conservatively at ``argv[*]``. (Pre-fix: omitted.)
+_case(
+    "argv_escape_returned_lambda",
+    """
+fun make(fs: Fs) -> Fun(String) -> String
+    return fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+fun main(fs: Fs, env: Env)
+    let rd = make(fs)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let _ = rd(p)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE (A-iii): a closure STORED in a struct field, then invoked with
+# argv. Stored in an aggregate the closure outlives the frame; its param is
+# bound later (here from argv), so the body's sink is reported at
+# ``argv[*]``. (Pre-fix: omitted.)
+_case(
+    "argv_escape_field_stored_lambda",
+    """
+type Box { f: Fun(String) -> String }
+fun main(fs: Fs, env: Env)
+    let g = fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+    let b = Box { f: g }
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let _ = (b.f)(p)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE precision guard: a closure stored in a LIST whose body reads a
+# STATIC literal (NOT its param). The escape taints the param, but the sink
+# slot is the literal, so NO false argv fact is produced. Confirms the
+# escape widening only fires through the param.
+_case(
+    "escape_lambda_static_sink_no_fact",
+    """
+type Box { f: Fun(String) -> String }
+fun main(fs: Fs)
+    let _ = [fun (a) => match fs.read("static.json") { Err(_) -> "", Ok(s) -> s }]
+""",
+    [],
+)
+
 # --- a BLOCK-BODY lambda (multi-statement) called with an argv-tainted
 # argument: the body's sink, reached only by walking the block, must be
 # reported (pre-fix: omitted).

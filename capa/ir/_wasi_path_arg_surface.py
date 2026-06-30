@@ -46,6 +46,41 @@ free function's body is the routing surface, but because a method may be
 reached by dynamic dispatch this AST-level analysis cannot pin down,
 the forward taint over-approximates by tainting a method parameter from
 ANY call site (positional binding), which only widens the surface.
+
+CLOSURES (lambdas) -- a sink inside a closure body reads a value bound to
+the closure's PARAMETER, and that parameter may be argv. The surface
+covers this in two ways, both never-omit:
+
+* TRACKED application -- the parameter provably (or possibly) receives an
+  argv element: the closure is the argument of a higher-order over an
+  argv-tainted receiver (``args.map(fun (a) => ...)``, inline OR passed by
+  name), or it is a named closure called directly with an argv-tainted
+  argument (``let rd = fun (a) => ...; rd(p)``). The body's param sink is
+  reported (``argv[*]``, the element binding is not a static index).
+
+* CONSERVATIVE ESCAPE -- the closure LEAVES its defining frame, so the
+  surface can no longer follow where its parameter is bound and CANNOT
+  PROVE it is never argv. To stay never-omit it taints the parameter and
+  reports the body's param sink at ``argv[*]``. A closure escapes when it
+  is passed to a call that is NOT a tracked argv higher-order (a generic
+  helper), is RETURNED, or is stored in an aggregate / struct field / list
+  / tuple. The widening only fires through the PARAMETER: an escaping
+  closure whose sink reads a STATIC literal (not its param) yields no
+  fact. An escaping IO closure that is never actually given argv yields a
+  conservative over-report (sound, accepted) -- measured non-noisy on the
+  real downstream corpus (audit-trail-reporter, sbom-watch, capa_showcase,
+  policy-eval all report the SAME surface before and after this widening).
+
+RESIDUAL UNDER-REPORT (known, documented honestly): the closure coverage
+follows a lambda VALUE only while it is named DIRECTLY by its binding or
+written INLINE at the escape / application site. A closure re-bound
+through an intermediate identifier before it escapes (``let g = fun ...;
+let h = g; return h``) is not traced through ``h``, and a closure stored
+and later re-extracted from a runtime container (e.g. fetched back out of
+a Map by key) is past what this AST-level, type-free pass tracks. These
+are narrow shapes; where they occur the surface MAY under-report a closure
+param sink. The frame-local, direct-name / inline coverage above is what
+the analysis actually proves -- the claim is scoped to it, not oversold.
 """
 
 from __future__ import annotations
@@ -237,17 +272,38 @@ class _SurfaceAnalysis:
 
     def _taint_lambda_params(self, c, tainted: set) -> None:
         """Taint the parameter names of lambdas whose body may be applied to
-        an argv-derived value. Two sound triggers (over-approximating; a
-        lambda the surface cannot prove argv-free fails closed):
+        an argv-derived value, so a sink inside the body is not silently
+        omitted. Three sound triggers (each over-approximating; a lambda the
+        surface cannot prove argv-free fails closed):
+
+        TRACKED applications (the param provably / possibly receives argv):
 
         * the lambda is an ARGUMENT to a method call whose RECEIVER is
           argv-tainted -- a higher-order iteration (``args.map(fun (a) =>
           ...)``, ``filter``, ``each``, ...) binds each element to the
-          lambda's first parameter; and
+          lambda's first parameter. The lambda may be inline OR a NAMED
+          closure passed by name (``let rd = fun (a) => ...; args.map(rd)``);
+          and
         * the lambda is bound to a name later CALLED with an argv-tainted
-          positional argument (``let rd = fun (a) => ...; rd(p)``)."""
+          positional argument (``let rd = fun (a) => ...; rd(p)``).
+
+        UNTRACKED ESCAPE (never-omit: the analysis cannot PROVE the escaped
+        lambda's param is never given argv, so it reports the body's
+        param-using sinks CONSERVATIVELY at ``argv[*]``):
+
+        * the lambda ESCAPES the frame -- it is passed as an argument to a
+          call that is NOT a tracked argv higher-order (a generic helper
+          ``apply(fun (a) => ..., p)``), or it is RETURNED, or it is stored
+          in an aggregate / struct field (``Box { f: fun (a) => ... }``,
+          ``[fun (a) => ...]``). Once a closure leaves the frame the surface
+          cannot follow where its parameter is bound, so to stay never-omit
+          it taints that parameter (the sink then surfaces at ``argv[*]``).
+          A lambda that escapes but is NEVER actually given argv yields a
+          conservative over-report (sound, accepted)."""
         # Map a name to the LambdaExpr it is directly bound to, so a
-        # later ``name(<tainted>)`` call can taint that lambda's params.
+        # later ``name(<tainted>)`` call can taint that lambda's params, and
+        # a named closure passed to a tracked higher-order / escaping
+        # position taints the same lambda.
         lam_by_name: dict = {}
         for stmt in _all_stmts(c.decl.body):
             if isinstance(stmt, A.LetStmt) and isinstance(
@@ -263,15 +319,32 @@ class _SurfaceAnalysis:
             for p in lam.params:
                 tainted.add(p.name)
 
+        def lam_of(arg):
+            """The LambdaExpr an argument expression denotes: an inline
+            lambda, or a name bound to a lambda in this frame."""
+            if isinstance(arg, A.LambdaExpr):
+                return arg
+            if isinstance(arg, A.Ident):
+                return lam_by_name.get(arg.name)
+            return None
+
         def visit(e) -> None:
-            # Higher-order: a tainted receiver applies the lambda arg to
-            # each element. Taint every lambda passed as an argument.
-            if isinstance(e, A.MethodCall) and self._is_tainted(
-                e.receiver, tainted,
-            ):
-                for arg in e.args:
-                    if isinstance(arg, A.LambdaExpr):
-                        taint_lambda(arg)
+            if isinstance(e, A.MethodCall):
+                if self._is_tainted(e.receiver, tainted):
+                    # TRACKED higher-order over argv: bind each element to
+                    # the lambda's parameter (inline or named-by-reference).
+                    for arg in e.args:
+                        lam = lam_of(arg)
+                        if lam is not None:
+                            taint_lambda(lam)
+                else:
+                    # ESCAPE via a NON-argv method call argument (a generic
+                    # helper that takes the closure): the param may be given
+                    # argv elsewhere, so fail closed.
+                    for arg in e.args:
+                        lam = lam_of(arg)
+                        if lam is not None:
+                            taint_lambda(lam)
             # A named closure called with a tainted positional argument
             # binds that argument to the closure's parameter.
             if isinstance(e, A.Call) and isinstance(e.callee, A.Ident):
@@ -280,12 +353,57 @@ class _SurfaceAnalysis:
                     self._is_tainted(a, tainted) for a in e.args
                 ):
                     taint_lambda(lam)
+            # ESCAPE via a free-function call argument (``apply(fun (a) =>
+            # ..., p)``): the helper may apply the closure to any value.
+            if isinstance(e, A.Call):
+                for arg in e.args:
+                    lam = lam_of(arg)
+                    if lam is not None:
+                        taint_lambda(lam)
+            # ESCAPE via storage in an aggregate / struct field: the closure
+            # outlives the frame and may be invoked with argv later.
+            if isinstance(e, A.StructLit):
+                for _name, v in e.fields:
+                    lam = lam_of(v)
+                    if lam is not None:
+                        taint_lambda(lam)
+            if isinstance(e, (A.ListLit, A.TupleLit)):
+                for v in e.elements:
+                    lam = lam_of(v)
+                    if lam is not None:
+                        taint_lambda(lam)
             for child in _child_exprs(e):
                 visit(child)
 
         for stmt in _all_stmts(c.decl.body):
             for e in _stmt_exprs(stmt):
                 visit(e)
+
+        # ESCAPE via RETURN / become / tail expression: a closure handed
+        # back to the caller may be invoked with argv there.
+        self._taint_returned_lambdas(c, tainted, lam_of)
+
+    def _taint_returned_lambdas(self, c, tainted: set, lam_of) -> None:
+        """Taint the params of any lambda (inline or named in this frame)
+        that ``c`` RETURNS -- an explicit ``return``, a tail ``become``, or
+        a final-expression body. A returned closure escapes the frame; its
+        parameter is then bound by an unknown caller (possibly argv), so the
+        surface fails closed and reports the body's param-using sinks at
+        ``argv[*]``."""
+        def taint_lambda(lam) -> None:
+            for p in lam.params:
+                tainted.add(p.name)
+
+        for stmt in _all_stmts(c.decl.body):
+            if isinstance(stmt, (A.ReturnStmt, A.Become)):
+                lam = lam_of(stmt.value) if stmt.value is not None else None
+                if lam is not None:
+                    taint_lambda(lam)
+        last = self._tail_expr(c.decl.body)
+        if last is not None:
+            lam = lam_of(last)
+            if lam is not None:
+                taint_lambda(lam)
 
     def _taint_stmt(self, stmt, tainted: set) -> None:
         if isinstance(stmt, A.LetStmt):

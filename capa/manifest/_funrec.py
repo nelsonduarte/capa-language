@@ -301,10 +301,12 @@ def build_path_arg_surface(module: A.Module) -> dict[str, Any]:
             "argv (env.args()) arguments the compiler PROVED reach an Fs / "
             "Net / Env sink, and whether read or write. A sound "
             "over-approximation (no reaching argument omitted; arg_index "
-            "'*' when the concrete index is not statically determinate). "
-            "This does NOT grant authority -- a dynamic Fs/Net path still "
-            "fail-closes in --wasi without --preopen; it is an auditable "
-            "fact, distinct from operator_declared_grants."
+            "'*' when the concrete index is not statically determinate, "
+            "including a sink inside a closure whose parameter may be argv "
+            "or that escapes its defining frame, reported conservatively at "
+            "'*'). This does NOT grant authority -- a dynamic Fs/Net path "
+            "still fail-closes in --wasi without --preopen; it is an "
+            "auditable fact, distinct from operator_declared_grants."
         ),
         "arguments": arguments,
     }

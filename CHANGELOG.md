@@ -118,6 +118,31 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *The `--wasi` path-arg surface now covers NAMED closures and closures
+  that ESCAPE their defining frame, so it no longer falsely reports an
+  EMPTY surface for an argv-fed sink hidden inside a lambda.* Two gaps are
+  closed, both restoring the never-omit guarantee. (1) A named closure
+  passed BY NAME to a higher-order over `argv` (`let rd = fun (a) =>
+  fs.read(a); env.args().map(rd)`) was omitted -- only INLINE lambda
+  arguments were tainted; the named reference is now resolved and its
+  parameter tainted. (2) A closure that LEAVES its frame -- passed to a
+  generic helper that invokes it (`apply(fun (a) => fs.read(a), arg)`),
+  RETURNED, or stored in an aggregate / struct field / list / tuple -- had
+  its parameter untracked, so an argv element bound to that parameter at an
+  unknown call site reached a sink invisibly. The surface cannot PROVE such
+  an escaped parameter is never argv, so it now taints it and reports the
+  body's param-fed sinks CONSERVATIVELY at `argv[*]` (a sound
+  over-approximation, never-omit). The widening only fires through the
+  closure PARAMETER, so an escaping closure whose sink reads a STATIC
+  literal still yields no fact, and it was measured non-noisy on the real
+  downstream corpus (audit-trail-reporter, sbom-watch, capa_showcase,
+  policy-eval all report the SAME surface before and after). The module
+  docstring, the `capa --wasi-surface` output, the CLI help and the SBOM
+  `compiler_derived_path_arg_surface` note now describe the closure model
+  honestly, including the one residual under-report it does NOT cover (a
+  closure re-bound through an intermediate identifier, or re-extracted from
+  a runtime container, before it escapes). Covered by new soundness-harness
+  cases that FAIL pre-fix.
 - *In the experimental `--wasi` mode, the guest-side fine attenuation gate
   (`restrict_to` / `allows`) now lexically normalises `.` and `..` path
   segments before its containment check, closing a bypass on a dynamic
