@@ -1280,10 +1280,12 @@ def _main_dispatch() -> int:
                 "applied only locally to non-argv values, so an escaping "
                 "closure -- returned, passed to a helper, stored in an "
                 "aggregate, or reached through a match/if arm or a name "
-                "bound to one -- fails closed. Residual gap: a closure "
-                "carried by a value not statically tied back to a lambda "
-                "(re-extracted from a runtime container by key, or threaded "
-                "through an opaque computed value) may be under-reported.)"
+                "bound to one -- fails closed, including a named closure "
+                "bound inside another lambda's body. Residual gap (VALUE-FLOW "
+                "only): a closure carried by a value not statically tied back "
+                "to a lambda (re-extracted from a runtime container by key, or "
+                "threaded through an opaque computed value) may be "
+                "under-reported.)"
             )
         return 0
 

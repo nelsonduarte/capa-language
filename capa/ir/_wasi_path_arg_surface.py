@@ -77,6 +77,17 @@ argv-tainted argument, or passed to a higher-order over an argv receiver,
 binds argv to its parameter (still reported at ``argv[*]`` -- a per-element
 binding is not a static index).
 
+SCOPE (no sub-frame is skipped): the statement-level traversal descends into
+every lambda BODY, so a NAMED closure bound INSIDE another lambda's body
+(``let outer = fun (b) =>\\n let rd = fun (a) => fs.read(a)\\n
+args().map(rd)``) -- at any nesting depth -- is found, its application /
+escape inside that body is tracked, and its body's sink is reported. A
+nested lambda's OWN ``return`` / tail value stays attributed to that lambda,
+NOT to its enclosing frame (the frame-boundary helpers use an own-frame
+traversal), so the scope descent widens coverage without confusing scopes.
+The previously-omitted scope shape (a named closure in a lambda sub-frame)
+is therefore CLOSED; the residual below is value-flow only.
+
 PRECISION (the over-report this allows is the minimum soundness forces):
 tainting a parameter yields a fact ONLY when that parameter actually
 reaches a sink slot. A closure whose body reads a STATIC literal (not its
@@ -87,13 +98,14 @@ downstream corpus: audit-trail-reporter, sbom-watch, capa_showcase,
 policy-eval and examples/ (250 files) report the IDENTICAL surface before
 and after the sound-by-construction rule (zero new facts).
 
-RESIDUAL UNDER-REPORT (the one honest gap, scoped narrowly): the rule
-follows a closure VALUE only while a STATIC, frame-local name resolution
-can link it to a ``LambdaExpr`` -- inline, or through the wrappers above.
-A closure carried by a value the pass cannot statically tie back to a
-lambda still slips: re-extracted from a RUNTIME CONTAINER by key (fetched
-back out of a Map at run time), or threaded through an opaque computed
-value (a helper return whose body the name resolution does not inline).
+RESIDUAL UNDER-REPORT (the one honest gap, VALUE-FLOW only -- NOT a scope
+gap): the rule follows a closure VALUE only while a STATIC, frame-local name
+resolution can link it to a ``LambdaExpr`` -- inline, or through the wrappers
+above, in this frame OR in any nested-lambda sub-frame. A closure carried by
+a value the pass cannot statically tie back to a lambda still slips:
+re-extracted from a RUNTIME CONTAINER by key (fetched back out of a Map at
+run time), or threaded through an opaque computed value (a helper return
+whose body the name resolution does not inline).
 Where such a value reaches an unknown application the surface MAY
 under-report that closure's param sink. This is a property of an
 AST-level, type-free pass (no value-flow through runtime containers); it
@@ -109,7 +121,7 @@ from dataclasses import dataclass
 from .. import capa_ast as A
 from ._wasi_const_prop import (
     FS_CAP, NET_CAP, ENV_CAP, _SINK_METHODS, _SINK_SLOT, _bind,
-    _all_stmts, _child_exprs, _stmt_exprs, _ConstPropagator,
+    _all_stmts, _own_frame_stmts, _child_exprs, _stmt_exprs, _ConstPropagator,
 )
 from ._fs_ceiling import _FS_MUTATING_METHODS
 
@@ -480,7 +492,12 @@ class _SurfaceAnalysis:
             for p in lam.params:
                 tainted.add(p.name)
 
-        for stmt in _all_stmts(c.decl.body):
+        # OWN-FRAME returns only: a ``return`` inside a NESTED lambda body
+        # belongs to that lambda, not to ``c``, so it must not be read as
+        # ``c`` returning the closure. A closure returned by a nested lambda
+        # escapes ``c`` only through the value flow (the nested lambda's
+        # result), which the binding / escape sweeps already follow.
+        for stmt in _own_frame_stmts(c.decl.body):
             if isinstance(stmt, (A.ReturnStmt, A.Become)):
                 if stmt.value is not None:
                     for lam in lams_reachable(stmt.value):
@@ -925,7 +942,10 @@ class _SurfaceAnalysis:
         ``return <tainted>``, a tail ``become``, or a final-expression body
         whose value is tainted (covers ``return match ...`` arms via
         ``_is_tainted`` recursion)."""
-        for stmt in _all_stmts(c.decl.body):
+        # OWN-FRAME returns only: a ``return`` inside a NESTED lambda body is
+        # the lambda's result, not ``c``'s, so it must not mark ``c``'s
+        # return tainted (a scope confusion that would over-report).
+        for stmt in _own_frame_stmts(c.decl.body):
             if isinstance(stmt, A.ReturnStmt) and stmt.value is not None:
                 if self._is_tainted(stmt.value, local):
                     return True

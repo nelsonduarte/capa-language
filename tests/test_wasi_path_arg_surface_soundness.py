@@ -600,6 +600,106 @@ fun main(fs: Fs, env: Env)
     [G(ANY_INDEX, FS_CAP, "read", "read")],
 )
 
+# --- SCOPE-OMISSION CLASS (R5): a NAMED closure bound INSIDE another
+# lambda's body, passed BY NAME to a higher-order over argv
+# (``let outer = fun (b) =>\\n let rd = fun (a) => fs.read(a)\\n
+# args().map(rd)``). Pre-fix the statement-level helpers (``_all_stmts``,
+# ``_lambda_name_bindings``, the application sweep) never descended into a
+# lambda BODY, so the ``let rd = ...`` binding and the ``args().map(rd)``
+# application inside ``outer`` were invisible and the surface falsely
+# reported EMPTY. Each argv element binds ``rd``'s param -> ANY index.
+_case(
+    "argv_named_nested_closure_higher_order",
+    """
+fun main(fs: Fs, env: Env)
+    let outer = fun (b: Int) -> Int =>
+        let rd = fun (a: String) -> String => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+        let _ = env.args().map(rd)
+        return b
+    let _ = outer(0)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- SCOPE-OMISSION CLASS (R1): a NAMED closure bound INSIDE another
+# lambda's body, APPLIED with an argv-tainted argument inside that same
+# body (``let rd = fun (a) => ...; let p = args.get(0); rd(p)``). Pre-fix:
+# omitted (the binding and the application lived in a lambda sub-scope the
+# statement helpers never entered). ANY index (slot is a closure param).
+_case(
+    "argv_named_nested_closure_applied",
+    """
+fun main(fs: Fs, env: Env)
+    let outer = fun (b: Int) -> Int =>
+        let rd = fun (a: String) -> String => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+        let p = match env.args().get(0) { None -> "", Some(x) -> x }
+        let _ = rd(p)
+        return b
+    let _ = outer(0)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- SCOPE-OMISSION CLASS, DEEPER NESTING: a named closure three lambda
+# levels deep, mapped over argv from the innermost frame. Confirms the
+# statement-level descent recurses through ARBITRARY lambda nesting, not
+# just one level.
+_case(
+    "argv_named_closure_triple_nested",
+    """
+fun main(fs: Fs, env: Env)
+    let a1 = fun (x: Int) -> Int =>
+        let a2 = fun (y: Int) -> Int =>
+            let rd = fun (a: String) -> String => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+            let _ = env.args().map(rd)
+            return y
+        let _ = a2(0)
+        return x
+    let _ = a1(0)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- SCOPE-OMISSION CLASS, named-nested bound to a MATCH inside a lambda
+# body: the named closure is reached through a ``match`` wrapper, itself
+# bound inside ``outer``'s body, then mapped over argv. Confirms the
+# descent composes with the existing wrapping descent (``lams_reachable``).
+_case(
+    "argv_named_nested_closure_via_match",
+    """
+fun main(fs: Fs, env: Env)
+    let outer = fun (b: Int) -> Int =>
+        let rd = match b { _ -> fun (a: String) -> String => match fs.read(a) { Err(_) -> "", Ok(s) -> s } }
+        let _ = env.args().map(rd)
+        return b
+    let _ = outer(0)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- SCOPE precision guard (no scope confusion): a NESTED lambda whose
+# OWN ``return`` yields an argv value, while the ENCLOSING function returns
+# a non-argv Int and the only sink reads a STATIC literal. The nested
+# lambda's ``return`` must NOT be attributed to the enclosing frame (that
+# would taint ``helper``'s return and could over-report), and no argv
+# reaches a sink, so the surface must stay EMPTY. Guards the statement
+# descent from leaking a lambda's return into its enclosing frame.
+_case(
+    "nested_lambda_return_not_outer_frame_no_fact",
+    """
+fun helper(env: Env) -> Int
+    let f = fun (x: Int) -> String =>
+        let p = match env.args().get(0) { None -> "", Some(v) -> v }
+        return p
+    let _ = f(0)
+    return 5
+fun main(fs: Fs, env: Env)
+    let n = helper(env)
+    let _ = match fs.read("static.json") { Err(_) -> "", Ok(s) -> s }
+""",
+    [],
+)
+
 
 def _covers(analysis_facts, g: G) -> bool:
     """A ground-truth fact ``g`` is covered when some analysis fact has

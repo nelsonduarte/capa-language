@@ -118,6 +118,34 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *The `--wasi` path-arg surface traversal helpers now DESCEND into lambda
+  BODIES, closing a whole CLASS of scope omission rather than one more shape.*
+  The statement-level helpers (`_all_stmts` and everything built on it --
+  the closure-name binding map, the application / escape sweep, the taint
+  seed, the alias / index provenance) recursed into `if` / `while` / `for`
+  blocks but NOT into a lambda body, so a NAMED closure bound INSIDE another
+  lambda's body and then applied or mapped over argv THERE
+  (`let outer = fun (b) =>` `  let rd = fun (a) => fs.read(a)` `
+  args().map(rd)`) was invisible: its binding and its application lived in a
+  sub-scope the helpers never entered, and the surface falsely reported a
+  clean EMPTY for an argv-fed sink. This is the same class as the earlier
+  `_child_exprs`-does-not-visit-a-lambda fix, in the statement family. The
+  fix makes `_all_stmts` treat every lambda body as a reachable sub-frame of
+  statements (at any nesting depth), while a new own-frame traversal keeps a
+  nested lambda's OWN `return` / tail value attributed to that lambda and not
+  to its enclosing callable (no scope confusion). The const-prop security
+  frontier is unchanged: its local literal fold deliberately does NOT cross a
+  lambda body, so a lambda-local indirected literal stays DYNAMIC
+  (fail-closed, no over-grant) -- verified byte-identical resolved-literal
+  ceilings on the 250-file downstream corpus, and the path-arg surface is
+  IDENTICAL on that corpus before and after (zero new facts). New
+  soundness-harness cases (named nested closure mapped over / applied with
+  argv, three lambda levels deep, and via a `match` wrapper) FAIL pre-fix and
+  pass now; a precision guard confirms a nested lambda's argv `return` does
+  not leak into its enclosing frame. The residual is now VALUE-FLOW only (a
+  closure re-extracted from a runtime container by key or threaded through an
+  opaque computed value); the scope omission is closed, reflected in the
+  module docstring, the `capa --wasi-surface` output and the SBOM note.
 - *The `--wasi` path-arg surface now detects an escaping closure SOUND BY
   CONSTRUCTION, replacing the per-shape enumeration that kept missing one
   more way a lambda could leave its frame.* The prior pass listed the escape

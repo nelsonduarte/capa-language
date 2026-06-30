@@ -619,12 +619,47 @@ def _bind(args: list, arg_names: list, param_names: list) -> dict:
 
 
 def _all_stmts(block: A.Block):
-    """Yield every statement in ``block`` and its nested blocks (depth
-    first), so a sink / call anywhere in the body is visited."""
+    """Yield every statement in ``block``, its nested control-flow blocks
+    (if / while / for), AND the statements inside every LAMBDA BODY reached
+    from a statement's expressions (a ``let rd = fun (a) =>\\n ...`` binds a
+    closure whose body is a sub-scope of statements). A closure body is a
+    reachable sub-frame for the statement-level helpers (binding maps, taint
+    seeds, sink scans), so a sink / call / binding anywhere -- including
+    inside a nested lambda -- is visited.
+
+    Closing the SCOPE-OMISSION class: the expression-level walk
+    (:func:`_child_exprs`) already descends into lambda bodies, so any
+    consumer that flattens statements to expressions saw lambda-body calls;
+    but consumers that inspect STATEMENTS directly (``LetStmt`` / ``VarStmt``
+    bindings -- name maps, taint, alias / index provenance) never saw a
+    binding made INSIDE a lambda body. Descending here makes the two
+    traversal families consistent so no helper silently skips a lambda
+    sub-scope."""
     for stmt in block.stmts:
         yield stmt
         for sub in _child_blocks(stmt):
             yield from _all_stmts(sub)
+        for lam_block in _lambda_body_blocks(stmt):
+            yield from _all_stmts(lam_block)
+
+
+def _own_frame_stmts(block: A.Block):
+    """Yield every statement in ``block`` and its nested CONTROL-FLOW blocks
+    (if / while / for) but NOT statements inside a lambda body -- the
+    statements of THIS frame only.
+
+    Frame-boundary helpers (does THIS callable's own ``return`` / tail value
+    carry taint or a returned closure) must use this, not :func:`_all_stmts`:
+    a ``return`` written inside a NESTED lambda body belongs to the LAMBDA,
+    not to the enclosing callable, so descending into the lambda there would
+    mis-attribute the lambda's return to its enclosing frame (a scope
+    confusion). Binding / taint / sink helpers, which are scope-merge-safe
+    over-approximations, use :func:`_all_stmts` instead so they DO see a
+    lambda sub-frame's bindings and applications."""
+    for stmt in block.stmts:
+        yield stmt
+        for sub in _child_blocks(stmt):
+            yield from _own_frame_stmts(sub)
 
 
 def _child_blocks(stmt):
@@ -641,6 +676,34 @@ def _child_blocks(stmt):
         out.append(stmt.body)
     elif isinstance(stmt, A.ForStmt):
         out.append(stmt.body)
+    return out
+
+
+def _lambda_body_blocks(stmt):
+    """The ``Block`` body of every ``LambdaExpr`` reachable from ``stmt``'s
+    expressions (including a lambda nested inside another lambda's body, a
+    match arm, or any aggregate). A single-expression lambda body is not a
+    Block and contributes no sub-statements (its expression is already
+    reached via ``_child_exprs``); only block-body lambdas add statements.
+
+    The walk uses ``_child_exprs`` to descend the expression tree but does
+    NOT recurse THROUGH a lambda body here (``_all_stmts`` does that for the
+    Block it yields), so each lambda body is yielded exactly once and nested
+    lambdas are reached when ``_all_stmts`` re-enters the yielded block."""
+    out = []
+
+    def walk(e) -> None:
+        if isinstance(e, A.LambdaExpr):
+            if isinstance(e.body, A.Block):
+                out.append(e.body)
+            else:
+                walk(e.body)
+            return
+        for child in _child_exprs(e):
+            walk(child)
+
+    for e in _stmt_exprs(stmt):
+        walk(e)
     return out
 
 
