@@ -417,6 +417,132 @@ fun main(fs: Fs)
     [],
 )
 
+# --- ESCAPE through a RETURNED MATCH ARM (sound-by-construction): a closure
+# produced inline as an arm of a ``match`` that is RETURNED escapes the
+# frame. Pre-fix ``lam_of`` only descended a bare lambda or a name bound
+# DIRECTLY to one, so a lambda nested in a returned match arm was OMITTED and
+# the surface falsely reported EMPTY. The general rule descends into match
+# arms and reports the param sink at ``argv[*]``.
+_case(
+    "argv_escape_returned_match_arm_lambda",
+    """
+fun make(fs: Fs, mode: String) -> Fun(String) -> String
+    return match mode { _ -> fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s } }
+fun main(fs: Fs, env: Env, mode: String)
+    let rd = make(fs, mode)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let _ = rd(p)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE through a RETURNED IF ARM: a closure produced as a branch of a
+# returned ``if`` expression escapes the frame. Pre-fix: omitted (the
+# IfExpr branch was never descended). Reported at ``argv[*]``.
+_case(
+    "argv_escape_returned_if_arm_lambda",
+    """
+fun make(fs: Fs, flag: Bool) -> Fun(String) -> String
+    return if flag then fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s } else fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+fun main(fs: Fs, env: Env, flag: Bool)
+    let rd = make(fs, flag)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let _ = rd(p)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE via a name bound to a MATCH that is then returned
+# (``let g = match { ... lambda ... }; return g``). Pre-fix the name ``g``
+# was not recognised as holding a lambda (only a name bound DIRECTLY to a
+# LambdaExpr was), so the returned closure was OMITTED. The general rule
+# resolves ``g`` to the wrapped closure and reports at ``argv[*]``.
+_case(
+    "argv_escape_let_match_then_returned",
+    """
+fun make(fs: Fs, mode: String) -> Fun(String) -> String
+    let g = match mode { _ -> fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s } }
+    return g
+fun main(fs: Fs, env: Env, mode: String)
+    let rd = make(fs, mode)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let _ = rd(p)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE via a closure stored as a MAP element, where the closure is
+# reached only THROUGH A NAME bound to a returned match (``let g = match {
+# ... fun ... }; Map.new().insert("k", g)``). Pre-fix the map-stored closure
+# behind a name bound to a WRAPPED value was OMITTED (the name was not
+# recognised as holding a lambda). The general rule resolves ``g`` to the
+# wrapped closure stored in the map and reports at ``argv[*]``.
+_case(
+    "argv_escape_map_element_named_wrapped_lambda",
+    """
+fun make(fs: Fs, mode: String) -> Map<String, Fun(String) -> String>
+    let g = match mode { _ -> fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s } }
+    return Map.new().insert("k", g)
+fun main(fs: Fs, env: Env, mode: String)
+    let _ = make(fs, mode)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE via a closure nested in a RETURNED NESTED STRUCT where the
+# closure is reached only THROUGH A NAME bound to a returned ``if`` arm
+# (``let g = if .. then fun .. else fun ..; Outer { inner: Inner { f: g } }``).
+# Pre-fix: omitted (the name ``g`` bound to an IfExpr was not seen to hold a
+# lambda). The general rule descends the if arms behind the name and reports
+# at ``argv[*]`` two aggregate levels deep.
+_case(
+    "argv_escape_nested_struct_named_wrapped_lambda",
+    """
+type Inner { f: Fun(String) -> String }
+type Outer { inner: Inner }
+fun make(fs: Fs, flag: Bool) -> Outer
+    let g = if flag then fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s } else fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+    return Outer { inner: Inner { f: g } }
+fun main(fs: Fs, env: Env, flag: Bool)
+    let _ = make(fs, flag)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE via a closure wrapped in ``Some(...)`` and returned, where the
+# closure is reached only THROUGH A NAME bound to a returned match
+# (``let g = match { ... fun ... }; return Some(g)``). Pre-fix: omitted (the
+# name ``g`` inside the variant constructor was not seen to hold a lambda).
+# The general rule resolves ``g`` inside the wrapper and reports at
+# ``argv[*]``.
+_case(
+    "argv_escape_some_wrapped_named_lambda",
+    """
+fun make(fs: Fs, mode: String) -> Option<Fun(String) -> String>
+    let g = match mode { _ -> fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s } }
+    return Some(g)
+fun main(fs: Fs, env: Env, mode: String)
+    let _ = make(fs, mode)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- ESCAPE precision guard (sound-by-construction, no over-fire): a closure
+# nested in a RETURNED match arm whose body reads a STATIC literal (NOT its
+# param). The general escape rule taints the param, but the sink slot is the
+# literal, so NO false argv fact is produced -- the widening fires through the
+# param only, even through the new wrapping descent.
+_case(
+    "escape_returned_match_arm_static_sink_no_fact",
+    """
+fun make(fs: Fs, mode: String) -> Fun(String) -> String
+    return match mode { _ -> fun (a) => match fs.read("static.json") { Err(_) -> "", Ok(s) -> s } }
+fun main(fs: Fs)
+    let _ = make(fs, "x")
+""",
+    [],
+)
+
 # --- a BLOCK-BODY lambda (multi-statement) called with an argv-tainted
 # argument: the body's sink, reached only by walking the block, must be
 # reported (pre-fix: omitted).

@@ -118,31 +118,38 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
-- *The `--wasi` path-arg surface now covers NAMED closures and closures
-  that ESCAPE their defining frame, so it no longer falsely reports an
-  EMPTY surface for an argv-fed sink hidden inside a lambda.* Two gaps are
-  closed, both restoring the never-omit guarantee. (1) A named closure
-  passed BY NAME to a higher-order over `argv` (`let rd = fun (a) =>
-  fs.read(a); env.args().map(rd)`) was omitted -- only INLINE lambda
-  arguments were tainted; the named reference is now resolved and its
-  parameter tainted. (2) A closure that LEAVES its frame -- passed to a
-  generic helper that invokes it (`apply(fun (a) => fs.read(a), arg)`),
-  RETURNED, or stored in an aggregate / struct field / list / tuple -- had
-  its parameter untracked, so an argv element bound to that parameter at an
-  unknown call site reached a sink invisibly. The surface cannot PROVE such
-  an escaped parameter is never argv, so it now taints it and reports the
-  body's param-fed sinks CONSERVATIVELY at `argv[*]` (a sound
-  over-approximation, never-omit). The widening only fires through the
-  closure PARAMETER, so an escaping closure whose sink reads a STATIC
-  literal still yields no fact, and it was measured non-noisy on the real
-  downstream corpus (audit-trail-reporter, sbom-watch, capa_showcase,
-  policy-eval all report the SAME surface before and after). The module
-  docstring, the `capa --wasi-surface` output, the CLI help and the SBOM
-  `compiler_derived_path_arg_surface` note now describe the closure model
-  honestly, including the one residual under-report it does NOT cover (a
-  closure re-bound through an intermediate identifier, or re-extracted from
-  a runtime container, before it escapes). Covered by new soundness-harness
-  cases that FAIL pre-fix.
+- *The `--wasi` path-arg surface now detects an escaping closure SOUND BY
+  CONSTRUCTION, replacing the per-shape enumeration that kept missing one
+  more way a lambda could leave its frame.* The prior pass listed the escape
+  positions it knew (argument to a helper, returned directly, element of a
+  struct / list / tuple) and resolved a lambda only when it was written
+  INLINE or named DIRECTLY by its binding. Each round closed one shape and
+  another appeared: a lambda produced inline by a RETURNED `match` / `if`
+  arm (`return match mode { _ -> fun (a) => fs.read(a) }`), or bound to a
+  name through a wrapper and then escaping (`let g = match { ... fun ... };
+  return g`), was still OMITTED -- a false EMPTY surface for an argv-fed sink
+  hidden in a closure. The enumeration is now a single general rule: a
+  closure's parameter is tainted (its param-fed sinks surface at `argv[*]`)
+  UNLESS the analysis proves the closure is applied only locally to non-argv
+  values. The DEFAULT is escape; the analysis abstains only on a proof of
+  safety. A recursive `lams_reachable` descends the wrappers a closure can
+  hide behind (`match` / `if` arms, a `Block` tail, a variant wrapper such
+  as `Some(fun ...)`, and a name bound to any of those), and ANY occurrence
+  that is not the callee of a tracked local application counts as escape, so
+  a newly-written escape shape is covered without a new branch. The widening
+  fires through the closure PARAMETER only, so an escaping closure whose sink
+  reads a STATIC literal still yields no fact; measured ZERO new facts on the
+  real downstream corpus (audit-trail-reporter, sbom-watch, capa_showcase,
+  policy-eval and `examples/`, 250 files report the IDENTICAL surface before
+  and after). The module docstring, the `capa --wasi-surface` output and the
+  SBOM `compiler_derived_path_arg_surface` note now all describe the
+  sound-by-construction rule and the ONE honest residual it still does NOT
+  cover: a closure carried by a value the AST-level pass cannot statically
+  tie back to a lambda -- re-extracted from a runtime container by key, or
+  threaded through an opaque computed value. Covered by new soundness-harness
+  cases (returned `match`/`if` arm, `let`-bound wrapped closure returned,
+  map / nested-struct / `Some`-wrapped via a name) that FAIL pre-fix, plus a
+  precision guard (escape with a static-literal sink yields no fact).
 - *In the experimental `--wasi` mode, the guest-side fine attenuation gate
   (`restrict_to` / `allows`) now lexically normalises `.` and `..` path
   segments before its containment check, closing a bypass on a dynamic

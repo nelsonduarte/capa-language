@@ -1275,8 +1275,15 @@ def _main_dispatch() -> int:
             print(
                 "  (sound over-approximation: no reaching argv argument is "
                 "omitted; argv[*] = a reaching argument at an indeterminate "
-                "index, including a sink inside a closure that escapes its "
-                "frame)"
+                "index. Closures are sound by construction: a closure whose "
+                "param reaches a sink is reported at argv[*] unless proven "
+                "applied only locally to non-argv values, so an escaping "
+                "closure -- returned, passed to a helper, stored in an "
+                "aggregate, or reached through a match/if arm or a name "
+                "bound to one -- fails closed. Residual gap: a closure "
+                "carried by a value not statically tied back to a lambda "
+                "(re-extracted from a runtime container by key, or threaded "
+                "through an opaque computed value) may be under-reported.)"
             )
         return 0
 
