@@ -220,15 +220,72 @@ class _SurfaceAnalysis:
                 tainted.add(name)
         # Fixpoint over the body so a later binding can taint an earlier
         # use's source (flow-insensitive); cheap because bodies are small.
+        # Lambda parameters are tainted when the closure may be applied to
+        # an argv-derived value (higher-order over a tainted collection, or
+        # a named closure called with a tainted argument), so a sink inside
+        # the body is not silently omitted.
         grew = True
         while grew:
             grew = False
             before = len(tainted)
             for stmt in _all_stmts(c.decl.body):
                 self._taint_stmt(stmt, tainted)
+            self._taint_lambda_params(c, tainted)
             if len(tainted) > before:
                 grew = True
         return tainted
+
+    def _taint_lambda_params(self, c, tainted: set) -> None:
+        """Taint the parameter names of lambdas whose body may be applied to
+        an argv-derived value. Two sound triggers (over-approximating; a
+        lambda the surface cannot prove argv-free fails closed):
+
+        * the lambda is an ARGUMENT to a method call whose RECEIVER is
+          argv-tainted -- a higher-order iteration (``args.map(fun (a) =>
+          ...)``, ``filter``, ``each``, ...) binds each element to the
+          lambda's first parameter; and
+        * the lambda is bound to a name later CALLED with an argv-tainted
+          positional argument (``let rd = fun (a) => ...; rd(p)``)."""
+        # Map a name to the LambdaExpr it is directly bound to, so a
+        # later ``name(<tainted>)`` call can taint that lambda's params.
+        lam_by_name: dict = {}
+        for stmt in _all_stmts(c.decl.body):
+            if isinstance(stmt, A.LetStmt) and isinstance(
+                stmt.pattern, A.IdentPat,
+            ) and isinstance(stmt.value, A.LambdaExpr):
+                lam_by_name[stmt.pattern.name] = stmt.value
+            elif isinstance(stmt, A.VarStmt) and isinstance(
+                stmt.value, A.LambdaExpr,
+            ):
+                lam_by_name[stmt.name] = stmt.value
+
+        def taint_lambda(lam) -> None:
+            for p in lam.params:
+                tainted.add(p.name)
+
+        def visit(e) -> None:
+            # Higher-order: a tainted receiver applies the lambda arg to
+            # each element. Taint every lambda passed as an argument.
+            if isinstance(e, A.MethodCall) and self._is_tainted(
+                e.receiver, tainted,
+            ):
+                for arg in e.args:
+                    if isinstance(arg, A.LambdaExpr):
+                        taint_lambda(arg)
+            # A named closure called with a tainted positional argument
+            # binds that argument to the closure's parameter.
+            if isinstance(e, A.Call) and isinstance(e.callee, A.Ident):
+                lam = lam_by_name.get(e.callee.name)
+                if lam is not None and any(
+                    self._is_tainted(a, tainted) for a in e.args
+                ):
+                    taint_lambda(lam)
+            for child in _child_exprs(e):
+                visit(child)
+
+        for stmt in _all_stmts(c.decl.body):
+            for e in _stmt_exprs(stmt):
+                visit(e)
 
     def _taint_stmt(self, stmt, tainted: set) -> None:
         if isinstance(stmt, A.LetStmt):
@@ -563,6 +620,17 @@ class _SurfaceAnalysis:
                 idx = self._index_of_expr(stmt.value, aliases)
                 if idx is not None:
                     note(stmt.name, idx)
+            elif isinstance(stmt, A.AssignStmt) and isinstance(
+                stmt.target, A.Ident,
+            ):
+                # A reassigned name may now hold a DIFFERENT argv index (or a
+                # non-argv value). Recording the new value's index would risk
+                # claiming a narrower index than the live value proves, so
+                # collapse the name to ANY -- the surface still proves an
+                # argv element reaches the sink but never names a wrong one.
+                # (``_argv_list_aliases`` already collapses AssignStmt the
+                # same way for the list-alias map.)
+                note(stmt.target.name, ANY_INDEX)
         # Drop names that collapsed to ANY so ``.get(name, ANY_INDEX)``
         # returns ANY for them.
         return {n: i for n, i in env.items() if i is not ANY_INDEX}

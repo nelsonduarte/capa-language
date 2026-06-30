@@ -346,6 +346,35 @@ fun main(fs: Fs)
     {FS_CAP: _t({"one/a.json", "two/b.json"})},
 )
 
+# --- LITERAL INSIDE A LAMBDA BODY: after the ``_child_exprs`` fix the
+# const-prop now visits lambda bodies (so the surface no longer omits
+# lambda-body sinks). The literal here GENUINELY reaches ``fs.read``, so
+# resolving it is correct and conservative -- it must stay subset-not-
+# superset (no extra preopen materialised). This locks that the
+# `_child_exprs` change does NOT cause the const-prop to over-grant.
+_case(
+    "literal_in_lambda_body",
+    """
+fun main(fs: Fs, env: Env)
+    let args = env.args()
+    let _ = args.map(fun (a) => match fs.read("in_lambda.json") { Err(_) -> "", Ok(s) -> s })
+""",
+    {FS_CAP: _t({"in_lambda.json"})},
+)
+
+# --- a DYNAMIC value (the lambda parameter) reaching a sink inside the
+# lambda body -> DYNAMIC (fail-closed; the body is now visited, so this
+# must report dynamic, not silently resolve nothing).
+_case(
+    "dynamic_in_lambda_body",
+    """
+fun main(fs: Fs, env: Env)
+    let args = env.args()
+    let _ = args.map(fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s })
+""",
+    {FS_CAP: _t(set(), dynamic=True)},
+)
+
 
 class TestConstPropSoundness(unittest.TestCase):
     """Per-program subset-not-superset + closed-iff-no-computed checks."""

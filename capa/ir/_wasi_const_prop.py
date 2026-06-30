@@ -719,5 +719,16 @@ def _child_exprs(e):
                     yield from _stmt_exprs(stmt)
             else:
                 yield arm.body
+    elif isinstance(e, A.LambdaExpr):
+        # The lambda BODY must be visited: a sink (Fs/Net/Env) or a path
+        # literal inside a closure body is otherwise invisible to the
+        # surface and to const-prop. The body is an expression (single-expr
+        # lambda) or a Block (multi-line lambda); a Block is walked via the
+        # statement helpers, exactly like a match-arm block body.
+        if isinstance(e.body, A.Block):
+            for stmt in _all_stmts(e.body):
+                yield from _stmt_exprs(stmt)
+        else:
+            yield e.body
     elif isinstance(e, A.Become):
         yield e.value

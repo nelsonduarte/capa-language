@@ -293,6 +293,106 @@ fun main(fs: Fs, env: Env)
     [G(ANY_INDEX, FS_CAP, "read", "read")],
 )
 
+# --- LAMBDA-BODY SINK (regression: pre-fix ``_child_exprs`` never visited
+# a lambda body, so this sink was OMITTED and the surface falsely said no
+# argv reaches a sink). The argv LIST is mapped through a closure whose
+# body reads each element -> argv reaches fs.read (ANY index: a higher-
+# order element binding, not a single static index).
+_case(
+    "argv_map_lambda_read",
+    """
+fun main(fs: Fs, env: Env)
+    let args = env.args()
+    let _ = args.map(fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s })
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- 0-arg lambda CAPTURING an argv-bound name, then called: the captured
+# ``p`` is the concrete argv[0], and the sink lives in the closure body
+# (pre-fix: omitted because the body was never walked).
+_case(
+    "argv_lambda_zero_arg_capture",
+    """
+fun main(fs: Fs, env: Env)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let go = fun () => match fs.read(p) { Err(_) -> "", Ok(s) -> s }
+    let _ = go()
+""",
+    [G(0, FS_CAP, "read", "read")],
+)
+
+# --- a NAMED closure called with an argv-tainted argument: the taint flows
+# to the lambda parameter and the body's sink must be reported (pre-fix:
+# omitted; index is ANY since the slot is a closure parameter).
+_case(
+    "argv_named_lambda_called",
+    """
+fun main(fs: Fs, env: Env)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let rd = fun (a) => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+    let _ = rd(p)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- a BLOCK-BODY lambda (multi-statement) called with an argv-tainted
+# argument: the body's sink, reached only by walking the block, must be
+# reported (pre-fix: omitted).
+_case(
+    "argv_block_body_lambda",
+    """
+fun main(fs: Fs, env: Env)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let rd = fun (a) =>
+        let r = match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+        return r
+    let _ = rd(p)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- a lambda over a NON-argv collection whose body reads a STATIC literal
+# path: no argv reaches the sink, so the surface must stay empty (guards
+# the lambda-param taint from over-firing into a false fact).
+_case(
+    "nonargv_lambda_no_fact",
+    """
+fun main(fs: Fs, nums: List<Int>)
+    let _ = nums.map(fun (n) => match fs.read("static.json") { Err(_) -> "", Ok(s) -> s })
+""",
+    [],
+)
+
+# --- REASSIGNED argv index (regression: pre-fix ``_index_provenance``
+# ignored ``AssignStmt`` and reported the FIRST binding's index, so this
+# falsely claimed ``argv[0]`` while the live value is ``argv[1]``). A
+# reassigned argv-index name must collapse to ANY (never narrower than the
+# real element).
+_case(
+    "argv_reassigned_index",
+    """
+fun main(fs: Fs, env: Env)
+    var p = match env.args().get(0) { None -> "", Some(x) -> x }
+    p = match env.args().get(1) { None -> "", Some(x) -> x }
+    let _ = match fs.read(p) { Err(_) -> "", Ok(s) -> s }
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- mirror of the reassignment (0 after 1): still ANY, never the
+# first-binding's narrower index.
+_case(
+    "argv_reassigned_index_mirror",
+    """
+fun main(fs: Fs, env: Env)
+    var p = match env.args().get(1) { None -> "", Some(x) -> x }
+    p = match env.args().get(0) { None -> "", Some(x) -> x }
+    let _ = match fs.read(p) { Err(_) -> "", Ok(s) -> s }
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
 
 def _covers(analysis_facts, g: G) -> bool:
     """A ground-truth fact ``g`` is covered when some analysis fact has
