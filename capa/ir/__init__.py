@@ -38,7 +38,7 @@ from ._emit_python import PythonEmitter
 from ._emit_wasm import WasmEmitter, WasmEmissionError
 from ._emit_wit import (
     emit_wit, collect_used_capabilities, UnsupportedCapabilityMethod,
-    MainReturnTypeUnsupported,
+    MainReturnTypeUnsupported, validate_main_return_type as _validate_main_ret,
 )
 from ._env_ceiling import (
     EnvCeiling, compute_env_ceiling, compute_env_ceiling_from_cir,
@@ -66,6 +66,7 @@ __all__ = [
     "WasmEmissionError",
     "UnsupportedCapabilityMethod",
     "MainReturnTypeUnsupported",
+    "check_main_return_type",
     "lower",
     "emit_python",
     "emit_wat",
@@ -321,6 +322,23 @@ def _build_wasm_capa_manifest_json(
     # we can without losing JSON readability; consumers can re-pretty
     # the output if they want.
     return json.dumps(payload, separators=(",", ":"), sort_keys=False)
+
+
+def check_main_return_type(
+    module: A.Module, types: dict | None = None,
+) -> None:
+    """Lower ``module`` and raise ``MainReturnTypeUnsupported`` iff its
+    ``main`` declares a return type the WASM component backend cannot
+    lift into its WIT world export (``String`` or any composite).
+
+    The CLI runs this on the ``--component`` path BEFORE
+    ``compile_wasm`` so an unsupported ``main`` return surfaces as the
+    clean Capa diagnostic instead of the cryptic wasm-tools dump the
+    core emitter would produce first (e.g. a Struct-returning ``main``
+    lowers to a ``return_call $Struct`` the core module has no function
+    for). Same policy the WIT generator applies via
+    ``main_result_clause``."""
+    _validate_main_ret(lower(module, types=types))
 
 
 def compile_wit(

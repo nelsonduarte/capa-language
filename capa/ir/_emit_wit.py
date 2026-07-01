@@ -415,17 +415,37 @@ class MainReturnTypeUnsupported(Exception):
         self.return_type = return_type
 
 
+def _is_unit_return(rty: str) -> bool:
+    """True when ``rty`` (``main``'s lowered ``return_type`` string) is
+    a Unit return, which the component backend maps to NO result
+    clause.
+
+    Three shapes reach here (see the lowerer): the empty string (no
+    annotation), the literal ``"Unit"`` (both ``fun main`` with no
+    annotation and ``fun main -> Unit`` lower to this), and the AST
+    ``repr`` ``"UnitType(pos=...)"`` that an EXPLICIT ``fun main -> ()``
+    lowers to. All three are Unit and must be treated as supported --
+    an explicit ``-> ()`` main is a Unit main, not a composite, so the
+    clean-error layer must never mis-reject it with an ugly AST repr in
+    the message. (A ``-> ()`` main still fails LATER in the core
+    emitter with "UnitType has no Wasm encoding"; that is a separate
+    pre-existing limitation, out of scope here -- this layer only
+    guarantees the return-type validation does not itself produce a
+    repr-in-message rejection.)"""
+    return rty == "" or rty == "Unit" or rty.startswith("UnitType(")
+
+
 def main_result_clause(module: Module) -> str:
     """Return the WIT result clause for the world's ``export main``,
     derived from ``main``'s source-level return type so the world
     signature matches the core module's ``main`` result.
 
     Returns ``""`` (no result clause) when ``main`` is absent, returns
-    ``Unit`` / ``()``, or declares no return type. Returns
-    ``" -> <wit-ty>"`` for a supported scalar. Raises
-    ``MainReturnTypeUnsupported`` for a composite return type so the
-    error is a clear Capa diagnostic rather than the cryptic
-    wasm-tools core-vs-world mismatch.
+    a Unit-ish type (no annotation / ``Unit`` / explicit ``()``). Returns
+    ``" -> <wit-ty>"`` for a supported scalar (``Int`` / ``Float`` /
+    ``Bool``). Raises ``MainReturnTypeUnsupported`` for a ``String`` or
+    composite return type so the error is a clear Capa diagnostic
+    rather than the cryptic wasm-tools core-vs-world mismatch.
 
     The returned string is ready to append directly after the
     ``func(...)`` of the export, e.g. ``export main: func(){clause};``.
@@ -434,13 +454,32 @@ def main_result_clause(module: Module) -> str:
         if fn.name != "main":
             continue
         rty = (fn.return_type or "").strip()
-        if rty in ("", "Unit", "()"):
+        if _is_unit_return(rty):
             return ""
         wit = _MAIN_RESULT_WIT.get(rty)
         if wit is None:
             raise MainReturnTypeUnsupported(rty)
         return f" -> {wit}"
     return ""
+
+
+def validate_main_return_type(module: Module) -> None:
+    """Raise ``MainReturnTypeUnsupported`` iff ``main``'s return type
+    is one the WASM component backend cannot lift into its WIT world
+    export (``String`` or any composite: ``Struct`` / ``Sum`` /
+    ``List`` / ``Map`` / tuple / ``Option`` / ``Result`` / ``Char`` /
+    ...). Scalars (``Int`` / ``Float`` / ``Bool``) and Unit-ish returns
+    pass silently.
+
+    This is the early gate the CLI runs on the ``--component`` path
+    BEFORE ``compile_wasm``, so an unsupported ``main`` return surfaces
+    as the clean, actionable Capa diagnostic instead of dying first in
+    the core emitter with a cryptic wasm-tools dump (e.g. a
+    Struct-returning ``main`` compiles a ``return_call $Struct`` the
+    core module has no function for). The WIT generator applies the
+    same policy via ``main_result_clause``; this entry point lets the
+    CLI enforce it without lowering + emitting the whole WIT twice."""
+    main_result_clause(module)
 
 
 class UnsupportedCapabilityMethod(Exception):

@@ -1554,7 +1554,9 @@ def _main_dispatch() -> int:
         # Python) so coverage gaps in the Wasm backend surface as
         # actionable errors rather than silent shape changes.
         from capa.ir import compile_wat, compile_wasm, compile_wit
-        from capa.ir import MainReturnTypeUnsupported
+        from capa.ir import (
+            MainReturnTypeUnsupported, check_main_return_type,
+        )
         # Experimental WASI mode is only meaningful for the component
         # path (it rewrites the WIT world + the component imports);
         # ``--transpile`` shows the WAT, which carries the wasi:*
@@ -1599,6 +1601,28 @@ def _main_dispatch() -> int:
             wasi_dynamic_fs = True
         if result is None:
             result = analyze(module, source=source, filename=filename)
+        # Component path only: validate ``main``'s return type BEFORE
+        # ``compile_wasm``. A String / composite (Struct / Sum / List /
+        # Map / tuple / ...) return on ``main`` cannot be lifted into
+        # the WIT world export; without this early gate the core
+        # emitter would die first with a cryptic wasm-tools dump (a
+        # Struct-returning ``main`` lowers to ``return_call $Struct``
+        # the module has no function for), never reaching the clean
+        # ``compile_wit`` error. Running the check here makes both the
+        # ``--output`` and ``--run`` component paths surface the
+        # actionable ``capa: --wasm: main returning '<ty>' is not
+        # supported ...`` diagnostic + exit 1 instead. Scalars / Unit
+        # pass silently; the non-component path is untouched.
+        if args.component:
+            try:
+                check_main_return_type(module, types=result.types)
+            except MainReturnTypeUnsupported as e:
+                msg = f"capa: --wasm: {e}"
+                if use_color:
+                    print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+                else:
+                    print(msg, file=sys.stderr)
+                return 1
         try:
             if args.transpile:
                 wat = compile_wat(
@@ -1739,18 +1763,6 @@ def _main_dispatch() -> int:
                 host = WasmHost(args=program_args)
                 host.run_main(blob)
             return 0
-        except MainReturnTypeUnsupported as e:
-            # A composite / String return type on ``main`` is a
-            # compile-time limitation of the component backend, not a
-            # runtime trap; surface it as the same clean
-            # ``capa: --wasm:`` diagnostic the ``compile_wasm`` /
-            # ``--output`` paths use, rather than a raw traceback.
-            msg = f"capa: --wasm: {e}"
-            if use_color:
-                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
-            else:
-                print(msg, file=sys.stderr)
-            return 1
         except Exception as e:
             # A deliberate ``panic`` aborts via the guest's
             # ``unreachable``, which surfaces here as a wasmtime
