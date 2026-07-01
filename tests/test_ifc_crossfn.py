@@ -1364,5 +1364,165 @@ class TestSecretConstSource(unittest.TestCase):
         )
 
 
+class TestSecretConstCrossFunction(unittest.TestCase):
+    """Soundness (cross-function): a module-level ``@secret`` const must
+    be an internal secret source in the CROSS-FUNCTION summary walk, not
+    only the intra-procedural pass. The summary is an independent walk
+    that seeds only parameters, so before this a secret const crossing a
+    FREE-FUNCTION return (or field-write) to a public sink was missed in
+    both default and ``@strict_ifc`` mode (fail-open) -- the same
+    return-laundering class already closed for env/param sources. These
+    lock the return path, the struct-return path, the field-write path,
+    a 2-hop chain, the strict fail-closed verdict, symmetry with the
+    env-source equivalent, and the no-false-positive negatives."""
+
+    def test_secret_const_via_free_fn_return_flagged(self):
+        # ``get_key`` RETURNS the const (not as an argument): the
+        # return-effect must carry INTERNAL_SECRET to the call site.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun get_key() -> String\n"
+            "    return K\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(get_key())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_secret_const_in_returned_struct_field_flagged(self):
+        # The const is embedded in a struct returned by a free function;
+        # the caller reads the field and sinks it.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "type Box { v: String }\n"
+            "fun make() -> Box\n"
+            "    return Box { v: K }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = make()\n"
+            "    stdio.eprintln(b.v)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_secret_const_via_callee_field_write_flagged(self):
+        # ``fill`` writes ``b.v = K`` (a field-write effect from an
+        # internal-secret source); the caller reads ``b.v`` and sinks it.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "type Box { v: String }\n"
+            "fun fill(b: Box)\n"
+            "    b.v = K\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Box { v: \"public\" }\n"
+            "    fill(b)\n"
+            "    stdio.eprintln(b.v)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_secret_const_two_hop_chain_flagged(self):
+        # K -> get() -> passthrough() -> sink: the internal-secret source
+        # must survive two free-function return hops.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun get() -> String\n"
+            "    return K\n"
+            "fun passthrough(s: String) -> String\n"
+            "    return s\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(passthrough(get()))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_secret_const_via_free_fn_return_strict_is_error(self):
+        # Under @strict_ifc the cross-function const leak is a HARD ERROR
+        # (fail-closed), not a warning.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun get_key() -> String\n"
+            "    return K\n"
+            "@strict_ifc()\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(get_key())\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_symmetry_const_matches_env_source_via_return(self):
+        # A secret const returned by a free function yields the SAME
+        # verdict as the env-source equivalent already did: one sink-leak
+        # warning in each. Symmetry with the PR #25 return-laundering fix.
+        const_src = (
+            "const K: @secret String = \"sk\"\n"
+            "fun get_key() -> String\n"
+            "    return K\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(get_key())\n"
+        )
+        env_src = (
+            "fun get_key(env: Env) -> String\n"
+            "    match env.get(\"K\")\n"
+            "        Some(k) -> return k\n"
+            "        None -> return \"none\"\n"
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    stdio.eprintln(get_key(env))\n"
+        )
+        r_const = _analyze(const_src)
+        r_env = _analyze(env_src)
+        self.assertEqual(
+            len(_sink_leak_warnings(r_const)),
+            len(_sink_leak_warnings(r_env)),
+        )
+        self.assertEqual(len(_sink_leak_warnings(r_const)), 1)
+
+    def test_public_const_via_free_fn_return_not_flagged(self):
+        # Negative: a PUBLIC const returned by a free function to a sink
+        # must NOT be flagged (no cross-function false positive).
+        r = _analyze(
+            "const P: String = \"pub\"\n"
+            "fun get_pub() -> String\n"
+            "    return P\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(get_pub())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+    def test_secret_const_declassified_in_callee_return_not_flagged(self):
+        # Negative: a callee that declassifies the const before returning
+        # it breaks the chain -- no leak at the caller's sink.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun get_key() -> String\n"
+            "    return declassify(K, reason: \"audited\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(get_key())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
