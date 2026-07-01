@@ -118,6 +118,31 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *SECURITY / SOUNDNESS (information-flow control): closed a return-
+  laundering false negative through FREE FUNCTIONS.* The cross-function
+  IFC summary already carried a METHOD call's result label from the
+  callee's return-effect (so a method returning a declared-`@secret`
+  field of its receiver taints the call result), but the FREE-FUNCTION
+  call path in the summary only joined the argument taints and never
+  consulted the callee's `return_effects`. So a free function that reads
+  a declared-`@secret` field of a struct parameter (or otherwise produces
+  an internal secret) and RETURNS it did not propagate the internal-
+  secret source into ITS OWN return-effect: the `INTERNAL_SECRET`
+  sentinel was silently dropped. A caller whose own return or public sink
+  (`Stdio.println`/`eprintln`, `Net.post`, `panic`, a sink-reaching
+  parameter of a further function, ...) depended on that call result was
+  therefore NOT flagged -- a silent secret-disclosure path. The summary's
+  free-function-call result now follows the callee's `return_effects`
+  mapped back to the call's taint, exactly like the method path
+  (`INTERNAL_SECRET` -> the sentinel; a real parameter source -> the
+  taint of the bound argument). Because a free-function name resolves to
+  exactly one callable, this mapping is precise (no by-name over-
+  approximation): it both closes the laundering (widening in the secret
+  direction, never under-marking) AND removes the previous unconditional
+  argument join, so a parameter whose value does not flow into the return
+  no longer over-taints the result. No existing IFC label or check is
+  relaxed; the aggregate-laundering (struct / list / tuple) and the
+  method-path return-effect narrowing tests are unchanged and green.
 - *The WASM Component Model backend now accepts a `main` with a scalar
   return type (`fun main -> Int` / `Float` / `Bool`); previously any
   non-`Unit` `main` failed to wrap into a component.* The core module

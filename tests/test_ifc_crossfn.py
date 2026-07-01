@@ -1188,5 +1188,100 @@ class TestMethodResultFollowsReturnEffect(unittest.TestCase):
         )
 
 
+class TestFreeFnResultFollowsReturnEffect(unittest.TestCase):
+    """The result of a FREE-FUNCTION call carries the callee's
+    RETURN-EFFECT, not just the join of the argument taints.
+
+    Closes a soundness hole (return laundering through a free function):
+    a free function that reads a declared-@secret field of a struct
+    parameter and RETURNS it produces an internal-secret result, but the
+    summary's free-function-call path used to join only the argument
+    taints, dropping the ``INTERNAL_SECRET`` sentinel. So a caller whose
+    own return / sink depended on that call result was silently missed.
+
+    Pins both directions:
+
+    * the LAUNDERING shape: a chain of free functions ending in a
+      @secret-field read, whose final result reaches a public sink, is
+      now flagged (was a false negative); and
+    * the NON-LAUNDERING shape: a free function whose return derives only
+      from a public argument -- even though another parameter holds a
+      @secret field -- must NOT be flagged (the return-effect narrowing
+      does not introduce a false positive)."""
+
+    def test_free_fn_return_field_launder_flagged(self):
+        # LAUNDERING: ``launder`` returns ``extract(e)`` and ``extract``
+        # returns the declared-@secret field ``e.iban``; ``main`` sinks
+        # ``launder``'s result. Before the fix ``launder``'s return-effect
+        # dropped INTERNAL_SECRET, so this was missed.
+        r = _analyze(
+            "type Emp { iban: @secret String }\n"
+            "fun extract(e: Emp) -> String\n"
+            "    return e.iban\n"
+            "fun launder(e: Emp) -> String\n"
+            "    return extract(e)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let emp = Emp { iban: \"DE00\" }\n"
+            "    stdio.eprintln(launder(emp))\n"
+        )
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_free_fn_return_field_launder_into_sink_param(self):
+        # LAUNDERING through the SUMMARY path: the free-function result
+        # flows into a sink-reaching PARAMETER of a further free function.
+        r = _analyze(
+            "type Emp { iban: @secret String }\n"
+            "fun extract(e: Emp) -> String\n"
+            "    return e.iban\n"
+            "fun mid(e: Emp) -> String\n"
+            "    return extract(e)\n"
+            "fun sink(s: String, stdio: Stdio)\n"
+            "    stdio.println(s)\n"
+            "fun top(e: Emp, stdio: Stdio)\n"
+            "    sink(mid(e), stdio)\n"
+        )
+        self.assertEqual(
+            len(_crossfn_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_free_fn_passthrough_public_arg_not_flagged(self):
+        # NON-LAUNDERING: ``passthrough`` returns only its public arg
+        # ``p``; the ``Emp`` parameter holds a @secret field but the
+        # return does not derive from it, so sinking the result is clean.
+        r = _analyze(
+            "type Emp { iban: @secret String }\n"
+            "fun passthrough(e: Emp, p: String) -> String\n"
+            "    return p\n"
+            "fun main(stdio: Stdio)\n"
+            "    let emp = Emp { iban: \"x\" }\n"
+            "    stdio.eprintln(passthrough(emp, \"hi\"))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            _sink_leak_warnings(r), [],
+            [w.message for w in r.warnings],
+        )
+        self.assertEqual(_crossfn_warnings(r), [])
+
+    def test_free_fn_return_secret_arg_flagged(self):
+        # LAUNDERING via a returned parameter: ``echo`` returns its
+        # argument; passing a @secret and sinking the result is caught
+        # (the real-param source of the return-effect fires).
+        r = _analyze(
+            "fun echo(s: String) -> String\n"
+            "    return s\n"
+            "fun main(token: @secret String, stdio: Stdio)\n"
+            "    stdio.eprintln(echo(token))\n"
+        )
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
