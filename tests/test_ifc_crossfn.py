@@ -1283,5 +1283,86 @@ class TestFreeFnResultFollowsReturnEffect(unittest.TestCase):
         )
 
 
+class TestSecretConstSource(unittest.TestCase):
+    """Soundness: a module-level ``const`` annotated ``@secret`` is an
+    IFC source. Before the fix the declared label on a const was
+    silently dropped, so a reference to it came out PUBLIC and a leak to
+    a public sink was NOT flagged -- an accepted ``@secret`` annotation
+    that bought nothing. These lock BOTH directions: a secret const
+    reaching a sink (directly and via an intermediary) is flagged, and a
+    plain (public) const is not (no false positive)."""
+
+    def test_secret_const_direct_sink_flagged(self):
+        r = _analyze(
+            "const K: @secret String = \"sk-secret\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(K)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_secret_const_via_local_var_flagged(self):
+        # Intermediary local binding: the taint must flow from the const
+        # symbol through ``let s = K`` into the sink.
+        r = _analyze(
+            "const K: @secret String = \"sk-secret\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = K\n"
+            "    stdio.eprintln(s)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_secret_const_via_callee_flagged(self):
+        # Intermediary function: the const is passed to a callee that
+        # sinks its parameter -- caught at the call site (cross-fn).
+        r = _analyze(
+            "const K: @secret String = \"sk-secret\"\n"
+            "fun log(s: String, stdio: Stdio)\n"
+            "    stdio.println(s)\n"
+            "fun main(stdio: Stdio)\n"
+            "    log(K, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_crossfn_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_secret_const_declassify_closes(self):
+        # declassify(K, ...) is the sanctioned exit: no leak warning.
+        r = _analyze(
+            "const K: @secret String = \"sk-secret\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(declassify(K, reason: \"audited\"))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+    def test_public_const_direct_sink_not_flagged(self):
+        # Negative direction: an unannotated (public) const referenced at
+        # a public sink must NOT be flagged -- the fix must not trade the
+        # dropped-label hole for a false positive.
+        r = _analyze(
+            "const P: String = \"not-secret\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(P)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
