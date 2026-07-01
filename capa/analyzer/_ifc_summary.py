@@ -732,9 +732,34 @@ class _SummaryBuilder:
             self._propagate_callee_effects(
                 self.field_effects.get(key, {}), perm, e.args, arg_srcs, env,
             )
-        # Either way the call RESULT joins argument taints (the
-        # conservative result-label rule, mirrored here) plus the taint of
-        # an invoked Fun-typed parameter.
+            # The call RESULT follows the callee's RETURN-EFFECT, mapped
+            # back to this call's taint -- the same rule the method path
+            # uses (``_return_taint_of_method_call``), and the key fix for
+            # the free-function return-laundering false negative. A free
+            # function name resolves to EXACTLY ONE callable, so its
+            # ``return_effects`` is precise (no by-name over-approximation):
+            # ``INTERNAL_SECRET`` -> the sentinel (the result is secret
+            # unconditionally, e.g. the callee reads a declared-@secret
+            # field of a struct param and returns it, which the plain
+            # argument join dropped); a real param ``s`` -> the taint of
+            # the argument bound to ``s``. This both CLOSES the laundering
+            # (INTERNAL_SECRET now propagates) and is more precise than the
+            # old unconditional argument join (a param whose value does not
+            # flow into the return no longer taints the result), mirroring
+            # the method-path narrowing. The invoked Fun-typed-parameter
+            # taint still joins in (it is not a summarised callee).
+            out = set(invoke_src)
+            for s in self.return_effects.get(key, set()):
+                if s == INTERNAL_SECRET:
+                    out.add(INTERNAL_SECRET)
+                    continue
+                arg_idx = perm.get(s)
+                if arg_idx is not None and arg_idx < len(arg_srcs):
+                    out |= arg_srcs[arg_idx]
+            return out
+        # Non-summarised callee (a Fun-typed parameter invocation, or a
+        # name that is not a known free function): conservatively join the
+        # argument taints into the result plus the invoked value's taint.
         out = set(invoke_src)
         for s in arg_srcs:
             out |= s
