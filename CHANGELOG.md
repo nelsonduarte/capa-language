@@ -118,6 +118,26 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *SECURITY / SOUNDNESS (information-flow control): a `@secret` label on
+  a module-level `const` was SILENTLY IGNORED.* A
+  `const K: @secret String = "..."` is accepted by the parser, but the
+  const handler only type-checked the value and never stamped the
+  declared label onto the global symbol, so a reference to the const came
+  out PUBLIC. A secret const forwarded to a public sink
+  (`Stdio.println`/`eprintln`, `Net.post`, `panic`, an `Fs.write` path, a
+  sink-reaching parameter of a further function, ...) was therefore NOT
+  flagged -- the worst kind of hole, since the author writes `@secret`,
+  believes they are protected, and are not. The `let`/`var` path already
+  honoured the declared label; module consts now behave consistently: the
+  const handler joins (lattice join, never lowers) the declared
+  `@secret`/`@public` label with the value's label and records it on the
+  global symbol, exactly as `_join_decl_and_value_label` does for a
+  binding. A reference to a secret const now carries the label and a leak
+  to a public sink is flagged (directly and through intermediary bindings
+  / functions), while `declassify(K, reason: "...")` still closes it and
+  an unannotated (public) const at a sink is not flagged (no false
+  positive).
+
 - *SECURITY / SOUNDNESS (information-flow control): closed a return-
   laundering false negative through FREE FUNCTIONS.* The cross-function
   IFC summary already carried a METHOD call's result label from the

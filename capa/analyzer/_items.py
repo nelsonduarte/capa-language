@@ -79,6 +79,19 @@ class _ItemsMixin:
                 f"got {ty_str(actual)}",
                 c.value.pos,
             )
+        # Information-flow (roadmap S2, soundness): honour the declared
+        # ``@secret``/``@public`` label on a module-level const the same
+        # way a ``let``/``var`` binding does. Without this the annotation
+        # is silently dropped and a reference to the const comes out
+        # PUBLIC, laundering a declared-secret const to any public sink.
+        # A const value is usually a public literal, but the annotation
+        # DECLARES the intent to treat it as secret; join the declared
+        # label with the value's label (never lower) and stamp it on the
+        # global symbol so every reference (which binds to this symbol in
+        # ``_check_ident``) carries the label.
+        if sym is not None:
+            decl_label = c.type_expr.label if c.type_expr is not None else None
+            sym.label = self._join_decl_and_value_label(decl_label, c.value)
 
     def _check_function_attributes(self, fn: A.FunDecl) -> None:
         """Validate attribute names and keys against
