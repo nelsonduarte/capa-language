@@ -132,11 +132,21 @@ breaking changes and the discipline is still being shaped.
   const handler joins (lattice join, never lowers) the declared
   `@secret`/`@public` label with the value's label and records it on the
   global symbol, exactly as `_join_decl_and_value_label` does for a
-  binding. A reference to a secret const now carries the label and a leak
-  to a public sink is flagged (directly and through intermediary bindings
-  / functions), while `declassify(K, reason: "...")` still closes it and
-  an unannotated (public) const at a sink is not flagged (no false
-  positive).
+  binding. The cross-function summary walk (an independent pass that does
+  not consult the global scope) now recognises a reference to a
+  `@secret` const as an internal secret source too, symmetric to a
+  declared-`@secret` field read: so the leak is caught not only in the
+  intra-procedural pass but also when the const crosses a FREE-FUNCTION
+  return or a callee field-write to a public sink (the return-laundering
+  class already closed for env / parameter sources). Coverage: a secret
+  const reaching a public sink is flagged directly, through intermediary
+  bindings, through a call argument, through a free-function return
+  (incl. embedded in a returned struct field), through a callee
+  field-write, and across multi-hop return chains -- a warning by
+  default and a hard error under `@strict_ifc` (fail-closed). A
+  `declassify(K, reason: "...")` still closes the flow (intra- and
+  cross-function) and an unannotated (public) const at a sink is not
+  flagged (no false positive).
 
 - *SECURITY / SOUNDNESS (information-flow control): closed a return-
   laundering false negative through FREE FUNCTIONS.* The cross-function

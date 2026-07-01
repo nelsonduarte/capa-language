@@ -185,7 +185,14 @@ class _SummaryBuilder:
         # an internal secret source at summary time -- the cross-function
         # analogue of the intra-procedural declared-field-label rule.
         self.struct_field_labels: dict[str, dict[str, str]] = {}
+        # Names of module-level consts DECLARED ``@secret`` (roadmap S2).
+        # A reference to one is an internal secret source in the summary
+        # walk, the cross-function analogue of the intra-procedural
+        # ``sym.label`` on the const's global symbol. Pre-computed once so
+        # each identifier costs a set membership test, not a lookup.
+        self.secret_consts: set[str] = set()
         self._collect_secret_fields()
+        self._collect_secret_consts()
         self._collect_callables()
 
     def _collect_secret_fields(self) -> None:
@@ -205,6 +212,22 @@ class _SummaryBuilder:
                 if label in L.VALID_LABELS:
                     self.struct_field_labels.setdefault(name, {})[fld.name] = \
                         label
+
+    def _collect_secret_consts(self) -> None:
+        """Populate ``secret_consts`` from every module-level ``const``
+        whose declared type carries the ``@secret`` label, so the body
+        walk recognises a reference to it as an internal secret source
+        (``_taint_of`` of an ``A.Ident``). The cross-function analogue of
+        the intra-procedural label stamped on the const's global symbol;
+        without it a secret const that crosses a free-function return or
+        field-write to a public sink is missed (fail-open)."""
+        from .. import _labels as L
+        for item in self.module.items:
+            if isinstance(item, A.ConstDecl):
+                te = getattr(item, "type_expr", None)
+                label = getattr(te, "label", None) if te is not None else None
+                if label == L.SECRET:
+                    self.secret_consts.add(item.name)
 
     # ---- collection -------------------------------------------------
 
@@ -568,6 +591,16 @@ class _SummaryBuilder:
         those source params are added to ``reaching``.
         """
         if isinstance(e, A.Ident):
+            # A reference to a module-level ``@secret`` const is an
+            # internal secret source, symmetric to a declared-@secret
+            # field read: it carries the INTERNAL_SECRET sentinel so a
+            # free function returning it / writing it to a field taints
+            # its return / field-write effect and the leak is caught at
+            # the call site. Only when the name is NOT shadowed by a local
+            # (parameters and let/var binds populate ``env``, so a name in
+            # ``env`` refers to the local, never the const).
+            if e.name in self.secret_consts and e.name not in env:
+                return {INTERNAL_SECRET}
             return set(env.get(e.name, set()))
         if isinstance(e, (
             A.IntLit, A.FloatLit, A.StringLit, A.CharLit,
