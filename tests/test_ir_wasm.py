@@ -43,7 +43,7 @@ from capa import Lexer, Parser, analyze
 from capa.ir import (
     lower, emit_wat, emit_wit, compile_wat, compile_wasm, compile_wit,
     collect_used_capabilities, WasmEmissionError,
-    UnsupportedCapabilityMethod,
+    UnsupportedCapabilityMethod, MainReturnTypeUnsupported,
 )
 
 
@@ -434,6 +434,98 @@ class TestWitGeneration(unittest.TestCase):
         with self.assertRaises(UnsupportedCapabilityMethod):
             emit_wit(ir_mod)
 
+    def test_main_returning_unit_has_no_result_clause(self):
+        # Baseline / no-regression: a plain ``fun main`` (Unit return)
+        # keeps the historical ``export main: func();`` shape with no
+        # result clause, matching the core module's Unit ``main``.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        self.assertIn("export main: func();", wit)
+        self.assertNotIn("export main: func() ->", wit)
+
+    def test_main_returning_int_emits_s64_result(self):
+        # ``main -> Int``: the core module returns ``(result i64)``,
+        # so the WIT world must advertise ``-> s64`` (Capa Int is
+        # signed) or ``wasm-tools component new`` rejects the artifact
+        # with a core-vs-world result mismatch.
+        src = (
+            "fun main(stdio: Stdio) -> Int\n"
+            "    stdio.println(\"hi\")\n"
+            "    return 7\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        self.assertIn("export main: func() -> s64;", wit)
+
+    def test_main_returning_float_emits_f64_result(self):
+        src = (
+            "fun main(stdio: Stdio) -> Float\n"
+            "    stdio.println(\"hi\")\n"
+            "    return 1.5\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        self.assertIn("export main: func() -> f64;", wit)
+
+    def test_main_returning_bool_emits_bool_result(self):
+        src = (
+            "fun main(stdio: Stdio) -> Bool\n"
+            "    stdio.println(\"hi\")\n"
+            "    return true\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        self.assertIn("export main: func() -> bool;", wit)
+
+    def test_main_result_clause_present_with_handle_params(self):
+        # The result clause must sit AFTER the cap-handle param list,
+        # so a ``main`` with both handle params and a scalar return
+        # produces ``export main: func(fs: u32) -> s64;``. Guards the
+        # ordering the shared ``main_result_clause`` helper appends.
+        src = (
+            "fun main(stdio: Stdio, fs: Fs) -> Int\n"
+            "    let _e = fs.exists(\"/nope\")\n"
+            "    stdio.println(\"hi\")\n"
+            "    return 3\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        self.assertIn("export main: func(fs: u32) -> s64;", wit)
+
+    def test_main_returning_string_rejected_with_clear_error(self):
+        # ``main -> String``: the core returns a flattened (i32 i32)
+        # multi-value the Component Model canonical ABI cannot lift
+        # from a WIT ``string`` result (it demands an indirect return
+        # area). Rather than surface the cryptic wasm-tools mismatch,
+        # the WIT generator raises a clear Capa compile-time error.
+        src = (
+            "fun main(stdio: Stdio) -> String\n"
+            "    stdio.println(\"hi\")\n"
+            "    return \"x\"\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(MainReturnTypeUnsupported) as ctx:
+            emit_wit(ir_mod)
+        self.assertIn("String", str(ctx.exception))
+
+    def test_main_returning_struct_rejected_with_clear_error(self):
+        # A composite (Struct) return on ``main`` is likewise rejected
+        # at WIT generation with the actionable Capa error, not the raw
+        # component-linker mismatch.
+        src = (
+            "type Point { x: Int, y: Int }\n"
+            "fun main(stdio: Stdio) -> Point\n"
+            "    stdio.println(\"hi\")\n"
+            "    return Point(x: 1, y: 2)\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(MainReturnTypeUnsupported):
+            emit_wit(ir_mod)
+
     def test_parse_json_does_not_emit_host_json_interface(self):
         # Audit 2026-05-25 (item #3): parse_json / to_json are
         # bundled into the guest module via
@@ -456,12 +548,19 @@ class TestWitGeneration(unittest.TestCase):
     def test_to_json_does_not_emit_host_json_interface(self):
         # Same as the parse_json case, but exercising the serialise
         # direction as well so both bundled functions are covered.
+        # The ``?`` operator needs a Result-returning function, so the
+        # json round-trip lives in a helper; ``main`` stays Unit so the
+        # world export is the trivial ``func()`` shape (a composite /
+        # Result return on ``main`` itself is unsupported by the
+        # component backend -- see the main-return-type tests above).
         src = (
-            "fun main(stdio: Stdio) -> Result<Unit, String>\n"
+            "fun roundtrip() -> Result<String, String>\n"
             "    let jv = parse_json(\"[1,2]\")?\n"
-            "    let back = to_json(jv)\n"
-            "    stdio.println(back)\n"
-            "    return Ok(())\n"
+            "    return Ok(to_json(jv))\n"
+            "fun main(stdio: Stdio)\n"
+            "    match roundtrip()\n"
+            "        Ok(back) -> stdio.println(back)\n"
+            "        Err(_) -> stdio.eprintln(\"bug\")\n"
         )
         ir_mod, _, _ = _parse_lower(src)
         wit = emit_wit(ir_mod)
@@ -4512,6 +4611,80 @@ class TestWasmComponentHost(unittest.TestCase):
         finally:
             sys.stdout = saved
         self.assertEqual(out_cm, core_out.getvalue())
+
+    def _core_stdout(self, src: str, args=()) -> str:
+        # Run the same program under the NON-component core host so a
+        # test can assert 3-backend parity (Python is covered by the
+        # transpiler tests; here we pin core-wasm == component). The
+        # component host discards ``main``'s return value exactly like
+        # the core host, so a successful run (no exception) IS the
+        # exit-0 assertion for both.
+        from capa.runtime._wasm_host import WasmHost
+        import io
+        import sys
+        _, types, ast_mod = _parse_lower(src)
+        core_blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost(args=list(args))
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            host.run_main(core_blob)
+        finally:
+            sys.stdout = saved
+        return buf.getvalue()
+
+    def test_main_returning_int_runs_and_discards_value(self):
+        # Regression for the component-backend ``main -> Int`` bug:
+        # the WIT world now advertises ``-> s64`` so ``component new``
+        # accepts the core module's ``(result i64)`` main. The return
+        # value is discarded (exit 0), same stdout as the core host.
+        src = (
+            "fun main(stdio: Stdio) -> Int\n"
+            "    stdio.println(\"int-ret\")\n"
+            "    return 42\n"
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "int-ret\n")
+        self.assertEqual(
+            self._run_capturing_stdout(src), self._core_stdout(src),
+        )
+
+    def test_main_returning_float_runs_and_discards_value(self):
+        src = (
+            "fun main(stdio: Stdio) -> Float\n"
+            "    stdio.println(\"float-ret\")\n"
+            "    return 3.5\n"
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "float-ret\n")
+        self.assertEqual(
+            self._run_capturing_stdout(src), self._core_stdout(src),
+        )
+
+    def test_main_returning_bool_runs_and_discards_value(self):
+        src = (
+            "fun main(stdio: Stdio) -> Bool\n"
+            "    stdio.println(\"bool-ret\")\n"
+            "    return true\n"
+        )
+        self.assertEqual(self._run_capturing_stdout(src), "bool-ret\n")
+        self.assertEqual(
+            self._run_capturing_stdout(src), self._core_stdout(src),
+        )
+
+    def test_main_returning_int_with_handle_param_runs(self):
+        # A ``main`` that BOTH takes a cap-handle param (Fs) AND
+        # returns a scalar: the world export is
+        # ``func(fs: u32) -> s64``. Exercises the result clause sitting
+        # after the handle param list end-to-end through the CM host.
+        src = (
+            "fun main(stdio: Stdio, fs: Fs) -> Int\n"
+            "    let _e = fs.exists(\"/nope\")\n"
+            "    stdio.println(\"handle-int-ret\")\n"
+            "    return 9\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "handle-int-ret\n",
+        )
 
 
 @unittest.skipUnless(

@@ -38,6 +38,7 @@ from ._emit_python import PythonEmitter
 from ._emit_wasm import WasmEmitter, WasmEmissionError
 from ._emit_wit import (
     emit_wit, collect_used_capabilities, UnsupportedCapabilityMethod,
+    MainReturnTypeUnsupported,
 )
 from ._env_ceiling import (
     EnvCeiling, compute_env_ceiling, compute_env_ceiling_from_cir,
@@ -64,6 +65,7 @@ __all__ = [
     "WasmEmitter",
     "WasmEmissionError",
     "UnsupportedCapabilityMethod",
+    "MainReturnTypeUnsupported",
     "lower",
     "emit_python",
     "emit_wat",
