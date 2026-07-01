@@ -77,16 +77,24 @@ argv-tainted argument, or passed to a higher-order over an argv receiver,
 binds argv to its parameter (still reported at ``argv[*]`` -- a per-element
 binding is not a static index).
 
-SCOPE (no sub-frame is skipped): the statement-level traversal descends into
-every lambda BODY, so a NAMED closure bound INSIDE another lambda's body
-(``let outer = fun (b) =>\\n let rd = fun (a) => fs.read(a)\\n
-args().map(rd)``) -- at any nesting depth -- is found, its application /
-escape inside that body is tracked, and its body's sink is reported. A
-nested lambda's OWN ``return`` / tail value stays attributed to that lambda,
-NOT to its enclosing frame (the frame-boundary helpers use an own-frame
-traversal), so the scope descent widens coverage without confusing scopes.
-The previously-omitted scope shape (a named closure in a lambda sub-frame)
-is therefore CLOSED; the residual below is value-flow only.
+SCOPE (no sub-scope is skipped -- EXHAUSTIVE, not ad-hoc): the statement-level
+traversal descends into EVERY node that holds sub-statements -- if / while /
+for branches, the ``Block`` body of a ``match`` arm or block-bodied ``if``
+(which live at the EXPRESSION level), AND every lambda BODY -- at any nesting
+depth and in any composition. So a NAMED closure bound INSIDE a match-arm
+block (``match x`` ``  _ ->`` ``    let rd = fun (a) => fs.read(a)`` ``
+rd(argv_path)``) or inside another lambda's body, and its application / escape
+there, is found and its body's sink reported. Same-frame sub-blocks (control
+flow, match / if arm) are reached by :func:`_child_blocks`; lambda bodies (a
+different frame) by :func:`_lambda_body_blocks`; together they cover every
+sub-statement-bearing node. A nested lambda's OWN ``return`` / tail value
+stays attributed to that lambda, NOT to its enclosing frame (the
+frame-boundary helpers use an own-frame traversal that descends match-arm
+blocks but not lambda bodies), so the descent widens coverage without
+confusing scopes. The exhaustiveness is pinned by a META-TEST over the AST
+node inventory (a new sub-statement-bearing node fails the suite rather than
+silently slipping), so the scope-omission CLASS is CLOSED by proof; the
+residual below is VALUE-FLOW only.
 
 PRECISION (the over-report this allows is the minimum soundness forces):
 tainting a parameter yields a fact ONLY when that parameter actually
@@ -99,9 +107,10 @@ policy-eval and examples/ (250 files) report the IDENTICAL surface before
 and after the sound-by-construction rule (zero new facts).
 
 RESIDUAL UNDER-REPORT (the one honest gap, VALUE-FLOW only -- NOT a scope
-gap): the rule follows a closure VALUE only while a STATIC, frame-local name
-resolution can link it to a ``LambdaExpr`` -- inline, or through the wrappers
-above, in this frame OR in any nested-lambda sub-frame. A closure carried by
+gap: every sub-block, including a match / if arm and a lambda body, is
+traversed): the rule follows a closure VALUE only while a STATIC, frame-local
+name resolution can link it to a ``LambdaExpr`` -- inline, or through the
+wrappers above, in this frame OR in any sub-scope. A closure carried by
 a value the pass cannot statically tie back to a lambda still slips:
 re-extracted from a RUNTIME CONTAINER by key (fetched back out of a Map at
 run time), or threaded through an opaque computed value (a helper return

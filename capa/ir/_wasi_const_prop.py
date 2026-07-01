@@ -619,22 +619,24 @@ def _bind(args: list, arg_names: list, param_names: list) -> dict:
 
 
 def _all_stmts(block: A.Block):
-    """Yield every statement in ``block``, its nested control-flow blocks
-    (if / while / for), AND the statements inside every LAMBDA BODY reached
-    from a statement's expressions (a ``let rd = fun (a) =>\\n ...`` binds a
-    closure whose body is a sub-scope of statements). A closure body is a
-    reachable sub-frame for the statement-level helpers (binding maps, taint
-    seeds, sink scans), so a sink / call / binding anywhere -- including
-    inside a nested lambda -- is visited.
+    """Yield every statement in ``block`` and every statement in every
+    sub-scope reachable from it -- its nested control-flow blocks (if /
+    while / for), the ``Block`` body of every ``match`` arm and every
+    block-bodied ``if`` reached from a statement's expressions, AND the
+    statements inside every LAMBDA BODY. A sub-scope is any node that
+    carries sub-statements (a control-flow branch, a match-arm block, a
+    closure body); a sink / call / binding anywhere in one is visited.
 
-    Closing the SCOPE-OMISSION class: the expression-level walk
-    (:func:`_child_exprs`) already descends into lambda bodies, so any
-    consumer that flattens statements to expressions saw lambda-body calls;
-    but consumers that inspect STATEMENTS directly (``LetStmt`` / ``VarStmt``
-    bindings -- name maps, taint, alias / index provenance) never saw a
-    binding made INSIDE a lambda body. Descending here makes the two
-    traversal families consistent so no helper silently skips a lambda
-    sub-scope."""
+    Closing the SCOPE-OMISSION class exhaustively: the expression-level
+    walk (:func:`_child_exprs`) descends into these sub-scopes when a
+    consumer flattens statements to expressions, but consumers that inspect
+    STATEMENTS directly (``LetStmt`` / ``VarStmt`` bindings -- name maps,
+    taint seeds, alias / index provenance, sink scans) only see what the
+    statement traversal yields. Descending into EVERY sub-statement-bearing
+    node here makes the two traversal families consistent, so no helper
+    silently skips a sub-scope (control-flow branch, match arm, closure).
+    The exhaustiveness is pinned by a meta-test that fails if any AST node
+    with a sub-statement field is not reached by this traversal."""
     for stmt in block.stmts:
         yield stmt
         for sub in _child_blocks(stmt):
@@ -644,16 +646,20 @@ def _all_stmts(block: A.Block):
 
 
 def _own_frame_stmts(block: A.Block):
-    """Yield every statement in ``block`` and its nested CONTROL-FLOW blocks
-    (if / while / for) but NOT statements inside a lambda body -- the
-    statements of THIS frame only.
+    """Yield every statement in ``block`` and every statement in every
+    sub-scope THAT BELONGS TO THE SAME FRAME -- its nested control-flow
+    blocks (if / while / for) and the ``Block`` body of every ``match`` arm
+    / block-bodied ``if`` -- but NOT statements inside a lambda body (a
+    different frame). The statements of THIS frame only.
 
     Frame-boundary helpers (does THIS callable's own ``return`` / tail value
     carry taint or a returned closure) must use this, not :func:`_all_stmts`:
     a ``return`` written inside a NESTED lambda body belongs to the LAMBDA,
     not to the enclosing callable, so descending into the lambda there would
     mis-attribute the lambda's return to its enclosing frame (a scope
-    confusion). Binding / taint / sink helpers, which are scope-merge-safe
+    confusion). A ``return`` inside a MATCH-ARM block, by contrast, DOES
+    belong to this frame, so it is descended into (via ``_child_blocks``).
+    Binding / taint / sink helpers, which are scope-merge-safe
     over-approximations, use :func:`_all_stmts` instead so they DO see a
     lambda sub-frame's bindings and applications."""
     for stmt in block.stmts:
@@ -663,8 +669,17 @@ def _own_frame_stmts(block: A.Block):
 
 
 def _child_blocks(stmt):
-    """The nested blocks of a statement (if / while / for / nested
-    expression blocks reached via match arms are handled at expr level)."""
+    """Every SAME-FRAME sub-block of a statement: the control-flow blocks of
+    an ``if`` / ``while`` / ``for`` (direct block fields), PLUS the ``Block``
+    body of every ``match`` arm and every block-bodied ``if`` EXPRESSION
+    reachable from the statement's expressions. A match arm / if-expr block
+    is a sub-scope of the SAME frame (unlike a lambda body), so both the
+    all-frames and own-frame traversals descend into it here.
+
+    The expression descent for match-arm / if-expr blocks stops at a
+    ``LambdaExpr`` body -- that is a DIFFERENT frame handled by
+    :func:`_lambda_body_blocks` -- so this yields exactly the same-frame
+    sub-blocks and never crosses a closure boundary."""
     out = []
     if isinstance(stmt, A.IfStmt):
         out.append(stmt.then_block)
@@ -676,6 +691,47 @@ def _child_blocks(stmt):
         out.append(stmt.body)
     elif isinstance(stmt, A.ForStmt):
         out.append(stmt.body)
+    for e in _stmt_exprs(stmt):
+        out.extend(_same_frame_expr_blocks(e))
+    return out
+
+
+def _same_frame_expr_blocks(e):
+    """Every ``Block`` that is a match-arm body reachable from expression
+    ``e`` WITHOUT crossing a lambda boundary (same frame). Descends the
+    expression tree via ``_child_exprs`` but does NOT recurse THROUGH a
+    ``LambdaExpr`` body (that block belongs to the lambda's frame and is
+    collected by :func:`_lambda_body_blocks`); the match-arm block itself is
+    yielded, and ``_all_stmts`` / ``_own_frame_stmts`` re-enter it to reach
+    any nested match arms.
+
+    A ``MatchArm`` with an EXPR (single-line) body contributes no block; a
+    guard is an expression, not a sub-scope. This is the sibling of
+    :func:`_lambda_body_blocks`: together they cover EVERY sub-statement
+    bearing expression node (match-arm blocks here, closure bodies there)."""
+    out = []
+
+    def walk(node) -> None:
+        if isinstance(node, A.LambdaExpr):
+            # A DIFFERENT frame: the lambda's body block (and anything nested
+            # in it, including its own match arms) belongs to the lambda and
+            # is handled by ``_lambda_body_blocks``. Stop here so this helper
+            # never crosses a closure boundary.
+            return
+        if isinstance(node, A.MatchExpr):
+            walk(node.scrutinee)
+            for arm in node.arms:
+                if arm.guard is not None:
+                    walk(arm.guard)
+                if isinstance(arm.body, A.Block):
+                    out.append(arm.body)
+                else:
+                    walk(arm.body)
+            return
+        for child in _child_exprs(node):
+            walk(child)
+
+    walk(e)
     return out
 
 

@@ -118,6 +118,40 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *The `--wasi` statement traversal is now EXHAUSTIVE over every AST
+  sub-scope and pinned by a meta-test, closing the scope-omission CLASS by
+  proof rather than by patching one more shape.* The shared traversal
+  (`_all_stmts` / `_own_frame_stmts` and everything built on them -- the
+  closure-name binding map, the application / escape sweep, the taint seed,
+  the alias / index provenance, the sink scan, and the const-prop local
+  literal fold) descended into sub-scopes by AD-HOC enumeration (if / while /
+  for, then lambda bodies) and kept forgetting the next one: the most recent
+  gap was the `Block` body of a `match` arm (which lives at the EXPRESSION
+  level, `MatchExpr.arms[].body`). A named closure bound and applied inside a
+  match-arm block (`match x` `  _ ->` `    let rd = fun (a) => fs.read(a)` `
+  rd(argv_path)`) was therefore invisible and the surface falsely reported a
+  clean EMPTY for an argv-fed sink -- top-level OR nested inside a lambda. The
+  fix descends into EVERY node that holds sub-statements: `_child_blocks` now
+  yields the same-frame match-arm block bodies (found by walking a statement's
+  expressions without crossing a lambda boundary) alongside the if / while /
+  for branches, so both `_all_stmts` and the own-frame variant reach them,
+  while lambda bodies (a different frame) stay with `_lambda_body_blocks`. A
+  new META-TEST introspects the whole AST node inventory and asserts every
+  field that carries a sub-statement / sub-block (`Block` / `Stmt` /
+  `MatchArm`) is accounted for by the traversal, and behaviourally proves a
+  unique marker in each kind of sub-scope (control-flow, match-arm, lambda,
+  and their compositions) is reached -- so a NEW sub-statement-bearing node,
+  or a forgotten one, fails the suite automatically instead of silently
+  slipping. The const-prop security frontier is unchanged in behaviour:
+  verified byte-identical resolved-literal ceilings AND an identical path-arg
+  surface (zero new / lost facts, zero literal supersets) on the 250-file
+  downstream corpus. New soundness-harness cases (named closure applied /
+  mapped over argv inside a match-arm block, top-level and inside a lambda,
+  plus an `if` block nested in a match-arm block) FAIL pre-fix and pass now;
+  a precision guard confirms a match-arm block reading a static literal
+  produces no false argv fact. The residual stays VALUE-FLOW only; scope is
+  now exhaustively covered, reflected in the module docstring, the `capa
+  --wasi-surface` output and the SBOM note.
 - *The `--wasi` path-arg surface traversal helpers now DESCEND into lambda
   BODIES, closing a whole CLASS of scope omission rather than one more shape.*
   The statement-level helpers (`_all_stmts` and everything built on it --

@@ -700,6 +700,95 @@ fun main(fs: Fs, env: Env)
     [],
 )
 
+# --- SCOPE-OMISSION CLASS (match-arm BLOCK body): a named closure bound and
+# APPLIED with an argv-tainted value INSIDE a multi-line ``match`` arm's
+# ``Block`` body. Pre-fix the statement-level traversal descended into
+# if/while/for blocks and lambda bodies but NOT into a match-arm block (it
+# lives at the expression level), so the ``let rd = ...`` binding and the
+# ``rd(p)`` application inside the arm were invisible and the surface falsely
+# reported EMPTY. ANY index (slot is a closure parameter).
+_case(
+    "argv_match_arm_block_named_closure_applied",
+    """
+fun main(fs: Fs, env: Env)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    match env.args()
+        _ ->
+            let rd = fun (a: String) -> String => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+            let _ = rd(p)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- SCOPE-OMISSION CLASS (match-arm BLOCK body, higher-order): a named
+# closure bound inside a match-arm block, passed BY NAME to a higher-order
+# over argv (``args().map(rd)``) within that same arm block. Pre-fix:
+# omitted (the arm-block binding + application were never traversed). ANY.
+_case(
+    "argv_match_arm_block_map_named_closure",
+    """
+fun main(fs: Fs, env: Env)
+    match env.args()
+        _ ->
+            let rd = fun (a: String) -> String => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+            let _ = env.args().map(rd)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- SCOPE-OMISSION CLASS (match-arm BLOCK inside a LAMBDA body): a named
+# closure bound inside a match-arm block that is ITSELF inside another
+# lambda's body, mapped over argv. Confirms the same-frame match-arm descent
+# composes with the cross-frame lambda descent (the arm block belongs to the
+# lambda's frame, and its binding/application are reached). Pre-fix: omitted.
+_case(
+    "argv_match_arm_block_inside_lambda",
+    """
+fun main(fs: Fs, env: Env)
+    let outer = fun (b: Int) -> Int =>
+        match b
+            _ ->
+                let rd = fun (a: String) -> String => match fs.read(a) { Err(_) -> "", Ok(s) -> s }
+                let _ = env.args().map(rd)
+        return b
+    let _ = outer(0)
+""",
+    [G(ANY_INDEX, FS_CAP, "read", "read")],
+)
+
+# --- SCOPE-OMISSION CLASS (IF-STATEMENT block inside a match-arm block):
+# a sink whose argv-tainted slot lives inside an ``if`` block that is itself
+# inside a match-arm block -- two same-frame sub-scopes deep. Confirms the
+# traversal composes control-flow and match-arm descent. Pre-fix: omitted.
+_case(
+    "argv_if_block_inside_match_arm_block",
+    """
+fun main(fs: Fs, env: Env)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    match env.args()
+        _ ->
+            if true
+                let _ = match fs.read(p) { Err(_) -> "", Ok(s) -> s }
+""",
+    [G(0, FS_CAP, "read", "read")],
+)
+
+# --- SCOPE precision guard (match-arm block, no over-fire): a named closure
+# bound inside a match-arm block whose body reads a STATIC literal (NOT argv).
+# The descent reaches the binding but the sink slot is a literal, so NO false
+# argv fact is produced -- confirms the match-arm descent does not over-report.
+_case(
+    "match_arm_block_static_sink_no_fact",
+    """
+fun main(fs: Fs, env: Env)
+    let p = match env.args().get(0) { None -> "", Some(x) -> x }
+    match env.args()
+        _ ->
+            let _ = match fs.read("static.json") { Err(_) -> "", Ok(s) -> s }
+""",
+    [],
+)
+
 
 def _covers(analysis_facts, g: G) -> bool:
     """A ground-truth fact ``g`` is covered when some analysis fact has
