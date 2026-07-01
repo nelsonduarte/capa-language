@@ -97,6 +97,16 @@ def _substatement_fields() -> set[tuple[str, str]]:
         for fname, ann in _raw_annotations(obj).items():
             if fname == "pos":
                 continue
+            # ASSUMPTION for the next maintainer: this is a SUBSTRING match on
+            # the raw annotation string (deliberate -- ``get_type_hints`` fails
+            # here because some AST bodies use forward-ref strings like ``Pos``
+            # that do not resolve at import time). It therefore only sees a
+            # statement-bearing field if the annotation SPELLS ``Block`` /
+            # ``Stmt`` / ``MatchArm`` LITERALLY. A field that carries statements
+            # behind a type ALIAS (e.g. ``Body = list[Block]`` then
+            # ``field: Body``) would be INVISIBLE to this scan and slip the
+            # exhaustiveness proof. If you introduce such an alias, spell the
+            # container name literally in the field annotation instead.
             s = str(ann)
             if "Block" in s or "MatchArm" in s or "Stmt" in s:
                 found.add((name, fname))

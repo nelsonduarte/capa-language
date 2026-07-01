@@ -78,14 +78,16 @@ binds argv to its parameter (still reported at ``argv[*]`` -- a per-element
 binding is not a static index).
 
 SCOPE (no sub-scope is skipped -- EXHAUSTIVE, not ad-hoc): the statement-level
-traversal descends into EVERY node that holds sub-statements -- if / while /
-for branches, the ``Block`` body of a ``match`` arm or block-bodied ``if``
-(which live at the EXPRESSION level), AND every lambda BODY -- at any nesting
-depth and in any composition. So a NAMED closure bound INSIDE a match-arm
-block (``match x`` ``  _ ->`` ``    let rd = fun (a) => fs.read(a)`` ``
-rd(argv_path)``) or inside another lambda's body, and its application / escape
-there, is found and its body's sink reported. Same-frame sub-blocks (control
-flow, match / if arm) are reached by :func:`_child_blocks`; lambda bodies (a
+traversal descends into EVERY node that holds sub-statements -- the ``Block``
+bodies of if / while / for statements, the ``Block`` body of a ``match`` arm
+(which lives at the EXPRESSION level), AND every lambda BODY -- at any nesting
+depth and in any composition. (An expression-level ``IfExpr`` has only ``Expr``
+branches, no ``Block``, so it holds no sub-statements to descend into.) So a
+NAMED closure bound INSIDE a match-arm block (``match x`` ``  _ ->`` ``
+let rd = fun (a) => fs.read(a)`` `` rd(argv_path)``) or inside another lambda's
+body, and its application / escape there, is found and its body's sink
+reported. Same-frame sub-blocks (if / while / for statement blocks, match-arm
+blocks) are reached by :func:`_child_blocks`; lambda bodies (a
 different frame) by :func:`_lambda_body_blocks`; together they cover every
 sub-statement-bearing node. A nested lambda's OWN ``return`` / tail value
 stays attributed to that lambda, NOT to its enclosing frame (the
@@ -107,7 +109,7 @@ policy-eval and examples/ (250 files) report the IDENTICAL surface before
 and after the sound-by-construction rule (zero new facts).
 
 RESIDUAL UNDER-REPORT (the one honest gap, VALUE-FLOW only -- NOT a scope
-gap: every sub-block, including a match / if arm and a lambda body, is
+gap: every sub-block, including a match-arm block and a lambda body, is
 traversed): the rule follows a closure VALUE only while a STATIC, frame-local
 name resolution can link it to a ``LambdaExpr`` -- inline, or through the
 wrappers above, in this frame OR in any sub-scope. A closure carried by

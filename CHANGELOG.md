@@ -134,8 +134,10 @@ breaking changes and the discipline is still being shaped.
   fix descends into EVERY node that holds sub-statements: `_child_blocks` now
   yields the same-frame match-arm block bodies (found by walking a statement's
   expressions without crossing a lambda boundary) alongside the if / while /
-  for branches, so both `_all_stmts` and the own-frame variant reach them,
-  while lambda bodies (a different frame) stay with `_lambda_body_blocks`. A
+  for statement blocks, so both `_all_stmts` and the own-frame variant reach
+  them, while lambda bodies (a different frame) stay with `_lambda_body_blocks`
+  (an expression-level `IfExpr` has only `Expr` branches, no `Block`, so it
+  holds no sub-statements to descend into). A
   new META-TEST introspects the whole AST node inventory and asserts every
   field that carries a sub-statement / sub-block (`Block` / `Stmt` /
   `MatchArm`) is accounted for by the traversal, and behaviourally proves a
