@@ -1554,6 +1554,7 @@ def _main_dispatch() -> int:
         # Python) so coverage gaps in the Wasm backend surface as
         # actionable errors rather than silent shape changes.
         from capa.ir import compile_wat, compile_wasm, compile_wit
+        from capa.ir import MainReturnTypeUnsupported
         # Experimental WASI mode is only meaningful for the component
         # path (it rewrites the WIT world + the component imports);
         # ``--transpile`` shows the WAT, which carries the wasi:*
@@ -1738,6 +1739,18 @@ def _main_dispatch() -> int:
                 host = WasmHost(args=program_args)
                 host.run_main(blob)
             return 0
+        except MainReturnTypeUnsupported as e:
+            # A composite / String return type on ``main`` is a
+            # compile-time limitation of the component backend, not a
+            # runtime trap; surface it as the same clean
+            # ``capa: --wasm:`` diagnostic the ``compile_wasm`` /
+            # ``--output`` paths use, rather than a raw traceback.
+            msg = f"capa: --wasm: {e}"
+            if use_color:
+                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+            else:
+                print(msg, file=sys.stderr)
+            return 1
         except Exception as e:
             # A deliberate ``panic`` aborts via the guest's
             # ``unreachable``, which surfaces here as a wasmtime

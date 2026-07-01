@@ -118,6 +118,34 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *The WASM Component Model backend now accepts a `main` with a scalar
+  return type (`fun main -> Int` / `Float` / `Bool`); previously any
+  non-`Unit` `main` failed to wrap into a component.* The core module
+  exported `main` with its real source result (`(result i64)` for
+  `-> Int`), but the generated WIT world always declared
+  `export main: func(...)` with NO result clause, so `wasm-tools
+  component new` rejected the artifact with a cryptic core-vs-world
+  mismatch (`expected [...] -> [] but found [...] -> [I64]`). The Python
+  and non-component WASM backends were unaffected because they discard
+  `main`'s return (exit code is always 0 barring a panic). The WIT
+  generator now derives the world export's result clause from `main`'s
+  return type through one shared helper used by both the default and the
+  `--wasi` emit points: `Int -> s64` (Capa `Int` is signed), `Float ->
+  f64`, `Bool -> bool`, `Unit`/absent -> no result. The return value is
+  still discarded at every backend (the fix makes the world ACCEPT and
+  drop it, preserving exit-0 parity, rather than propagating it as an
+  exit code, which would diverge). A `main` returning `String` or a
+  composite type (`Struct` / `Sum` / `List` / `Map` / tuple) is now
+  rejected with a clear compile-time error naming the type and the
+  supported alternatives, instead of the raw `wasm-tools` mismatch:
+  `String` because the core returns a flattened `(i32 i32)` the Component
+  Model canonical ABI cannot lift from a WIT `string` result without a
+  core-side indirect-return rewrite that would buy nothing observable (the
+  value is discarded); composites because lifting a bare heap pointer into
+  a structured Component Model value is not implemented. Verified with
+  3-backend parity (Python, WASM, WASM component) plus `--wasi` at exit 0
+  for `Int` / `Float` / `Bool` / `Unit`.
+
 - *The `--wasi` statement traversal is now EXHAUSTIVE over every AST
   sub-scope and pinned by a meta-test, closing the scope-omission CLASS by
   proof rather than by patching one more shape.* The shared traversal

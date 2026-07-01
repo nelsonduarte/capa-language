@@ -357,6 +357,92 @@ _GUEST_ONLY_METHODS: dict[str, frozenset[str]] = {
 }
 
 
+# Capa scalar return types that ``main`` may declare, mapped to the
+# WIT result type the Component Model world must advertise so the
+# world signature matches the core module's ``(export "main")``
+# result. The core module returns (see ``_emit_wasm._emit_function`` +
+# ``_wasm_type``): ``Int`` -> ``i64``, ``Float`` -> ``f64``,
+# ``Bool`` -> ``i32``. ``wasm-tools component new`` lifts each of those
+# single-value core results into the matching WIT type below (``s64``
+# because Capa ``Int`` is signed; ``f64`` direct; ``bool`` from the
+# i32). ``Unit`` / absent maps to no result clause (the historical
+# shape). Everything else -- ``String`` and the composite types
+# (``Struct`` / ``Sum`` / ``List`` / ``Map`` / tuples) -- is rejected
+# up front by ``main_result_clause`` with a clear compile-time error
+# rather than the cryptic wasm-tools mismatch. See that function's
+# docstring for why ``String`` cannot be supported without a core-side
+# indirect-return rewrite.
+_MAIN_RESULT_WIT: dict[str, str] = {
+    "Int":   "s64",
+    "Float": "f64",
+    "Bool":  "bool",
+}
+
+
+class MainReturnTypeUnsupported(Exception):
+    """Raised when ``main`` declares a return type the WASM component
+    backend cannot lift into the WIT world export. The single-core-
+    value scalars (``Int`` / ``Float`` / ``Bool``) and ``Unit`` are
+    supported; ``String`` and composite returns (``Struct`` / ``Sum``
+    / ``List`` / ``Map`` / tuples) are not.
+
+    Why ``String`` is excluded: the core module returns a String as a
+    flattened multi-value ``(i32 i32)`` (ptr, len). The Component
+    Model canonical ABI flattens a ``string`` result past its
+    single-flat-value budget, so it demands the core function return
+    the pointer to an 8-byte return area indirectly (``[] -> [i32]``)
+    -- a shape the current core ``main`` does not emit. There is no
+    WIT result type that lifts from a flat ``(i32 i32)`` return, so
+    supporting a String-returning ``main`` would require rewriting the
+    core ``main`` export to the indirect-return convention (or to drop
+    the discarded String and export ``func()``). Since ``main``'s
+    return value is discarded at every backend (exit code is always 0),
+    that rewrite buys nothing observable; we reject it with a clear
+    message instead. Composite returns are rejected for the same
+    "lifting a bare heap pointer into a structured CM value is not
+    implemented" reason.
+
+    Surfacing this as a Capa compile-time error means the user sees an
+    actionable message instead of the raw ``wasm-tools component new``
+    type-mismatch."""
+
+    def __init__(self, return_type: str):
+        super().__init__(
+            f"main returning {return_type!r} is not supported by the "
+            f"WASM component backend; return a scalar "
+            f"(Int / Float / Bool) or Unit"
+        )
+        self.return_type = return_type
+
+
+def main_result_clause(module: Module) -> str:
+    """Return the WIT result clause for the world's ``export main``,
+    derived from ``main``'s source-level return type so the world
+    signature matches the core module's ``main`` result.
+
+    Returns ``""`` (no result clause) when ``main`` is absent, returns
+    ``Unit`` / ``()``, or declares no return type. Returns
+    ``" -> <wit-ty>"`` for a supported scalar. Raises
+    ``MainReturnTypeUnsupported`` for a composite return type so the
+    error is a clear Capa diagnostic rather than the cryptic
+    wasm-tools core-vs-world mismatch.
+
+    The returned string is ready to append directly after the
+    ``func(...)`` of the export, e.g. ``export main: func(){clause};``.
+    """
+    for fn in module.functions:
+        if fn.name != "main":
+            continue
+        rty = (fn.return_type or "").strip()
+        if rty in ("", "Unit", "()"):
+            return ""
+        wit = _MAIN_RESULT_WIT.get(rty)
+        if wit is None:
+            raise MainReturnTypeUnsupported(rty)
+        return f" -> {wit}"
+    return ""
+
+
 class UnsupportedCapabilityMethod(Exception):
     """Raised when a CIR ``MethodCall`` exercises a capability method
     that does not yet have a WIT signature in this generator. The
@@ -639,12 +725,21 @@ def emit_wit(
     # have no attenuation surface to thread; they stay erased (no
     # i32 param). Pure ``fun main()`` programs keep the trivial
     # ``func()`` shape.
+    # The world export's result clause must mirror the core module's
+    # ``main`` result (Int -> s64, Float -> f64, Bool -> bool,
+    # String -> string, Unit / absent -> none) or ``wasm-tools
+    # component new`` rejects the artifact with a core-vs-world
+    # signature mismatch. The return VALUE is discarded at every
+    # backend (exit code is always 0 barring panic); declaring the
+    # result only makes the world accept + drop it. Composite returns
+    # raise ``MainReturnTypeUnsupported`` here (a clear Capa error).
+    result_clause = main_result_clause(module)
     main_cap_params = _main_handle_param_names(module)
     if main_cap_params:
         sig = ", ".join(f"{name}: u32" for name in main_cap_params)
-        lines.append(f"  export main: func({sig});")
+        lines.append(f"  export main: func({sig}){result_clause};")
     else:
-        lines.append("  export main: func();")
+        lines.append(f"  export main: func(){result_clause};")
     lines.append("}")
     lines.append("")
 
@@ -856,12 +951,16 @@ def _emit_wit_wasi(
     lines = _deduped
     if uses_panic:
         lines.append("  import panic;")
+    # Same result-clause mirroring as the default path (see
+    # ``main_result_clause``): the WASI world export must match the
+    # core module's ``main`` result or ``component new`` rejects it.
+    result_clause = main_result_clause(module)
     main_cap_params = _main_handle_param_names(module)
     if main_cap_params:
         sig = ", ".join(f"{name}: u32" for name in main_cap_params)
-        lines.append(f"  export main: func({sig});")
+        lines.append(f"  export main: func({sig}){result_clause};")
     else:
-        lines.append("  export main: func();")
+        lines.append(f"  export main: func(){result_clause};")
     lines.append("}")
     lines.append("")
 
