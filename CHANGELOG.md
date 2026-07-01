@@ -143,10 +143,17 @@ breaking changes and the discipline is still being shaped.
   bindings, through a call argument, through a free-function return
   (incl. embedded in a returned struct field), through a callee
   field-write, and across multi-hop return chains -- a warning by
-  default and a hard error under `@strict_ifc` (fail-closed). A
+  default and a hard error under `@strict_ifc` (fail-closed). The
+  summary walk's const-vs-local decision respects REAL lexical scope
+  (Capa lets a `let` shadow a module const): a `let K = ...` inside a
+  loop body, an `if` branch, or a `match` arm masks the const only
+  within that sub-scope, so a genuine reference to the secret const in a
+  sibling / later block is still caught (the shadow scope is
+  saved/restored per block, mirroring the isolation match arms already
+  had, while the taint map stays flat and monotone). A
   `declassify(K, reason: "...")` still closes the flow (intra- and
-  cross-function) and an unannotated (public) const at a sink is not
-  flagged (no false positive).
+  cross-function), and neither an unannotated (public) const at a sink
+  nor a genuine local shadow is flagged (no false positive).
 
 - *SECURITY / SOUNDNESS (information-flow control): closed a return-
   laundering false negative through FREE FUNCTIONS.* The cross-function

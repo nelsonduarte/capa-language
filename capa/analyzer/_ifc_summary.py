@@ -409,6 +409,20 @@ class _SummaryBuilder:
         self._cur_param_type_names = self.param_type_names.get(key, {})
         self._cur_effects = effects
         self._cur_returns = returns
+        # Names of secret consts currently shadowed by a LEXICALLY IN-SCOPE
+        # local binding. Consulted (not ``env``) by the const-vs-local
+        # decision in ``_taint_of``: ``env`` is a flat, monotonically
+        # grown, per-body map, so a ``let K = ...`` in a closed sub-scope
+        # would suppress a GENUINE reference to the secret const ``K`` in a
+        # sibling / later block (fail-open). This set is saved/restored per
+        # sub-block (mirroring the ``dict(env)`` isolation match arms
+        # already get), so a local shadow only masks the const within its
+        # real lexical extent. A PARAMETER named like a const shadows it
+        # for the whole body (Capa forbids shadowing a param with a local,
+        # so the whole-body extent is correct).
+        self._shadowed_consts: set[str] = {
+            pname for pname in param_names if pname in self.secret_consts
+        }
         self._walk_block(decl.body, env, reaching)
         # A function body's trailing bare expression is an implicit
         # return (unit / expression-bodied functions), so its taint is a
@@ -421,12 +435,40 @@ class _SummaryBuilder:
         for stmt in block.stmts:
             self._walk_stmt(stmt, env, reaching)
 
+    def _walk_scoped_block(
+        self, block: A.Block, env: dict, reaching: set,
+    ) -> None:
+        """Walk a nested block (an ``if`` branch or loop body) under its
+        OWN const-shadow scope: a ``let K = ...`` inside it masks the
+        secret const ``K`` only within the block, not in sibling / later
+        blocks. ``env`` stays flat (its monotone taint accumulation across
+        blocks is intentional and unchanged); only the lexical const-vs-
+        local decision is scoped, mirroring the ``dict(env)`` isolation
+        that match arms already use."""
+        saved = self._shadowed_consts
+        self._shadowed_consts = set(saved)
+        self._walk_block(block, env, reaching)
+        self._shadowed_consts = saved
+
+    def _register_shadowing_binds(self, names) -> None:
+        """Record every bound ``name`` that equals a secret const as
+        shadowing it in the CURRENT scope (added to ``_shadowed_consts``,
+        which the enclosing ``_walk_scoped_block`` unwinds on exit)."""
+        for name in names:
+            if name in self.secret_consts:
+                self._shadowed_consts.add(name)
+
     def _walk_stmt(self, stmt: A.Stmt, env: dict, reaching: set) -> None:
         if isinstance(stmt, A.LetStmt):
             src = self._taint_of(stmt.value, env, reaching)
             self._bind_pattern_taint(stmt.pattern, src, env)
+            # A ``let`` binding a name equal to a secret const shadows it
+            # for the REST OF THIS BLOCK (and its sub-blocks); it is
+            # unwound when the enclosing block's scope is restored.
+            self._register_shadowing_binds(_pattern_bound_names(stmt.pattern))
         elif isinstance(stmt, A.VarStmt):
             env[stmt.name] = self._taint_of(stmt.value, env, reaching)
+            self._register_shadowing_binds((stmt.name,))
         elif isinstance(stmt, A.AssignStmt):
             src = self._taint_of(stmt.value, env, reaching)
             self._taint_of(stmt.target, env, reaching)
@@ -450,19 +492,25 @@ class _SummaryBuilder:
                 self._record_field_write(stmt.target, src, env)
         elif isinstance(stmt, A.IfStmt):
             self._taint_of(stmt.cond, env, reaching)
-            self._walk_block(stmt.then_block, env, reaching)
+            self._walk_scoped_block(stmt.then_block, env, reaching)
             for cond, blk in stmt.elif_arms:
                 self._taint_of(cond, env, reaching)
-                self._walk_block(blk, env, reaching)
+                self._walk_scoped_block(blk, env, reaching)
             if stmt.else_block is not None:
-                self._walk_block(stmt.else_block, env, reaching)
+                self._walk_scoped_block(stmt.else_block, env, reaching)
         elif isinstance(stmt, A.WhileStmt):
             self._taint_of(stmt.cond, env, reaching)
-            self._walk_block(stmt.body, env, reaching)
+            self._walk_scoped_block(stmt.body, env, reaching)
         elif isinstance(stmt, A.ForStmt):
             iter_src = self._taint_of(stmt.iter, env, reaching)
             self._bind_pattern_taint(stmt.pattern, iter_src, env)
+            # The loop variable is scoped to the body; a loop var named
+            # like a secret const shadows it there only.
+            saved = self._shadowed_consts
+            self._shadowed_consts = set(saved)
+            self._register_shadowing_binds(_pattern_bound_names(stmt.pattern))
             self._walk_block(stmt.body, env, reaching)
+            self._shadowed_consts = saved
         elif isinstance(stmt, A.ReturnStmt):
             if stmt.value is not None:
                 # The returned value's source set is a return-secret
@@ -596,10 +644,15 @@ class _SummaryBuilder:
             # field read: it carries the INTERNAL_SECRET sentinel so a
             # free function returning it / writing it to a field taints
             # its return / field-write effect and the leak is caught at
-            # the call site. Only when the name is NOT shadowed by a local
-            # (parameters and let/var binds populate ``env``, so a name in
-            # ``env`` refers to the local, never the const).
-            if e.name in self.secret_consts and e.name not in env:
+            # the call site. Suppressed only when a LEXICALLY IN-SCOPE
+            # local shadows the const name (``_shadowed_consts``, scoped
+            # per sub-block) -- NOT when it merely appears in the flat
+            # ``env`` (a sibling / later-block shadow must not mask a
+            # genuine const reference).
+            if (
+                e.name in self.secret_consts
+                and e.name not in self._shadowed_consts
+            ):
                 return {INTERNAL_SECRET}
             return set(env.get(e.name, set()))
         if isinstance(e, (
@@ -666,9 +719,16 @@ class _SummaryBuilder:
             out = set()
             for arm in e.arms:
                 # Each arm sees a sub-env where the pattern binds carry
-                # the scrutinee's taint (whole-value).
+                # the scrutinee's taint (whole-value), and its OWN const-
+                # shadow scope: a pattern binding a name equal to a secret
+                # const shadows it within the arm only.
                 arm_env = dict(env)
                 self._bind_pattern_taint(arm.pattern, scrut, arm_env)
+                saved = self._shadowed_consts
+                self._shadowed_consts = set(saved)
+                self._register_shadowing_binds(
+                    _pattern_bound_names(arm.pattern),
+                )
                 if arm.guard is not None:
                     self._taint_of(arm.guard, arm_env, reaching)
                 if isinstance(arm.body, A.Block):
@@ -676,6 +736,7 @@ class _SummaryBuilder:
                     out |= self._block_tail_taint(arm.body, arm_env, reaching)
                 else:
                     out |= self._taint_of(arm.body, arm_env, reaching)
+                self._shadowed_consts = saved
             return out
         if isinstance(e, A.Become):
             return self._taint_of(e.value, env, reaching)
