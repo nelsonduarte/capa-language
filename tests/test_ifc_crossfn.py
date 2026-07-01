@@ -1524,5 +1524,179 @@ class TestSecretConstCrossFunction(unittest.TestCase):
         )
 
 
+class TestSecretConstShadowScoping(unittest.TestCase):
+    """Soundness (lexical scoping in the summary pass): the const-vs-local
+    decision must respect REAL lexical scope, not a flat per-body map. A
+    ``let`` shadowing a secret const inside a closed sub-scope (a loop
+    body, an ``if`` branch, a ``match`` arm) MUST NOT suppress a genuine
+    reference to the same secret const in a sibling / later block. Capa
+    lets a ``let`` shadow a module const (it only forbids shadowing a
+    local / param), so before this a sub-scope ``let K = ...`` masked the
+    const body-wide and the leak was missed (fail-open, incl. under
+    ``@strict_ifc``). These lock the whole order-sensitivity matrix and
+    the no-false-positive genuine-shadow negatives."""
+
+    def test_for_body_shadow_then_genuine_return_flagged(self):
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun leak() -> String\n"
+            "    for x in [1]\n"
+            "        let K = \"public\"\n"
+            "    return K\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_while_body_shadow_then_genuine_return_flagged(self):
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun leak() -> String\n"
+            "    while false\n"
+            "        let K = \"public\"\n"
+            "    return K\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_if_branch_shadow_genuine_in_sibling_branch_flagged(self):
+        # Shadow in the ``then`` branch; a GENUINE ``return K`` in the
+        # ``else`` (sibling) branch must still be caught.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun leak(b: Bool) -> String\n"
+            "    if b\n"
+            "        let K = \"public\"\n"
+            "        return K\n"
+            "    else\n"
+            "        return K\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak(true))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_genuine_ref_before_later_shadow_flagged(self):
+        # Reference-before-shadow: the genuine const use precedes a shadow
+        # in a later loop; the use is still tainted.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun leak() -> String\n"
+            "    let out = K\n"
+            "    for x in [1]\n"
+            "        let K = \"public\"\n"
+            "    return out\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_match_arm_shadow_genuine_in_sibling_arm_flagged(self):
+        # A pattern binding ``k`` shadows the const in that arm only; a
+        # genuine ``return k`` in a sibling arm is still caught. Uses a
+        # lower-case const so the pattern name binds (an upper-case name
+        # in a pattern is parsed as a variant, not a binding).
+        r = _analyze(
+            "const k: @secret String = \"sk\"\n"
+            "fun leak(o: Option<Int>) -> String\n"
+            "    match o\n"
+            "        Some(k) -> return \"public\"\n"
+            "        None -> return k\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak(None))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_match_arm_shadow_used_in_both_arms_not_flagged(self):
+        # Negative: both arms use the shadowed local ``k`` (never the
+        # const) -- no false positive.
+        r = _analyze(
+            "const k: @secret String = \"sk\"\n"
+            "fun leak(o: Option<String>) -> String\n"
+            "    match o\n"
+            "        Some(k) -> return k\n"
+            "        None -> return \"none\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak(None))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+    def test_for_body_shadow_then_genuine_return_strict_is_error(self):
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun leak() -> String\n"
+            "    for x in [1]\n"
+            "        let K = \"public\"\n"
+            "    return K\n"
+            "@strict_ifc()\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak())\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_genuine_local_shadow_not_flagged(self):
+        # Negative: a real shadow -- ``let K`` at the same level, and the
+        # return refers to the LOCAL, not the const -- is not a leak.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun leak() -> String\n"
+            "    let K = \"public\"\n"
+            "    return K\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+    def test_same_block_shadow_used_locally_not_flagged(self):
+        # Negative: a same-block shadow that is used (via an intermediary
+        # local) refers to the local throughout -- no false positive.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun leak() -> String\n"
+            "    let K = \"public\"\n"
+            "    let y = K\n"
+            "    return y\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
