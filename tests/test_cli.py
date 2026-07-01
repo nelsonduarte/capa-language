@@ -947,6 +947,121 @@ class TestCliInProcess(unittest.TestCase):
             self.assertEqual(rc, 0, err)
             self.assertIn("Hi", out)
 
+    # --- main-return-type gate on the component path ---------------
+    #
+    # A String / composite return on ``main`` must surface the clean,
+    # actionable ``capa: --wasm: main returning '<ty>' is not
+    # supported ...`` diagnostic (exit 1) on BOTH component paths
+    # (--run and --output), NOT the cryptic ``wasm-tools`` dump. The
+    # gate runs BEFORE ``compile_wasm`` (which would otherwise die
+    # first on a Struct-returning main with an ``unknown func
+    # $Struct`` parse error), so these tests also pin the CLI-ordering
+    # regression the gate closes. Driven through the real CLI (not
+    # ``emit_wit`` directly) so they exercise the actual dispatch.
+
+    _COMPOSITE_MAIN_SOURCES = {
+        "Point": (
+            "type Point { x: Int, y: Int }\n"
+            "fun main(stdio: Stdio) -> Point\n"
+            "    stdio.println(\"x\")\n"
+            "    return Point(x: 1, y: 2)\n"
+        ),
+        "String": (
+            "fun main(stdio: Stdio) -> String\n"
+            "    stdio.println(\"x\")\n"
+            "    return \"y\"\n"
+        ),
+        "List<Int>": (
+            "fun main(stdio: Stdio) -> List<Int>\n"
+            "    stdio.println(\"x\")\n"
+            "    return [1, 2, 3]\n"
+        ),
+        "(Int, Int)": (
+            "fun main(stdio: Stdio) -> (Int, Int)\n"
+            "    stdio.println(\"x\")\n"
+            "    return (1, 2)\n"
+        ),
+    }
+
+    def _assert_clean_main_return_error(self, err: str, ty: str):
+        # The actionable Capa diagnostic, and NONE of the cryptic
+        # wasm-tools leakage the pre-gate ordering produced.
+        self.assertIn(
+            f"capa: --wasm: main returning '{ty}' is not supported", err,
+        )
+        self.assertNotIn("wasm-tools", err)
+        self.assertNotIn("unknown func", err)
+        self.assertNotIn("failed to encode a component", err)
+        self.assertNotIn("type mismatch for function", err)
+
+    @unittest.skipUnless(
+        _wasm_tooling_available(),
+        "wasm-tools / wasmtime missing",
+    )
+    def test_component_run_rejects_composite_main_return_cleanly(self):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            for ty, src in self._COMPOSITE_MAIN_SOURCES.items():
+                p = _write_capa(td_path, "prog.capa", src)
+                rc, _out, err = _run_main(
+                    ["--wasm", "--run", "--component", str(p)],
+                    cwd=td_path,
+                )
+                self.assertEqual(rc, 1, f"{ty}: {err}")
+                self._assert_clean_main_return_error(err, ty)
+
+    @unittest.skipUnless(
+        _wasm_tooling_available(),
+        "wasm-tools / wasmtime missing",
+    )
+    def test_component_output_rejects_composite_main_return_cleanly(self):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            out_path = td_path / "component.wasm"
+            for ty, src in self._COMPOSITE_MAIN_SOURCES.items():
+                p = _write_capa(td_path, "prog.capa", src)
+                rc, _out, err = _run_main(
+                    [
+                        "--wasm", "--component", "-o", str(out_path),
+                        str(p),
+                    ],
+                    cwd=td_path,
+                )
+                self.assertEqual(rc, 1, f"{ty}: {err}")
+                self._assert_clean_main_return_error(err, ty)
+                # The gate fires before any bytes are written.
+                self.assertFalse(out_path.exists(), ty)
+
+    @unittest.skipUnless(
+        _wasm_tooling_available(),
+        "wasm-tools / wasmtime missing",
+    )
+    def test_component_scalar_main_return_still_runs(self):
+        # No-regression: a scalar-returning main runs to exit 0 on the
+        # component path (the value is discarded), and does NOT trip
+        # the composite gate. Covers Int (incl. negative), Float, Bool.
+        cases = [
+            ("Int", "Int", "return -17", "neg"),
+            ("Float", "Float", "return 3.5", "flt"),
+            ("Bool", "Bool", "return true", "boo"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            for _name, ty, ret, tag in cases:
+                src = (
+                    f"fun main(stdio: Stdio) -> {ty}\n"
+                    f"    stdio.println(\"{tag}\")\n"
+                    f"    {ret}\n"
+                )
+                p = _write_capa(td_path, "scalar.capa", src)
+                rc, out, err = _run_main(
+                    ["--wasm", "--run", "--component", str(p)],
+                    cwd=td_path,
+                )
+                self.assertEqual(rc, 0, f"{ty}: {err}")
+                self.assertIn(tag, out)
+                self.assertNotIn("not supported", err)
+
     @unittest.skipUnless(
         _wasm_tooling_available(),
         "wasm-tools / wasmtime missing",

@@ -134,17 +134,28 @@ breaking changes and the discipline is still being shaped.
   f64`, `Bool -> bool`, `Unit`/absent -> no result. The return value is
   still discarded at every backend (the fix makes the world ACCEPT and
   drop it, preserving exit-0 parity, rather than propagating it as an
-  exit code, which would diverge). A `main` returning `String` or a
-  composite type (`Struct` / `Sum` / `List` / `Map` / tuple) is now
-  rejected with a clear compile-time error naming the type and the
-  supported alternatives, instead of the raw `wasm-tools` mismatch:
-  `String` because the core returns a flattened `(i32 i32)` the Component
-  Model canonical ABI cannot lift from a WIT `string` result without a
-  core-side indirect-return rewrite that would buy nothing observable (the
-  value is discarded); composites because lifting a bare heap pointer into
-  a structured Component Model value is not implemented. Verified with
-  3-backend parity (Python, WASM, WASM component) plus `--wasi` at exit 0
-  for `Int` / `Float` / `Bool` / `Unit`.
+  exit code, which would diverge). A `main` returning `String` or ANY
+  composite type (`Struct` / `Sum` / `List` / `Map` / tuple / `Option` /
+  `Result` / `Char` / ...) is now rejected with a clear, actionable
+  compile-time error naming the type and the supported alternatives
+  (`capa: --wasm: main returning '<ty>' is not supported ...`, exit 1),
+  instead of the raw `wasm-tools` mismatch. On the `--component` path the
+  CLI runs this return-type gate BEFORE `compile_wasm`, so a composite
+  return that the core emitter would otherwise choke on first (e.g. a
+  `Struct`-returning `main` lowers to a `return_call $Struct` the module
+  has no function for, dumping an `unknown func` parse error) still gets
+  the clean message on BOTH the `--run` and `--output` component paths,
+  before any bytes are written. `String` is excluded because the core
+  returns a flattened `(i32 i32)` the Component Model canonical ABI cannot
+  lift from a WIT `string` result without a core-side indirect-return
+  rewrite that would buy nothing observable (the value is discarded);
+  composites because lifting a bare heap pointer into a structured
+  Component Model value is not implemented. An explicit `fun main -> ()`
+  is treated as the Unit main it is (no result clause), not mis-rejected.
+  Verified with 3-backend parity (Python, WASM, WASM component) plus
+  `--wasi` at exit 0 for `Int` (incl. negative) / `Float` / `Bool` /
+  `Unit`, and the clean-error path for `String` / `Struct` / `List` /
+  tuple on both component paths.
 
 - *The `--wasi` statement traversal is now EXHAUSTIVE over every AST
   sub-scope and pinned by a meta-test, closing the scope-omission CLASS by

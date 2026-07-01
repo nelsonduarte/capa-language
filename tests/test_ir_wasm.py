@@ -447,6 +447,26 @@ class TestWitGeneration(unittest.TestCase):
         self.assertIn("export main: func();", wit)
         self.assertNotIn("export main: func() ->", wit)
 
+    def test_main_returning_explicit_empty_tuple_is_unit(self):
+        # An EXPLICIT ``fun main -> ()`` lowers ``return_type`` to the
+        # AST repr ``UnitType(pos=...)`` (not the literal ``"Unit"``).
+        # The result-clause helper must treat it as Unit (no clause),
+        # NOT mis-classify it as an unsupported composite and raise
+        # ``MainReturnTypeUnsupported`` with an ugly AST repr in the
+        # message. (The core emitter still rejects ``-> ()`` later with
+        # its own pre-existing "no Wasm encoding" error; that is out of
+        # scope -- here we only pin that the WIT layer emits the
+        # trivial ``func();`` and never leaks the repr.)
+        src = (
+            "fun main(stdio: Stdio) -> ()\n"
+            "    stdio.println(\"hi\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wit = emit_wit(ir_mod)
+        self.assertIn("export main: func();", wit)
+        self.assertNotIn("export main: func() ->", wit)
+        self.assertNotIn("UnitType", wit)
+
     def test_main_returning_int_emits_s64_result(self):
         # ``main -> Int``: the core module returns ``(result i64)``,
         # so the WIT world must advertise ``-> s64`` (Capa Int is
