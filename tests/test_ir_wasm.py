@@ -6880,6 +6880,10 @@ class TestWasmRejectsUnsafeReachingTypes(unittest.TestCase):
         self.assertIn("(module", wat)
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmNullaryVariantInAggregate(unittest.TestCase):
     """Regression: a payload-less (nullary) sum variant used as a
     VALUE inside an aggregate literal (struct field, list element,
