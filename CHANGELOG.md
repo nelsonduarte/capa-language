@@ -118,6 +118,20 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *SECURITY (information-flow control): `capa --fmt` SILENTLY STRIPPED
+  information-flow security labels (`@secret` / `@public`) from every type
+  position, disarming the IFC.* The AST pretty-printer's type emitter never
+  re-emitted the `TypeExpr.label`, so formatting a struct field
+  (`field: @secret String`), a parameter, a return type, a `let`/`var`
+  binding, a `const`, or a generic / tuple / `Fun(...)` type argument
+  dropped the label with no warning and exit 0. Because a formatted file
+  is written back in place, a user who ran the formatter lost the label
+  and the analyzer stopped protecting the value: a program that leaked the
+  field to a public sink -- rejected before formatting -- was accepted
+  after. The label lives on the `TypeExpr` base, so it is now emitted once,
+  centrally, covering every position uniformly. The typestate index
+  `Name[State]`, dropped by the same emitter, is preserved too. Formatting
+  is idempotent and never emits empty output for a valid, non-empty source.
 - *SECURITY / SOUNDNESS (information-flow control): a secret-capturing
   closure passed to a higher-order callee BY NAME laundered the secret
   (the "two-hop closure-by-name" false negative).* A closure that closes

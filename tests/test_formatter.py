@@ -229,5 +229,128 @@ class TestIntraLineSpacing(unittest.TestCase):
         self.assertEqual(once, twice)
 
 
+class TestSecurityLabelRoundTrip(unittest.TestCase):
+    """A formatter that drops an information-flow security label
+    (``@secret`` / ``@public``) silently disarms the IFC: a leak that
+    was rejected before formatting is accepted after. Every position a
+    label is valid must round-trip. The label lives on ``TypeExpr``,
+    so this exercises the full class, not just the reported struct
+    field.
+    """
+
+    def test_struct_field_secret_preserved(self):
+        src = (
+            "pub type Probe {\n"
+            "    name: String,\n"
+            "    field: @secret String,\n"
+            "    source: String\n"
+            "}\n"
+        )
+        out = format_source(src)
+        self.assertIn("@secret String", out)
+        # Canonical already, so byte-exact round-trip.
+        self.assertEqual(out, src)
+        self.assertTrue(is_formatted(src))
+
+    def test_struct_field_public_preserved(self):
+        src = (
+            "pub type Probe {\n"
+            "    field: @public String\n"
+            "}\n"
+        )
+        self.assertIn("@public String", format_source(src))
+
+    def test_label_preserved_in_every_type_position(self):
+        cases = {
+            "param": "fun f(x: @secret String) -> Int\n    0\n",
+            "return": 'fun f(x: Int) -> @secret String\n    "a"\n',
+            "let": "fun f() -> Int\n    let x: @secret Int = 1\n    0\n",
+            "var": "fun f() -> Int\n    var x: @public Int = 1\n    0\n",
+            "generic": "fun f(x: List<@secret String>) -> Int\n    0\n",
+            "tuple": "fun f(x: (@secret Int, String)) -> Int\n    0\n",
+        }
+        for name, src in cases.items():
+            with self.subTest(position=name):
+                out = format_source(src)
+                self.assertTrue(
+                    "@secret" in out or "@public" in out,
+                    f"label dropped in {name}: {out!r}",
+                )
+                # Idempotent: formatting the output again is a no-op.
+                self.assertEqual(out, format_source(out))
+
+    def test_labelled_field_is_idempotent(self):
+        src = (
+            "pub type Probe {\n"
+            "    field: @secret String\n"
+            "}\n"
+        )
+        once = format_source(src)
+        self.assertEqual(once, format_source(once))
+
+    def test_fmt_check_does_not_claim_label_stripping_is_formatted(self):
+        # A canonical labelled field must be reported as already
+        # formatted (is_formatted True). Before the fix the formatter
+        # produced an unlabelled form, so is_formatted was False and
+        # --fmt would then have stripped the label.
+        src = (
+            "pub type Probe {\n"
+            "    field: @secret String\n"
+            "}\n"
+        )
+        self.assertTrue(is_formatted(src))
+
+    def test_ifc_still_rejects_leak_after_formatting(self):
+        # End-to-end: a program that leaks a @secret field to a public
+        # sink is flagged by the analyzer. After formatting, the label
+        # survives, so the SAME leak is still flagged. If the label
+        # were stripped the leak would go silent.
+        from capa import Lexer, Parser, analyze
+
+        def ifc_flags(text):
+            module = Parser(Lexer(text).lex(), source=text).parse_module()
+            r = analyze(module, source=text)
+            msgs = list(r.warnings) + list(r.errors)
+            return [m for m in msgs if "public sink" in m.message]
+
+        leak = (
+            "pub type Probe {\n"
+            "    field: @secret String\n"
+            "}\n"
+            "fun leak(p: Probe, stdio: Stdio)\n"
+            "    stdio.println(p.field)\n"
+        )
+        self.assertEqual(len(ifc_flags(leak)), 1, "leak not flagged pre-fmt")
+        formatted = format_source(leak)
+        self.assertIn("@secret", formatted)
+        self.assertEqual(
+            len(ifc_flags(formatted)), 1,
+            "IFC no longer flags the leak after formatting -- the "
+            "@secret label was stripped by the formatter",
+        )
+
+
+class TestNeverEmpty(unittest.TestCase):
+    """A valid, non-empty source must never format to empty output.
+    Emitting empty for a valid file (especially when --fmt rewrites
+    in place) would silently destroy the user's program."""
+
+    def test_valid_sources_never_format_to_empty(self):
+        samples = [
+            "pub type Probe {\n    field: @secret String\n}\n",
+            "fun f(x: @secret String) -> Int\n    0\n",
+            'const K: @secret String = "x"\n',
+            "type Color =\n    Red\n    Green\n",
+            "fun main()\n    let x: @public Int = 1\n",
+        ]
+        for src in samples:
+            with self.subTest(src=src):
+                out = format_source(src)
+                self.assertNotEqual(
+                    out.strip(), "",
+                    f"formatter emptied a valid source: {src!r}",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
