@@ -24,7 +24,7 @@ from .._nodes import (
     Function, Instr, Value,
     BinOp, Call, MethodCall, TryUnwrap, For, FormatStr,
     If, While, Match, Index,
-    MakeLambda, MakeList, MakeMap, MakeRange, MakeSet, MakeTuple,
+    MakeLambda, MakeList, MakeMap, MakeRange, MakeSet, MakeStruct, MakeTuple,
     PatIdent, PatVariant,
 )
 from .._lower_pattern import PatStruct
@@ -666,6 +666,26 @@ class _LocalsCollectionMixin:
                 for v in getattr(instr, "args", []) or []:
                     if isinstance(v, Value) and value_uses_variant_ctor(v):
                         has_variant_ctor = True
+                # Aggregate literals carry their element / field values in
+                # dedicated lists the flat-attribute scan above never
+                # reaches. A nullary variant used as a struct-field
+                # value (``S { d: Allow }``), a list element
+                # (``[Allow, Deny]``), or a tuple element
+                # (``(Allow, 1)``) is still materialised via the
+                # ``$_alloc_tmp`` scratch in ``_push_value``, so the
+                # local must be declared even when no other form in the
+                # function pulls it in. (Map values reach the emitter as
+                # MethodCall args and are covered by the ``args`` scan
+                # above; MakeMap itself is always the empty ``{}``.)
+                if isinstance(instr, MakeStruct):
+                    for _fname, fval in instr.fields:
+                        if (isinstance(fval, Value)
+                                and value_uses_variant_ctor(fval)):
+                            has_variant_ctor = True
+                elif isinstance(instr, (MakeList, MakeTuple)):
+                    for v in instr.elements:
+                        if isinstance(v, Value) and value_uses_variant_ctor(v):
+                            has_variant_ctor = True
                 dst = getattr(instr, "dst", None)
                 if dst and dst not in param_names and dst not in out:
                     # Look up the Capa type of this local from the
