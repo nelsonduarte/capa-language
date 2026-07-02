@@ -118,6 +118,34 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *SECURITY / SOUNDNESS (information-flow control): a secret-capturing
+  closure passed to a higher-order callee BY NAME laundered the secret
+  (the "two-hop closure-by-name" false negative).* A closure that closes
+  over a secret, bound to a name (`let f = fun () => secret`) and then
+  handed to a distinct callee that invokes it and sinks the result
+  (`invoke(f)` where `invoke` does `f()` into a public sink), produced no
+  diagnostic. Only the INLINE form (`invoke(fun () => secret)`) was caught:
+  the invoke-sink boundary check consulted the closure's precise RESULT
+  label for an inline lambda but SKIPPED any Fun argument that was not a
+  literal, because the only label then to hand was the whole-value CAPTURE
+  label -- which cannot see through an in-body `declassify` and would raise
+  a FALSE POSITIVE on a declassifying let-bound closure. The check now
+  recovers the PRECISE result label of a closure passed by name when the
+  argument is an identifier resolvable to a `let`/`var` binding whose RHS
+  is a lambda LITERAL (a reassignable `var` joins the result labels of
+  every lambda literal assigned to it -- sound, a reassignment can only
+  raise the label). So `let f = fun () => secret; invoke(f)` is now flagged
+  (warning by default, hard error under `@strict_ifc`, fail-closed), while
+  `let f = fun () => declassify(secret); invoke(f)` stays public and is NOT
+  a false positive -- the result label sees through the declassify exactly
+  as the inline case does. RESIDUAL false negatives (unchanged, and never
+  degraded into a false positive by a capture-label fallback): a closure
+  borne in a STRUCT FIELD, a Fun PARAMETER of the enclosing function
+  re-passed onward, a binding whose RHS is NOT a lambda literal (e.g. a
+  call result), and a `var` ever reassigned a non-lambda value. These keep
+  the documented skip because their precise result label cannot be
+  recovered.
+
 - *SECURITY / SOUNDNESS (information-flow control): a LAMBDA that captured
   a secret from the enclosing scope and ESCAPED across a function boundary
   laundered the secret.* A free function returning `fun () => K` (a
