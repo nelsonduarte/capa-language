@@ -133,12 +133,19 @@ breaking changes and the discipline is still being shaped.
   `return` of a user-defined impl/trait method returning Unit, in a `match`
   arm, an `if` / `else` branch, or as a loose statement. The lowerer now
   normalises the Unit spelling (`()` -> `Unit`) so every downstream Unit
-  guard fires, the local collector no longer declares a Unit result temp,
-  and `return` of a Unit value pushes nothing -- restoring four-backend
-  parity (`--run`, `--wasm`, `--wasm --component`, `--wasm --component
-  --wasi`). The same normalisation also closes the sibling `let`-binding
-  form (`let u = ()`, `let x = obj.unit_method()`), whose Unit sink
-  previously emitted the same undeclared-local `local.set`.
+  guard fires, and the few sites that *produce* a Unit value emit nothing:
+  `return` of a Unit value pushes nothing, and a Unit sink in an
+  `AssignConst` / `Reassign` binder (`let u = ()`, `let x =
+  obj.unit_method()`) emits no `local.set` for a source that pushed
+  nothing. The Unit result temp itself stays declared (as the harmless
+  `i64` fallback) so the *consumer* side stays valid: in particular the
+  `?` operator lowers to a `TryUnwrap` that unpacks the (placeholder) Ok
+  payload of a `Result<Unit, E>` -- e.g. `fs.write(path, data)?` -- with a
+  real `local.set`, which would reference an undeclared local if the temp
+  were dropped. Guarding only the (few) push/return sites, rather than
+  every dst-producing emitter, closes the whole Unit class without leaving
+  a consumer uncovered. Restores four-backend parity (`--run`, `--wasm`,
+  `--wasm --component`, `--wasm --component --wasi`).
 
 - *Wasm codegen (backend parity): a payload-less (nullary) sum variant
   used as a VALUE inside an aggregate literal (`S { d: Allow }`,
