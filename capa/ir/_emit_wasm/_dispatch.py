@@ -43,6 +43,13 @@ class _InstrDispatchMixin:
                     self._push_value(instr.src)
                     self._write(f"local.set ${instr.dst}")
                 return
+            if self._is_unit_sink(instr.dst, instr.src):
+                # A Unit binding (``let u = ()`` / ``let x =
+                # obj.unit_method()``) has no Wasm value: the local is
+                # never declared and the source pushes nothing, so a
+                # ``local.set`` here would reference an undeclared local
+                # and consume a value that is not on the stack.
+                return
             if dst_ty == "String":
                 self._emit_string_assign(instr.dst, instr.src)
                 return
@@ -57,6 +64,8 @@ class _InstrDispatchMixin:
                 ):
                     self._push_value(instr.src)
                     self._write(f"local.set ${instr.dst}")
+                return
+            if self._is_unit_sink(instr.dst, instr.src):
                 return
             if dst_ty == "String":
                 self._emit_string_assign(instr.dst, instr.src)
@@ -239,10 +248,20 @@ class _InstrDispatchMixin:
             return
         if isinstance(instr, Return):
             if instr.value is not None:
+                # A Unit value has no Wasm representation: the enclosing
+                # function has no result clause, so ``return`` must leave
+                # the operand stack empty. Pushing here (e.g. a
+                # ``local.get`` of a Unit-typed local that was never
+                # declared, as ``return obj.unit_method()`` produces)
+                # would either reference an undeclared local or leave a
+                # stray value the validator rejects. Skip the push.
+                ret_ty = self._effective_value_ty(instr.value)
+                if instr.value.kind == "lit_unit" or ret_ty == "Unit":
+                    pass
                 # String returns push (ptr, len) as a pair so the
                 # multi-value ``(result i32 i32)`` signature is
                 # satisfied; other types push a single value.
-                if instr.value.ty == "String":
+                elif instr.value.ty == "String":
                     self._push_string_value_as_ptr_len(instr.value)
                 else:
                     self._push_value(instr.value)

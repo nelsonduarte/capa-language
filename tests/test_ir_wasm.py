@@ -6971,5 +6971,141 @@ class TestWasmNullaryVariantInAggregate(unittest.TestCase):
         self.assertEqual(self._run(src), "allow\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmReturnUnitUserMethod(unittest.TestCase):
+    """``return <user-method-call-returning-Unit>`` used to miscompile
+    on the Wasm backend. The analyzer types a Unit method result as
+    ``()`` (Unit is the empty tuple), but the emitter keys its Unit
+    handling off the spelling ``Unit``; the mismatch let a Unit value
+    slip past those guards, so the trait-method emitter wrote a
+    ``local.set`` for a callee that pushed nothing and the ``return``
+    then re-pushed the (never-declared) local. wasmtime rejected the
+    module with "expected i64 but nothing on stack".
+
+    The free-function form (``return f(...)``) and the builtin-cap form
+    (``return stdio.eprintln(...)``) already worked -- the former via
+    the tail-call peephole, the latter via the cap-method path -- so
+    these tests pin the user-method form across every context the
+    ``return`` can appear in (match arm, if / else branch, loose
+    statement) plus the non-taken path, confirming valid codegen and
+    parity with the Python backend."""
+
+    _LOGGER = (
+        "pub type Logger {\n"
+        "    prefix: String\n"
+        "}\n"
+        "impl Logger\n"
+        "    pub fun note(self, stdio: Stdio, msg: String)\n"
+        "        stdio.println(\"${self.prefix}: ${msg}\")\n"
+    )
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_return_unit_method_in_match_arm(self):
+        src = self._LOGGER + (
+            "pub fun classify(n: Int) -> Result<Int, String>\n"
+            "    if n > 0\n"
+            "        return Ok(n)\n"
+            "    return Err(\"negative\")\n"
+            "pub fun main(stdio: Stdio)\n"
+            "    let logger = Logger { prefix: \"log\" }\n"
+            "    match classify(-1)\n"
+            "        Ok(v)  -> stdio.println(\"ok\")\n"
+            "        Err(e) -> return logger.note(stdio, \"bad: ${e}\")\n"
+            "    stdio.println(\"after\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "log: bad: negative\n",
+        )
+
+    def test_match_ok_arm_skips_unit_method_return(self):
+        # The Ok arm is taken: the Unit-method return is NOT reached, so
+        # the ``match`` falls through to the trailing statement.
+        src = self._LOGGER + (
+            "pub fun classify(n: Int) -> Result<Int, String>\n"
+            "    if n > 0\n"
+            "        return Ok(n)\n"
+            "    return Err(\"negative\")\n"
+            "pub fun main(stdio: Stdio)\n"
+            "    let logger = Logger { prefix: \"log\" }\n"
+            "    match classify(5)\n"
+            "        Ok(v)  -> stdio.println(\"ok\")\n"
+            "        Err(e) -> return logger.note(stdio, \"bad: ${e}\")\n"
+            "    stdio.println(\"after\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "ok\nafter\n",
+        )
+
+    def test_return_unit_method_in_if_else_branch(self):
+        src = self._LOGGER + (
+            "pub fun main(stdio: Stdio)\n"
+            "    let logger = Logger { prefix: \"log\" }\n"
+            "    let n = 0\n"
+            "    if n > 0\n"
+            "        stdio.println(\"pos\")\n"
+            "    else\n"
+            "        return logger.note(stdio, \"nonpos\")\n"
+            "    stdio.println(\"after\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "log: nonpos\n",
+        )
+
+    def test_return_unit_method_as_loose_statement(self):
+        src = self._LOGGER + (
+            "pub fun main(stdio: Stdio)\n"
+            "    let logger = Logger { prefix: \"log\" }\n"
+            "    return logger.note(stdio, \"hi\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "log: hi\n",
+        )
+
+    def test_let_bound_unit_literal(self):
+        # Same Unit class via a ``let`` binding: ``let u = ()`` binds a
+        # literal-unit value. The dst has no Wasm representation, so the
+        # binder must emit no ``local.set`` (else the WAT references an
+        # undeclared local and wasm-tools rejects it).
+        src = (
+            "pub fun main(stdio: Stdio)\n"
+            "    let u = ()\n"
+            "    stdio.println(\"done\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "done\n",
+        )
+
+    def test_let_bound_unit_method_result(self):
+        # ``let x = obj.unit_method()`` binds the Unit result of a user
+        # method call; the same no-``local.set`` rule applies.
+        src = self._LOGGER + (
+            "pub fun main(stdio: Stdio)\n"
+            "    let logger = Logger { prefix: \"log\" }\n"
+            "    let x = logger.note(stdio, \"hi\")\n"
+            "    stdio.println(\"after\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "log: hi\nafter\n",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
