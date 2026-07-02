@@ -849,6 +849,156 @@ class TestCrossFnClosureInvokeSink(unittest.TestCase):
         self.assertIn("Box.take", w[0].message)
 
 
+class TestCrossFnClosureByNameTwoHop(unittest.TestCase):
+    """Two-hop closure-BY-NAME (soundness). A closure that captures a
+    secret is BOUND to a name (``let f = fun () => secret``) and then
+    passed by that name to a higher-order callee that invokes it and
+    sinks the result (``invoke(f)``). Before the fix the boundary check
+    skipped a Fun argument that was not an inline lambda, so this was a
+    silent leak (false negative). The check now recovers the closure's
+    PRECISE result label from the binding's lambda-literal RHS, closing
+    the leak while STILL seeing through an in-body declassify -- so a
+    declassifying let-bound closure is not a false positive."""
+
+    _INVOKE = (
+        "fun invoke(f: Fun() -> String, stdio: Stdio)\n"
+        "    stdio.eprintln(f())\n"
+    )
+
+    def test_let_bound_secret_const_closure_warns(self):
+        r = _analyze(
+            "const TOKEN: @secret String = \"sk\"\n"
+            + self._INVOKE
+            + "fun main(stdio: Stdio)\n"
+            "    let f = fun () -> String => TOKEN\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        w = _crossfn_warnings(r)
+        self.assertEqual(len(w), 1, [x.message for x in r.warnings])
+        self.assertIn("invoke", w[0].message)
+
+    def test_let_bound_secret_param_closure_warns(self):
+        r = _analyze(
+            self._INVOKE
+            + "fun main(stdio: Stdio, s: @secret String)\n"
+            "    let f = fun () -> String => s\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_let_bound_env_secret_closure_warns(self):
+        r = _analyze(
+            self._INVOKE
+            + "fun main(stdio: Stdio, env: Env)\n"
+            "    let s = env.get(\"SECRET\").unwrap_or(\"d\")\n"
+            "    let f = fun () -> String => s\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_let_bound_secret_closure_hard_error_under_strict(self):
+        r = _analyze(
+            "const TOKEN: @secret String = \"sk\"\n"
+            "@strict_ifc()\n"
+            "fun invoke(f: Fun() -> String, stdio: Stdio)\n"
+            "    stdio.eprintln(f())\n"
+            "@strict_ifc()\n"
+            "fun main(stdio: Stdio)\n"
+            "    let f = fun () -> String => TOKEN\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(_crossfn_errors(r)), 1,
+                         [e.message for e in r.errors])
+
+    def test_let_bound_declassifying_closure_is_clean(self):
+        # The let-bound closure DECLASSIFIES its captured secret, so its
+        # result is public. Recovering the precise result label (not the
+        # capture label) means this is NOT a false positive -- the case
+        # the whole design exists to protect.
+        r = _analyze(
+            "const TOKEN: @secret String = \"sk\"\n"
+            + self._INVOKE
+            + "fun main(stdio: Stdio)\n"
+            "    let f = fun () -> String => "
+            "declassify(TOKEN, reason: \"ok\")\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_let_bound_public_closure_is_clean(self):
+        # A let-bound closure that captures nothing secret -> no leak,
+        # no false positive.
+        r = _analyze(
+            self._INVOKE
+            + "fun main(stdio: Stdio)\n"
+            "    let f = fun () -> String => \"public\"\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_var_reassigned_join_flags_secret_lambda(self):
+        # A ``var`` reassigned across two lambda literals -- one public,
+        # one secret. The recovered result label is the JOIN, so the
+        # secret one is caught (sound; a reassignment can only RAISE).
+        r = _analyze(
+            self._INVOKE
+            + "fun main(stdio: Stdio, s: @secret String)\n"
+            "    var f = fun () -> String => \"pub\"\n"
+            "    f = fun () -> String => s\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_var_poisoned_by_non_lambda_stays_skip(self):
+        # A ``var`` reassigned a NON-lambda value (a call result) can no
+        # longer be resolved to a lambda literal, so the boundary check
+        # keeps its documented skip. This remains a (narrow) false
+        # negative -- pinned here so it is not silently WORSENED into a
+        # false positive by a future capture-label fallback.
+        r = _analyze(
+            "fun make(s: @secret String) -> Fun() -> String\n"
+            "    return fun () -> String => s\n"
+            + self._INVOKE
+            + "fun main(stdio: Stdio, s: @secret String)\n"
+            "    var f = fun () -> String => \"pub\"\n"
+            "    f = make(s)\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        self.assertEqual(len(_crossfn_errors(r)), 0,
+                         [e.message for e in r.errors])
+
+    def test_field_borne_closure_stays_skip(self):
+        # A closure borne in a STRUCT FIELD, then read out and passed by
+        # name, is NOT a resolvable lambda-literal binding -> documented
+        # skip preserved (still a false negative, not a false positive).
+        r = _analyze(
+            "type Box { thunk: Fun() -> String }\n"
+            + self._INVOKE
+            + "fun main(stdio: Stdio, s: @secret String)\n"
+            "    let b = Box { thunk: fun () -> String => s }\n"
+            "    invoke(b.thunk, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        # No cross-function FALSE POSITIVE is the invariant that matters.
+        self.assertEqual(len(_crossfn_errors(r)), 0,
+                         [e.message for e in r.errors])
+
+
 class TestStrictPcDoesNotLeakAcrossFunctions(unittest.TestCase):
     """Audit 2026-06-17 (BLOCKER): the implicit-flow pc-label is a
     per-function quantity. ``_check_block`` raises it monotonically

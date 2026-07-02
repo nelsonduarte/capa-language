@@ -246,6 +246,13 @@ class _StatementsMixin:
                 s.type_expr.label if s.type_expr is not None else None,
                 s.value,
             )
+            # Roadmap S2 (two-hop closure-by-name): record a lambda-literal
+            # RHS on this binding so a later ``invoke(f)`` can recover the
+            # closure's precise result label. A ``let`` binds a fresh Symbol,
+            # so this replaces any prior record for the name.
+            self._record_binding_lambda(
+                self.scope.lookup_local(s.pattern.name), s.value, fresh=True,
+            )
             # Aliasing (``let b2 = b``): link the new binding into the
             # source's alias group so a later field store through either
             # taints both (structs are reference types).
@@ -329,6 +336,10 @@ class _StatementsMixin:
         ):
             sym.field_labels = _deepcopy_field_map(_fmap)
         self.scope.define(sym)
+        # Roadmap S2 (two-hop closure-by-name): record a lambda-literal
+        # RHS on the fresh ``var`` binding (a subsequent reassignment adds
+        # to it in ``_check_assign``, keeping the join sound).
+        self._record_binding_lambda(sym, s.value, fresh=True)
         # Aliasing (``var b2 = b``): link into the source's alias group
         # so a later field store through either taints both.
         if isinstance(s.value, (A.Ident, A.FieldAccess)):
@@ -386,6 +397,14 @@ class _StatementsMixin:
                 sym.label = self._join_pc_if_strict(
                     L.join(getattr(sym, "label", None), self._label_of(s.value))
                 )
+            # Roadmap S2 (two-hop closure-by-name): a reassignment can only
+            # RAISE the recovered result label. Adding another lambda
+            # literal keeps a sound JOIN over every lambda the name may
+            # denote; assigning a NON-lambda makes the denotation
+            # unresolvable, which poisons the record so the boundary check
+            # falls back to the documented skip (never the capture label).
+            if sym is not None:
+                self._record_binding_lambda(sym, s.value, fresh=False)
             if sym is not None and sym.kind == SymbolKind.LOCAL:
                 self._err(
                     f"cannot assign to immutable binding {sym.name!r} "

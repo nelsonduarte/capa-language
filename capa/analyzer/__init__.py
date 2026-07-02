@@ -408,6 +408,18 @@ class Analyzer(
         # parameter of the callee (``_call_arg_invoke_label``), so the
         # declassify-in-closure case is not a false positive.
         self._lambda_result_labels: dict[int, str] = {}
+        # Roadmap S2 (IFC, two-hop closure-by-name). ``id(Symbol)`` of a
+        # ``let``/``var`` binding whose RHS is a LAMBDA LITERAL -> that
+        # ``LambdaExpr``. Lets the invoke-sink boundary check recover the
+        # PRECISE result label of a closure passed to a higher-order callee
+        # BY NAME (``let f = fun () => secret; invoke(f)``), instead of
+        # skipping the check. A reassignable ``var`` records the JOIN over
+        # every lambda literal assigned to it (a list of lambdas), so a
+        # later ``f = fun () => other`` cannot lower the result label. A
+        # non-lambda RHS records nothing, so a name is only resolved when
+        # the result label can be recovered exactly (no capture-label
+        # false positive; see ``_sink_param_arg_label``).
+        self._binding_lambdas: dict[int, list] = {}
         # Roadmap S2 (per-field IFC precision). Parallel to
         # ``self._expr_labels`` but only for STRUCT-typed expressions:
         # id(expr) -> a per-field label map ``{field_name: label_or_submap}``
