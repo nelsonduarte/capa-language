@@ -744,10 +744,58 @@ class _SummaryBuilder:
             return self._taint_of_call(e, env, reaching)
         if isinstance(e, A.MethodCall):
             return self._taint_of_method_call(e, env, reaching)
-        # Lambda: bodies are checked intra-procedurally elsewhere; a
-        # lambda value carries no parameter taint of the enclosing fn
-        # for this slice.
+        if isinstance(e, A.LambdaExpr):
+            return self._taint_of_lambda(e, env, reaching)
+        # Any other expression carries no source taint.
         return set()
+
+    def _taint_of_lambda(
+        self, e: A.LambdaExpr, env: dict, reaching: set,
+    ) -> set:
+        """The taint the VALUE of a lambda carries: the taint its
+        INVOCATION would produce -- the source-param / internal-secret set
+        of the value the body returns (its ``return`` statements plus its
+        trailing bare expression / expression body). So a free function
+        ``return fun () => K`` (``K`` a @secret const) or ``return fun () =>
+        e.iban`` (a declared-@secret field of a struct param it captures)
+        makes the function's return-effect record the captured secret, and
+        the existing call-site rules taint the caller's closure binding, so
+        invoking it and sinking the result is caught -- closing the
+        lambda-capture laundering. A lambda that captures a secret but
+        returns a PUBLIC value, or ``declassify(...)`` inside the body,
+        carries no taint (no false positive).
+
+        The lambda's own PARAMETERS are fresh locals, not captures: they
+        are masked in an ISOLATED copy of ``env`` (a param named like a
+        captured local does NOT inherit the enclosing taint) and registered
+        as const shadows (a param named like a secret const suppresses it
+        inside the body). The copy is throwaway so a body mutation never
+        leaks back into the enclosing function's flat, monotone env;
+        ``_shadowed_consts`` and the return accumulator are saved/restored
+        so nested lambdas compose. A sink INSIDE the body is left to the
+        intra-procedural pass; walking it here only ever ADDS to
+        ``reaching`` (sound over-approximation)."""
+        body_env = dict(env)
+        for p in e.params:
+            body_env[p.name] = set()
+        saved_shadowed = self._shadowed_consts
+        self._shadowed_consts = set(saved_shadowed)
+        self._register_shadowing_binds(p.name for p in e.params)
+        saved_returns = self._cur_returns
+        lambda_returns: set = set()
+        self._cur_returns = lambda_returns
+        try:
+            if isinstance(e.body, A.Block):
+                self._walk_block(e.body, body_env, reaching)
+                lambda_returns |= self._block_tail_taint(
+                    e.body, body_env, reaching,
+                )
+            else:
+                lambda_returns |= self._taint_of(e.body, body_env, reaching)
+        finally:
+            self._cur_returns = saved_returns
+            self._shadowed_consts = saved_shadowed
+        return lambda_returns
 
     def _block_tail_taint(
         self, block: A.Block, env: dict, reaching: set,

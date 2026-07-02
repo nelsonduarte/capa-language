@@ -1698,5 +1698,181 @@ class TestSecretConstShadowScoping(unittest.TestCase):
         )
 
 
+class TestLambdaCaptureLaundering(unittest.TestCase):
+    """A lambda that captures a secret from the enclosing scope and
+    ESCAPES (returned by a free function, or borne in a returned struct)
+    then invoked by the caller with the result reaching a public sink
+    was silently missed: the summary pass did not walk lambda bodies, so
+    the lambda VALUE carried none of the captured secret's taint across
+    the boundary. The summary now returns the taint a lambda's INVOCATION
+    would produce -- the source set of its body's return / tail -- with
+    the lambda's own parameters treated as fresh locals (masked in an
+    isolated env, registered as const shadows). Symmetric for the three
+    sources (@secret const, declared-@secret field, @secret param)."""
+
+    def test_lambda_captures_secret_const_return_flagged(self):
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make_leak() -> Fun() -> String\n"
+            "    return fun () -> String => K\n"
+            "fun caller(stdio: Stdio)\n"
+            "    let f = make_leak()\n"
+            "    stdio.println(f())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_captures_secret_field_return_flagged(self):
+        r = _analyze(
+            "type Emp { name: String, iban: @secret String }\n"
+            "fun make_leak(e: Emp) -> Fun() -> String\n"
+            "    return fun () -> String => e.iban\n"
+            "fun caller(e: Emp, stdio: Stdio)\n"
+            "    let f = make_leak(e)\n"
+            "    stdio.println(f())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_captures_secret_param_return_flagged(self):
+        r = _analyze(
+            "fun make_leak(token: @secret String) -> Fun() -> String\n"
+            "    return fun () -> String => token\n"
+            "fun caller(token: @secret String, stdio: Stdio)\n"
+            "    let f = make_leak(token)\n"
+            "    stdio.println(f())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_in_returned_struct_flagged(self):
+        # The escaping lambda is borne in a returned struct field; the
+        # returned struct carries the captured secret, so invoking the
+        # field's closure and sinking the result is caught.
+        r = _analyze(
+            "type Box { thunk: Fun() -> String }\n"
+            "fun make_box(token: @secret String) -> Box\n"
+            "    return Box { thunk: fun () -> String => token }\n"
+            "fun caller(token: @secret String, stdio: Stdio)\n"
+            "    let b = make_box(token)\n"
+            "    let g = b.thunk\n"
+            "    stdio.println(g())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_nested_lambda_captures_secret_const_flagged(self):
+        # A lambda nested inside another lambda that captures a secret
+        # const; both invocation layers must carry the taint out.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make_leak() -> Fun() -> Fun() -> String\n"
+            "    return fun () -> Fun() -> String => "
+            "fun () -> String => K\n"
+            "fun caller(stdio: Stdio)\n"
+            "    let outer = make_leak()\n"
+            "    let inner = outer()\n"
+            "    stdio.println(inner())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_capture_leak_strict_is_error(self):
+        # Under @strict_ifc the captured-secret lambda leak is a hard
+        # error (exit 1), matching the intra-procedural tier.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make_leak() -> Fun() -> String\n"
+            "    return fun () -> String => K\n"
+            "@strict_ifc()\n"
+            "fun caller(stdio: Stdio)\n"
+            "    let f = make_leak()\n"
+            "    stdio.println(f())\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("information-flow" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    # ---- negatives (no false positive) ------------------------------
+
+    def test_lambda_captures_secret_but_returns_public_not_flagged(self):
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make_ok() -> Fun() -> String\n"
+            "    return fun () -> String => \"public\"\n"
+            "fun caller(stdio: Stdio)\n"
+            "    let f = make_ok()\n"
+            "    stdio.println(f())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_declassifies_captured_secret_not_flagged(self):
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make_ok() -> Fun() -> String\n"
+            "    return fun () -> String => declassify(K, reason: \"ok\")\n"
+            "fun caller(stdio: Stdio)\n"
+            "    let f = make_ok()\n"
+            "    stdio.println(f())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_uses_only_own_param_not_flagged(self):
+        r = _analyze(
+            "fun make_ok() -> Fun(String) -> String\n"
+            "    return fun (x: String) -> String => x\n"
+            "fun caller(stdio: Stdio)\n"
+            "    let f = make_ok()\n"
+            "    stdio.println(f(\"hi\"))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_param_named_like_secret_const_does_not_inherit(self):
+        # A lambda parameter named like a secret const is a fresh local,
+        # NOT the captured const: it must not inherit the const's taint.
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make_ok() -> Fun(String) -> String\n"
+            "    return fun (K: String) -> String => K\n"
+            "fun caller(stdio: Stdio)\n"
+            "    let f = make_ok()\n"
+            "    stdio.println(f(\"hi\"))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
