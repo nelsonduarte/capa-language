@@ -131,20 +131,25 @@ breaking changes and the discipline is still being shaped.
   label -- which cannot see through an in-body `declassify` and would raise
   a FALSE POSITIVE on a declassifying let-bound closure. The check now
   recovers the PRECISE result label of a closure passed by name when the
-  argument is an identifier resolvable to a `let`/`var` binding whose RHS
-  is a lambda LITERAL (a reassignable `var` joins the result labels of
-  every lambda literal assigned to it -- sound, a reassignment can only
-  raise the label). So `let f = fun () => secret; invoke(f)` is now flagged
-  (warning by default, hard error under `@strict_ifc`, fail-closed), while
+  argument is an identifier resolvable to a binding that denotes ONE
+  CERTAIN lambda LITERAL: a `let` bound to a lambda literal, or a `var`
+  bound to a lambda literal at its declaration and NEVER reassigned. So
+  `let f = fun () => secret; invoke(f)` is now flagged (warning by default,
+  hard error under `@strict_ifc`, fail-closed), while
   `let f = fun () => declassify(secret); invoke(f)` stays public and is NOT
   a false positive -- the result label sees through the declassify exactly
   as the inline case does. RESIDUAL false negatives (unchanged, and never
   degraded into a false positive by a capture-label fallback): a closure
   borne in a STRUCT FIELD, a Fun PARAMETER of the enclosing function
   re-passed onward, a binding whose RHS is NOT a lambda literal (e.g. a
-  call result), and a `var` ever reassigned a non-lambda value. These keep
-  the documented skip because their precise result label cannot be
-  recovered.
+  call result), and ANY `var` that is EVER REASSIGNED (even to another
+  lambda literal). A reassigned `var` makes the denotation ambiguous, and
+  rather than join over the candidates -- which would reintroduce a false
+  positive, and turn a hard error under `@strict_ifc` in safe code -- it
+  keeps the documented skip. The posture is "a false positive is the worst
+  outcome", so only the inline and the single-assignment `let` / `var`
+  lambda-literal shapes are covered; everything else stays a documented
+  false negative.
 
 - *SECURITY / SOUNDNESS (information-flow control): a LAMBDA that captured
   a secret from the enclosing scope and ESCAPED across a function boundary

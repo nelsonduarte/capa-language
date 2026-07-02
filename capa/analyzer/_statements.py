@@ -337,8 +337,9 @@ class _StatementsMixin:
             sym.field_labels = _deepcopy_field_map(_fmap)
         self.scope.define(sym)
         # Roadmap S2 (two-hop closure-by-name): record a lambda-literal
-        # RHS on the fresh ``var`` binding (a subsequent reassignment adds
-        # to it in ``_check_assign``, keeping the join sound).
+        # RHS on the fresh ``var`` binding. A subsequent reassignment in
+        # ``_check_assign`` poisons it (the denotation becomes ambiguous),
+        # so only a never-reassigned ``var`` stays precise.
         self._record_binding_lambda(sym, s.value, fresh=True)
         # Aliasing (``var b2 = b``): link into the source's alias group
         # so a later field store through either taints both.
@@ -397,12 +398,12 @@ class _StatementsMixin:
                 sym.label = self._join_pc_if_strict(
                     L.join(getattr(sym, "label", None), self._label_of(s.value))
                 )
-            # Roadmap S2 (two-hop closure-by-name): a reassignment can only
-            # RAISE the recovered result label. Adding another lambda
-            # literal keeps a sound JOIN over every lambda the name may
-            # denote; assigning a NON-lambda makes the denotation
-            # unresolvable, which poisons the record so the boundary check
-            # falls back to the documented skip (never the capture label).
+            # Roadmap S2 (two-hop closure-by-name): a reassignment makes
+            # the name's denotation ambiguous (it may now denote a
+            # DIFFERENT closure), so it POISONS the record regardless of
+            # the RHS shape -- the boundary check then falls back to the
+            # documented skip (never the capture label, never an
+            # over-approximating join, hence never a false positive).
             if sym is not None:
                 self._record_binding_lambda(sym, s.value, fresh=False)
             if sym is not None and sym.kind == SymbolKind.LOCAL:

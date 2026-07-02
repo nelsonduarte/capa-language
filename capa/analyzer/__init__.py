@@ -409,17 +409,17 @@ class Analyzer(
         # declassify-in-closure case is not a false positive.
         self._lambda_result_labels: dict[int, str] = {}
         # Roadmap S2 (IFC, two-hop closure-by-name). ``id(Symbol)`` of a
-        # ``let``/``var`` binding whose RHS is a LAMBDA LITERAL -> that
-        # ``LambdaExpr``. Lets the invoke-sink boundary check recover the
-        # PRECISE result label of a closure passed to a higher-order callee
-        # BY NAME (``let f = fun () => secret; invoke(f)``), instead of
-        # skipping the check. A reassignable ``var`` records the JOIN over
-        # every lambda literal assigned to it (a list of lambdas), so a
-        # later ``f = fun () => other`` cannot lower the result label. A
-        # non-lambda RHS records nothing, so a name is only resolved when
-        # the result label can be recovered exactly (no capture-label
-        # false positive; see ``_sink_param_arg_label``).
-        self._binding_lambdas: dict[int, list] = {}
+        # ``let``/``var`` binding INTRODUCED with a LAMBDA LITERAL RHS ->
+        # that ``LambdaExpr``. Lets the invoke-sink boundary check recover
+        # the PRECISE result label of a closure passed to a higher-order
+        # callee BY NAME (``let f = fun () => secret; invoke(f)``), instead
+        # of skipping the check. Only a binding that denotes ONE certain
+        # lambda is recorded: any ``var`` REASSIGNMENT poisons the entry to
+        # ``None`` (denotation ambiguous), so a reassigned ``var`` falls
+        # back to the documented skip -- never an over-approximating join,
+        # hence never a false positive. A non-lambda introduction records
+        # nothing. See ``_record_binding_lambda`` / ``_sink_param_arg_label``.
+        self._binding_lambdas: dict[int, object] = {}
         # Roadmap S2 (per-field IFC precision). Parallel to
         # ``self._expr_labels`` but only for STRUCT-typed expressions:
         # id(expr) -> a per-field label map ``{field_name: label_or_submap}``
