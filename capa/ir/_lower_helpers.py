@@ -139,5 +139,16 @@ def _ty_to_str(t: object) -> str:
         return repr(t)
     if s.startswith("fun("):
         return "Fun" + s[3:]
+    # Unit renders as ``()`` from the type printer (Unit is the empty
+    # tuple), but the IR and both backends key their Unit handling off
+    # the canonical spelling ``Unit``. Normalise here so a Unit-typed
+    # local / call result carries the same string every downstream
+    # consumer's ``== "Unit"`` guard expects; otherwise a Unit value
+    # (e.g. the result of a user method call that returns nothing)
+    # slips past those guards and the Wasm backend emits a spurious
+    # ``local.set`` / local declaration for a callee that pushed
+    # nothing.
+    if s == "()":
+        return "Unit"
     return s
 

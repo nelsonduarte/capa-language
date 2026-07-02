@@ -700,11 +700,17 @@ class _LocalsCollectionMixin:
                     # (slices 25.2 - 25.6) which are i32 handles
                     # so a restricted cap survives crossing function
                     # boundaries.
-                    if capa_ty in BUILTIN_CAPS:
+                    if capa_ty in BUILTIN_CAPS or capa_ty == "Unit":
                         if capa_ty in (
                             "Fs", "Net", "Db", "Proc", "Env", "Clock",
                         ):
                             out[dst] = "i32"
+                        # Unit dsts (e.g. the result temp of a user
+                        # method call that returns nothing) have no
+                        # Wasm value; declaring one as the ``i64``
+                        # fallback below would leave an unused local
+                        # and mask the fact that the call pushed
+                        # nothing.
                         continue
                     # String locals expand to a (ptr, len) pair so
                     # the function can carry the value forward. The

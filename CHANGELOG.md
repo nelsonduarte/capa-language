@@ -118,6 +118,28 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *Wasm codegen (backend parity): `return <user-method-call-returning-Unit>`
+  miscompiled on the `--wasm` backend.* The analyzer types a Unit method
+  result as `()` (Unit is the empty tuple), but the Wasm emitter keys its
+  Unit handling off the canonical spelling `Unit`, so a Unit-typed method
+  result slipped past those guards: the trait/impl-method emitter wrote a
+  `local.set` for a callee that pushes nothing, its result temp was
+  declared as an `i64` fallback, and the following `return` re-pushed that
+  never-initialised local -- wasmtime rejected the module (`type mismatch:
+  expected i64 but nothing on stack`) even though `--check` and the Python
+  backend accepted and ran the program. The free-function form
+  (`return f(...)`, optimised by the tail-call peephole) and the builtin-cap
+  form (`return stdio.eprintln(...)`) were unaffected; the bug hit any
+  `return` of a user-defined impl/trait method returning Unit, in a `match`
+  arm, an `if` / `else` branch, or as a loose statement. The lowerer now
+  normalises the Unit spelling (`()` -> `Unit`) so every downstream Unit
+  guard fires, the local collector no longer declares a Unit result temp,
+  and `return` of a Unit value pushes nothing -- restoring four-backend
+  parity (`--run`, `--wasm`, `--wasm --component`, `--wasm --component
+  --wasi`). The same normalisation also closes the sibling `let`-binding
+  form (`let u = ()`, `let x = obj.unit_method()`), whose Unit sink
+  previously emitted the same undeclared-local `local.set`.
+
 - *Wasm codegen (backend parity): a payload-less (nullary) sum variant
   used as a VALUE inside an aggregate literal (`S { d: Allow }`,
   `[Allow, Deny]`, `(Allow, 1)`) miscompiled on the `--wasm` backend.* The

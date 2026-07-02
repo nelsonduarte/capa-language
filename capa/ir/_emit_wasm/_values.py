@@ -87,6 +87,16 @@ class _ValueEmissionMixin:
             return ""
         return self._current_fn.locals.get(name, "")
 
+    def _is_unit_sink(self, dst: str, src: Value) -> bool:
+        """True when binding ``src`` into local ``dst`` carries a Unit
+        value, which has no Wasm representation. Either the destination
+        local is Unit-typed or the source is a literal unit; in both
+        cases the local is never declared and the source pushes nothing,
+        so the caller must skip the ``local.set``."""
+        if src.kind == "lit_unit":
+            return True
+        return self._dst_capa_ty(dst) == "Unit"
+
     def _effective_value_ty(self, v: Value) -> str:
         """Resolve a Value's effective Capa type. The IR sometimes
         carries Unknown on Values captured at lowering time before
