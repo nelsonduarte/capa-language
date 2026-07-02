@@ -408,11 +408,26 @@ class _ExprsEmitterMixin:
     # Type expressions
     # ------------------------------------------------------------
     def _emit_type(self, t: A.TypeExpr) -> str:
+        # Information-flow security label (roadmap S2): ``@secret`` /
+        # ``@public`` written before ANY type form. It lives on the
+        # TypeExpr base, so re-emitting it here covers every position a
+        # type can occur -- struct fields, parameters, return types,
+        # let/var bindings, generic args, tuple elements, Fun(...) param
+        # and return types. Dropping it would silently strip a security
+        # annotation and disarm the IFC, so it must round-trip.
+        prefix = f"@{t.label} " if t.label is not None else ""
+        return prefix + self._emit_type_body(t)
+
+    def _emit_type_body(self, t: A.TypeExpr) -> str:
         if isinstance(t, A.TypeName):
-            if not t.args:
-                return t.name
-            args = ", ".join(self._emit_type(a) for a in t.args)
-            return f"{t.name}<{args}>"
+            base = t.name
+            if t.args:
+                args = ", ".join(self._emit_type(a) for a in t.args)
+                base = f"{t.name}<{args}>"
+            # Typestate index ``Name[State]`` (roadmap S3).
+            if getattr(t, "state", None) is not None:
+                base = f"{base}[{t.state}]"
+            return base
         if isinstance(t, A.FunType):
             params = ", ".join(self._emit_type(p) for p in t.param_types)
             return f"Fun({params}) -> {self._emit_type(t.return_type)}"
