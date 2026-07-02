@@ -946,27 +946,50 @@ class TestCrossFnClosureByNameTwoHop(unittest.TestCase):
         self.assertEqual(len(_crossfn_warnings(r)), 0,
                          [w.message for w in r.warnings])
 
-    def test_var_reassigned_join_flags_secret_lambda(self):
-        # A ``var`` reassigned across two lambda literals -- one public,
-        # one secret. The recovered result label is the JOIN, so the
-        # secret one is caught (sound; a reassignment can only RAISE).
+    def test_var_single_assignment_secret_lambda_warns(self):
+        # A ``var`` bound to a secret lambda literal at its declaration and
+        # NEVER reassigned denotes ONE certain closure -> precise, covered.
         r = _analyze(
             self._INVOKE
             + "fun main(stdio: Stdio, s: @secret String)\n"
-            "    var f = fun () -> String => \"pub\"\n"
-            "    f = fun () -> String => s\n"
+            "    var f = fun () -> String => s\n"
             "    invoke(f, stdio)\n"
         )
         self.assertTrue(r.ok, [e.message for e in r.errors])
         self.assertEqual(len(_crossfn_warnings(r)), 1,
                          [w.message for w in r.warnings])
 
-    def test_var_poisoned_by_non_lambda_stays_skip(self):
+    def test_var_reassigned_lambdas_stays_skip(self):
+        # A ``var`` REASSIGNED across two lambda literals is ambiguous
+        # (it may denote a different closure), so the boundary check keeps
+        # its documented skip rather than joining -- deliberately trading a
+        # residual false negative for ZERO false positive. Public->secret
+        # AND secret->public are both skipped (no over-approximation, no
+        # false positive even under strict). This remains a documented FN.
+        for first, second in (
+            ("\"pub\"", "s"),   # public then secret
+            ("s", "\"pub\""),   # secret then public
+        ):
+            r = _analyze(
+                self._INVOKE
+                + "@strict_ifc()\n"
+                "fun main(stdio: Stdio, s: @secret String)\n"
+                f"    var f = fun () -> String => {first}\n"
+                f"    f = fun () -> String => {second}\n"
+                "    invoke(f, stdio)\n"
+            )
+            self.assertTrue(r.ok, [e.message for e in r.errors])
+            self.assertEqual(len(_crossfn_warnings(r)), 0,
+                             [w.message for w in r.warnings])
+            self.assertEqual(len(_crossfn_errors(r)), 0,
+                             [e.message for e in r.errors])
+
+    def test_var_reassigned_non_lambda_stays_skip(self):
         # A ``var`` reassigned a NON-lambda value (a call result) can no
-        # longer be resolved to a lambda literal, so the boundary check
-        # keeps its documented skip. This remains a (narrow) false
-        # negative -- pinned here so it is not silently WORSENED into a
-        # false positive by a future capture-label fallback.
+        # longer be resolved to a single lambda literal, so the boundary
+        # check keeps its documented skip. A (narrow) false negative --
+        # pinned here so it is not silently WORSENED into a false positive
+        # by a future capture-label fallback.
         r = _analyze(
             "fun make(s: @secret String) -> Fun() -> String\n"
             "    return fun () -> String => s\n"

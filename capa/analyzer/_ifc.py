@@ -875,25 +875,30 @@ class _IfcMixin:
           For an INLINE closure literal that is its RESULT label (so a
           closure whose body DECLASSIFIES its captured secret is correctly
           public and not flagged). For a closure passed BY NAME whose
-          binding resolves to a lambda LITERAL RHS (``let f = fun () =>
-          secret; invoke(f)``) that same RESULT label is recovered from
-          the binding (``_binding_result_label``), closing the two-hop
-          leak while STILL seeing through an in-body declassify -- a
-          let-bound declassifying closure stays public and is not a false
-          positive.
+          binding denotes ONE CERTAIN lambda LITERAL -- a ``let`` bound to
+          a lambda literal, or a ``var`` bound to a lambda literal at its
+          declaration and NEVER REASSIGNED (``let f = fun () => secret;
+          invoke(f)``) -- that same RESULT label is recovered from the
+          binding (``_binding_result_label``), closing the two-hop leak
+          while STILL seeing through an in-body declassify: a let-bound
+          declassifying closure stays public and is not a false positive.
 
         KNOWN LIMITATIONS (documented false NEGATIVES that REMAIN). When
         the argument is a Fun-typed name whose PRECISE result label
-        cannot be recovered, the check is SKIPPED (``None``) rather than
-        falling back to the whole-value CAPTURE label -- the capture label
-        cannot see through an in-body declassify and would raise a FALSE
-        POSITIVE, the worst outcome. The skip stands for: a closure borne
-        in a STRUCT FIELD (``s.thunk``); a Fun PARAMETER of the enclosing
-        function re-passed onward; a binding whose RHS is NOT a lambda
-        literal (e.g. the result of a call); and a reassignable ``var``
-        that was ever assigned a non-lambda value. Those remain narrow
-        false negatives; the inline and the let/var-bound-lambda-literal
-        shapes -- the common and most dangerous ones -- are precise.
+        cannot be recovered with CERTAINTY, the check is SKIPPED
+        (``None``) rather than falling back to the whole-value CAPTURE
+        label -- the capture label cannot see through an in-body
+        declassify and would raise a FALSE POSITIVE, the worst outcome.
+        The skip stands for: a closure borne in a STRUCT FIELD
+        (``s.thunk``); a Fun PARAMETER of the enclosing function re-passed
+        onward; a binding whose RHS is NOT a lambda literal (e.g. the
+        result of a call); and any ``var`` that is EVER REASSIGNED (even
+        to another lambda literal) -- reassignment makes the denotation
+        ambiguous, so it is skipped rather than joined, deliberately
+        trading a residual false negative for ZERO false positive. Only
+        the inline and the SINGLE-ASSIGNMENT ``let`` / ``var`` lambda-
+        literal shapes -- the common and most dangerous ones -- are
+        precise.
 
         The parameter kind is told apart by its declared TYPE: a ``TyFun``
         parameter is the invoke case, anything else the data case."""
@@ -907,52 +912,46 @@ class _IfcMixin:
         return self._label_of(arg)
 
     def _record_binding_lambda(self, sym, value: A.Expr, fresh: bool) -> None:
-        """Record, for the closure-by-name boundary check, the lambda
-        LITERAL(s) a binding may denote. ``fresh`` marks a ``let``/``var``
-        INTRODUCTION (the record is replaced); a reassignment adds to it.
+        """Record, for the closure-by-name boundary check, the SINGLE
+        lambda literal a binding denotes WITH CERTAINTY. ``fresh`` marks a
+        ``let``/``var`` INTRODUCTION; ``fresh=False`` marks a ``var``
+        reassignment.
 
-        A lambda-literal RHS is appended; ANY OTHER RHS makes the name's
-        denotation unresolvable and stores ``None`` (a poison sentinel) so
-        the boundary check keeps its documented skip instead of guessing.
-        A fresh non-lambda binding records nothing -- the name simply has
-        no lambda to resolve. The list of lambdas is later JOINED, so a
-        reassignment can only RAISE the recovered result label (sound)."""
+        Only an introduction bound to a lambda LITERAL is recorded -- the
+        binding then denotes exactly that one closure. ANY reassignment,
+        of a lambda OR a non-lambda value, makes the denotation ambiguous
+        and POISONS the record (stores ``None``): a ``var`` that is ever
+        reassigned falls back to the documented skip, because precision
+        can no longer be guaranteed and a false positive is the worst
+        outcome (a residual false negative is preferred). A fresh
+        non-lambda binding records nothing (no lambda to resolve)."""
         if sym is None:
             return
-        if isinstance(value, A.LambdaExpr):
-            if fresh:
-                self._binding_lambdas[id(sym)] = [value]
-            else:
-                prev = self._binding_lambdas.get(id(sym))
-                if prev is None and id(sym) in self._binding_lambdas:
-                    # Already poisoned (a non-lambda was assigned): stay
-                    # unresolvable.
-                    return
-                (prev if prev is not None else
-                 self._binding_lambdas.setdefault(id(sym), [])).append(value)
+        if fresh:
+            if isinstance(value, A.LambdaExpr):
+                self._binding_lambdas[id(sym)] = value
             return
-        # Non-lambda RHS: a fresh binding has nothing to record; a
-        # reassignment poisons the record (denotation now unresolvable).
-        if not fresh:
-            self._binding_lambdas[id(sym)] = None
+        # A reassignment (var only): the name may now denote a DIFFERENT
+        # closure, so it is no longer resolvable to a single certain
+        # lambda literal. Poison the record regardless of the RHS shape --
+        # no join, no over-approximation, hence no false positive.
+        self._binding_lambdas[id(sym)] = None
 
     def _binding_result_label(self, arg: A.Ident):
-        """The join of the RESULT labels of every lambda literal the name
-        ``arg`` may denote, or ``None`` when it cannot be recovered
-        precisely (unknown binding, poisoned ``var``, or a binding with no
-        recorded lambda literal). Returning ``None`` keeps the boundary
-        check's documented skip -- it never falls back to a capture label,
-        so a declassifying let-bound closure is not a false positive."""
+        """The RESULT label of the single lambda literal the name ``arg``
+        denotes with certainty, or ``None`` when it cannot be recovered
+        precisely (unknown binding, a reassigned/poisoned ``var``, or a
+        binding whose RHS was not a lambda literal). Returning ``None``
+        keeps the boundary check's documented skip -- it never falls back
+        to a capture label, so a declassifying let-bound closure is not a
+        false positive."""
         sym = self.bindings.get(id(arg))
         if sym is None:
             return None
-        lambdas = self._binding_lambdas.get(id(sym))
-        if not lambdas:  # absent, empty, or the ``None`` poison sentinel
+        lam = self._binding_lambdas.get(id(sym))
+        if lam is None:  # absent, or the ``None`` poison sentinel
             return None
-        return L.join_all(
-            self._lambda_result_labels.get(id(lam), L.PUBLIC)
-            for lam in lambdas
-        )
+        return self._lambda_result_labels.get(id(lam), L.PUBLIC)
 
     def _lambda_body_stmts(self, e: A.LambdaExpr):
         """The statement list of a block-bodied lambda, or empty for an
