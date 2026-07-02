@@ -6880,5 +6880,92 @@ class TestWasmRejectsUnsafeReachingTypes(unittest.TestCase):
         self.assertIn("(module", wat)
 
 
+class TestWasmNullaryVariantInAggregate(unittest.TestCase):
+    """Regression: a payload-less (nullary) sum variant used as a
+    VALUE inside an aggregate literal (struct field, list element,
+    tuple element, map value) is materialised via the function-level
+    ``$_alloc_tmp`` scratch in ``_push_value``. The locals collector
+    only declared ``$_alloc_tmp`` when it saw the variant through a
+    fixed set of flat instruction attributes plus ``instr.args``; it
+    never descended into ``MakeStruct.fields`` / ``MakeList.elements``
+    / ``MakeTuple.elements``. So when a nullary variant was the ONLY
+    thing pulling in the scratch AND it lived inside an aggregate
+    literal, the local was never declared and the emitted WAT
+    referenced an unknown ``$_alloc_tmp`` (``--check`` and the Python
+    backend both accepted the program). Each case below uses a
+    program shape where no other construct (list method, match on a
+    collection, for-loop, range, ...) would incidentally declare the
+    scratch, so it isolates the aggregate path.
+    """
+
+    def _run(self, src: str) -> str:
+        from capa.runtime._wasm_host import WasmHost
+        import io
+        import sys
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    _DISP = (
+        "type Disp =\n"
+        "    Allow\n"
+        "    Deny\n"
+        "\n"
+        "fun word(x: Disp) -> String\n"
+        "    return match x\n"
+        "        Allow -> \"allow\"\n"
+        "        Deny  -> \"deny\"\n"
+        "\n"
+    )
+
+    def test_nullary_variant_as_struct_field(self):
+        src = self._DISP + (
+            "type S {\n"
+            "    d: Disp\n"
+            "}\n"
+            "\n"
+            "pub fun main(stdio: Stdio)\n"
+            "    let s = S { d: Allow }\n"
+            "    stdio.println(word(s.d))\n"
+        )
+        self.assertEqual(self._run(src), "allow\n")
+
+    def test_nullary_variant_as_list_element(self):
+        src = self._DISP + (
+            "pub fun main(stdio: Stdio)\n"
+            "    let xs = [Allow, Deny]\n"
+            "    stdio.println(word(xs[0]))\n"
+        )
+        self.assertEqual(self._run(src), "allow\n")
+
+    def test_nullary_variant_as_tuple_element(self):
+        src = self._DISP + (
+            "pub fun main(stdio: Stdio)\n"
+            "    let t = (Allow, 1)\n"
+            "    let (a, b) = t\n"
+            "    stdio.println(word(a))\n"
+        )
+        self.assertEqual(self._run(src), "allow\n")
+
+    def test_nullary_variant_as_map_value(self):
+        src = self._DISP + (
+            "pub fun main(stdio: Stdio)\n"
+            "    let m: Map<String, Disp> = new_map()\n"
+            "    m.set(\"k\", Allow)\n"
+            "    match m.get(\"k\")\n"
+            "        Some(v) -> stdio.println(word(v))\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        self.assertEqual(self._run(src), "allow\n")
+
+
 if __name__ == "__main__":
     unittest.main()

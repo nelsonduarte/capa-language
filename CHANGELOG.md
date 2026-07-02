@@ -118,6 +118,25 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *Wasm codegen (backend parity): a payload-less (nullary) sum variant
+  used as a VALUE inside an aggregate literal (`S { d: Allow }`,
+  `[Allow, Deny]`, `(Allow, 1)`) miscompiled on the `--wasm` backend.* The
+  variant value is materialised inline via the function-level
+  `$_alloc_tmp` scratch local, but the per-function local collector only
+  discovered variant values through a fixed set of flat instruction
+  attributes plus `instr.args` -- it never descended into
+  `MakeStruct.fields` / `MakeList.elements` / `MakeTuple.elements`. When a
+  nullary variant nested in an aggregate literal was the ONLY construct
+  pulling in the scratch (no list method, match, for-loop, range, ... in
+  the function to declare it incidentally), the local was never declared
+  and the emitted WAT referenced an unknown `$_alloc_tmp` (`wasm-tools
+  parse failed: unknown local`), even though `--check` and the Python
+  backend accepted and ran the program. The collector now closes the whole
+  class: any aggregate-literal element/field that needs `$_alloc_tmp`
+  triggers its declaration, restoring four-backend parity (`--run`,
+  `--wasm`, `--wasm --component`, `--wasm --component --wasi`). Map values
+  reach the emitter as method-call arguments already covered by the
+  existing scan and were unaffected.
 - *SECURITY (information-flow control): `capa --fmt` SILENTLY STRIPPED
   information-flow security labels (`@secret` / `@public`) from every type
   position, disarming the IFC.* The AST pretty-printer's type emitter never
