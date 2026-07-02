@@ -118,6 +118,32 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *SECURITY / SOUNDNESS (information-flow control): a LAMBDA that captured
+  a secret from the enclosing scope and ESCAPED across a function boundary
+  laundered the secret.* A free function returning `fun () => K` (a
+  `@secret` const), `fun () => e.iban` (a declared-`@secret` field of a
+  struct parameter) or `fun () => token` (a `@secret` parameter), or
+  hiding such a closure in a returned struct field, produced a closure
+  VALUE that carried none of the captured secret's taint: the caller could
+  invoke it and route the result to a public sink (`Stdio.println`, ...)
+  with no diagnostic. The cause was that the cross-function summary pass
+  did not walk lambda bodies -- a `LambdaExpr` yielded the empty taint set,
+  so the function's return-effect never recorded the captured source. The
+  summary now returns the taint a lambda's INVOCATION would produce: the
+  source set of the value its body returns (its `return` statements plus
+  its trailing bare expression / expression body). The lambda's own
+  parameters are treated as fresh locals, not captures -- masked in an
+  isolated copy of the taint env (a parameter named like a captured local
+  does NOT inherit the enclosing taint) and registered as const shadows (a
+  parameter named like a secret const suppresses it inside the body) -- so
+  the walk never corrupts the enclosing function's flat, monotone env and
+  nested lambdas compose. A lambda that captures a secret but returns a
+  PUBLIC value, or that `declassify(...)`s the captured secret in its body,
+  carries no taint (no false positive). This closes the same laundering
+  class already shut for direct free-function returns and secret consts,
+  now for closure values: a warning by default and a hard error under
+  `@strict_ifc` (fail-closed).
+
 - *SECURITY / SOUNDNESS (information-flow control): a `@secret` label on
   a module-level `const` was SILENTLY IGNORED.* A
   `const K: @secret String = "..."` is accepted by the parser, but the
