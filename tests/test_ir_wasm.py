@@ -7081,9 +7081,9 @@ class TestWasmReturnUnitUserMethod(unittest.TestCase):
 
     def test_let_bound_unit_literal(self):
         # Same Unit class via a ``let`` binding: ``let u = ()`` binds a
-        # literal-unit value. The dst has no Wasm representation, so the
-        # binder must emit no ``local.set`` (else the WAT references an
-        # undeclared local and wasm-tools rejects it).
+        # literal-unit value. A ``lit_unit`` source pushes nothing, so
+        # the binder must emit no ``local.set`` (else ``local.set``
+        # consumes a value that is not on the operand stack).
         src = (
             "pub fun main(stdio: Stdio)\n"
             "    let u = ()\n"
@@ -7104,6 +7104,32 @@ class TestWasmReturnUnitUserMethod(unittest.TestCase):
         )
         self.assertEqual(
             self._run_capturing_stdout(src), "log: hi\nafter\n",
+        )
+
+    def test_try_unwrap_over_result_unit(self):
+        # Regression guard: ``fs.write(...)?`` returns ``Result<Unit,
+        # IoError>``, so the ``?`` operator's ``TryUnwrap`` unpacks a
+        # Unit Ok-payload. The Unit result temp must stay declared (the
+        # unpack does a real ``local.set`` into it); an earlier form of
+        # the Unit fix dropped that declaration and left the emitted WAT
+        # referencing an undeclared ``$_ir_tN``, which wasm-tools
+        # rejected. Writes into a fresh temp dir so the host actually
+        # succeeds and the Ok path is taken.
+        import os
+        import tempfile
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "capa_try_unit.txt").replace("\\", "/")
+        src = (
+            "fun writeit(fs: Fs, path: String) -> Result<Int, IoError>\n"
+            "    fs.write(path, \"hello\")?\n"
+            "    return Ok(1)\n"
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    match writeit(fs, \"" + path + "\")\n"
+            "        Ok(n)  -> stdio.println(\"wrote ${n}\")\n"
+            "        Err(e) -> stdio.eprintln(\"err: ${e}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "wrote 1\n",
         )
 
 
