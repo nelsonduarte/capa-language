@@ -9,6 +9,26 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Fixed.**
+
+- *The compiler version is now single-sourced from `pyproject.toml`, so the
+  released binary and the provenance it stamps report the real version.*
+  `capa.__version__` was a hard-coded literal (`1.13.0`) that the release
+  process never bumped alongside `pyproject.toml`, so the shipped binaries
+  (v1.14.0 and v1.15.0) reported `capa 1.13.0` and the AOT / provenance /
+  SBOM stamped the wrong compiler version, a real correctness problem for a
+  language whose headline is machine-verifiable SBOMs. `capa.__version__`
+  now derives from `[project].version` in `pyproject.toml` when running from
+  a source checkout, and from installed distribution metadata
+  (`importlib.metadata`) for a `pip install` or the PyInstaller binary; the
+  release spec bundles Capa's own dist-info metadata (`copy_metadata`) so
+  the frozen binary resolves the correct version. There is no longer a
+  second place to bump at release time, and a new test locks
+  `capa.__version__` to the pyproject version so the two can never diverge
+  again. Every version-stamping consumer (`capa --version`, the
+  `.capa-version` project stamp, the manifest / provenance / AOT builders,
+  the LSP server) follows automatically.
+
 ## [1.15.0], 2026-07-03
 
 **Added.**

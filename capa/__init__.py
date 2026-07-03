@@ -15,11 +15,97 @@ Example usage:
         print(e.format())
 """
 
-# Single source of truth for the package version. Bump here when
-# cutting a release; consumers (the manifest builder, the docs
-# tooling, the egg-info / wheel metadata) read this value rather
-# than hard-coding a string.
-__version__ = "1.13.0"
+# The package version is single-sourced from ``pyproject.toml``
+# (``[project].version``). Nothing in the tree hard-codes a version
+# string, so a release only ever bumps pyproject.toml and every
+# consumer that reads ``capa.__version__`` (the CLI ``--version``,
+# ``init_project``'s ``.capa-version`` stamp, the manifest / SBOM /
+# provenance / AOT builders, the LSP server) follows automatically.
+#
+# Resolution order, most-authoritative first:
+#
+# 1. The ``pyproject.toml`` sitting next to this package on disk.
+#    This is the ground truth when running from a source checkout,
+#    and it stays correct even when a *stale* editable install has
+#    left an out-of-date ``capa`` dist-info on the path (a common
+#    dev setup that would otherwise make ``importlib.metadata``
+#    report the wrong version).
+# 2. Installed distribution metadata via ``importlib.metadata``.
+#    This is the path for a real ``pip install`` (no adjacent
+#    pyproject.toml under ``site-packages``) and for the PyInstaller
+#    binary, whose spec bundles ``capa``'s dist-info metadata with
+#    ``copy_metadata`` precisely so this lookup succeeds when frozen.
+#
+# The final fallback is a clearly-bogus sentinel, never a plausible
+# release number: if resolution ever fails we want it to be obvious,
+# not to silently re-introduce the stale-literal bug this replaces.
+
+
+def _resolve_version() -> str:
+    import os
+
+    # 1. Adjacent pyproject.toml (source checkout / editable install).
+    pyproject = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "pyproject.toml",
+    )
+    try:
+        with open(pyproject, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        raw = None
+    if raw is not None:
+        version = _version_from_pyproject(raw)
+        if version is not None:
+            return version
+
+    # 2. Installed distribution metadata (wheel / frozen binary).
+    try:
+        from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+        try:
+            return _dist_version("capa")
+        except PackageNotFoundError:
+            pass
+    except ImportError:  # pragma: no cover - importlib.metadata is stdlib >=3.8
+        pass
+
+    # 3. Sentinel: resolution failed. Deliberately not a real version.
+    return "0+unknown"
+
+
+def _version_from_pyproject(raw: bytes) -> "str | None":
+    try:
+        import tomllib  # Python >= 3.11
+    except ImportError:
+        tomllib = None
+    if tomllib is not None:
+        try:
+            data = tomllib.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return None
+        project = data.get("project")
+        if isinstance(project, dict):
+            value = project.get("version")
+            if isinstance(value, str):
+                return value
+        return None
+    # Python 3.10 has no tomllib: fall back to a minimal regex scan.
+    # The only bare ``version = "..."`` assignment in pyproject.toml is
+    # the ``[project].version`` line; the dependency pins use ``>=`` in
+    # list literals and never match this anchored pattern.
+    import re
+
+    match = re.search(
+        rb'(?m)^\s*version\s*=\s*["\']([^"\']+)["\']',
+        raw,
+    )
+    if match is not None:
+        return match.group(1).decode("utf-8")
+    return None
+
+
+__version__ = _resolve_version()
 
 from . import capa_ast as ast
 from .analyzer import Analyzer, AnalysisError, AnalysisResult, Symbol, SymbolKind, analyze
