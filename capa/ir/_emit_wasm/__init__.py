@@ -1544,6 +1544,15 @@ class WasmEmitter(
             return False
         if name in self._TAIL_CALL_INTRINSICS:
             return False
+        # Built-in ``IoError(...)`` construction lowers inline (see
+        # ``_emit_ioerror_construction``); there is no ``$IoError``
+        # function to ``return_call``. Same guard as the routing in
+        # ``_emit_user_call`` so ``return IoError(...)`` in tail
+        # position falls through to the ordinary lowering.
+        if name == "IoError" \
+                and name not in self._user_fn_names \
+                and "IoError" in self._struct_layouts:
+            return False
         callee_ty = self._lookup_local_or_param_ty(name)
         if callee_ty and callee_ty.startswith("Fun"):
             return False

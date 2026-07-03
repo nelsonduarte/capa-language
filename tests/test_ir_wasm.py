@@ -820,6 +820,53 @@ class TestWasmStdioExecutes(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertEqual(err, "caught\n")
 
+    def test_ioerror_construction_in_return_position(self):
+        # Regression (PR #41 adversarial review): ``return IoError(...)``
+        # in tail position was intercepted by the tail-call peephole
+        # BEFORE the constructor routing, emitting ``return_call
+        # $IoError`` against a function that is never defined ("unknown
+        # func $IoError" at wasm-tools parse). ``_is_tail_callable`` now
+        # excludes the built-in IoError constructor (like variants and
+        # intrinsics), so the construction falls through to the inline
+        # lowering. The ``assertNotIn("call $IoError", ...)`` substring
+        # check also covers ``return_call $IoError``. The one-arg
+        # (empty-cause) form renders ``${e}`` identically to Python's
+        # ``IoError.__str__``, so stdout parity holds end to end.
+        src = (
+            "fun make() -> IoError\n"
+            "    return IoError(\"from-fn\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    let e = make()\n"
+            "    stdio.println(\"made: ${e}\")\n"
+        )
+        _, types, ast_mod = _parse_lower(src)
+        self.assertNotIn("call $IoError", compile_wat(ast_mod, types=types))
+        out, err = self._run_capturing_stdout(src)
+        self.assertEqual(out, "made: from-fn\n")
+        self.assertEqual(err, "")
+
+    def test_ioerror_two_args_in_return_position(self):
+        # Two-arg form in tail position: the record is built (both
+        # fields stored) and flows back through the ordinary call +
+        # return, matching Python's control flow. The output observes a
+        # constant rather than ``${e}`` because rendering a NON-empty
+        # cause is a pre-existing FormatStr divergence (Wasm renders
+        # only the message; see the IoError branch in
+        # _emit_wasm/_strings.py) separate from the construction under
+        # test here.
+        src = (
+            "fun make() -> IoError\n"
+            "    return IoError(\"from-fn\", \"detail\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    let e = make()\n"
+            "    stdio.println(\"made\")\n"
+        )
+        _, types, ast_mod = _parse_lower(src)
+        self.assertNotIn("call $IoError", compile_wat(ast_mod, types=types))
+        out, err = self._run_capturing_stdout(src)
+        self.assertEqual(out, "made\n")
+        self.assertEqual(err, "")
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),
