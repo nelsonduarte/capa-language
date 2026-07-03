@@ -9,6 +9,8 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.15.0], 2026-07-03
+
 **Added.**
 
 - *The `--wasi` mode now PROVES and EXPOSES a by-construction "path-arg
