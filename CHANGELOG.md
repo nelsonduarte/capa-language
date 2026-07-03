@@ -9,6 +9,8 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.15.1], 2026-07-03
+
 **Fixed.**
 
 - *Verified `capa install` works again with modern `gh`.* The SLSA
