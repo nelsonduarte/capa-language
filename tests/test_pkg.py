@@ -1560,8 +1560,12 @@ class TestVerifyProvenanceModes(unittest.TestCase):
         self.assertIn("mylib", str(cm.exception))
 
     def test_repo_scope_passed_to_attestation_verify(self):
-        # The attestation verify call must carry --repo owner/repo, not
-        # only --owner (M4 closes the owner-only weakness).
+        # The attestation verify call must carry --repo owner/repo and
+        # must NOT also pass --owner. Modern gh (>= 2.88) treats
+        # {--owner, --repo} as a mutually exclusive group and exits
+        # non-zero before verifying if both are set, which capa then
+        # mis-reports as a missing/tampered attestation. This is the
+        # regression trap for that flag pairing.
         from unittest.mock import patch, MagicMock
         from capa.pkg._install import _verify_slsa_provenance
         dep = self._dep(git="https://github.com/foo/bar", level="warn")
@@ -1582,8 +1586,9 @@ class TestVerifyProvenanceModes(unittest.TestCase):
         self.assertIn("--repo", verify_cmd)
         repo_idx = verify_cmd.index("--repo") + 1
         self.assertEqual(verify_cmd[repo_idx], "foo/bar")
-        # --owner still present (belt and braces).
-        self.assertIn("--owner", verify_cmd)
+        # --owner must be absent: modern gh rejects --owner + --repo
+        # together as a mutually exclusive group.
+        self.assertNotIn("--owner", verify_cmd)
 
     def test_env_override_raises_on_warn_dep(self):
         # CAPA_REQUIRE_PROVENANCE=1 lifts a "warn" dep to required.
