@@ -80,19 +80,23 @@ Out of scope:
   audit *what holders of authority choose to do*.
 - Attacks that require uses of the `Unsafe` capability or `py_import`.
   The Python interop boundary deliberately exits the discipline.
-- Issues with third-party Python packages used at build time.
+- Issues with third-party Python packages used at build time. CI does
+  gate on known advisories in the packaged dependency set: a `pip-audit`
+  job runs on every pull request over the package plus its `[lsp,wasm,test]`
+  extras and fails the build on any known vulnerability.
 - Theoretical issues in the type system that have no concrete attack.
 
 ## Supported versions
 
-Capa is at version 1.0 and is a one-person project. Only the latest
-tagged release is supported for security fixes. I may publish patch
-releases for the latest minor when a fix is significant.
+Capa is on the `1.x` line (latest `1.15.1`) and is a one-person
+project. Only the latest tagged release is supported for security fixes.
+I may publish patch releases for the latest minor when a fix is
+significant.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.0.x   | yes       |
-| < 1.0   | no, please upgrade |
+| 1.15.x (latest) | yes |
+| < 1.15  | no, please upgrade |
 
 ## Published advisories
 

@@ -7,7 +7,7 @@
 > This file holds only what is still open; everything already shipped
 > lives in [`DONE.md`](DONE.md).
 
-Compiler at **v1.13.0** (released 2026-06-26). Suite green (3221 tests),
+Compiler at **v1.15.1** (released 2026-07-03). Suite green (3578 tests),
 CI green. Items are grouped by time horizon, not by an internal priority
 code.
 
@@ -121,8 +121,13 @@ code.
   out-of-prefix file passes the checks.
 - **Db post-open TOCTOU.** Narrow residual window; `sqlite3` does not
   accept a pre-opened file descriptor.
-- **IFC C-2 residual.** A `@secret` closure bound to a `let`/field and
-  then passed by name cross-function is a documented false negative.
+- **IFC C-2 residual.** The two-hop closure-by-name laundering is now
+  caught for a closure bound to a single-assignment `let` / `var` that
+  denotes one lambda literal (closed in v1.15.0). The remaining documented
+  false negatives are a `@secret` closure borne in a STRUCT FIELD, a `Fun`
+  PARAMETER re-passed onward, a binding whose RHS is not a lambda literal
+  (e.g. a call result), or ANY `var` that is ever reassigned, then passed
+  by name cross-function.
 - **IFC flow-insensitivity on reassignment.** Conservative, never
   unsound.
 - **Security M3.** `install.sh` same-channel SHA pinning, deferred by

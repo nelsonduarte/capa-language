@@ -19,6 +19,91 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.15.1: verified `capa install` repaired (2026-07-03)
+
+- **`capa install` verifies again with modern `gh`.** The SLSA
+  provenance check passed both `--owner` and `--repo` to `gh attestation
+  verify`; `gh` >= 2.88 treats `{owner, repo}` as a mutually exclusive
+  group and exits non-zero before verifying, which `capa install`
+  mis-reported as a missing / tampered attestation and refused every
+  verified install. The call now passes `--repo {owner}/{repo}` only, so
+  valid GPG-tag + SLSA-provenance attestations verify as intended and the
+  verified-install path (used by the four public demos' git-deps) works
+  end to end.
+
+## v1.15.0: verifiable `--wasi` path-arg surface, `--preopen`, IFC hardening, codegen + formatter fixes (2026-07-03)
+
+- **`--wasi` proves and exposes a by-construction "path-arg surface".** A
+  sound static over-approximation forward-taints `env.args()` through
+  bindings, struct fields, helper calls / returns and interpolation, and
+  records every `argv` argument that reaches an `Fs` / `Net` / `Env` sink
+  with its access (read / write) and, when statically determinate, its
+  concrete index. It drives a new `compiler_derived_path_arg_surface`
+  SBOM block (manifest, CycloneDX, SPDX), an actionable `--wasi`
+  rejection message that names the offending `arg -> sink`, and a
+  read-only `capa --wasi-surface <prog>` inspection command. Backed by a
+  dedicated soundness harness with a hand-written ground-truth corpus.
+- **`--preopen <dir>[:ro|:rw]` unblocks dynamic (non-literal) `Fs`
+  paths** as a Level-2 operator-declared grant, recorded distinctly in
+  the SBOM under `operator_declared_grants`. Without it, a dynamic `Fs`
+  path stays rejected at compile time.
+- **`--wasi` authority ceilings now propagate string literals
+  INTER-PROCEDURALLY**, closing idiomatic helper-routed paths / urls /
+  keys without an operator grant, fail-closed on any genuinely computed
+  value. A dynamic (non-literal) URL to `Net.get` / `Net.post` is now
+  rejected at compile time, symmetric with the `Fs` dynamic-path rule.
+- **IFC soundness hardening (several laundering classes closed).**
+  Return-laundering through FREE FUNCTIONS; a `@secret` module `const`
+  that was silently ignored; a lambda that captured a secret and escaped
+  across a function boundary (free-function return or returned struct
+  field); and the two-hop closure-by-name false negative (a
+  secret-capturing closure bound to a single-assignment `let` / `var`
+  denoting one lambda literal, then handed to a higher-order callee that
+  invokes it into a public sink). Each is a warning by default and a hard
+  error under `@strict_ifc` (fail-closed), with the residual false
+  negatives documented in `TODO.md`.
+- **SECURITY (formatter): `capa --fmt` no longer strips `@secret` /
+  `@public` labels.** The AST pretty-printer never re-emitted
+  `TypeExpr.label`, so formatting a file silently dropped IFC labels from
+  every type position and disarmed the analyzer on the reformatted file.
+  The label is now emitted once, centrally, covering every position;
+  the `Name[State]` typestate index is preserved too.
+- **Wasm codegen backend-parity fixes.** `return` of a user-method call
+  returning Unit (Unit spelled `()` vs `Unit`) miscompiled; a nullary
+  sum variant used as a value inside an aggregate literal referenced an
+  undeclared `$_alloc_tmp`; and the WASM Component Model backend now
+  accepts a `main` with a scalar return type (`Int` / `Float` / `Bool`),
+  rejecting `String` / composite returns with a clean actionable message.
+  Restores four-backend parity (`--run`, `--wasm`, `--wasm --component`,
+  `--wasm --component --wasi`).
+- **Compiler version single-sourced from `pyproject.toml`.**
+  `capa.__version__` was a hard-coded `1.13.0` the release process never
+  bumped, so v1.14.0 / v1.15.0 binaries reported `capa 1.13.0` and stamped
+  the wrong version into AOT / provenance / SBOM. It now derives from the
+  project metadata, with a test locking the two together.
+
+## CI gates: `pip-audit` + Wasm/Python example parity (2026-07-03)
+
+- **`pip-audit` job gates on dependency vulnerabilities.** Runs on every
+  pull request over the package plus its `[lsp,wasm,test]` extras (pinned
+  by SHA) and fails the build on any known advisory; the paper-figure-only
+  `[eval]` extra is excluded on purpose. The `pytest` floor was also
+  raised to `>=9.0.3` to exclude CVE-2025-71176.
+- **Wasm/Python example parity gate.** A new `scripts/wasm_parity_smoke.sh`,
+  invoked by the `wasi` job (which already installs wasm-tools + wasmtime),
+  runs a curated deterministic set of examples on the Python oracle, the
+  core Wasm backend, and the Component backend, and fails the build if any
+  backend diverges in exit code or stdout. Closes the gap that let a
+  Wasm-only codegen regression ship with a green build.
+
+## Four public corporate demos (2026-07-02)
+
+- **Published `capa_dataguard`, `capa_supplygate`, `capa_configbroker`,
+  `capa_licenseaudit`** under `github.com/nelsonduarte/<name>`, each a
+  compact IFC / capability / SBOM showcase with a compiler-rejected
+  negative and verified git-deps (`capa install`). Dogfooding them
+  surfaced the Wasm codegen and formatter bugs closed in v1.15.0.
+
 ## Experimental WASI Preview 2 `--wasi` mode (Env/Fs/Net migrated) (2026-06-29)
 
 - **Opt-in `--wasi` (with `--wasm --component`) migrates Env/Fs/Net to

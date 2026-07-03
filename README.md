@@ -261,7 +261,7 @@ capa/                 # Python package: compiler + runtime + pkg manager
   lexer/  parser/  analyzer/  transpiler/  runtime/
   ir/                 # CIR + Wasm Component Model backend + WIT emitter
   manifest/  docgen/  lsp/    pkg/    cli.py
-tests/                # 3000+ unit, end-to-end, and property tests
+tests/                # 3,500+ unit, end-to-end, and property tests
 examples/             # .capa programs (basics, CVE case studies, LLM sandbox)
 # (seed libraries now all live in standalone repos; see Standard library section)
 docs/                 # public website (HTML) + design writeups (.md)
@@ -274,7 +274,7 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa ships as **`1.13.0`** (released 2026-06-26), with the full
+Capa ships as **`1.15.1`** (released 2026-07-03), with the full
 security axis (information-flow control, constant-time markers, and
 typestate protocols) and the fully functional Wasm backend (see
 [`CHANGELOG.md`](CHANGELOG.md)). The stability commitment in
@@ -282,7 +282,7 @@ typestate protocols) and the fully functional Wasm backend (see
 breaking changes to the covered surfaces require a major bump, and
 deprecations get one minor release of warning first.
 
-**3000+ tests** spanning the lexer, parser, analyzer, transpiler,
+**3,500+ tests** spanning the lexer, parser, analyzer, transpiler,
 LSP, formatter, attribute-schema validation, package manager, the
 information-flow / constant-time / typestate checkers, the Wasm
 backend (with a Python/Wasm output parity harness), and
