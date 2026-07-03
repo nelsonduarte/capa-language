@@ -9,6 +9,18 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Fixed.**
+
+- *Verified `capa install` works again with modern `gh`.* The SLSA
+  provenance check passed both `--owner` and `--repo` to `gh attestation
+  verify`; `gh` >= 2.88 treats `{owner, repo}` as a mutually exclusive
+  group and exits non-zero before verifying ("if any flags in the group
+  [owner repo] are set none of the others can be"), which `capa install`
+  then mis-reported as a missing or tampered attestation and refused every
+  verified install. The call now passes `--repo {owner}/{repo}` only,
+  aligned with the function's own docstring, so valid SLSA attestations
+  verify as intended.
+
 ## [1.15.0], 2026-07-03
 
 **Added.**

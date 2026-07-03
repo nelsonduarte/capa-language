@@ -627,7 +627,6 @@ def _verify_slsa_provenance(
         r = subprocess.run(
             [
                 "gh", "attestation", "verify", str(tarball_path),
-                "--owner", owner,
                 "--repo", f"{owner}/{repo}",
             ],
             capture_output=True, text=True, encoding="utf-8",
