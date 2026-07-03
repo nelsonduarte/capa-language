@@ -167,6 +167,24 @@ class _DispatchMixin:
                         e.pos,
                     )
                     return TyName(sym.name)
+                if sym.kind == SymbolKind.TYPE_STRUCT and sym.name == "IoError":
+                    # ``IoError(msg)`` / ``IoError(msg, cause)`` is the
+                    # one built-in value type Capa constructs with call
+                    # syntax. Until 2026-07 this fell through to
+                    # TyUnknown, so any aggregate slot holding one --
+                    # ``[IoError(..)]``, ``(IoError(..), 1)``,
+                    # ``Some(IoError(..))`` -- inferred as ``?`` and the
+                    # Wasm backend defaulted the slot to a scalar i64
+                    # while the value is an i32 record pointer
+                    # (validator rejection at run time). Typing the
+                    # constructor result here lets the element / payload
+                    # inference carry the real type. The arguments were
+                    # already checked above; arity / argument mistakes
+                    # keep their pre-existing runtime behaviour rather
+                    # than growing new compile-time rejections.
+                    from ..builtins import BUILTIN_POS
+                    if sym.pos == BUILTIN_POS:
+                        return TyName("IoError")
                 if sym.kind == SymbolKind.FUNCTION:
                     # Underscore-prefixed BUILTIN functions (e.g.
                     # ``_capa_chr``) are compiler-internal plumbing

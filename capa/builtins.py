@@ -420,6 +420,19 @@ def register_builtins(define, lookup) -> None:
             pos=BUILTIN_POS, type_params=list(params),
         ))
 
+    # ``IoError`` is a builtin struct at the value level (the runtime
+    # dataclass carries ``message`` / ``cause``, and the Wasm backend
+    # pre-registers the matching 16-byte layout). Register the fields
+    # so ``err.message`` / ``err.cause`` type-check as String instead
+    # of erroring once the receiver's type is known. Mirrors
+    # ``capa.runtime._capabilities.IoError`` and the Wasm
+    # ``_IOERROR_LAYOUT``.
+    io_error_sym = lookup("IoError")
+    io_error_sym.struct_fields = {
+        "message": TyString,
+        "cause": TyString,
+    }
+
     # Methods (mutates the existing owner Symbol's ``methods`` dict).
     # ``String`` is one of the primitives above; the loop finds it
     # via ``lookup`` and adds the method table to that existing

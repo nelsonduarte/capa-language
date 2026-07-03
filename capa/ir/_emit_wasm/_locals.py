@@ -220,6 +220,24 @@ class _LocalsCollectionMixin:
                             for sub_pat, (_off, _sz, payload_ty) in zip(
                                 arm.pattern.payloads, payload_layouts,
                             ):
+                                if isinstance(sub_pat, PatVariant):
+                                    # Nested variant payload
+                                    # (``Ok(JObj(m))``): the inner
+                                    # binder's type comes from the
+                                    # INNER variant's own sum layout,
+                                    # resolved via _variant_to_sum
+                                    # (the outer slot type is 'Any'
+                                    # for builtin Option / Result).
+                                    # Without this the inner binder
+                                    # stayed at the default i64 while
+                                    # the payload extraction produced
+                                    # an i32 pointer (or a String
+                                    # ``_ptr``/``_len`` pair), and the
+                                    # local.set tripped the validator.
+                                    self._refine_nested_variant_binds(
+                                        sub_pat, fn,
+                                    )
+                                    continue
                                 if not isinstance(sub_pat, PatIdent):
                                     continue
                                 cur = fn.locals.get(sub_pat.name, "")
@@ -1122,6 +1140,38 @@ class _LocalsCollectionMixin:
             out["_trait_recv"] = "i32"
             out["_trait_tag"] = "i32"
         return out
+
+    def _refine_nested_variant_binds(
+        self, pat: PatVariant, fn: Function,
+    ) -> None:
+        """Thread the payload types of a NESTED variant pattern
+        (``JObj(m)`` inside ``Ok(JObj(m))``) into ``fn.locals``. The
+        outer refinement loop cannot: the outer sum's slot type for a
+        builtin Option / Result payload is ``'Any'``, so the inner
+        binder's type must come from the inner variant's OWN sum
+        layout, resolved through ``_variant_to_sum``. Only depth-1
+        nesting is handled, matching what the match emitter
+        implements (deeper nesting raises there)."""
+        inner_sum = self._variant_to_sum.get(pat.name)
+        if inner_sum is None:
+            return
+        inner_layout = self._sum_layouts.get(inner_sum)
+        if inner_layout is None:
+            return
+        entry = inner_layout["variants"].get(pat.name)
+        if entry is None:
+            return
+        _tag, payload_layouts = entry
+        for sub_pat, (_off, _sz, payload_ty) in zip(
+            pat.payloads, payload_layouts,
+        ):
+            if not isinstance(sub_pat, PatIdent):
+                continue
+            cur = fn.locals.get(sub_pat.name, "")
+            if (cur in ("", "Unknown", "?", "Any")
+                    or cur.startswith("?")):
+                if payload_ty and payload_ty != "Any":
+                    fn.locals[sub_pat.name] = payload_ty
 
     def _refine_struct_pat_binds(
         self, pattern, struct_layout: dict, fn: Function,

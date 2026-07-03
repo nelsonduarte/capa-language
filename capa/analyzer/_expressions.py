@@ -513,6 +513,28 @@ class _ExpressionsMixin:
             if not isinstance(t, type(TyUnknown)) and t != TyUnknown:
                 ref_ty = t
                 break
+        # The reference arm may still carry FLEXIBLE inference
+        # placeholders (an empty-list arm types as ``List<?lst_N>``);
+        # refine them against the other arms so the match's result
+        # type is as concrete as any arm can make it. Without this,
+        # ``match m.get(k) { None -> [] ; Some(xs) -> xs }`` typed
+        # ``List<?lst_N>`` and the Wasm backend treated later pushes
+        # of String / pointer elements as scalar i64 (a validator
+        # rejection at best, a silent miscompile at worst). Only
+        # flexible ``?``-prefixed vars are substituted: a rigid
+        # generic parameter (``T``) must not be narrowed to one
+        # arm's concrete type.
+        for t in arm_types:
+            if t is None or t is ref_ty:
+                continue
+            mapping: dict[str, Ty] = {}
+            if unify(ref_ty, t, mapping):
+                flexible = {
+                    name: bound for name, bound in mapping.items()
+                    if name.startswith("?")
+                }
+                if flexible:
+                    ref_ty = substitute(ref_ty, flexible)
         for i, t in enumerate(arm_types):
             if t is None:
                 continue

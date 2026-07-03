@@ -7224,5 +7224,233 @@ class TestWasmReturnUnitUserMethod(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmAggregateSlotTypeInference(unittest.TestCase):
+    """Regression guards for the 2026-07 aggregate/payload slot
+    type-inference fix. Family: a slot whose Capa type stayed ``?`` /
+    Unknown at lowering defaulted to a scalar i64 in the Wasm backend
+    while the actual value is pointer-shaped (i32 record pointer) or
+    packed-i64 (String / closure), producing a Wasm validator
+    rejection or an undeclared local. Four roots were closed:
+
+    1. ``IoError(...)`` constructor calls typed TyUnknown by the
+       analyzer, so any aggregate slot holding one (list element,
+       tuple slot, Option/Result payload) inferred ``?``.
+    2. Binders nested under a builtin-variant pattern
+       (``Ok(JObj(m))`` / ``Some(JStr(s))``) never resolved: the
+       lowerer's ``_variant_payload_tys`` did not know the builtin
+       JsonValue variants' payload types.
+    3. A match expression's result type took the FIRST arm verbatim,
+       so ``None -> [] ; Some(xs) -> xs`` kept the empty-list arm's
+       flexible ``List<?lst_N>`` and later pushes of String /
+       pointer elements were emitted as scalar i64.
+    4. ``_ty_to_str`` normalised ``fun(`` -> ``Fun(`` only at the top
+       level, so a ``List<fun(...)>`` literal's closure elements
+       missed the ``startswith("Fun")`` width checks (4-byte slots
+       for packed-i64 values).
+
+    Each test executes end-to-end on wasmtime and asserts the exact
+    stdout the Python backend produces for the same program."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_list_of_ioerror_iterated_and_formatted(self):
+        # Root 1: ``[IoError(..), IoError(..)]`` inferred List<?>; the
+        # element slot stored the i32 record pointer with i64.store and
+        # the for-binder was a scalar i64 formatted via $itoa.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [IoError(\"alpha\"), IoError(\"beta\")]\n"
+            "    for e in xs\n"
+            "        stdio.println(\"item: ${e}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "item: alpha\nitem: beta\n",
+        )
+
+    def test_ioerror_in_tuple_and_option_payload(self):
+        # Root 1: tuple slot and Some(...) payload holding an IoError.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let t = (IoError(\"a\"), 7)\n"
+            "    stdio.println(\"second: ${t[1]}\")\n"
+            "    let o = Some(IoError(\"b\"))\n"
+            "    match o\n"
+            "        Some(e) -> stdio.println(\"some: ${e}\")\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "second: 7\nsome: b\n",
+        )
+
+    def test_ioerror_field_access_on_let_binding(self):
+        # Root 1 corollary: with the constructor result typed, the
+        # FieldAccess dst is a String pair (``$_ir_tN_ptr``/``_len``)
+        # instead of an undeclared bare i64 local; and the analyzer
+        # knows the builtin's ``message`` / ``cause`` fields.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let e = IoError(\"boom\", \"root\")\n"
+            "    stdio.println(\"msg=${e.message} cause=${e.cause}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src),
+            "msg=boom cause=root\n",
+        )
+
+    def test_nested_builtin_variant_binding_map_payload(self):
+        # Root 2 (the examples/tasks.capa shape): ``Ok(JObj(m))``
+        # binds the Map<String, JsonValue> payload of a variant
+        # nested inside Ok. Pre-fix ``m`` was declared i64 while the
+        # payload extraction wrapped to i32. ``m`` is also USED, so
+        # method dispatch on the refined binder type is exercised.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    match parse_json(\"{\\\"name\\\": \\\"zeta\\\"}\")\n"
+            "        Ok(JObj(m)) ->\n"
+            "            match m.get(\"name\")\n"
+            "                Some(JStr(s)) -> stdio.println(\"name: ${s}\")\n"
+            "                _ -> stdio.println(\"no name\")\n"
+            "        _ -> stdio.println(\"bad\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "name: zeta\n",
+        )
+
+    def test_nested_builtin_variant_binding_string_payload(self):
+        # Root 2 (the examples/quota_check.capa shape):
+        # ``Some(JStr(s))`` binds a String payload one level deep;
+        # pre-fix the local-decl sweep declared a bare i64 ``$s``
+        # while the bind wrote ``$s_ptr`` / ``$s_len``.
+        src = (
+            "fun name_of(j: JsonValue) -> String\n"
+            "    return match j.as_object()\n"
+            "        None -> \"<not-an-object>\"\n"
+            "        Some(m) -> match m.get(\"name\")\n"
+            "            Some(JStr(s)) -> s\n"
+            "            _ -> \"<unnamed>\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    match parse_json(\"{\\\"name\\\": \\\"pod-1\\\"}\")\n"
+            "        Ok(j) -> stdio.println(name_of(j))\n"
+            "        Err(msg) -> stdio.println(\"bad: ${msg}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "pod-1\n",
+        )
+
+    def test_nested_builtin_variant_binding_list_payload(self):
+        # Root 2: ``Ok(JArr(xs))`` binds the List<JsonValue> payload.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    match parse_json(\"[1, 2, 3]\")\n"
+            "        Ok(JArr(xs)) -> stdio.println(\"len ${xs.length()}\")\n"
+            "        _ -> stdio.println(\"not arr\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "len 3\n",
+        )
+
+    def test_match_arm_result_type_refined_across_arms(self):
+        # Root 3 (the spdx/cyclonedx adjacency-building shape): the
+        # empty-list arm types List<?lst_N>; the Some arm's
+        # List<String> must refine the match's result type or the
+        # later ``push`` of a String element is emitted as a scalar
+        # i64 against an undeclared bare local.
+        src = (
+            "type Rel { source: String, target: String }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let rels = [\n"
+            "        Rel { source: \"a\", target: \"b\" },\n"
+            "        Rel { source: \"a\", target: \"c\" }\n"
+            "    ]\n"
+            "    let adj: Map<String, List<String>> = new_map()\n"
+            "    for r in rels\n"
+            "        let existing = match adj.get(r.source)\n"
+            "            None -> []\n"
+            "            Some(xs) -> xs\n"
+            "        existing.push(r.target)\n"
+            "        adj.set(r.source, existing)\n"
+            "    match adj.get(\"a\")\n"
+            "        Some(ts) ->\n"
+            "            for t in ts\n"
+            "                stdio.println(\"a -> ${t}\")\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "a -> b\na -> c\n",
+        )
+
+    def test_closure_elements_in_annotated_list_literal(self):
+        # Root 4 (the quota_check policy-list shape): the analyzer
+        # renders the annotated literal's element type ``fun(...)``
+        # (lowercase) NESTED inside List<>; the normalisation must
+        # reach it or the packed-i64 closures get 4-byte slots.
+        src = (
+            "fun add_n(n: Int) -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int => x + n\n"
+            "fun main(stdio: Stdio)\n"
+            "    let fns: List<Fun(Int) -> Int> = [add_n(1), add_n(10)]\n"
+            "    var total = 0\n"
+            "    for f in fns\n"
+            "        total += f(5)\n"
+            "    stdio.println(\"total: ${total}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "total: 21\n",
+        )
+
+    def test_nested_user_variant_binding_still_works(self):
+        # Guard: nested USER-sum variants inside Ok (already working
+        # pre-fix via ``_user_variants``) must keep working with the
+        # builtin seeding in place.
+        src = (
+            "type Col =\n"
+            "    Red\n"
+            "    Blue(Int)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let r: Result<Col, String> = Ok(Blue(9))\n"
+            "    match r\n"
+            "        Ok(Blue(n)) -> stdio.println(\"blue ${n}\")\n"
+            "        Ok(Red) -> stdio.println(\"red\")\n"
+            "        Err(e) -> stdio.println(\"err ${e}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "blue 9\n",
+        )
+
+    def test_list_of_user_structs_still_works(self):
+        # Guard: List<user-struct> element inference (working pre-fix)
+        # is unaffected by the IoError constructor typing.
+        src = (
+            "type P { x: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let a = [P { x: 1 }, P { x: 2 }]\n"
+            "    for e in a\n"
+            "        stdio.println(\"p: ${e.x}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "p: 1\np: 2\n",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
