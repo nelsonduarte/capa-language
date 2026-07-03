@@ -9,6 +9,24 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**CI.**
+
+- *Added a Wasm/Python example parity gate.* The main test job smoke-runs
+  `examples/*.capa` only under the Python interpreter, so a Wasm-only
+  codegen regression could ship with a green build. That is exactly what
+  happened with the `?`-over-`Result<Unit, E>` regression: it broke
+  `examples/io.capa` under `--wasm` while CI stayed green, and only manual
+  adversarial review caught it. A new `scripts/wasm_parity_smoke.sh`,
+  invoked by the `wasi` job (which already installs wasm-tools + wasmtime),
+  runs a curated set of 31 examples on the Python oracle, the core Wasm
+  backend (`--wasm --run`), and the Component backend
+  (`--wasm --component --run`), and fails the build if any backend diverges
+  from the oracle in exit code or stdout. The curated include list and the
+  documented exclusions (teaching demos that exit non-zero by design,
+  pre-existing Wasm backend limitations, and legitimate Python-vs-Wasm
+  output divergences) are maintained inline in the script. The set is
+  deterministic (no clock/random/network output) so the gate cannot flake.
+
 **Security.**
 
 - *Raised the `pytest` floor to exclude a known CVE.* The `[test]`
