@@ -19,6 +19,8 @@ import graph. ``_lower.py`` re-exports it so the public
 
 from __future__ import annotations
 
+import re as _re
+
 
 class UnsupportedInIR(Exception):
     """Raised when the lowerer hits an AST node it does not yet
@@ -130,15 +132,22 @@ def _ty_to_str(t: object) -> str:
     (lowercase). The IR's downstream consumers (Wasm emitter
     closure machinery, in particular) match against the
     ``Fun(...)`` form used by the AST-side rendering, so we
-    normalise the prefix here to keep the two paths in lockstep.
+    normalise the spelling here to keep the two paths in lockstep.
+    The normalisation applies at ANY nesting depth, not just the
+    top level: ``List<fun(JsonValue) -> ...>`` must yield the
+    element type ``Fun(...)`` or the closure checks
+    (``startswith("Fun")``) miss it and the element slot is sized
+    4 bytes instead of the packed-i64 8 (Wasm validator rejection).
+    ``fun`` is a keyword, so no user type name can produce the
+    ``fun(`` token; the word-boundary anchor keeps a hypothetical
+    ``Xfun`` name safe regardless.
     """
     try:
         from ..typesys import ty_str
         s = ty_str(t)
     except Exception:
         return repr(t)
-    if s.startswith("fun("):
-        return "Fun" + s[3:]
+    s = _re.sub(r"\bfun\(", "Fun(", s)
     # Unit renders as ``()`` from the type printer (Unit is the empty
     # tuple), but the IR and both backends key their Unit handling off
     # the canonical spelling ``Unit``. Normalise here so a Unit-typed

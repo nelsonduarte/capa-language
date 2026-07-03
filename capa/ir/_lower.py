@@ -147,6 +147,23 @@ class Lowerer(
         # this list mirrors its payloadless rows.
         for v_name in ("None", "JNull"):
             self._payloadless_variants.add(v_name)
+        # Seed the built-in JsonValue variants' payload types so
+        # ``_variant_payload_tys`` resolves binders nested under a
+        # builtin variant pattern (``Ok(JObj(m))`` / ``Some(JStr(s))``).
+        # Without this the binder stayed Unknown, the Wasm backend
+        # declared it as the default scalar i64 (or a bare ``$name``
+        # instead of the String ``_ptr``/``_len`` pair), and the
+        # pointer-shaped payload extraction tripped the validator.
+        # Mirrors the analyzer-side ``VARIANTS`` table and the Wasm
+        # ``_JSONVALUE_LAYOUT``; a user-declared sum scanned below
+        # overrides these entries, preserving shadowing semantics.
+        self._user_variants.update({
+            "JBool": ["Bool"],
+            "JNum": ["Float"],
+            "JStr": ["String"],
+            "JArr": ["List<JsonValue>"],
+            "JObj": ["Map<String, JsonValue>"],
+        })
         # Pre-scan struct declarations so struct-destructuring let/for
         # patterns can resolve each bound field's type (``let Point {
         # x, y } = p`` binds ``x`` / ``y`` at the struct's declared

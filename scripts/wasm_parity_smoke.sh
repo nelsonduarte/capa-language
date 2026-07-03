@@ -76,6 +76,15 @@ MUST_PASS=(
   empirical_config
   migrate_logfetcher_step3_typed
 
+  # Aggregate/payload slot type inference (2026-07 fix): nested
+  # builtin-variant match bindings (`Ok(JObj(m))` / `Some(JStr(s))`),
+  # match-arm result-type refinement (`None -> [] ; Some(xs) -> xs`),
+  # and closure elements in a list literal.
+  tasks
+  quota_check
+  cyclonedx_parser
+  spdx_parser
+
   # Built-in IoError construction (Err(IoError("...")) on the Wasm backend).
   provenance_demo
   llm_agent_runner
@@ -112,17 +121,8 @@ MUST_PASS=(
 #   closures                       higher-order function values ("unknown func $f").
 #   patterns                       tuple match with a variant sub-pattern not yet
 #                                  supported on the Wasm backend.
-#   tasks                          Wasm codegen gap (SEPARATE from IoError, which is
-#                                  now fixed): an unused `Ok(JObj(m))` match binding
-#                                  of a Map payload gets an i64 local while the arm's
-#                                  payload extraction wraps to i32 -- a nested-variant
-#                                  binding type-inference gap, not a construction one.
-#                                  `provenance_demo` and `llm_agent_runner`, which
-#                                  hit only the IoError construction gap, now reach
-#                                  full parity and moved to MUST_PASS.
-#   quota_check, cyclonedx_parser, spdx_parser
-#                                  Wasm codegen gap: a temp binding is referenced
-#                                  before declaration ("unknown local ...").
+# (`tasks`, `quota_check`, `cyclonedx_parser`, `spdx_parser` moved to
+# MUST_PASS after the 2026-07 aggregate/payload slot type-inference fix.)
 #
 # Legitimate Python-vs-Wasm output DIVERGENCE (both exit 0, stdout differs):
 #   cve_jinja2_ssti                the Wasm string-substitution path reports

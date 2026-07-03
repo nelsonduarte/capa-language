@@ -11,6 +11,58 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *Aggregate/payload slot type inference no longer miscompiles
+  pointer-shaped values on the Wasm backend.* A family of codegen bugs
+  shared one failure mode: when the Capa type of an aggregate slot (list
+  element, tuple slot, variant payload, match binder, match result) stayed
+  unresolved (`?`/Unknown) through lowering, the Wasm emitter defaulted the
+  slot to a scalar `i64` even though the runtime value is an `i32` record
+  pointer (struct / map / list / `IoError`) or a packed i64 (String /
+  closure) -- programs accepted by `--check` and correct under the Python
+  backend failed Wasm validation ("type mismatch: expected i64, found
+  i32"), referenced undeclared locals, or silently formatted a pointer as
+  an integer. Four roots closed, each at the place where the type was
+  lost:
+  1. **`IoError(...)` constructor calls were untyped by the analyzer**
+     (the earlier inline-construction fix pinned only the lowerer-side
+     result), so `[IoError("a")]` inferred `List<?>`, `(IoError("a"), 1)`
+     a `?` tuple slot, and `Some(IoError("a"))` an `Option<?>`. The
+     analyzer now types the builtin constructor call as `IoError` and
+     registers the builtin's `message` / `cause` fields (both `String`,
+     matching the runtime dataclass and the Wasm layout), so field access
+     on a typed `IoError` value type-checks and compiles instead of
+     tripping the validator.
+  2. **Match binders nested under a builtin variant pattern**
+     (`Ok(JObj(m))`, `Some(JStr(s))`, `Ok(JArr(xs))`) stayed Unknown: the
+     lowerer's variant-payload table only knew user-declared sums plus
+     Option/Result. The builtin `JsonValue` variants' payload types are
+     now seeded into that table, and the Wasm locals collector also
+     refines depth-1 nested binders from the inner variant's sum layout
+     as a backstop, so the binder's local is declared with the real shape
+     (`i32` pointer, String `_ptr`/`_len` pair) before the arm body
+     consumes it.
+  3. **A match expression's result type took the first arm verbatim**, so
+     `match m.get(k) { None -> [] ; Some(xs) -> xs }` kept the empty-list
+     arm's flexible `List<?lst_N>` and a later `push` of a String /
+     pointer element was emitted as a scalar i64 against an undeclared
+     local. The analyzer now refines flexible inference placeholders in
+     the reference arm type against the other arms (rigid generic
+     parameters are never narrowed).
+  4. **`fun(...)` -> `Fun(...)` spelling normalisation applied only at the
+     top level** of a lowered type string, so an annotated
+     `List<Fun(Int) -> Int>` literal's element type arrived as the
+     analyzer-rendered `fun(...)` and missed every `startswith("Fun")`
+     closure check -- the packed-i64 closure elements got 4-byte slots.
+     The normalisation now applies at any nesting depth.
+  `examples/tasks.capa`, `examples/quota_check.capa`,
+  `examples/cyclonedx_parser.capa` and `examples/spdx_parser.capa` now
+  reach full Python/Wasm parity (core and Component backends) and joined
+  the `scripts/wasm_parity_smoke.sh` MUST_PASS set. Out of scope, tracked
+  separately: an unannotated `let m = new_map()` still infers `Map<?, ?>`
+  (its keys/values need flow-sensitive refinement from later `set` calls,
+  a different mechanism), and `${e}` rendering of an `IoError` with a
+  non-empty `cause` still diverges (pre-existing FormatStr limitation).
+
 - *Wasm backend now constructs the built-in `IoError` error type.*
   Building `IoError("msg")` (or the two-argument `IoError("msg", "cause")`)
   compiled cleanly under `--check` and ran under the Python backend, but the
@@ -33,14 +85,13 @@ breaking changes and the discipline is still being shaped.
   falls through to the inline lowering there too. The `examples/`
   `provenance_demo` and `llm_agent_runner` programs, which hit only this gap,
   now reach full Python/Wasm parity and join the `scripts/wasm_parity_smoke.sh`
-  MUST_PASS set; `examples/tasks.capa` clears this gap but is blocked by a
-  separate, unrelated match-binding codegen issue and stays documented as
-  excluded. Known limitations, tracked separately and not addressed here:
-  `${e}` rendering of an `IoError` with a NON-empty `cause` diverges (Python
-  renders `message: cause`, the Wasm FormatStr emitter renders only
-  `message`; pre-existing), and `List<IoError>` elements are mis-typed `i64`
-  by the aggregate-element inference (the same family as the `tasks.capa`
-  match-binding issue).
+  MUST_PASS set; `examples/tasks.capa` clears this gap but was blocked by a
+  separate match-binding codegen issue, since closed by the
+  aggregate/payload slot type-inference fix above (which also fixed the
+  `List<IoError>` element mis-typing noted at the time). Still tracked
+  separately: `${e}` rendering of an `IoError` with a NON-empty `cause`
+  diverges (Python renders `message: cause`, the Wasm FormatStr emitter
+  renders only `message`; pre-existing).
 
 **CI.**
 
