@@ -35,8 +35,10 @@ lsp = ["pygls>=2.0"]
 # Install with: `pip install -e .[test]`. Adds the libraries needed
 # to run the full test suite, including the property-based tests in
 # `tests/test_properties.py` that fuzz the lexer / parser /
-# formatter with Hypothesis.
-test = ["pytest>=7", "hypothesis>=6"]
+# formatter with Hypothesis. The pytest floor is 9.0.3 to exclude
+# CVE-2025-71176 (GHSA-6w46-j5rx-g56g, predictable tmpdir; test-only,
+# local), which affects pytest < 9.0.3.
+test = ["pytest>=9.0.3", "hypothesis>=6"]
 # Install with: `pip install -e .[eval]`. Brings the matplotlib +
 # numpy stack used by the empirical-study scripts under
 # `evaluation/`. The core compiler does not depend on these; they
