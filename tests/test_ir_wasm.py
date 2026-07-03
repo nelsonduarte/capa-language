@@ -776,6 +776,50 @@ class TestWasmStdioExecutes(unittest.TestCase):
         wat = compile_wat(ast_mod, types=types)
         self.assertEqual(wat.count('(data (i32.const 0) "hi")'), 1)
 
+    def test_ioerror_construction_one_arg(self):
+        # Regression: constructing the built-in ``IoError`` error type
+        # with call syntax used to emit a ``call $IoError`` to a
+        # function that was never defined ("unknown func $IoError" at
+        # wasm-tools parse), even though ``--check`` and the Python
+        # backend accepted it. It now lowers inline like a struct
+        # literal, so ``Err(IoError("bad"))`` builds a real record and
+        # the ``Err`` arm's ``${e}`` renders the message -- identical
+        # to the Python backend's ``IoError.__str__``.
+        src = (
+            "fun boom() -> Result<Int, IoError>\n"
+            "    return Err(IoError(\"bad\"))\n"
+            "fun main(stdio: Stdio)\n"
+            "    match boom()\n"
+            "        Ok(n)  -> stdio.println(\"ok\")\n"
+            "        Err(e) -> stdio.eprintln(\"err: ${e}\")\n"
+        )
+        # No dangling constructor call survives to the emitted WAT.
+        _, types, ast_mod = _parse_lower(src)
+        self.assertNotIn("call $IoError", compile_wat(ast_mod, types=types))
+        out, err = self._run_capturing_stdout(src)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "err: bad\n")
+
+    def test_ioerror_construction_two_args(self):
+        # The two-argument form ``IoError(message, cause)`` maps onto
+        # the record's second String field (``cause``). The record is
+        # built and the ``Err`` arm is taken -- proving the two-arg
+        # construction codegen is valid and the value flows through the
+        # match unchanged, matching the Python backend's control flow.
+        src = (
+            "fun boom() -> Result<Int, IoError>\n"
+            "    return Err(IoError(\"bad\", \"disk full\"))\n"
+            "fun main(stdio: Stdio)\n"
+            "    match boom()\n"
+            "        Ok(n)  -> stdio.println(\"ok\")\n"
+            "        Err(e) -> stdio.eprintln(\"caught\")\n"
+        )
+        _, types, ast_mod = _parse_lower(src)
+        self.assertNotIn("call $IoError", compile_wat(ast_mod, types=types))
+        out, err = self._run_capturing_stdout(src)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "caught\n")
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),

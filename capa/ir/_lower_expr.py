@@ -594,6 +594,21 @@ class _LowerExprMixin:
             t = self.types.get(id(e))
             if t is not None:
                 result_ty = _ty_to_str(t)
+        # ``IoError(msg)`` / ``IoError(msg, cause)`` is the one built-in
+        # value type Capa constructs with call syntax (structs use brace
+        # literals). The analyzer does not type the constructor result --
+        # it falls through to ``?`` -- so pin it to ``IoError`` here.
+        # Without this the lowerer leaves the dst local unresolved (``?``),
+        # the Wasm backend declares it i64 instead of the i32 record
+        # pointer, and the Err-payload store treats it as a scalar rather
+        # than a pointer-shaped value. The Python backend is unaffected
+        # (its Call rendering does not consult the dst type).
+        if callee_name == "IoError" and (
+            not result_ty
+            or result_ty in ("Unknown", "?")
+            or result_ty.startswith("?")
+        ):
+            result_ty = "IoError"
         dst = fresh_local(self._counter)
         self._locals[dst] = result_ty
         self._instrs.append(Call(dst=dst, callee_name=callee_name, args=args))
