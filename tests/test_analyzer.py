@@ -6183,6 +6183,77 @@ class TestFrozenStructTypes(unittest.TestCase):
         )
 
 
+class TestBuiltinIoErrorReadOnly(unittest.TestCase):
+    """The builtin ``IoError``'s fields are readable but not
+    writable: the Python runtime backs the value with a frozen
+    dataclass (a write raises FrozenInstanceError at runtime) while
+    the Wasm backend would silently store through the record
+    pointer, a silent backend divergence. The analyzer rejects the
+    write at compile time. A USER-declared ``type IoError`` shadows
+    the builtin and keeps ordinary mutable-struct semantics."""
+
+    def test_write_to_builtin_ioerror_field_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let e = IoError(\"x\")\n"
+            "    e.message = \"y\"\n"
+            "    stdio.println(\"${e.message}\")\n"
+        )
+        self.assertTrue(
+            any("built-in 'IoError'" in m and "read-only" in m
+                for m in msgs),
+            msgs,
+        )
+
+    def test_augmented_write_to_builtin_ioerror_field_rejected(self):
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let e = IoError(\"x\")\n"
+            "    e.message += \"y\"\n"
+            "    stdio.println(\"${e.message}\")\n"
+        )
+        self.assertTrue(
+            any("built-in 'IoError'" in m and "read-only" in m
+                for m in msgs),
+            msgs,
+        )
+
+    def test_write_via_err_pattern_binder_rejected(self):
+        msgs = errors_of(
+            "fun fail() -> Result<Int, IoError>\n"
+            "    return Err(IoError(\"boom\"))\n"
+            "fun main(stdio: Stdio)\n"
+            "    match fail()\n"
+            "        Ok(n) -> stdio.println(\"ok ${n}\")\n"
+            "        Err(e) ->\n"
+            "            e.cause = \"later\"\n"
+            "            stdio.println(\"err\")\n"
+        )
+        self.assertTrue(
+            any("built-in 'IoError'" in m and "read-only" in m
+                for m in msgs),
+            msgs,
+        )
+
+    def test_read_of_builtin_ioerror_fields_still_allowed(self):
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let e = IoError(\"boom\", \"root\")\n"
+            "    stdio.println(\"${e.message}: ${e.cause}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_user_declared_ioerror_struct_stays_mutable(self):
+        r = check(
+            "type IoError { message: String, cause: String }\n"
+            "fun main(stdio: Stdio)\n"
+            "    var e = IoError { message: \"x\", cause: \"\" }\n"
+            "    e.message = \"y\"\n"
+            "    stdio.println(\"${e.message}\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 class TestMapKeyTypeRestrictions(unittest.TestCase):
     """Audit M4 (2026-05): the Wasm backend supports String / Int /
     Bool plus pointer-shape (struct / sum / tuple) Map keys. The

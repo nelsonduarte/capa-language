@@ -31,7 +31,13 @@ breaking changes and the discipline is still being shaped.
      registers the builtin's `message` / `cause` fields (both `String`,
      matching the runtime dataclass and the Wasm layout), so field access
      on a typed `IoError` value type-checks and compiles instead of
-     tripping the validator.
+     tripping the validator. Field READS are allowed; field WRITES to the
+     builtin `IoError` are now rejected at analysis time ("IoError values
+     are read-only"): the Python runtime backs the value with a frozen
+     dataclass (a write raised FrozenInstanceError at runtime) while the
+     Wasm backend would silently mutate the record, a silent backend
+     divergence. A USER-declared `type IoError` shadows the builtin and
+     keeps ordinary mutable-struct semantics on both backends.
   2. **Match binders nested under a builtin variant pattern**
      (`Ok(JObj(m))`, `Some(JStr(s))`, `Ok(JArr(xs))`) stayed Unknown: the
      lowerer's variant-payload table only knew user-declared sums plus
@@ -47,7 +53,13 @@ breaking changes and the discipline is still being shaped.
      pointer element was emitted as a scalar i64 against an undeclared
      local. The analyzer now refines flexible inference placeholders in
      the reference arm type against the other arms (rigid generic
-     parameters are never narrowed).
+     parameters are never narrowed). Note this refinement also TIGHTENS
+     acceptance for a class of genuinely ill-typed programs the analyzer
+     previously let through: with a flexible first arm (`[]`), mutually
+     incompatible concrete arms (say `List<String>` then `List<Int>`)
+     each used to check against the still-flexible reference and pass;
+     the refined reference now rejects the mismatching arm. An analyzer
+     soundness improvement, not a regression.
   4. **`fun(...)` -> `Fun(...)` spelling normalisation applied only at the
      top level** of a lowered type string, so an annotated
      `List<Fun(Int) -> Int>` literal's element type arrived as the
