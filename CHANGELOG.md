@@ -26,12 +26,21 @@ breaking changes and the discipline is still being shaped.
   observable behaviour matches the Python backend. The lowerer also pins the
   constructor result's type to `IoError` (the analyzer leaves it
   unresolved), so the value is carried as an `i32` record pointer rather than
-  an `i64` scalar through the enclosing `Err` payload. The `examples/`
+  an `i64` scalar through the enclosing `Err` payload. The tail-call peephole
+  is excluded as well: `return IoError(...)` in tail position used to be
+  intercepted before the constructor routing and emitted a `return_call
+  $IoError` with the same "unknown func" failure; the built-in constructor now
+  falls through to the inline lowering there too. The `examples/`
   `provenance_demo` and `llm_agent_runner` programs, which hit only this gap,
   now reach full Python/Wasm parity and join the `scripts/wasm_parity_smoke.sh`
   MUST_PASS set; `examples/tasks.capa` clears this gap but is blocked by a
   separate, unrelated match-binding codegen issue and stays documented as
-  excluded.
+  excluded. Known limitations, tracked separately and not addressed here:
+  `${e}` rendering of an `IoError` with a NON-empty `cause` diverges (Python
+  renders `message: cause`, the Wasm FormatStr emitter renders only
+  `message`; pre-existing), and `List<IoError>` elements are mis-typed `i64`
+  by the aggregate-element inference (the same family as the `tasks.capa`
+  match-binding issue).
 
 **CI.**
 
