@@ -144,3 +144,15 @@ jobs:
 
       - name: Run the test suite (WASI tests now execute)
         run: python -m unittest discover tests -v
+
+      - name: Wasm/Python example parity gate
+        # The main `test` job smoke-runs examples ONLY under the Python
+        # interpreter, so a Wasm-only codegen regression can ship green
+        # (exactly what PR #31 did: `?` over Result<Unit, E> broke
+        # examples/io.capa under --wasm while CI stayed green). This job
+        # has the toolchain, so it re-runs a curated set of examples on
+        # the Python oracle, the core Wasm backend, and the Component
+        # backend, and fails if any backend diverges in exit code or
+        # stdout. The curated include/exclude lists live in the script.
+        shell: bash
+        run: scripts/wasm_parity_smoke.sh
