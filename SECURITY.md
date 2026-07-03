@@ -135,6 +135,19 @@ The 2026-05-25 audit record lives at the repository root in
   on the primary key, `file://` traversal incl. percent-encoding,
   fail-closed registry index) plus a `parse_int` DoS, shipped in `1.4.0`
   under the security exception.
+- [`docs/advisories/2026-07-03-soundness.md`](docs/advisories/2026-07-03-soundness.md):
+  a family of cross-boundary `@secret`-laundering false negatives closed
+  in the information-flow control (a free-function call result now follows
+  the callee's return effects, a `@secret` label on a module `const` is
+  now enforced with correct lexical scoping, a secret captured by an
+  escaping lambda is caught cross-function, and the two-hop
+  closure-by-name is flagged fail-positive-free), all verified
+  adversarially and fail-closed under `@strict_ifc`; a formatter fix
+  (`capa --fmt` silently stripped `@secret` / `@public` labels and the
+  typestate index from every type position, disarming the IFC); and a
+  provenance-integrity fix (the stamped `capa_version` was a stale
+  hard-coded literal, now single-sourced from `pyproject.toml`), shipped
+  in `1.15.0` under the security exception.
 
 ## Public disclosure
 
