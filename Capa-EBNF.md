@@ -257,12 +257,15 @@ The following words are reserved by the language and cannot be used as identifie
 | Control flow | `if`, `then`, `elif`, `else`, `match`, `while`, `for`, `in`, `break`, `continue`, `return` |
 | Variables | `let`, `var` |
 | Capability discipline | `consume` |
+| Linear and typestate | `linear`, `typestate`, `become` |
 | Literal values | `true`, `false` |
 | Logical operators | `and`, `or`, `not` |
 | Self and types | `self`, `Self` |
 | Reserved for future use | `async`, `await`, `yield`, `defer`, `where`, `mut` |
 
 Words reserved for future use have no meaning in version 1.0, but the lexer rejects them as identifiers. This proactive reservation makes it possible to introduce the corresponding features in later versions without breaking existing code.
+
+The information-flow label spellings `secret` and `public` (used only after `@` in a type position, see Section 5.8) are **contextual**, not reserved: the lexer emits them as ordinary `IDENT` tokens, and it is the parser that recognises `@secret` / `@public` in type position. They remain valid identifiers everywhere else.
 
 ### 3.6 Operators and punctuation
 
@@ -274,7 +277,7 @@ The operator and punctuation tokens are recognised by the lexer using the maxima
 | Comparison | `==`, `!=`, `<`, `<=`, `>`, `>=` |
 | Logical | `and`, `or`, `not` (words); `&&` and `\|\|` do not exist |
 | Assignment | `=`, `+=`, `-=`, `*=`, `/=`, `%=` |
-| Structural | `.`  `,`  `;`  `:`  `->`  `=>`  `?`  `..` |
+| Structural | `.`  `,`  `;`  `:`  `->`  `=>`  `?`  `..`  `@` |
 | Pattern | `\|`  (* or-pattern separator, only in match arms *) |
 | Delimiters | `( )`  `[ ]`  `{ }`  `< >` (in type args) |
 | Special | `_`  (* underscore as wildcard in patterns *) |
@@ -368,6 +371,7 @@ program = { top_item } EOF
 top_item = import_decl
          | function_decl
          | type_decl
+         | typestate_decl
          | trait_decl
          | impl_decl
          | capability_decl
@@ -416,7 +420,7 @@ param = [ "consume" ] IDENT ":" type
 
 The optional `consume` qualifier marks the parameter as taking ownership of the passed value (typically a capability). After a call to such a function, the caller can no longer use the argument it passed. This is enforced by the semantic analyzer's linearity check, not the grammar; see the Capabilities chapter of the white paper for details.
 
-Attributes are static, source-level metadata. The grammar accepts any identifier as the attribute name, but the analyzer restricts the v1 catalogue to `security`, `deprecated`, and `audited`, each with a fixed set of allowed keys. Attribute argument values must be string literals so that the metadata is statically inspectable without running expression evaluation. The `--manifest` tool emits attributes verbatim in JSON form for downstream consumption by audit tooling. Attributes are valid on top-level `fun` declarations and on methods inside an `impl` block; they are rejected on `const`, `type`, `trait`, `capability`, `impl`, and `import` in v1.
+Attributes are static, source-level metadata. The grammar accepts any identifier as the attribute name and any number of `key: "value"` arguments (including none), but the analyzer restricts the v1 catalogue to `security`, `deprecated`, `audited`, `vex`, `strict_ifc`, and `constant_time`, each with a fixed set of allowed keys. The first four carry documentation / supply-chain metadata; `strict_ifc` and `constant_time` are argument-less behavioural attributes written with empty parentheses (`@strict_ifc()`, `@constant_time()`): the former opts the function into fail-closed information-flow checking (a secret-reaches-public-sink flow becomes a hard error instead of a warning), the latter requires the function to be constant-time (the analyzer rejects any control-flow decision or index that depends on a `@secret` value). Attribute argument values must be string literals so that the metadata is statically inspectable without running expression evaluation. The `--manifest` tool emits attributes verbatim in JSON form for downstream consumption by audit tooling. Attributes are valid on top-level `fun` declarations and on methods inside an `impl` block; they are rejected on `const`, `type`, `trait`, `capability`, `impl`, and `import` in v1.
 
 Doc comments (`///` and `/** */`) are similar metadata but free-form: they are attached to the next `fun`, `type`, `trait` (including `capability`), or `impl`-block method, surfaced in the manifest as a `doc` field, and rendered into HTML by the `--doc` tool. `////+` (four or more slashes) and `/*` (without the second star) remain plain comments and are dropped by the lexer.
 
@@ -429,7 +433,7 @@ The absence of a `":"` between the function header and the block is a deliberate
 Capa has two kinds of type declaration: structures (with named fields) and sum types (with variants). The syntax is distinguished by the initial separator: braces for structures, equals sign followed by indented variants for sum types.
 
 ```ebnf
-type_decl = [ "pub" ] "type" IDENT [ generic_params ] type_body
+type_decl = [ "pub" ] [ "linear" ] "type" IDENT [ generic_params ] type_body
 
 type_body = struct_body
           | sum_body
@@ -446,6 +450,19 @@ variant_payload = "(" variant_field { "," variant_field } [ "," ] ")"
 
 variant_field = type
 ```
+
+The optional `linear` qualifier (roadmap S1) marks a struct type as **must-consume**: a value of a `linear type` carries an affine, use-once obligation that the semantic analyzer's linearity check enforces (it must be consumed exactly once and cannot be used after consumption). `linear` is only valid on the struct form; it is rejected on a sum type. This is a semantic constraint, not a grammar rule, so it is noted here rather than encoded in the production.
+
+Typestate declarations (roadmap S3) introduce a named type whose values move through a fixed set of **states**. The header names the type and, optionally, a shared field block (the data a value carries across all states, S3.4); an indented, one-per-line list of bare state names follows, at least one required.
+
+```ebnf
+typestate_decl = [ "pub" ] "typestate" IDENT [ struct_body ]
+    NEWLINE INDENT state_name { state_name } DEDENT
+
+state_name = IDENT NEWLINE
+```
+
+A value of a typestate type is written with the state index `Name[State]` (see Section 5.8) and constructed with the state-annotated struct literal `Name[State] { ... }` (see Section 5.12.5); a state transition is expressed with `become(value, State)` (see Section 5.12.5). The set of legal transitions and the state of a value at each program point are checked by the analyzer, not the grammar.
 
 The variant name is syntactically any `IDENT`, but four names are **reserved** and rejected at semantic-analysis time: `Ok`, `Err`, `Some`, and `None`. These are the constructors of the built-in `Result<T, E>` and `Option<T>` sum types; a user-declared variant reusing one of them would silently shadow the built-in constructor at every later use site. The compiler refuses the declaration with a diagnostic that names the colliding built-in and suggests an alternative (for example `Compliant` / `Success` in place of `Ok`). This is a name-resolution constraint, not a grammar rule, so it is noted here rather than encoded in the production above. The built-in JSON variants (`JNull`, `JBool`, `JNum`, `JStr`, `JArr`, `JObj`) are not reserved.
 
@@ -528,14 +545,17 @@ Constants are evaluated at compile time. The expression must be a const expressi
 The grammar for types is separate from the grammar for expressions. Types may be qualified names (with optional generic arguments), function types, tuple types, or references to `Self`.
 
 ```ebnf
-type = function_type
-     | tuple_type
-     | named_type
+type = [ flow_label ] ( function_type | tuple_type | named_type )
 
-named_type = qualified_name [ type_args ]
-           | "Self"
+flow_label = "@" ( "secret" | "public" )    (* information-flow label,
+                                                roadmap S2 *)
+
+named_type = ( qualified_name | "Self" ) [ type_args ] [ state_index ]
 
 type_args = "<" type { "," type } ">"
+
+state_index = "[" IDENT "]"                  (* typestate index:
+                                                Name[State], roadmap S3 *)
 
 tuple_type = "(" ")"                                  (* Unit *)
            | "(" type "," ")"                          (* 1-tuple *)
@@ -547,6 +567,10 @@ qualified_name = IDENT { "." IDENT }
 ```
 
 Note that `List`, `Option`, `Result`, `Map`, and `Fun` are not keywords, they are merely generic types / built-in type constructors defined by the language and the standard library. The syntax `List<Int>` is an ordinary `named_type` with type arguments; `Fun(Int, Int) -> Int` is the dedicated `function_type` production. This uniformity simplifies the grammar (and keeps `fun`, the lowercase keyword, distinct from `Fun`, the uppercase type constructor).
+
+An optional `flow_label` prefixes any type with an information-flow security label (roadmap S2): `@secret String`, `field: @public Int`, `let x: @secret Token = ...`. The label attaches to the type that follows and is honoured everywhere a type appears (struct fields, parameters, return types, `let` / `var` / `const` bindings, and generic / tuple / `Fun(...)` type arguments). A two-point lattice (`public` at the bottom, the unlabelled default; `secret` at the top) drives the analyzer's noninterference check: a `@secret` value may not reach a public sink without an explicit `declassify`. The label spelling shares the `@` prefix with `attribute` (Section 5.2), so the parser disambiguates by position and lookahead: `@secret` / `@public` **not** immediately followed by `(` in a type position is a `flow_label`; `@name(...)` before a declaration is an `attribute`. The `secret` / `public` spellings are contextual (Section 3.5), not reserved words.
+
+The optional `state_index` on a `named_type` is a typestate index (roadmap S3): `Socket[Connected]` names a value of typestate `Socket` in state `Connected`. It appears in type position, in an `impl` header target (`impl Socket[Connected]`, via `type` in the `impl_decl` production of Section 5.5), and, in construction position, on a state-annotated struct literal (Section 5.12.5). The `[State]` form is distinct from the `[ expression ]` indexing postfix (Section 5.12.4): the index here is a single bare state name, not an expression.
 
 ### 5.9 Block and statements
 
@@ -773,6 +797,7 @@ primary_expr = literal_expr
              | tuple_expr
              | list_expr
              | struct_expr
+             | become_expr
 
 literal_expr = INT_LIT | FLOAT_LIT | STRING_LIT | CHAR_LIT
              | BOOL_LIT | UNIT_LIT
@@ -787,13 +812,19 @@ tuple_expr = "(" expression "," ")"                          (* 1-tuple *)
 
 list_expr = "[" [ expression { "," expression } [ "," ] ] "]"
 
-struct_expr = qualified_name "{" struct_init
+struct_expr = qualified_name [ state_index ] "{" struct_init
     { "," struct_init } [ "," ] "}"
 
 struct_init = IDENT ":" expression
+
+become_expr = "become" "(" expression "," IDENT ")"
 ```
 
 Relevant notes. The distinction between `paren_expr` and `tuple_expr` is made by the presence of a comma: `(x)` is an expression in parentheses, `(x,)` is a one-element tuple. This convention is identical to Python's and Rust's.
+
+A `struct_expr` may carry an optional `state_index` (Section 5.8) between the type name and the opening brace, constructing a value of a typestate type in a named initial state: `Socket[Created] { fd: 3 }` (roadmap S3.2). Without the index it is an ordinary struct literal. The bracketed form is only read as a state index when it is immediately followed by `{`; a `Name[i]` not followed by a brace stays a plain indexing postfix (Section 5.12.4).
+
+The `become_expr` (roadmap S3.2) expresses a typestate transition: `become(value, State)` yields `value` re-tagged in the target `State`. The first operand is an ordinary expression; the second is a bare state name (an `IDENT`), not an expression. `become` is a reserved word, so the form is unambiguous. The set of legal transitions is checked by the analyzer, not the grammar.
 
 `{...}` in expression position is always a struct literal in v1.0 (map literals and block expressions are deferred; see section 1.5). The parser distinguishes by the leading `qualified_name`: braces preceded by a type-named identifier open a struct literal, braces in any other expression position are a parse error.
 
@@ -1034,6 +1065,9 @@ The following words are reserved by the Capa 1.0 language and cannot be used as 
 | `self` | Current instance | In use |
 | `Self` | Type of the current instance | In use |
 | `consume` | Ownership-transfer parameter qualifier | In use |
+| `linear` | Must-consume struct qualifier (`linear type`) | In use |
+| `typestate` | Typestate declaration | In use |
+| `become` | Typestate transition (`become(value, State)`) | In use |
 | `async` | Asynchronous function | Reserved for future use |
 | `await` | Awaiting a future | Reserved for future use |
 | `yield` | Generators | Reserved for future use |
@@ -1068,6 +1102,7 @@ The following tokens are recognised by the lexer using the maximal munch rule. T
 | `%=` | Compound assignment | Analogous |
 | `->` | Structural | Return type; match arm |
 | `=>` | Structural | Lambda body separator (`fun (...) -> R => body`) |
+| `@` | Structural | Attribute prefix (`@name(...)`); information-flow label (`@secret` / `@public`) |
 | `?` | Postfix | Result propagation |
 | `..` | Range / structural | Exclusive integer range `a..b`; also spread in patterns and structs |
 | `..=` | Range | Inclusive integer range `a..=b` |
