@@ -9,6 +9,30 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Fixed.**
+
+- *Wasm backend now constructs the built-in `IoError` error type.*
+  Building `IoError("msg")` (or the two-argument `IoError("msg", "cause")`)
+  compiled cleanly under `--check` and ran under the Python backend, but the
+  Wasm backend lowered the construction to a `call $IoError` against a
+  function it never emitted, so any program that returned
+  `Err(IoError(...))` failed at `wasm-tools parse` with "unknown func
+  `$IoError`". `IoError` is the one built-in value type Capa constructs with
+  call syntax (user structs use brace literals), and it had fallen through
+  the ordinary-function-call path. The construction now lowers inline the
+  way a struct literal does -- allocating the 16-byte record and storing the
+  `message` / `cause` String fields at their layout offsets, with an absent
+  `cause` defaulting to the empty string -- so the constructed error's
+  observable behaviour matches the Python backend. The lowerer also pins the
+  constructor result's type to `IoError` (the analyzer leaves it
+  unresolved), so the value is carried as an `i32` record pointer rather than
+  an `i64` scalar through the enclosing `Err` payload. The `examples/`
+  `provenance_demo` and `llm_agent_runner` programs, which hit only this gap,
+  now reach full Python/Wasm parity and join the `scripts/wasm_parity_smoke.sh`
+  MUST_PASS set; `examples/tasks.capa` clears this gap but is blocked by a
+  separate, unrelated match-binding codegen issue and stays documented as
+  excluded.
+
 **CI.**
 
 - *Added a Wasm/Python example parity gate.* The main test job smoke-runs
@@ -18,7 +42,7 @@ breaking changes and the discipline is still being shaped.
   `examples/io.capa` under `--wasm` while CI stayed green, and only manual
   adversarial review caught it. A new `scripts/wasm_parity_smoke.sh`,
   invoked by the `wasi` job (which already installs wasm-tools + wasmtime),
-  runs a curated set of 31 examples on the Python oracle, the core Wasm
+  runs a curated set of examples on the Python oracle, the core Wasm
   backend (`--wasm --run`), and the Component backend
   (`--wasm --component --run`), and fails the build if any backend diverges
   from the oracle in exit code or stdout. The curated include list and the

@@ -2100,6 +2100,20 @@ class WasmEmitter(
         if instr.callee_name in self._variant_to_sum:
             self._emit_variant_construction(instr)
             return
+        # ``IoError(msg)`` / ``IoError(msg, cause)`` -- the one built-in
+        # value type Capa constructs with call syntax. It has no emitted
+        # ``$IoError`` function; lower the construction inline (alloc +
+        # per-field String store) the same way a struct literal is
+        # lowered. Must sit above the ordinary-call path, which would
+        # otherwise emit a ``call $IoError`` to a function that does not
+        # exist (wasm-tools "unknown func"). A user function is never
+        # named ``IoError`` (a reserved built-in type name), so this
+        # branch cannot shadow a real call.
+        if instr.callee_name == "IoError" \
+                and instr.callee_name not in self._user_fn_names \
+                and "IoError" in self._struct_layouts:
+            self._emit_ioerror_construction(instr)
+            return
         # ``Random()`` source-level constructor. The dst is a Random
         # cap (BUILTIN_CAPS dsts are erased at the Wasm level) so
         # there's no value to bind; the SplitMix64 state lazy-inits

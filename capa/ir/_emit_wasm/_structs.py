@@ -216,6 +216,53 @@ class _StructEmissionMixin:
             self._push_value(arg)
             self._write(f"{_store_op_for_size(size)} offset={offset}")
 
+    def _emit_ioerror_construction(self, instr: Call) -> None:
+        """Construct a built-in ``IoError`` record from a positional
+        ``IoError(message)`` / ``IoError(message, cause)`` call.
+
+        IoError is the one built-in value type Capa builds with call
+        syntax rather than a struct literal; the Python runtime backs it
+        with a ``@dataclass(message, cause="")``. No ``$IoError`` function
+        is emitted, so lower the construction inline exactly the way
+        ``_emit_make_struct`` lowers a struct literal: allocate the record
+        and store each String field as a (ptr, len) pair at its layout
+        offset (see ``_IOERROR_LAYOUT``). A one-arg call leaves ``cause``
+        as the empty string (ptr=0, len=0), matching the dataclass default
+        and the ``__str__`` that drops an empty cause -- so the value's
+        observable behaviour (formatted / matched) is identical to the
+        Python backend."""
+        if instr.dst is None:
+            raise WasmEmissionError(
+                "IoError construction must bind a dst (its pointer)"
+            )
+        layout = self._struct_layouts["IoError"]
+        fields = list(layout["fields"].items())
+        if not 1 <= len(instr.args) <= len(fields):
+            raise WasmEmissionError(
+                f"IoError takes 1 or {len(fields)} arguments, got "
+                f"{len(instr.args)}"
+            )
+        self._write(f"i32.const {layout['size']}")
+        self._write("call $alloc")
+        self._write(f"local.set ${instr.dst}")
+        for i, (fname, (offset, _size, _field_ty)) in enumerate(fields):
+            if i < len(instr.args):
+                self._write(f"local.get ${instr.dst}")
+                self._push_string_field_ptr_only(instr.args[i])
+                self._write(f"i32.store offset={offset}")
+                self._write(f"local.get ${instr.dst}")
+                self._push_string_field_len_only(instr.args[i])
+                self._write(f"i32.store offset={offset + 4}")
+                continue
+            # Absent trailing field (the one-arg ``cause`` default):
+            # the empty string is (ptr=0, len=0).
+            self._write(f"local.get ${instr.dst}")
+            self._write("i32.const 0")
+            self._write(f"i32.store offset={offset}")
+            self._write(f"local.get ${instr.dst}")
+            self._write("i32.const 0")
+            self._write(f"i32.store offset={offset + 4}")
+
     def _emit_make_struct(self, instr: MakeStruct) -> None:
         """Emit alloc + per-field store for a struct literal. The
         pointer to the newly-allocated struct lands in ``instr.dst``.
