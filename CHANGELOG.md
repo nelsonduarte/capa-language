@@ -9,6 +9,22 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Security.**
+
+- *Raised the `pytest` floor to exclude a known CVE.* The `[test]`
+  extra now requires `pytest>=9.0.3` (was `>=7`). Versions below 9.0.3
+  are affected by CVE-2025-71176 (GHSA-6w46-j5rx-g56g, predictable
+  temporary directory; test-only, local). `hypothesis>=6` is unchanged.
+- *CI now gates on dependency vulnerabilities.* A new `pip-audit` job
+  (`pypa/gh-action-pip-audit`, pinned by SHA) installs the package plus
+  the `[lsp,wasm,test]` extras and fails the build on any known
+  advisory, so a compromised or newly-CVE'd dependency can no longer
+  ship silently. The `[eval]` extra (matplotlib -> pillow / numpy) is
+  excluded from the audit on purpose: it is a paper-figure-only stack
+  and a magnet for transitive CVEs outside our control, with no bearing
+  on what we distribute. No advisories are ignored today; the audited
+  surface is clean.
+
 ## [1.15.1], 2026-07-03
 
 **Fixed.**

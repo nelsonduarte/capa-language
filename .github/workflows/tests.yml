@@ -48,6 +48,55 @@ jobs:
             python -m capa --run "examples/$f.capa"
           done
 
+  audit:
+    # Fail the build on a known-vulnerable Python dependency. Nothing
+    # else in CI gates on advisories, so a compromised, withdrawn, or
+    # newly-CVE'd transitive dependency would otherwise ship silently.
+    #
+    # Scope: we audit the surface that actually reaches users and
+    # developers - the package plus the `[lsp,wasm,test]` extras (the
+    # distributed-binary surface + dev tooling). The `[eval]` extra
+    # (matplotlib -> pillow / numpy) is DELIBERATELY excluded: it is a
+    # paper-figure-only stack, a magnet for transitive CVEs outside our
+    # control, and pulling it in would turn this gate into a source of
+    # false-red flakiness with no bearing on what we ship.
+    name: pip-audit (dependency vulnerabilities)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the audited surface into a venv
+        # Resolve the exact dependency tree pip-audit will scan - the
+        # package plus the lsp/wasm/test extras - into a dedicated venv
+        # the action then audits directly (via `virtual-environment`).
+        run: |
+          python -m venv .audit-venv
+          .audit-venv/bin/python -m pip install --upgrade pip
+          .audit-venv/bin/python -m pip install -e .[lsp,wasm,test]
+
+      - name: Audit dependencies for known vulnerabilities
+        uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266  # v1.1.0
+        with:
+          # Audit the packages installed in the venv above, not the repo
+          # tree, so the resolved transitive set is what gets scanned.
+          virtual-environment: .audit-venv
+          vulnerability-service: osv
+          # No advisories are ignored: the audited surface
+          # (capa[lsp,wasm,test]) is clean today. If a transitive CVE
+          # with no available fix ever surfaces here, add its ID to this
+          # whitespace-separated list with a one-line justification
+          # (advisory source, why it is unreachable or has no fix), e.g.
+          #   ignore-vulns: "GHSA-xxxx-xxxx-xxxx"  # transitive, no fix, sink unreachable
+          # Do NOT ignore anything pre-emptively.
+          ignore-vulns: ""
+
   wasi:
     # Experimental --wasi mode (WASI Preview 2). The main `test` job runs
     # on three OSes WITHOUT the Wasm toolchain, so its WASI tests skip
