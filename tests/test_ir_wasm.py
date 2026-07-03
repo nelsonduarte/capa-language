@@ -7451,6 +7451,24 @@ class TestWasmAggregateSlotTypeInference(unittest.TestCase):
             self._run_capturing_stdout(src), "p: 1\np: 2\n",
         )
 
+    def test_user_declared_ioerror_struct_field_write_runs(self):
+        # A USER-declared ``type IoError`` shadows the builtin: it
+        # keeps ordinary mutable-struct semantics (the analyzer's
+        # read-only rule applies only to the BUILTIN_POS symbol), and
+        # a field write runs with Python/Wasm parity. The builtin's
+        # write rejection is covered in test_analyzer.py
+        # (TestBuiltinIoErrorReadOnly).
+        src = (
+            "type IoError { message: String, cause: String }\n"
+            "fun main(stdio: Stdio)\n"
+            "    var e = IoError { message: \"x\", cause: \"\" }\n"
+            "    e.message = \"y\"\n"
+            "    stdio.println(\"msg=${e.message}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "msg=y\n",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

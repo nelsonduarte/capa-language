@@ -471,6 +471,30 @@ class _StatementsMixin:
                         f"would break the structure)",
                         s.pos,
                     )
+                # The builtin ``IoError`` is read-only: the Python
+                # runtime backs it with a frozen dataclass (a field
+                # write raises FrozenInstanceError at runtime), while
+                # the Wasm backend would silently store through the
+                # record pointer -- a silent backend divergence.
+                # Reject the write here so both backends agree at
+                # compile time. Reads (``e.message`` / ``e.cause``)
+                # stay allowed. Guarded on BUILTIN_POS: a USER-declared
+                # ``type IoError`` shadows the builtin with a real
+                # source position and keeps ordinary mutable-struct
+                # semantics on both backends.
+                from ..typesys import TyName as _TyName
+                if (isinstance(recv_ty, _TyName)
+                        and recv_ty.name == "IoError"):
+                    from ..builtins import BUILTIN_POS
+                    io_sym = self.scope.lookup("IoError")
+                    if io_sym is not None and io_sym.pos == BUILTIN_POS:
+                        self._err(
+                            f"field {s.target.field_name!r} of the "
+                            f"built-in 'IoError' cannot be assigned: "
+                            f"IoError values are read-only (construct a "
+                            f"new IoError instead)",
+                            s.pos,
+                        )
             cap = self._contains_any_capability(target_ty)
             if cap is not None:
                 self._err(
