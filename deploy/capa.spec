@@ -92,6 +92,21 @@ for _dist in ['pygls', 'lsprotocol', 'cattrs', 'attrs']:
         # that is unavailable in such a build.
         pass
 
+# Bundle Capa's OWN distribution metadata. `capa.__version__` resolves the
+# package version from `pyproject.toml` when running from a source checkout,
+# but that file is not part of the frozen bundle, so inside the binary the
+# resolver falls back to `importlib.metadata.version("capa")`. Copying the
+# dist-info here is what makes that lookup succeed, so the released binary
+# reports the real version (e.g. `capa 1.15.0`) instead of a sentinel.
+# The release workflow `pip install`s the project before building, so this
+# metadata exists; guard anyway so a metadata-less build still produces a
+# working compiler (it would just fall back to the sentinel version).
+capa_datas = []
+try:
+    capa_datas += copy_metadata('capa')
+except Exception:
+    pass
+
 # Embed the Capa logo as the executable icon. Only Windows PE binaries
 # carry an embedded .ico; Linux ELF binaries have no icon slot and
 # macOS PyInstaller expects an .icns, so leave the icon unset there to
@@ -104,7 +119,7 @@ a = Analysis(
     [os.path.join(SPEC_DIR, 'capa-entry.py')],
     pathex=[ROOT],
     binaries=[],
-    datas=lsp_datas,
+    datas=lsp_datas + capa_datas,
     hiddenimports=[
         # The transpiled Capa program imports from capa.runtime at
         # runtime via exec(). PyInstaller's static analysis does not
