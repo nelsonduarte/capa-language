@@ -84,6 +84,26 @@ class _LowerPatternMixin:
                 else:
                     self._refine_pattern_binds(sub, ety)
             return
+        if isinstance(p, A.StructPat):
+            # Struct destructuring, possibly a tuple element or a
+            # struct field of its own. Thread each field's declared
+            # type into its binder so a String / pointer-shaped field
+            # (e.g. ``(P { name: n }, k)``) is typed correctly instead
+            # of defaulting to the Unknown ``i64`` shape. Shorthand
+            # ``{ x }`` binds a same-name local; a nested struct /
+            # tuple sub-pattern recurses.
+            field_types = self._struct_field_types.get(
+                scrut_ty.split("<", 1)[0], {},
+            )
+            for fname, fpat in p.fields:
+                fty = field_types.get(fname, "Unknown")
+                if fpat is None:
+                    self._bind_local(fname, fty)
+                elif isinstance(fpat, A.IdentPat):
+                    self._bind_local(fpat.name, fty)
+                else:
+                    self._refine_pattern_binds(fpat, fty)
+            return
         if isinstance(p, A.OrPat):
             # Or-pattern: refine each alternative's binders against the
             # same scrutinee type. The analyzer has already proven all

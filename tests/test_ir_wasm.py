@@ -896,6 +896,145 @@ class TestWasmStdioExecutes(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmNestedTuplePattern(unittest.TestCase):
+    """A PatTuple / PatStruct sitting as an ELEMENT of a tuple-match
+    pattern. The nested sub-pattern's slot holds a pointer to another
+    tuple / struct record; the emitter descends into it, reusing the
+    tuple-destructuring and struct-match machinery one scratch level
+    deeper so a parent pointer survives while a child is decoded.
+    Each case asserts byte-exact stdout parity with the Python
+    backend."""
+
+    def _run_capturing_stdout(self, src: str) -> tuple[str, str]:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out, err = io.StringIO(), io.StringIO()
+        saved_out, saved_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+        return out.getvalue(), err.getvalue()
+
+    def test_nested_tuple_element(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let d = ((1, 2), \"x\")\n"
+            "    match d\n"
+            "        ((a, b), s) -> stdio.println(\"${a} ${b} ${s}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "1 2 x\n")
+
+    def test_deeper_nested_tuple_element(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let d = (((1, 2), 3), \"x\")\n"
+            "    match d\n"
+            "        (((a, b), c), s) ->"
+            " stdio.println(\"${a} ${b} ${c} ${s}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "1 2 3 x\n")
+
+    def test_struct_element(self):
+        src = (
+            "type P { x: Int, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let d = (P { x: 1, y: 2 }, \"s\")\n"
+            "    match d\n"
+            "        (P { x: a, y: b }, s) ->"
+            " stdio.println(\"${a} ${b} ${s}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "1 2 s\n")
+
+    def test_struct_element_string_field(self):
+        # A pointer-shaped (String) struct field bound inside a tuple
+        # element: the binder must be typed String (ptr/len pair), not
+        # the Unknown i64 default (which formatted it via itoa).
+        src = (
+            "type P { name: String }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let d = (P { name: \"bob\" }, 7)\n"
+            "    match d\n"
+            "        (P { name: n }, k) -> stdio.println(\"${n} ${k}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "bob 7\n")
+
+    def test_mixture_struct_and_tuple_elements(self):
+        src = (
+            "type P { x: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let d = (P { x: 9 }, (4, 5))\n"
+            "    match d\n"
+            "        (P { x: a }, (b, c)) ->"
+            " stdio.println(\"${a} ${b} ${c}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "9 4 5\n")
+
+    def test_literal_in_nested_tuple_selects_arm(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let d = ((1, 2), \"x\")\n"
+            "    match d\n"
+            "        ((1, b), s) -> stdio.println(\"one ${b} ${s}\")\n"
+            "        ((a, b), s) ->"
+            " stdio.println(\"other ${a} ${b} ${s}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "one 2 x\n")
+
+    def test_literal_in_nested_tuple_falls_through(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let d = ((9, 2), \"x\")\n"
+            "    match d\n"
+            "        ((1, b), s) -> stdio.println(\"one ${b} ${s}\")\n"
+            "        ((a, b), s) ->"
+            " stdio.println(\"other ${a} ${b} ${s}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "other 9 2 x\n")
+
+    def test_variant_inside_nested_tuple(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let d = ((Some(7), 2), \"x\")\n"
+            "    match d\n"
+            "        ((Some(n), b), s) ->"
+            " stdio.println(\"some ${n} ${b} ${s}\")\n"
+            "        ((None, b), s) ->"
+            " stdio.println(\"none ${b} ${s}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "some 7 2 x\n")
+
+    def test_guard_over_nested_tuple(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let d = ((5, 2), \"x\")\n"
+            "    match d\n"
+            "        ((a, b), s) if a > 0 ->"
+            " stdio.println(\"pos ${a} ${b} ${s}\")\n"
+            "        ((a, b), s) ->"
+            " stdio.println(\"nonpos ${a} ${b} ${s}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "pos 5 2 x\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmSumAndStruct(unittest.TestCase):
     """Phase 6C: sum types, structs, and pattern matching compile
     to a heap-allocator-backed memory layout and execute on

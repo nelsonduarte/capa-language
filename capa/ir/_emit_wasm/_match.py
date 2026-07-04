@@ -33,6 +33,30 @@ from ._layout import (
 )
 
 
+# Depth of the inner-scratch pointer pool declared in _locals.py
+# (``_m_scrut_inner`` plus ``_m_scrut_inner2`` .. ``_m_scrut_inner8``).
+# A nested sub-pattern (PatTuple / PatStruct / PatVariant sitting
+# inside a tuple element or struct field) stashes the decoded child
+# pointer one level deeper than its parent so the parent's pointer
+# survives; the pool caps the reachable nesting and the emitter
+# raises FAIL-LOUD past it rather than reuse a live scratch.
+_MAX_NEST_DEPTH = 8
+
+
+def _inner_scratch_local(depth: int) -> str:
+    """Name of the inner-scratch pointer local for nesting ``depth``
+    (1-based). Depth 1 is the legacy ``_m_scrut_inner`` (kept so the
+    existing nested-variant WAT is byte-identical); deeper levels are
+    ``_m_scrut_inner2`` .. ``_m_scrut_inner{_MAX_NEST_DEPTH}``."""
+    if depth < 1 or depth > _MAX_NEST_DEPTH:
+        raise WasmEmissionError(
+            f"Nested tuple/struct match pattern exceeds the supported "
+            f"nesting depth of {_MAX_NEST_DEPTH}; refactor the match "
+            f"or split the pattern (FAIL-LOUD rather than mis-compile)."
+        )
+    return "_m_scrut_inner" if depth == 1 else f"_m_scrut_inner{depth}"
+
+
 def _match_has_guards(instr: Match) -> bool:
     """True iff any arm in ``instr`` carries a non-None guard.
     Selects between the legacy nested-cascade path (no guards)
@@ -527,19 +551,21 @@ class _MatchEmissionMixin:
 
     def _emit_inner_variant_payload_binds(
         self, nested_pat: PatVariant, inner_payloads: list,
+        scrut_local_name: str = "_m_scrut_inner",
     ) -> None:
         """Bind the payload sub-patterns of a depth-1 nested variant
-        pattern from ``$_m_scrut_inner``. Shared by the cascade and
-        guarded nested-arm paths. PatLiteral sub-patterns were
-        consumed by the arm predicate; a PatVariant here would be
-        depth 2, which the emitter does not implement."""
+        pattern from ``$scrut_local_name`` (default ``_m_scrut_inner``;
+        a variant nested inside a nested tuple passes a deeper scratch).
+        Shared by the cascade and guarded nested-arm paths. PatLiteral
+        sub-patterns were consumed by the arm predicate; a PatVariant
+        here would be depth 2, which the emitter does not implement."""
         for sub_pat, (offset, size, _ty) in zip(
             nested_pat.payloads, inner_payloads,
         ):
             if isinstance(sub_pat, PatIdent):
                 self._bind_variant_payload(
                     sub_pat, offset, size, _ty,
-                    scrut_local_name="_m_scrut_inner",
+                    scrut_local_name=scrut_local_name,
                 )
             elif isinstance(sub_pat, (PatWildcard, PatLiteral)):
                 continue
@@ -888,26 +914,46 @@ class _MatchEmissionMixin:
             f"Tuple match: literal kind {lit_pat.kind!r} not supported"
         )
 
+    def _emit_and_of_checks(self, checks: list) -> None:
+        """Emit the i32 AND of a list of 0-arg check callables, or
+        ``i32.const 1`` when the list is empty (an irrefutable
+        sub-pattern). Each callable must push exactly one i32 0/1."""
+        if not checks:
+            self._write("i32.const 1")
+            return
+        for n, emit_check in enumerate(checks):
+            emit_check()
+            if n > 0:
+                self._write("i32.and")
+
     def _tuple_arm_checks(
         self, scrut_local: str, elem_tys: list, elements: list,
+        depth: int = 1,
     ) -> list:
         """Return a list of 0-arg thunks, each pushing an i32 0/1
         predicate for one REFUTABLE tuple element. A PatLiteral
         element contributes a slot-equality check; a PatVariant
         element contributes a discriminant check (the element's own
         sum tag equals the pattern variant's tag) refined by any
-        literal payload sub-patterns. PatIdent / PatWildcard elements
-        are irrefutable and contribute no thunk; an empty list means
-        the whole tuple pattern is irrefutable (a catch-all).
+        literal payload sub-patterns. A PatTuple element recurses
+        into the nested tuple's own checks; a PatStruct element
+        loads the struct pointer and gathers its field checks. PatIdent
+        / PatWildcard elements are irrefutable and contribute no thunk;
+        an empty list means the whole tuple pattern is irrefutable
+        (a catch-all).
 
         A PatVariant element is conceptually a nested variant slot:
         the tuple slot at ``idx * 8`` holds the sum record's i32
         pointer (i64-extended, like every pointer-shaped slot), so we
-        wrap it back to i32 into ``$_m_scrut_inner`` and reuse the
-        same tag-test + payload-literal machinery the depth-1
-        nested-variant arms use. No outer-tag gating is needed (unlike
-        the variant-in-variant case): the tuple's static element type
-        guarantees the slot always holds a valid sum pointer."""
+        wrap it back to i32 into the depth-``depth`` inner scratch and
+        reuse the tag-test + payload-literal machinery. A PatTuple /
+        PatStruct element is likewise pointer-shaped in the slot; the
+        child pointer stashes one level deeper (``depth`` here, its own
+        grandchildren at ``depth + 1``) so a parent pointer survives
+        while a sibling is decoded. No outer-tag gating is needed
+        (unlike the variant-in-variant case): the tuple's static
+        element type guarantees the slot always holds a valid pointer."""
+        inner = _inner_scratch_local(depth)
         checks: list = []
         for idx, sub in enumerate(elements):
             if isinstance(sub, PatLiteral):
@@ -929,16 +975,32 @@ class _MatchEmissionMixin:
                     self._write(f"local.get ${scrut_local}")
                     self._write(f"i64.load offset={offset}")
                     self._write("i32.wrap_i64")
-                    self._write("local.tee $_m_scrut_inner")
+                    self._write(f"local.tee ${inner}")
                     self._write("i32.load")
                     self._write(f"i32.const {t}")
                     self._write("i32.eq")
                     self._refine_predicate_with_payload_literals(
-                        _literal_payload_checks(
-                            s, layouts, "_m_scrut_inner",
-                        ),
+                        _literal_payload_checks(s, layouts, inner),
                     )
                 checks.append(var_thunk)
+            elif isinstance(sub, PatTuple):
+                inner_tys = self._tuple_elem_types_for(elem_tys, idx, sub)
+
+                def tup_thunk(i=idx, s=sub, tys=tuple(inner_tys)):
+                    self._load_tuple_slot_ptr(scrut_local, i, inner)
+                    self._emit_and_of_checks(self._tuple_arm_checks(
+                        inner, list(tys), s.elements, depth + 1,
+                    ))
+                checks.append(tup_thunk)
+            elif isinstance(sub, PatStruct):
+                layout = self._tuple_struct_layout(elem_tys, idx, sub)
+
+                def struct_thunk(i=idx, s=sub, lay=layout):
+                    self._load_tuple_slot_ptr(scrut_local, i, inner)
+                    self._emit_and_of_checks(self._struct_pattern_checks(
+                        s, lay, inner, depth + 1,
+                    ))
+                checks.append(struct_thunk)
             elif isinstance(sub, (PatIdent, PatWildcard)):
                 continue
             else:
@@ -946,9 +1008,55 @@ class _MatchEmissionMixin:
                     f"Tuple match: sub-pattern "
                     f"{type(sub).__name__} not yet supported "
                     f"(PatIdent / PatWildcard / PatLiteral / "
-                    f"PatVariant only at the moment)"
+                    f"PatVariant / PatTuple / PatStruct)"
                 )
         return checks
+
+    def _load_tuple_slot_ptr(
+        self, scrut_local: str, idx: int, dest_local: str,
+    ) -> None:
+        """Load the pointer-shaped tuple slot at ``idx`` (i64-extended
+        in the uniform 8-byte slot) as an i32 into ``$dest_local``.
+        Used to descend into a nested-tuple / nested-struct element."""
+        self._write(f"local.get ${scrut_local}")
+        self._write(f"i64.load offset={idx * 8}")
+        self._write("i32.wrap_i64")
+        self._write(f"local.set ${dest_local}")
+
+    def _tuple_elem_types_for(
+        self, elem_tys: list, idx: int, sub: PatTuple,
+    ) -> list:
+        """Resolve the element types of a nested-tuple sub-pattern from
+        the parent tuple's declared element type. Raises FAIL-LOUD when
+        the element type is not a tuple of matching arity."""
+        from ._tuples import _tuple_elem_types
+        elem_ty = elem_tys[idx] if idx < len(elem_tys) else "Unknown"
+        inner_tys = _tuple_elem_types(elem_ty)
+        if not inner_tys or len(inner_tys) != len(sub.elements):
+            raise WasmEmissionError(
+                f"Tuple match: nested tuple sub-pattern of arity "
+                f"{len(sub.elements)} at position {idx} does not match "
+                f"element type {elem_ty!r}"
+            )
+        return inner_tys
+
+    def _tuple_struct_layout(
+        self, elem_tys: list, idx: int, sub: PatStruct,
+    ) -> dict:
+        """Resolve the struct layout for a nested-struct tuple element
+        from the element's declared type. Raises FAIL-LOUD when the
+        element type is not a known struct."""
+        from ._layout import _strip_type_qualifiers
+        elem_ty = elem_tys[idx] if idx < len(elem_tys) else "Unknown"
+        head = _strip_type_qualifiers(elem_ty)
+        layout = self._struct_layouts.get(head)
+        if layout is None:
+            raise WasmEmissionError(
+                f"Tuple match: struct sub-pattern {sub.type_name!r} at "
+                f"position {idx} needs a struct-typed element, but the "
+                f"element type is {elem_ty!r}"
+            )
+        return layout
 
     def _tuple_variant_layout(
         self, elem_tys: list, idx: int, sub: PatVariant,
@@ -975,28 +1083,41 @@ class _MatchEmissionMixin:
 
     def _emit_tuple_arm_binds(
         self, scrut_local: str, elem_tys: list,
-        elements: list,
+        elements: list, depth: int = 1,
     ) -> None:
         """Bind tuple slots into their PatIdent locals. Slot encoding
         mirrors ``_store_tuple_slot`` / ``_emit_tuple_index``: i64
         for Int, f64 for Float, i32 wrap for pointer-shape, packed
         i64 split for String. A PatVariant element re-extracts the
-        sum pointer from its slot into ``$_m_scrut_inner`` and binds
-        its payload sub-patterns via the shared nested-variant
-        binder (``Some(n)`` binds ``n``; a nullary ``None`` binds
-        nothing)."""
+        sum pointer from its slot into the depth-``depth`` inner
+        scratch and binds its payload sub-patterns via the shared
+        nested-variant binder (``Some(n)`` binds ``n``; a nullary
+        ``None`` binds nothing). A PatTuple / PatStruct element
+        descends into the child record's binds one scratch level
+        deeper so a sibling's pointer survives."""
+        inner = _inner_scratch_local(depth)
         for idx, sub in enumerate(elements):
             if isinstance(sub, PatVariant):
                 _tag, payload_layouts = self._tuple_variant_layout(
                     elem_tys, idx, sub,
                 )
-                offset = idx * 8
-                self._write(f"local.get ${scrut_local}")
-                self._write(f"i64.load offset={offset}")
-                self._write("i32.wrap_i64")
-                self._write("local.set $_m_scrut_inner")
+                self._load_tuple_slot_ptr(scrut_local, idx, inner)
                 self._emit_inner_variant_payload_binds(
-                    sub, payload_layouts,
+                    sub, payload_layouts, scrut_local_name=inner,
+                )
+                continue
+            if isinstance(sub, PatTuple):
+                inner_tys = self._tuple_elem_types_for(elem_tys, idx, sub)
+                self._load_tuple_slot_ptr(scrut_local, idx, inner)
+                self._emit_tuple_arm_binds(
+                    inner, inner_tys, sub.elements, depth + 1,
+                )
+                continue
+            if isinstance(sub, PatStruct):
+                layout = self._tuple_struct_layout(elem_tys, idx, sub)
+                self._load_tuple_slot_ptr(scrut_local, idx, inner)
+                self._emit_struct_pattern_binds(
+                    sub, layout, inner, depth + 1,
                 )
                 continue
             if not isinstance(sub, PatIdent):
@@ -1100,6 +1221,7 @@ class _MatchEmissionMixin:
 
     def _struct_pattern_checks(
         self, pat: PatStruct, layout: dict, scrut_local: str,
+        depth: int = 1,
     ) -> list:
         """Return a list of 0-arg callables, each of which pushes an
         i32 0/1 predicate for one literal (or nested-refutable) field
@@ -1107,7 +1229,10 @@ class _MatchEmissionMixin:
         irrefutable (only binds / wildcards). PatIdent / PatWildcard
         sub-patterns contribute no check. A nested PatStruct field
         contributes its own (recursively gathered) field checks,
-        loading the nested struct pointer first."""
+        loading the nested struct pointer into the depth-``depth``
+        inner scratch first (deeper than the parent's so the parent
+        pointer survives)."""
+        inner = _inner_scratch_local(depth)
         checks: list = []
         for fname, sub in pat.fields:
             f_info = layout["fields"].get(fname)
@@ -1142,17 +1267,10 @@ class _MatchEmissionMixin:
                 ):
                     self._write(f"local.get ${scrut_local}")
                     self._write(f"i32.load offset={off}")
-                    self._write("local.set $_m_scrut_inner")
-                    inner = self._struct_pattern_checks(
-                        sp, nl, "_m_scrut_inner",
-                    )
-                    if not inner:
-                        self._write("i32.const 1")
-                        return
-                    for n, emit_check in enumerate(inner):
-                        emit_check()
-                        if n > 0:
-                            self._write("i32.and")
+                    self._write(f"local.set ${inner}")
+                    self._emit_and_of_checks(self._struct_pattern_checks(
+                        sp, nl, inner, depth + 1,
+                    ))
 
                 checks.append(emit_nested)
                 continue
@@ -1219,6 +1337,7 @@ class _MatchEmissionMixin:
 
     def _emit_struct_pattern_binds(
         self, pat: PatStruct, layout: dict, scrut_local: str,
+        depth: int = 1,
     ) -> None:
         """Bind the PatIdent fields of a struct pattern into their
         locals, loading each from the struct record by layout offset.
@@ -1228,7 +1347,9 @@ class _MatchEmissionMixin:
         pointer-shape = i32 (loaded directly, NOT i64-wrapped, because
         struct slots store pointer fields as a bare i32 at their
         offset), Int / scalar = sized load. Nested PatStruct fields
-        recurse against the loaded inner pointer."""
+        recurse against the loaded inner pointer (stashed in the
+        depth-``depth`` scratch so the parent pointer survives)."""
+        inner = _inner_scratch_local(depth)
         for fname, sub in pat.fields:
             offset, size, field_ty = layout["fields"][fname]
             if isinstance(sub, PatWildcard):
@@ -1238,10 +1359,10 @@ class _MatchEmissionMixin:
             if isinstance(sub, PatStruct):
                 self._write(f"local.get ${scrut_local}")
                 self._write(f"i32.load offset={offset}")
-                self._write("local.set $_m_scrut_inner")
+                self._write(f"local.set ${inner}")
                 nested_layout = self._struct_layouts[sub.type_name]
                 self._emit_struct_pattern_binds(
-                    sub, nested_layout, "_m_scrut_inner",
+                    sub, nested_layout, inner, depth + 1,
                 )
                 continue
             if isinstance(sub, PatIdent):

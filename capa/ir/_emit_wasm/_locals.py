@@ -891,6 +891,16 @@ class _LocalsCollectionMixin:
             # Nested PatVariant arms (depth 1) stash the inner
             # scrutinee pointer here; flat arms never touch it.
             out["_m_scrut_inner"] = "i32"
+            # Deeper nesting (a PatTuple / PatStruct / PatVariant that
+            # is itself a sub-pattern of a nested tuple element) needs
+            # one scratch pointer per level so a parent's stashed
+            # pointer survives while a child decodes its own. The
+            # emitter walks ``_m_scrut_inner`` (depth 1), then
+            # ``_m_scrut_inner2`` .. ``_m_scrut_inner{N}`` for deeper
+            # levels; beyond the pool it raises FAIL-LOUD rather than
+            # clobber a live pointer.
+            for d in range(2, 9):
+                out[f"_m_scrut_inner{d}"] = "i32"
         if has_int_match:
             # Int-scrutinee match: the scrutinee is an i64 and cannot
             # live in the i32 ``$_m_scrut``, so it gets a dedicated

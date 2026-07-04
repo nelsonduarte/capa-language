@@ -35,6 +35,32 @@ breaking changes and the discipline is still being shaped.
   swept) and a tuple whose element type is `Fun` remains a separate,
   pre-existing Wasm encoding gap independent of fn-refs.
 
+- *A tuple or struct sub-pattern inside a tuple match now compiles on the
+  Wasm backend instead of failing loud.* Matching a tuple whose element is
+  itself a tuple or struct pattern -- `match ((1, 2), "x"); ((a, b), s) ->
+  ...` or `match (P { x: 1, y: 2 }, "s"); (P { x: a, y: b }, s) -> ...` --
+  previously raised `Tuple match: sub-pattern PatTuple not yet supported`
+  / `... PatStruct not yet supported` at codegen time (`--check` and the
+  Python backend accepted it). A tuple element's slot holds a pointer to
+  the nested tuple / struct record, so both tuple-match emitters (the
+  guard-free cascade and the guarded flat-block path) now descend into it:
+  a `PatTuple` element recurses into the existing tuple-destructuring
+  machinery and a `PatStruct` element reuses the struct-match field
+  binding / literal-check machinery, each stashing the child pointer one
+  scratch level deeper so a parent pointer survives while a sibling is
+  decoded. The IR lowerer's pattern-binding type refinement gained the
+  matching `PatStruct` case so a pointer-shaped field (e.g. a `String`)
+  bound inside a tuple element is typed correctly instead of defaulting to
+  the Unknown `i64` shape. The covered matrix -- nested tuple, deeper
+  nested tuple `(((a, b), c), s)`, struct element, struct with a `String`
+  field, struct/tuple mixtures, literals and wildcards inside the nested
+  sub-pattern, a variant inside a nested tuple, and a guard over the whole
+  arm -- all hold Python-vs-Wasm parity across `--run`, `--wasm`,
+  `--wasm --component`, and `--wasm --component --wasi`. Nesting past the
+  eight-level inner-scratch pool, and a variant or `String`-literal used
+  as a *struct field* (a pre-existing struct-match limitation, orthogonal
+  to tuple nesting), still fail loud rather than mis-compiling.
+
 - *A variant sub-pattern inside a tuple match now compiles on the Wasm
   backend instead of failing loud.* Matching a tuple whose element is a
   variant pattern -- `match (opt, label); (Some(n), label) -> ... ;
