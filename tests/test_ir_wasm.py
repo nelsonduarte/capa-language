@@ -2969,6 +2969,79 @@ class TestWasmClosures(unittest.TestCase):
         store, exp = self._instantiate(src)
         self.assertEqual(exp["main"](store), 30)
 
+    def test_compose_captures_and_calls(self):
+        # Regression (2026-07): a lifted lambda that CAPTURES another
+        # function and CALLS it. ``compose(f, g)`` returns
+        # ``fun (x) => g(f(x))`` where ``f`` / ``g`` are captured only
+        # as call targets, never as plain values. Before the fix the
+        # free-var analysis missed the callee names entirely (a Call's
+        # callee is a bare string, not a Value), so the env was empty
+        # and the body emitted ``call $f`` for a non-existent static
+        # function -- ``unknown func $f`` at wasm parse time.
+        src = (
+            "fun compose(f: Fun(Int) -> Int, g: Fun(Int) -> Int)"
+            " -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int => g(f(x))\n"
+            "fun main() -> Int\n"
+            "    let d = fun (x: Int) -> Int => x * 2\n"
+            "    let i = fun (x: Int) -> Int => x + 1\n"
+            "    let di = compose(d, i)\n"
+            "    return di(10)\n"
+        )
+        store, exp = self._instantiate(src)
+        # d(10) = 20, then i(20) = 21.
+        self.assertEqual(exp["main"](store), 21)
+
+    def test_compose_chained(self):
+        # Chained / triple composition compose(compose(d, i), s):
+        # the outer compose captures a capturing closure and another
+        # closure, and calls both.
+        src = (
+            "fun compose(f: Fun(Int) -> Int, g: Fun(Int) -> Int)"
+            " -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int => g(f(x))\n"
+            "fun main() -> Int\n"
+            "    let d = fun (x: Int) -> Int => x * 2\n"
+            "    let i = fun (x: Int) -> Int => x + 1\n"
+            "    let s = fun (x: Int) -> Int => x - 3\n"
+            "    let t = compose(compose(d, i), s)\n"
+            "    return t(10)\n"
+        )
+        store, exp = self._instantiate(src)
+        # d(10)=20, i(20)=21, s(21)=18.
+        self.assertEqual(exp["main"](store), 18)
+
+    def test_capturing_closure_returned_stored_called(self):
+        # A capturing closure DEVOLVED, stored in a let, and called
+        # later. ``adder(n)`` closes over the Int ``n``; the returned
+        # closure is bound and invoked from another scope.
+        src = (
+            "fun adder(n: Int) -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int => x + n\n"
+            "fun main() -> Int\n"
+            "    let add5 = adder(5)\n"
+            "    let add10 = adder(10)\n"
+            "    return add5(1) + add10(1)\n"
+        )
+        store, exp = self._instantiate(src)
+        # (1+5) + (1+10) = 17.
+        self.assertEqual(exp["main"](store), 17)
+
+    def test_fun_capture_alongside_int_capture(self):
+        # A Fun-typed capture sits next to an Int capture in the SAME
+        # env record: the layout must place both without clobbering.
+        src = (
+            "fun make(f: Fun(Int) -> Int, k: Int) -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int => f(x) + k\n"
+            "fun main() -> Int\n"
+            "    let d = fun (x: Int) -> Int => x * 2\n"
+            "    let g = make(d, 100)\n"
+            "    return g(7)\n"
+        )
+        store, exp = self._instantiate(src)
+        # d(7)=14, +100 = 114.
+        self.assertEqual(exp["main"](store), 114)
+
     def test_call_through_fun_typed_param_returning_bool(self):
         # Regression: before 2026-05-25 the analyzer returned
         # TyUnknown for a call whose callee was a parameter
