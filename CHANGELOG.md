@@ -11,6 +11,30 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *A top-level function used as a `Fun(...)` value INSIDE an aggregate
+  literal now compiles on the Wasm backend.* Passing a free function by
+  name as an element of a list (`[add1, add1]`), a tuple slot, or a
+  struct field (`S { op: add1 }`) previously failed loud at codegen with
+  `top-level function 'X' used as Fun(...) value, but no thunk was
+  registered for sig '...'` (the `--check` + Python backends accepted
+  it). The pre-emit thunk-discovery walk swept the Value slots of
+  `Call` / `MethodCall` / `BinOp` / `Return` / `Index` / `FieldStore` /
+  `FormatStr` and the like, but had no case for the element / field
+  values of aggregate-literal instructions, so a `Fun` reference sitting
+  in `MakeList` / `MakeTuple` / `MakeStruct` was never visited and no
+  adapter thunk was registered. The walk now visits those element /
+  field values; nested aggregates are already separate `MakeList` /
+  `MakeTuple` instructions in ANF, so the top-level sweep reaches each
+  one. Parity holds across all four backends for a list of fn-refs
+  (iterated and indexed), a Fun-typed struct field built from a fn-ref,
+  a nested list-of-lists of fn-refs, and a list mixing a fn-ref with an
+  inline lambda. A fn-ref whose signature the closure ABI cannot encode
+  (e.g. a `Unit` return) still fails loud with the existing clear
+  message rather than mis-compiling. `MakeMap` / `MakeSet` literals are
+  always empty (values enter via `.set(...)` method calls, already
+  swept) and a tuple whose element type is `Fun` remains a separate,
+  pre-existing Wasm encoding gap independent of fn-refs.
+
 - *A variant sub-pattern inside a tuple match now compiles on the Wasm
   backend instead of failing loud.* Matching a tuple whose element is a
   variant pattern -- `match (opt, label); (Some(n), label) -> ... ;
