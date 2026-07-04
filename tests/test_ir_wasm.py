@@ -7714,5 +7714,129 @@ class TestWasmAggregateSlotTypeInference(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmFnRefInAggregate(unittest.TestCase):
+    """Regression guards for the fn-ref-in-aggregate thunk fix.
+
+    A top-level function used as a ``Fun(...)`` value that appears
+    as an ELEMENT of an aggregate literal (list element, tuple
+    slot, struct field) was not seen by the pre-emit thunk
+    discovery walk: the walk swept Call / MethodCall / BinOp /
+    etc. Value slots but had no case for MakeList / MakeTuple /
+    MakeStruct element values. The reference therefore registered
+    no thunk and emit failed with "no thunk was registered for
+    sig". Each test executes end-to-end on wasmtime and asserts the
+    exact stdout the Python backend produces for the same program."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_list_of_fn_refs_iterated_and_called(self):
+        # The minimal repro: ``[add1, add1]`` iterated and each
+        # element applied. Pre-fix the MakeList element ``add1``
+        # (a global Fun value) never reached thunk discovery.
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun main(stdio: Stdio)\n"
+            "    let fs = [add1, add1]\n"
+            "    var acc = 0\n"
+            "    for f in fs\n"
+            "        acc = f(acc)\n"
+            "    stdio.println(\"acc=${acc}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "acc=2\n",
+        )
+
+    def test_list_of_fn_refs_indexed_and_called(self):
+        # A fn-ref list element reached through an index, bound to a
+        # local, then called.
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun main(stdio: Stdio)\n"
+            "    let fs = [add1, add1]\n"
+            "    let f = fs[0]\n"
+            "    let r = f(10)\n"
+            "    stdio.println(\"r=${r}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "r=11\n",
+        )
+
+    def test_struct_field_of_fun_type_built_with_fn_ref(self):
+        # A Fun-typed struct field initialised with a top-level
+        # function reference (MakeStruct field value).
+        src = (
+            "type S { op: Fun(Int) -> Int }\n"
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = S { op: add1 }\n"
+            "    let op = s.op\n"
+            "    let r = op(41)\n"
+            "    stdio.println(\"s=${r}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "s=42\n",
+        )
+
+    def test_nested_list_of_fn_refs(self):
+        # A nested aggregate (list of lists of fn-refs). ANF flattens
+        # the inner lists into their own MakeList instrs, so the
+        # top-level walk must reach each one.
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun dbl(x: Int) -> Int\n"
+            "    return x * 2\n"
+            "fun main(stdio: Stdio)\n"
+            "    let grid = [[add1, dbl], [dbl, add1]]\n"
+            "    var acc = 0\n"
+            "    for row in grid\n"
+            "        for f in row\n"
+            "            acc = f(acc + 1)\n"
+            "    stdio.println(\"acc=${acc}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "acc=16\n",
+        )
+
+    def test_mixed_fn_ref_and_lambda_in_same_list(self):
+        # A fn-ref and an inline lambda in the same list literal:
+        # the lambda registers via _discover_lambdas, the fn-ref via
+        # the aggregate-element thunk walk; both must resolve.
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun main(stdio: Stdio)\n"
+            "    let fs = [add1, fun (x: Int) -> Int => x * 2]\n"
+            "    var acc = 1\n"
+            "    for f in fs\n"
+            "        acc = f(acc)\n"
+            "    stdio.println(\"acc=${acc}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "acc=4\n",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

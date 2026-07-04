@@ -98,6 +98,7 @@ class _ClosureEmissionMixin:
             Call, MethodCall, For, If, While, Match, MakeLambda,
             AssignConst, Reassign, BinOp, UnaryOp, Index, FieldAccess,
             FieldStore, Return, TryUnwrap, FormatStr, Value as IrValue,
+            MakeList, MakeTuple, MakeStruct,
         )
 
         # Map global-fun callee names to their Function for sig
@@ -197,6 +198,27 @@ class _ClosureEmissionMixin:
                     for part in instr.parts:
                         if isinstance(part, IrValue):
                             visit_value(part)
+                elif isinstance(instr, (MakeList, MakeTuple)):
+                    # A top-level function used as a ``Fun(...)``
+                    # value can appear as an element of a list or
+                    # tuple literal (``[add1, add1]`` /
+                    # ``(add1, add1)``). Without visiting the
+                    # elements the thunk for that fn-ref is never
+                    # registered and emit fails with "no thunk
+                    # registered for sig". Nested aggregates are
+                    # already separate MakeList/MakeTuple instrs in
+                    # ANF, so the top-level walk reaches each one.
+                    for el in instr.elements:
+                        visit_value(el)
+                elif isinstance(instr, MakeStruct):
+                    # ``S { op: add1 }`` -- a Fun-typed struct field
+                    # initialised with a top-level function ref.
+                    for _fname, fval in instr.fields:
+                        visit_value(fval)
+                # MakeMap / MakeSet literals are always empty in Capa
+                # (values are added via ``.set(...)`` MethodCalls,
+                # already visited above); MakeRange only ever carries
+                # Int endpoints, never a Fun, so neither needs a case.
                 # Recurse into nested instruction lists.
                 if isinstance(instr, If):
                     visit_value(instr.cond)
