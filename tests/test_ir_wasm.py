@@ -5325,6 +5325,82 @@ class TestWasmMatchEmission(unittest.TestCase):
         )
         self.assertEqual(self._exec(src, "read_flag"), 1)
 
+    # ------- Tuple-scrutinee match: PatVariant sub-pattern -----
+    # A variant pattern as a tuple element is a slot at a known
+    # offset holding a sum record; the emitter reuses the depth-1
+    # nested-variant tag-test + payload-bind machinery. These
+    # exercise every case in the supported matrix.
+
+    def test_tuple_match_variant_with_payload_element(self):
+        # ``(Some(n), m) -> ...`` binds the Option payload from the
+        # first tuple slot; ``(None, m)`` is the tag-only arm.
+        src = (
+            "fun pick(a: Int) -> Int\n"
+            "    let t: (Option<Int>, Int) = (Some(a), 9)\n"
+            "    return match t\n"
+            "        (Some(n), m) -> n + m\n"
+            "        (None, m) -> m\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 3), 12)
+        self.assertEqual(self._exec(src, "pick", 100), 109)
+
+    def test_tuple_match_nullary_variant_element(self):
+        # ``(None, m) -> ...`` is a pure tag check with no payload
+        # bind; the Some arm must NOT fire.
+        src = (
+            "fun pick() -> Int\n"
+            "    let t: (Option<Int>, Int) = (None, 7)\n"
+            "    return match t\n"
+            "        (Some(n), m) -> n + m\n"
+            "        (None, m) -> m\n"
+        )
+        self.assertEqual(self._exec(src, "pick"), 7)
+
+    def test_tuple_match_variant_in_second_position(self):
+        # The variant element is NOT slot 0: offset math + inner
+        # scrutinee extraction must key off ``idx * 8``.
+        src = (
+            "fun pick(a: Int) -> Int\n"
+            "    let t: (Int, Option<Int>) = (100, Some(a))\n"
+            "    return match t\n"
+            "        (m, Some(n)) -> m + n\n"
+            "        (m, None) -> m\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 5), 105)
+
+    def test_tuple_match_multiple_variant_elements(self):
+        # Two variant elements in one tuple: the predicate ANDs
+        # both discriminant checks; each bind re-extracts its own
+        # slot into $_m_scrut_inner.
+        src = (
+            "fun pick(a: Int, b: Int) -> Int\n"
+            "    let t: (Option<Int>, Result<Int, Int>) = "
+            "(Some(a), Ok(b))\n"
+            "    return match t\n"
+            "        (Some(x), Ok(y)) -> x * 100 + y\n"
+            "        (Some(x), Err(e)) -> x\n"
+            "        (None, _) -> -1\n"
+        )
+        self.assertEqual(self._exec(src, "pick", 2, 3), 203)
+
+    def test_tuple_match_variant_next_to_literal(self):
+        # ``(Some(n), "x")`` mixes a variant discriminant check
+        # with a String-literal slot compare in the same predicate.
+        src = (
+            "fun pick_x() -> Int\n"
+            "    return inner(\"x\", 5)\n"
+            "fun pick_y() -> Int\n"
+            "    return inner(\"y\", 5)\n"
+            "fun inner(s: String, a: Int) -> Int\n"
+            "    let t: (Option<Int>, String) = (Some(a), s)\n"
+            "    return match t\n"
+            "        (Some(n), \"x\") -> n * 10\n"
+            "        (Some(n), k) -> n\n"
+            "        (None, k) -> -1\n"
+        )
+        self.assertEqual(self._exec(src, "pick_x"), 50)
+        self.assertEqual(self._exec(src, "pick_y"), 5)
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),

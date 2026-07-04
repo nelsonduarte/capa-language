@@ -55,6 +55,12 @@ MUST_PASS=(
   documented_demo
   demo_event_stream
 
+  # Advanced pattern matching: tuple deconstruction, string-literal
+  # dispatch, and a variant sub-pattern inside a tuple element
+  # (`(Some(n), label)` / `(None, label)`). Moved here after the 2026-07
+  # tuple-variant match fix.
+  patterns
+
   # Higher-order function values / closures, including a closure that
   # CAPTURES another function and CALLS it (``compose(f, g) => fun(x) =>
   # g(f(x))``). Moved here after the 2026-07 captured-Fun-call fix.
@@ -124,8 +130,6 @@ MUST_PASS=(
 #                                  use the `Unsafe` capability, intentionally
 #                                  unsupported on the Wasm backend (raw FFI /
 #                                  pointers have no sandboxed Wasm equivalent).
-#   patterns                       tuple match with a variant sub-pattern not yet
-#                                  supported on the Wasm backend.
 # (`tasks`, `quota_check`, `cyclonedx_parser`, `spdx_parser` moved to
 # MUST_PASS after the 2026-07 aggregate/payload slot type-inference fix.
 # `cve_jinja2_ssti` moved to MUST_PASS after the 2026-07 multi-character

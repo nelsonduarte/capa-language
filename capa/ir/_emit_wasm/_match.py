@@ -798,29 +798,18 @@ class _MatchEmissionMixin:
                         f"does not match scrutinee arity {arity} "
                         f"({scrut_ty})"
                     )
-                # Literal sub-patterns produce a per-arm guard
-                # condition. Build the combined condition by
-                # ANDing together each literal check; bind the
-                # PatIdent slots inside the if-true branch.
-                literal_checks: list[tuple[int, PatLiteral]] = []
-                for idx, sub in enumerate(pat.elements):
-                    if isinstance(sub, PatLiteral):
-                        literal_checks.append((idx, sub))
-                    elif isinstance(sub, (PatIdent, PatWildcard)):
-                        continue
-                    else:
-                        raise WasmEmissionError(
-                            f"Tuple match: sub-pattern "
-                            f"{type(sub).__name__} not yet supported "
-                            f"(PatIdent / PatWildcard / PatLiteral "
-                            f"only at the moment)"
-                        )
-                if literal_checks:
-                    # Push each per-slot comparison, AND them all.
-                    for n, (idx, lit_pat) in enumerate(literal_checks):
-                        self._emit_tuple_slot_eq(
-                            scrut_local, idx, elem_tys[idx], lit_pat,
-                        )
+                # Refutable sub-patterns (PatLiteral slot compares,
+                # PatVariant discriminant + payload-literal checks)
+                # each produce a per-arm predicate thunk. Build the
+                # combined condition by ANDing them; bind the
+                # PatIdent slots and variant payloads inside the
+                # if-true branch.
+                checks = self._tuple_arm_checks(
+                    scrut_local, elem_tys, pat.elements,
+                )
+                if checks:
+                    for n, thunk in enumerate(checks):
+                        thunk()
                         if n > 0:
                             self._write("i32.and")
                     self._write("if")
@@ -899,6 +888,91 @@ class _MatchEmissionMixin:
             f"Tuple match: literal kind {lit_pat.kind!r} not supported"
         )
 
+    def _tuple_arm_checks(
+        self, scrut_local: str, elem_tys: list, elements: list,
+    ) -> list:
+        """Return a list of 0-arg thunks, each pushing an i32 0/1
+        predicate for one REFUTABLE tuple element. A PatLiteral
+        element contributes a slot-equality check; a PatVariant
+        element contributes a discriminant check (the element's own
+        sum tag equals the pattern variant's tag) refined by any
+        literal payload sub-patterns. PatIdent / PatWildcard elements
+        are irrefutable and contribute no thunk; an empty list means
+        the whole tuple pattern is irrefutable (a catch-all).
+
+        A PatVariant element is conceptually a nested variant slot:
+        the tuple slot at ``idx * 8`` holds the sum record's i32
+        pointer (i64-extended, like every pointer-shaped slot), so we
+        wrap it back to i32 into ``$_m_scrut_inner`` and reuse the
+        same tag-test + payload-literal machinery the depth-1
+        nested-variant arms use. No outer-tag gating is needed (unlike
+        the variant-in-variant case): the tuple's static element type
+        guarantees the slot always holds a valid sum pointer."""
+        checks: list = []
+        for idx, sub in enumerate(elements):
+            if isinstance(sub, PatLiteral):
+                def lit_thunk(i=idx, s=sub):
+                    self._emit_tuple_slot_eq(
+                        scrut_local, i, elem_tys[i], s,
+                    )
+                checks.append(lit_thunk)
+            elif isinstance(sub, PatVariant):
+                tag, payload_layouts = self._tuple_variant_layout(
+                    elem_tys, idx, sub,
+                )
+
+                def var_thunk(
+                    i=idx, s=sub, t=tag,
+                    layouts=tuple(payload_layouts),
+                ):
+                    offset = i * 8
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"i64.load offset={offset}")
+                    self._write("i32.wrap_i64")
+                    self._write("local.tee $_m_scrut_inner")
+                    self._write("i32.load")
+                    self._write(f"i32.const {t}")
+                    self._write("i32.eq")
+                    self._refine_predicate_with_payload_literals(
+                        _literal_payload_checks(
+                            s, layouts, "_m_scrut_inner",
+                        ),
+                    )
+                checks.append(var_thunk)
+            elif isinstance(sub, (PatIdent, PatWildcard)):
+                continue
+            else:
+                raise WasmEmissionError(
+                    f"Tuple match: sub-pattern "
+                    f"{type(sub).__name__} not yet supported "
+                    f"(PatIdent / PatWildcard / PatLiteral / "
+                    f"PatVariant only at the moment)"
+                )
+        return checks
+
+    def _tuple_variant_layout(
+        self, elem_tys: list, idx: int, sub: PatVariant,
+    ):
+        """Resolve ``(tag, payload_layouts)`` for a PatVariant tuple
+        element from the element's declared sum type. Raises a precise
+        error when the element type is not a known sum or the variant
+        is not one of its constructors."""
+        elem_ty = elem_tys[idx] if idx < len(elem_tys) else "Unknown"
+        sum_layout = self._sum_layouts.get(elem_ty.split("<", 1)[0])
+        if sum_layout is None:
+            raise WasmEmissionError(
+                f"Tuple match: variant sub-pattern {sub.name!r} at "
+                f"position {idx} needs a sum-typed element, but the "
+                f"element type is {elem_ty!r}"
+            )
+        entry = sum_layout["variants"].get(sub.name)
+        if entry is None:
+            raise WasmEmissionError(
+                f"Tuple match: variant {sub.name!r} is not a "
+                f"constructor of element type {elem_ty!r}"
+            )
+        return entry
+
     def _emit_tuple_arm_binds(
         self, scrut_local: str, elem_tys: list,
         elements: list,
@@ -906,8 +980,25 @@ class _MatchEmissionMixin:
         """Bind tuple slots into their PatIdent locals. Slot encoding
         mirrors ``_store_tuple_slot`` / ``_emit_tuple_index``: i64
         for Int, f64 for Float, i32 wrap for pointer-shape, packed
-        i64 split for String."""
+        i64 split for String. A PatVariant element re-extracts the
+        sum pointer from its slot into ``$_m_scrut_inner`` and binds
+        its payload sub-patterns via the shared nested-variant
+        binder (``Some(n)`` binds ``n``; a nullary ``None`` binds
+        nothing)."""
         for idx, sub in enumerate(elements):
+            if isinstance(sub, PatVariant):
+                _tag, payload_layouts = self._tuple_variant_layout(
+                    elem_tys, idx, sub,
+                )
+                offset = idx * 8
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i64.load offset={offset}")
+                self._write("i32.wrap_i64")
+                self._write("local.set $_m_scrut_inner")
+                self._emit_inner_variant_payload_binds(
+                    sub, payload_layouts,
+                )
+                continue
             if not isinstance(sub, PatIdent):
                 continue
             offset = idx * 8
@@ -1640,30 +1731,16 @@ class _MatchEmissionMixin:
                         f"does not match scrutinee arity {arity} "
                         f"({scrut_ty})"
                     )
-                literal_checks: list[tuple[int, PatLiteral]] = []
-                for idx, sub in enumerate(pat.elements):
-                    if isinstance(sub, PatLiteral):
-                        literal_checks.append((idx, sub))
-                    elif isinstance(sub, (PatIdent, PatWildcard)):
-                        continue
-                    else:
-                        raise WasmEmissionError(
-                            f"Tuple match (guarded): sub-pattern "
-                            f"{type(sub).__name__} not yet supported "
-                            f"(PatIdent / PatWildcard / PatLiteral "
-                            f"only at the moment)"
-                        )
+                checks = self._tuple_arm_checks(
+                    scrut_local, elem_tys, pat.elements,
+                )
 
-                def push_predicate(
-                    checks=tuple(literal_checks), e=elem_tys,
-                ):
+                def push_predicate(checks=tuple(checks)):
                     if not checks:
                         self._write("i32.const 1")
                         return
-                    for n, (idx, lit_pat) in enumerate(checks):
-                        self._emit_tuple_slot_eq(
-                            scrut_local, idx, e[idx], lit_pat,
-                        )
+                    for n, thunk in enumerate(checks):
+                        thunk()
                         if n > 0:
                             self._write("i32.and")
 
