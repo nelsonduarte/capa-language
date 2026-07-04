@@ -11,6 +11,26 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *`String.split` with a multi-character separator now matches the
+  Python backend on the Wasm backend.* The Wasm emitter compared only
+  the FIRST byte of the separator, so every byte of a multi-character
+  separator became a cut point: `"a}}b}}c".split("}}")` produced
+  `["a", "", "b", "", "c"]` (n=5) instead of `["a", "b", "c"]` (n=3).
+  The scan now matches the FULL separator at each position (non-
+  overlapping, left to right, via the `$str_eq` runtime helper), the
+  same contract as Python's `str.split`: leading/trailing/adjacent
+  separators yield empty chunks, an absent or too-long separator
+  returns the whole receiver as one element, `"aaa".split("aa")` is
+  `["", "a"]`, and the empty separator still fails loud on both
+  backends. Single-character separators were unaffected. This was the
+  root cause of the `examples/cve_jinja2_ssti.capa` divergence (its
+  template parser splits on `"{{"`/`"}}"`; the spurious empty chunk
+  tripped the "unterminated substitution" branch on Wasm); the example
+  now produces identical output on both backends and joined the
+  `wasm_parity_smoke.sh` MUST_PASS set. The sibling multi-character
+  needle builtins (`contains`, `replace`, `index_of`, `starts_with`,
+  `ends_with`) were audited and already compare the full needle.
+
 - *Aggregate/payload slot type inference no longer miscompiles
   pointer-shaped values on the Wasm backend.* A family of codegen bugs
   shared one failure mode: when the Capa type of an aggregate slot (list

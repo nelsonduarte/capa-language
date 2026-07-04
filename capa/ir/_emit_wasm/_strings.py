@@ -628,19 +628,25 @@ class _StringEmissionMixin:
     def _emit_string_split(
         self, recv: Value, sep: Value, dst: Optional[str],
     ) -> None:
-        """``recv.split(sep) -> List<String>``. Phase 6H supports
-        single-byte separators only (the only shape policy-eval and
-        the gallery demos use). The result is a ``List<String>``
-        where each element occupies an 8-byte slot packed as
-        ``ptr | (len << 32)``.
+        """``recv.split(sep) -> List<String>``. The result is a
+        ``List<String>`` where each element occupies an 8-byte slot
+        packed as ``ptr | (len << 32)``.
 
-        Algorithm: linear scan over the receiver. At each position
-        where ``recv[i] == sep_byte``, emit chunk ``[start, i)``
-        into the result list; advance start to ``i + 1``. After the
-        loop, emit the trailing chunk ``[start, recv.len)`` (which
-        is empty when the receiver ends with the separator). Grow
-        the data array inline if the chunk count exceeds the
+        Algorithm: linear scan over the receiver, matching the FULL
+        separator at each position via ``$str_eq`` (non-overlapping,
+        left to right -- same contract as Python's ``str.split``).
+        On a match at ``i``, emit chunk ``[start, i)`` into the
+        result list and advance both ``i`` and ``start`` past the
+        separator (``i + sep.len``); otherwise advance ``i`` by one.
+        After the loop, emit the trailing chunk ``[start, recv.len)``
+        (which is empty when the receiver ends with the separator).
+        Grow the data array inline if the chunk count exceeds the
         initial capacity.
+
+        Pre-fix (2026-07) the scan compared only the FIRST byte of
+        the separator, so ``"a}}b".split("}}")`` cut at every ``}``
+        and produced spurious empty chunks (``["a","","b"]`` instead
+        of ``["a","b"]``). Single-byte separators were unaffected.
 
         For an empty receiver, the result is a single empty-string
         element -- mirrors Python's ``"".split(",") == [""]``."""
@@ -668,10 +674,6 @@ class _StringEmissionMixin:
         self._write("unreachable")
         self._indent -= 1
         self._write("end")
-        # sep_byte = i32.load8_u(sep.ptr)
-        self._write("local.get $_str_b_ptr")
-        self._write("i32.load8_u")
-        self._write("local.set $_str_byte")
 
         # Allocate list header + initial 16-slot data array
         # (128 bytes). The grow path doubles cap when full.
@@ -700,10 +702,12 @@ class _StringEmissionMixin:
         self._write("i32.const 0")
         self._write("local.set $_m_tag")
 
-        # Outer block: scan loop. Each iteration tests the byte at
-        # recv[i]; on match, pushes chunk [start, i) and advances
-        # start. On loop exit (i == recv.len), pushes the trailing
-        # chunk [start, recv.len).
+        # Outer block: scan loop. Each iteration compares the full
+        # separator against recv[i : i+sep.len] via $str_eq; on
+        # match, pushes chunk [start, i) and advances both i and
+        # start past the separator (non-overlapping). On loop exit
+        # (i + sep.len > recv.len -- no further match can fit),
+        # pushes the trailing chunk [start, recv.len).
         self._block_counter += 1
         loop = f"$Ssplit{self._block_counter}_loop"
         exit_ = f"$Ssplit{self._block_counter}_exit"
@@ -711,35 +715,43 @@ class _StringEmissionMixin:
         self._indent += 1
         self._write(f"loop {loop}")
         self._indent += 1
-        # if i >= len: exit.
+        # if i + sep.len > recv.len: exit.
         self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
         self._write("local.get $_str_a_len")
-        self._write("i32.ge_s")
+        self._write("i32.gt_s")
         self._write(f"br_if {exit_}")
-        # byte = recv[i]
+        # str_eq(recv.ptr + i, sep.len, sep.ptr, sep.len)
         self._write("local.get $_str_a_ptr")
         self._write("local.get $_str_i")
         self._write("i32.add")
-        self._write("i32.load8_u")
-        self._write("local.get $_str_byte")
-        self._write("i32.eq")
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
         self._write("if")
         self._indent += 1
         # Match: push chunk [start, i). chunk_ptr = recv_ptr+start;
-        # chunk_len = i - start.
+        # chunk_len = i - start. Then skip the whole separator.
         self._emit_split_push_chunk(dst, start_local="_str_start",
                                     end_local="_str_i")
         self._write("local.get $_str_i")
-        self._write("i32.const 1")
+        self._write("local.get $_str_b_len")
         self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write("local.get $_str_i")
         self._write("local.set $_str_start")
         self._indent -= 1
-        self._write("end")
-        # i++
+        self._write("else")
+        self._indent += 1
+        # No match: i++
         self._write("local.get $_str_i")
         self._write("i32.const 1")
         self._write("i32.add")
         self._write("local.set $_str_i")
+        self._indent -= 1
+        self._write("end")
         self._write(f"br {loop}")
         self._indent -= 1
         self._write("end")

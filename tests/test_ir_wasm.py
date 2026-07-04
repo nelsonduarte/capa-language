@@ -3539,9 +3539,14 @@ class TestWasmJson(unittest.TestCase):
     "wasm-tools and/or wasmtime-py not installed",
 )
 class TestWasmStringSplit(unittest.TestCase):
-    """Phase 6H: String.split(sep) -> List<String> via single-char
-    separator. Also exercises the new List<String> baseline
-    (literal + index + iter) that the same change unlocks."""
+    """Phase 6H: String.split(sep) -> List<String>. Also exercises
+    the List<String> baseline (literal + index + iter) that the same
+    change unlocks. The multi-character separator tests (2026-07)
+    pin the substring-split semantics of Python's ``str.split``:
+    cut at each NON-overlapping occurrence of the FULL separator,
+    left to right. Pre-fix the Wasm backend compared only the first
+    byte of the separator, so ``"a}}b".split("}}")`` cut at every
+    ``}`` and inserted spurious empty chunks."""
 
     def _run_capturing_stdout(self, src: str) -> str:
         import io
@@ -3626,6 +3631,72 @@ class TestWasmStringSplit(unittest.TestCase):
         self.assertEqual(
             self._run_capturing_stdout(src),
             "config\nencryption\nenabled\n",
+        )
+
+    def _split_stdout(self, receiver: str, sep: str) -> str:
+        """Compile-and-run helper for the multi-char separator
+        matrix: prints the element count then each part wrapped in
+        angle brackets so empty chunks are visible in the exact
+        stdout assertion."""
+        src = (
+            'fun main(stdio: Stdio)\n'
+            f'    let parts = "{receiver}".split("{sep}")\n'
+            '    stdio.println("n=${parts.length()}")\n'
+            '    for p in parts\n'
+            '        stdio.println("<${p}>")\n'
+        )
+        return self._run_capturing_stdout(src)
+
+    def test_split_multichar_basic(self):
+        # The original parity bug: the pre-fix byte-at-a-time scan
+        # produced n=5 with empty chunks between the two `}` bytes.
+        self.assertEqual(
+            self._split_stdout("a}}b}}c", "}}"),
+            "n=3\n<a>\n<b>\n<c>\n",
+        )
+
+    def test_split_multichar_leading_separator(self):
+        # Python: "}}a".split("}}") == ["", "a"]
+        self.assertEqual(
+            self._split_stdout("}}a", "}}"), "n=2\n<>\n<a>\n",
+        )
+
+    def test_split_multichar_trailing_separator(self):
+        # Python: "a}}".split("}}") == ["a", ""]
+        self.assertEqual(
+            self._split_stdout("a}}", "}}"), "n=2\n<a>\n<>\n",
+        )
+
+    def test_split_multichar_adjacent_separators(self):
+        # Python: "a}}}}b".split("}}") == ["a", "", "b"]
+        self.assertEqual(
+            self._split_stdout("a}}}}b", "}}"), "n=3\n<a>\n<>\n<b>\n",
+        )
+
+    def test_split_multichar_absent_separator(self):
+        # Python: "abc".split("}}") == ["abc"]
+        self.assertEqual(
+            self._split_stdout("abc", "}}"), "n=1\n<abc>\n",
+        )
+
+    def test_split_multichar_overlapping_occurrences(self):
+        # Non-overlapping, left to right, same as Python:
+        # "aaa".split("aa") == ["", "a"] (the match at offset 0
+        # consumes both bytes; the match at offset 1 never fires).
+        self.assertEqual(
+            self._split_stdout("aaa", "aa"), "n=2\n<>\n<a>\n",
+        )
+
+    def test_split_separator_longer_than_receiver(self):
+        # Python: "ab".split("abc") == ["ab"]
+        self.assertEqual(
+            self._split_stdout("ab", "abc"), "n=1\n<ab>\n",
+        )
+
+    def test_split_receiver_equals_separator(self):
+        # Python: "}}".split("}}") == ["", ""]
+        self.assertEqual(
+            self._split_stdout("}}", "}}"), "n=2\n<>\n<>\n",
         )
 
 
