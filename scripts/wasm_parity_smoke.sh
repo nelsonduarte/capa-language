@@ -91,6 +91,7 @@ MUST_PASS=(
 
   # CVE explainer demos (string handling, pattern matching, control flow).
   cve_eslint_scope
+  cve_jinja2_ssti
   cve_lxml_xxe
   cve_node_ipc
   cve_pickle
@@ -122,12 +123,11 @@ MUST_PASS=(
 #   patterns                       tuple match with a variant sub-pattern not yet
 #                                  supported on the Wasm backend.
 # (`tasks`, `quota_check`, `cyclonedx_parser`, `spdx_parser` moved to
-# MUST_PASS after the 2026-07 aggregate/payload slot type-inference fix.)
-#
-# Legitimate Python-vs-Wasm output DIVERGENCE (both exit 0, stdout differs):
-#   cve_jinja2_ssti                the Wasm string-substitution path reports
-#                                  "unterminated substitution" where the Python
-#                                  backend parses the template correctly.
+# MUST_PASS after the 2026-07 aggregate/payload slot type-inference fix.
+# `cve_jinja2_ssti` moved to MUST_PASS after the 2026-07 multi-character
+# String.split fix: the Wasm backend used to cut at every byte of the
+# separator, so `split("}}")` produced spurious empty chunks and the template
+# parser reported "unterminated substitution" where Python parsed correctly.)
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"

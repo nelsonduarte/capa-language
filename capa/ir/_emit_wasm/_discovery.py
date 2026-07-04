@@ -300,8 +300,8 @@ class _DiscoveryMixin:
         Map<String, V>: Int/Bool key maps compare with native
         ``i64.eq`` / ``i32.eq`` and never call ``$str_eq``. The
         helper is still emitted for any String-method that relies
-        on byte-string equality (contains / starts_with /
-        ends_with) and for List<String>.contains /
+        on byte-string equality (contains / starts_with / ends_with /
+        index_of / replace / split) and for List<String>.contains /
         Set<String>.{add,contains,remove}."""
         for _fn, instr in walk_module(module):
             # MakeMap alone never calls ``$str_eq`` (the allocator
@@ -331,7 +331,7 @@ class _DiscoveryMixin:
                         return True
                 if recv_ty == "String" and instr.method in (
                     "contains", "starts_with", "ends_with",
-                    "index_of", "replace",
+                    "index_of", "replace", "split",
                 ):
                     return True
                 # List<String>.contains compares the needle to
