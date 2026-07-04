@@ -54,12 +54,22 @@ class _ValueEmissionMixin:
         return _size_of(capa_ty, self._sum_layouts, self._struct_layouts)
 
     def _lookup_local_or_param_ty(self, name: str) -> Optional[str]:
-        """Find ``name`` in the current function's locals or
-        params and return its Capa type string, or None if not
-        present. Used by ``_emit_user_call`` to detect closure
-        callees (callee_name is a local of Fun(...) type) before
-        falling back to the ``call $name`` path for top-level
-        functions."""
+        """Find ``name`` in the current function's locals, params,
+        or captures and return its Capa type string, or None if
+        not present. Used by ``_emit_user_call`` to detect closure
+        callees (callee_name is a local / param / capture of
+        Fun(...) type) before falling back to the ``call $name``
+        path for top-level functions.
+
+        Captures are consulted last (locals / params shadow them):
+        inside a lifted lambda body a captured Fun value lives in
+        the env record, not a Wasm local, so a callee that is a
+        capture must still route through the closure-call path.
+        Without this, calling a captured higher-order function --
+        ``compose(f, g) => fun(x) => g(f(x))`` where ``f`` / ``g``
+        are captures -- would emit ``call $f`` for a function that
+        does not exist. The matching push side (``_push_value``)
+        already loads a captured value from ``$env``."""
         if self._current_fn is None:
             return None
         ty = self._current_fn.locals.get(name)
@@ -68,6 +78,9 @@ class _ValueEmissionMixin:
         for p in self._current_fn.params:
             if p.name == name:
                 return p.ty
+        cap = self._current_captures.get(name)
+        if cap is not None:
+            return cap[1]
         return None
 
     def _is_string_local(self, name: str) -> bool:

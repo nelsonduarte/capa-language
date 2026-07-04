@@ -11,6 +11,28 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *Higher-order closures that CAPTURE another function and CALL it now
+  compile on the Wasm backend.* A lifted lambda whose body invokes a
+  captured `Fun(...)` value -- the classic `compose(f, g)` returning
+  `fun (x) => g(f(x))`, where `f` / `g` are only ever referenced as call
+  targets -- previously emitted `call $f` for a static function that does
+  not exist, so `wasm-tools` rejected the module with `unknown func:
+  failed to find name $f` (it broke `examples/closures.capa`). Two gaps
+  are closed: (1) the free-variable analysis in the closure-discovery pass
+  now recognises a `Call`'s callee (a bare name, not a `Value`, so
+  `_values_of` never yielded it) and, when that name resolves to a
+  `Fun`-typed binding in an enclosing scope, adds it to the lambda's env
+  layout; and (2) the call-site dispatch (and the tail-call peephole) now
+  consult the current captures, not just locals / params, so a captured
+  `Fun` callee routes through the `call_indirect` closure path with its
+  value loaded from the env record. Verified end-to-end on wasmtime for
+  basic `compose`, chained composition `compose(compose(a, b), c)`, a
+  capturing closure returned + stored + called later, a two-level env, a
+  higher-order function that receives and calls a capturing closure, and a
+  `Fun` capture sharing an env record with an `Int` capture --
+  Python-vs-Wasm parity holds for all. `examples/closures.capa` moves into
+  the `wasm_parity_smoke.sh` MUST_PASS gate (now 39 examples).
+
 - *`${e}` of an `IoError` with a non-empty `cause` now renders
   `message: cause` on the Wasm backend, matching the Python backend.* The
   FormatStr emitter's IoError branch rendered only the `message` field, so

@@ -517,6 +517,29 @@ class _ClosureEmissionMixin:
                         return
                     out.add(v.name)
 
+            def collect_callee(callee: Optional[str]) -> None:
+                # A ``Call``'s callee is a bare name, not a Value, so
+                # ``_values_of`` never yields it. When that name is a
+                # higher-order function CAPTURED from an enclosing
+                # scope -- ``compose(f, g) => fun(x) => g(f(x))`` where
+                # ``f`` / ``g`` appear only as call targets, never as
+                # plain values -- the free-variable set would miss it
+                # and the lifted body would emit ``call $f`` for a
+                # static function that does not exist. Add the callee
+                # iff it is not shadowed by the lambda's own params /
+                # locals and resolves to a Fun type somewhere in the
+                # enclosing scope (a top-level function or builtin
+                # resolves to Unknown and is correctly left alone).
+                if not callee:
+                    return
+                if callee in shadow_params or callee in shadow_locals:
+                    return
+                cap_ty = self._resolve_capture_type(
+                    callee, parent_fn, outer_scope,
+                )
+                if cap_ty.startswith("Fun"):
+                    out.add(callee)
+
             def walk(instrs: list[Instr]) -> None:
                 for i in instrs:
                     if isinstance(i, MakeLambda):
@@ -561,6 +584,7 @@ class _ClosureEmissionMixin:
                         # Skip the standard value walk for
                         # MakeLambda; its dst is not a reference.
                         continue
+                    collect_callee(getattr(i, "callee_name", None))
                     for v in self._values_of(i):
                         collect(v)
                     if isinstance(i, If):

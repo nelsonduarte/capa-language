@@ -55,6 +55,11 @@ MUST_PASS=(
   documented_demo
   demo_event_stream
 
+  # Higher-order function values / closures, including a closure that
+  # CAPTURES another function and CALLS it (``compose(f, g) => fun(x) =>
+  # g(f(x))``). Moved here after the 2026-07 captured-Fun-call fix.
+  closures
+
   # Capability attenuation (structural, deterministic output).
   clock_attenuation
   net_attenuation
@@ -119,7 +124,6 @@ MUST_PASS=(
 #                                  use the `Unsafe` capability, intentionally
 #                                  unsupported on the Wasm backend (raw FFI /
 #                                  pointers have no sandboxed Wasm equivalent).
-#   closures                       higher-order function values ("unknown func $f").
 #   patterns                       tuple match with a variant sub-pattern not yet
 #                                  supported on the Wasm backend.
 # (`tasks`, `quota_check`, `cyclonedx_parser`, `spdx_parser` moved to
