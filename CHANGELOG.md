@@ -11,6 +11,28 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *A variant sub-pattern inside a tuple match now compiles on the Wasm
+  backend instead of failing loud.* Matching a tuple whose element is a
+  variant pattern -- `match (opt, label); (Some(n), label) -> ... ;
+  (None, label) -> ...` over an `(Option<Int>, String)` -- previously
+  raised `Tuple match: sub-pattern PatVariant not yet supported` at
+  codegen time (the `--check` + Python backends accepted it), which
+  blocked `examples/patterns.capa` under `--wasm`. Both tuple-match
+  emitters (the guard-free cascade and the guarded flat-block path) now
+  treat a `PatVariant` element as a nested sum slot: the tuple slot holds
+  the sum record's pointer, so the emitter reuses the existing depth-1
+  nested-variant machinery to (a) test the element's discriminant against
+  the pattern's variant tag (refined by any literal payload sub-patterns)
+  and (b) bind the variant's payload sub-patterns from the extracted
+  record. A nullary element (`None`) is a tag-only check with no bind.
+  The supported matrix -- variant with payload, nullary variant, variant
+  not in first position, multiple variants in one tuple, variant next to
+  a literal or wildcard, and a multi-field user-sum payload -- all hold
+  Python-vs-Wasm parity; deeper nesting (`PatTuple` / `PatStruct` as a
+  tuple element, or a nested aggregate inside a variant payload) still
+  fails loud rather than mis-compiling. `examples/patterns.capa` moves
+  into the `wasm_parity_smoke.sh` MUST_PASS gate (now 40 examples).
+
 - *Higher-order closures that CAPTURE another function and CALL it now
   compile on the Wasm backend.* A lifted lambda whose body invokes a
   captured `Fun(...)` value -- the classic `compose(f, g)` returning

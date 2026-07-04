@@ -273,6 +273,18 @@ class _LocalsCollectionMixin:
                             if not hasattr(arm.pattern, "elements"):
                                 continue
                             for idx, sub in enumerate(arm.pattern.elements):
+                                if isinstance(sub, PatVariant):
+                                    # A variant element (``Some(n)``)
+                                    # binds its payload sub-patterns.
+                                    # The concrete payload type comes
+                                    # from the inner variant's own sum
+                                    # layout (resolved via
+                                    # _variant_to_sum), same as a
+                                    # variant nested inside a variant.
+                                    self._refine_nested_variant_binds(
+                                        sub, fn,
+                                    )
+                                    continue
                                 if not isinstance(sub, PatIdent):
                                     continue
                                 ety = (elem_tys[idx]

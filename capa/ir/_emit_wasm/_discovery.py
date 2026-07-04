@@ -405,6 +405,11 @@ class _DiscoveryMixin:
                             if (isinstance(sub, PatLiteral)
                                     and sub.kind == "str"):
                                 return True
+                            # A variant element carrying a String
+                            # literal payload (``(Some("x"), n)``)
+                            # compares that payload slot via $str_eq.
+                            if _variant_pattern_has_str_literal(sub):
+                                return True
                     # Variant-payload String literal (flat
                     # ``Ok("yes")`` or nested ``Some(Ok("y"))``):
                     # the arm predicate compares the payload slot
