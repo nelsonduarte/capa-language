@@ -170,6 +170,36 @@ class _DiscoveryMixin:
                         return True
         return False
 
+    def _format_str_formats_ioerror(self, module: Module) -> bool:
+        """True if any ``FormatStr`` instruction has an IoError value
+        part. The FormatStr emitter's IoError branch renders
+        ``message: cause`` when the cause is non-empty, which calls
+        the ``$str_concat`` runtime helper -- so the helper must be
+        emitted whenever a program CAN format an IoError, even when
+        no String ``+`` appears anywhere in the source. This includes
+        IoErrors the program never constructs itself: an ``Err(e)``
+        binder from a failed host fs/net call carries the same record
+        shape and reaches the same branch.
+
+        Consults each function's ``locals`` dict as a fallback when
+        a value's ``ty`` is unresolved, exactly like
+        ``_uses_float_format`` above -- the match emitter refines
+        pattern-binder types (the ``Err(e) -> "${e}"`` case) into
+        ``fn.locals``, and the FormatStr dispatcher uses the same
+        fallback at emit time."""
+        def _eff_ty(p: Value, fn: Function) -> str:
+            if p.ty and p.ty not in ("?", "Unknown", "Any"):
+                return p.ty
+            if p.kind in ("local", "param") and p.name in fn.locals:
+                return fn.locals[p.name]
+            return p.ty or ""
+        for fn, instr in walk_module(module):
+            if isinstance(instr, FormatStr):
+                for p in instr.parts:
+                    if isinstance(p, Value) and _eff_ty(p, fn) == "IoError":
+                        return True
+        return False
+
     def _uses_parse_int(self, module: Module) -> bool:
         # A user-defined ``parse_int`` shadows the builtin: emit the
         # user function instead of the runtime helper (matches the

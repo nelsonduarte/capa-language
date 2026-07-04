@@ -1677,24 +1677,60 @@ class _StringEmissionMixin:
             return
         if ty == "IoError":
             # ``${io}`` where ``io: IoError`` mirrors the Python
-            # runtime's ``__str__``: render the ``message`` field
-            # (a String at offset 0 of the IoError record, see
-            # ``_IOERROR_LAYOUT``). The ``cause`` field is
-            # intentionally skipped here -- Python's ``__str__``
-            # also drops it when empty, and the common formatter
-            # usage is just ``${io}`` for a one-line diagnostic.
+            # runtime's ``__str__`` (capa/runtime/_capabilities.py):
+            # render ``message`` when ``cause`` is empty, otherwise
+            # ``message: cause``. The record layout is message
+            # (ptr@0, len@4) then cause (ptr@8, len@12), see
+            # ``_IOERROR_LAYOUT``. Branch on cause_len at runtime:
+            # host-built IoErrors (fs/net failures materialised by
+            # the capa:host bridge or the WASI wrappers) flow
+            # through the exact same record shape, so the one
+            # branch covers program-constructed and host-constructed
+            # errors alike. The non-empty path builds
+            # ``message ++ ": " ++ cause`` via two ``$str_concat``
+            # calls; the helper's emission is gated on
+            # ``_format_str_formats_ioerror`` in discovery so any
+            # program that can reach this branch has it defined.
             # IoError keeps the field-access fast path; user-
             # defined structs route through the Display protocol
             # below.
-            # Push the receiver twice rather than stash through a
-            # scratch local; avoids needing _collect_locals to
+            # Push the receiver repeatedly rather than stash through
+            # a scratch local; avoids needing _collect_locals to
             # declare a new helper local just for this branch.
+            colon_off, colon_len = self._intern_string(": ")
             self._push_value(v)              # i32 ptr -> IoError record
+            self._write("i32.load offset=12")  # cause_len
+            self._write("if")
+            self._indent += 1
+            # message ++ ": "
+            self._push_value(v)
+            self._write("i32.load offset=0")   # message_ptr
+            self._push_value(v)
+            self._write("i32.load offset=4")   # message_len
+            self._write(f"i32.const {colon_off}")
+            self._write(f"i32.const {colon_len}")
+            self._write("call $str_concat")
+            # ... ++ cause. $str_concat returns (ptr, len); push the
+            # cause pair on top and concat again.
+            self._push_value(v)
+            self._write("i32.load offset=8")   # cause_ptr
+            self._push_value(v)
+            self._write("i32.load offset=12")  # cause_len
+            self._write("call $str_concat")
+            self._write(f"local.set $_fs_l{idx}")
+            self._write(f"local.set $_fs_p{idx}")
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+            # Empty cause: message only, no trailing ": ".
+            self._push_value(v)
             self._write("i32.load offset=0")  # message_ptr
             self._write(f"local.set $_fs_p{idx}")
-            self._push_value(v)              # again
+            self._push_value(v)
             self._write("i32.load offset=4")  # message_len
             self._write(f"local.set $_fs_l{idx}")
+            self._indent -= 1
+            self._write("end")
             return
         # Display protocol: if the value's type declares a
         # ``fun to_string(self) -> String`` in an impl block, call

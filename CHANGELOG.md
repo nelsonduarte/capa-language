@@ -11,6 +11,31 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *`${e}` of an `IoError` with a non-empty `cause` now renders
+  `message: cause` on the Wasm backend, matching the Python backend.* The
+  FormatStr emitter's IoError branch rendered only the `message` field, so
+  interpolating a two-argument `IoError("msg", "detail")` printed `msg` on
+  Wasm where the Python runtime's `IoError.__str__` prints `msg: detail`
+  (the last documented backend-parity gap from the IoError constructor
+  work). The branch now checks `cause`'s length at runtime and, when
+  non-empty, concatenates `message ++ ": " ++ cause` via the `$str_concat`
+  runtime helper; an empty cause still renders `message` alone with no
+  trailing separator, so the one-argument form is unchanged. Because the
+  `": "` join happens at runtime, `$str_concat` emission is now also gated
+  on "the program formats an IoError anywhere" (not just on String `+`),
+  and the separator literal is pre-interned with the other formatter
+  fixtures -- covering IoErrors the program never constructs itself, such
+  as an `Err(e)` binder from a failed host `fs.read`/`net.get`, which carry
+  the same record shape (message, cause) and flow through the same branch.
+  Host-side error TEXTS still differ across backends for host-raised
+  failures (pre-existing and host-owned: the Python runtime reports
+  `failed to read '<path>': <errno text>`, the core-Wasm capa:host bridge
+  puts the errno text in `message` with an empty `cause`, the Component
+  host uses `str(e)` + the exception class name as `cause`, and WASI mode
+  intentionally uses a fixed message with parity asserted on the Result
+  discriminant); the formatting RULE (render the cause when present) is
+  what this fixes, and it now holds for all of them on both backends.
+
 - *`String.split` with a multi-character separator now matches the
   Python backend on the Wasm backend.* The Wasm emitter compared only
   the FIRST byte of the separator, so every byte of a multi-character
@@ -92,8 +117,9 @@ breaking changes and the discipline is still being shaped.
   the `scripts/wasm_parity_smoke.sh` MUST_PASS set. Out of scope, tracked
   separately: an unannotated `let m = new_map()` still infers `Map<?, ?>`
   (its keys/values need flow-sensitive refinement from later `set` calls,
-  a different mechanism), and `${e}` rendering of an `IoError` with a
-  non-empty `cause` still diverges (pre-existing FormatStr limitation).
+  a different mechanism); the other gap noted at the time -- `${e}`
+  rendering of an `IoError` with a non-empty `cause` -- is closed by the
+  FormatStr fix above.
 
 - *Wasm backend now constructs the built-in `IoError` error type.*
   Building `IoError("msg")` (or the two-argument `IoError("msg", "cause")`)
@@ -120,10 +146,11 @@ breaking changes and the discipline is still being shaped.
   MUST_PASS set; `examples/tasks.capa` clears this gap but was blocked by a
   separate match-binding codegen issue, since closed by the
   aggregate/payload slot type-inference fix above (which also fixed the
-  `List<IoError>` element mis-typing noted at the time). Still tracked
-  separately: `${e}` rendering of an `IoError` with a NON-empty `cause`
-  diverges (Python renders `message: cause`, the Wasm FormatStr emitter
-  renders only `message`; pre-existing).
+  `List<IoError>` element mis-typing noted at the time). The one gap
+  tracked separately at the time -- `${e}` rendering of an `IoError` with
+  a NON-empty `cause` (Python rendered `message: cause`, the Wasm
+  FormatStr emitter only `message`) -- is closed by the FormatStr fix
+  above.
 
 **CI.**
 
