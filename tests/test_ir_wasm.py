@@ -803,22 +803,44 @@ class TestWasmStdioExecutes(unittest.TestCase):
     def test_ioerror_construction_two_args(self):
         # The two-argument form ``IoError(message, cause)`` maps onto
         # the record's second String field (``cause``). The record is
-        # built and the ``Err`` arm is taken -- proving the two-arg
-        # construction codegen is valid and the value flows through the
-        # match unchanged, matching the Python backend's control flow.
+        # built, the ``Err`` arm is taken, and the match binder's
+        # ``${e}`` renders ``message: cause`` -- exactly Python's
+        # ``IoError.__str__`` (message alone when the cause is empty,
+        # ``message: cause`` otherwise). The source contains no String
+        # ``+``, so this also pins the discovery gate: formatting an
+        # IoError must pull in the ``$str_concat`` helper on its own
+        # (the ``: `` join happens at runtime), or the WAT references
+        # an undefined function.
         src = (
             "fun boom() -> Result<Int, IoError>\n"
             "    return Err(IoError(\"bad\", \"disk full\"))\n"
             "fun main(stdio: Stdio)\n"
             "    match boom()\n"
             "        Ok(n)  -> stdio.println(\"ok\")\n"
-            "        Err(e) -> stdio.eprintln(\"caught\")\n"
+            "        Err(e) -> stdio.eprintln(\"err: ${e}\")\n"
         )
         _, types, ast_mod = _parse_lower(src)
         self.assertNotIn("call $IoError", compile_wat(ast_mod, types=types))
         out, err = self._run_capturing_stdout(src)
         self.assertEqual(out, "")
-        self.assertEqual(err, "caught\n")
+        self.assertEqual(err, "err: bad: disk full\n")
+
+    def test_ioerror_two_args_direct_interpolation(self):
+        # ``${e}`` of a let-bound two-arg IoError as the WHOLE format
+        # string (no surrounding literal text, no match binder in
+        # between): the analyzer types the local directly, so this
+        # exercises the FormatStr IoError branch through the plain
+        # ``v.ty == "IoError"`` route rather than the fn.locals
+        # refinement fallback. Renders ``message: cause`` like
+        # Python's ``IoError.__str__``.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let e = IoError(\"msg\", \"detail\")\n"
+            "    stdio.println(\"${e}\")\n"
+        )
+        out, err = self._run_capturing_stdout(src)
+        self.assertEqual(out, "msg: detail\n")
+        self.assertEqual(err, "")
 
     def test_ioerror_construction_in_return_position(self):
         # Regression (PR #41 adversarial review): ``return IoError(...)``
@@ -847,24 +869,26 @@ class TestWasmStdioExecutes(unittest.TestCase):
 
     def test_ioerror_two_args_in_return_position(self):
         # Two-arg form in tail position: the record is built (both
-        # fields stored) and flows back through the ordinary call +
-        # return, matching Python's control flow. The output observes a
-        # constant rather than ``${e}`` because rendering a NON-empty
-        # cause is a pre-existing FormatStr divergence (Wasm renders
-        # only the message; see the IoError branch in
-        # _emit_wasm/_strings.py) separate from the construction under
-        # test here.
+        # fields stored), flows back through the ordinary call +
+        # return, and ``${e}`` of the returned value renders
+        # ``message: cause`` inside a larger literal -- matching
+        # Python's ``IoError.__str__`` byte for byte. This used to
+        # observe a constant instead of ``${e}`` while non-empty-cause
+        # rendering was a documented FormatStr divergence (Wasm
+        # rendered only the message); the IoError branch in
+        # _emit_wasm/_strings.py now branches on cause_len at runtime
+        # and concatenates ``message ++ ": " ++ cause``.
         src = (
             "fun make() -> IoError\n"
             "    return IoError(\"from-fn\", \"detail\")\n"
             "fun main(stdio: Stdio)\n"
             "    let e = make()\n"
-            "    stdio.println(\"made\")\n"
+            "    stdio.println(\"made: ${e}\")\n"
         )
         _, types, ast_mod = _parse_lower(src)
         self.assertNotIn("call $IoError", compile_wat(ast_mod, types=types))
         out, err = self._run_capturing_stdout(src)
-        self.assertEqual(out, "made\n")
+        self.assertEqual(out, "made: from-fn: detail\n")
         self.assertEqual(err, "")
 
 

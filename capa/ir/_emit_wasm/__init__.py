@@ -480,6 +480,15 @@ class WasmEmitter(
         if self._uses_format_str(module):
             self._intern_string("true")
             self._intern_string("false")
+        # Pre-intern the ": " separator the FormatStr IoError branch
+        # concatenates between message and a non-empty cause
+        # (mirroring the Python runtime's ``IoError.__str__``). Like
+        # "true"/"false" above, the offset is referenced via
+        # i32.const at emit time, so the literal must be in the data
+        # segment before bodies are emitted; interning at emit time
+        # would point past the segment's end and print NUL bytes.
+        if self._format_str_formats_ioerror(module):
+            self._intern_string(": ")
         # Pre-intern the special-case Float literals returned by
         # ``$ftoa`` directly (NaN / +/- inf / +/-0). These are
         # returned as pointers into the static data segment rather
@@ -1205,11 +1214,18 @@ class WasmEmitter(
                     or self._wasi_env_get_needs_str_eq()
                     or self._wasi_net_needs_str_eq()):
                 self._emit_str_eq_function()
-            if self._uses_string_concat(module):
+            if (self._uses_string_concat(module)
+                    or self._format_str_formats_ioerror(module)):
                 # String ``+`` lowers to ``call $str_concat`` (see
                 # _emit_binop's String branch). The helper grows the
                 # last bump allocation in place so ``out = out + x``
                 # in a loop is O(n) amortised rather than O(n^2).
+                # The FormatStr IoError branch also calls it to
+                # render ``message: cause`` when the cause is
+                # non-empty, so any program that can format an
+                # IoError (a match ``Err(e)`` binder from a host
+                # fs/net failure included) needs the helper even
+                # with no String ``+`` in the source.
                 self._emit_str_concat_function()
             if (self._uses_string_order_cmp(module)
                     or self._wasi_fs_list_dir_needs_str_cmp()):

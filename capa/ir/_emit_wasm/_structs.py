@@ -227,16 +227,14 @@ class _StructEmissionMixin:
         ``_emit_make_struct`` lowers a struct literal: allocate the record
         and store each String field as a (ptr, len) pair at its layout
         offset (see ``_IOERROR_LAYOUT``). A one-arg call leaves ``cause``
-        as the empty string (ptr=0, len=0), matching the dataclass default
-        and the ``__str__`` that drops an empty cause -- so for the
-        empty-cause form the value's observable behaviour (formatted /
-        matched) is identical to the Python backend. With a NON-empty
-        cause the record is still built correctly (both fields stored,
-        control flow matches Python), but ``${e}`` rendering diverges:
-        the Wasm FormatStr emitter renders only ``message`` (the IoError
-        branch in ``_strings.py``, ~1666) where Python's ``__str__``
-        renders ``message: cause``. That formatter gap pre-dates this
-        constructor and is tracked separately."""
+        as the empty string (ptr=0, len=0), matching the dataclass default.
+        Both forms now render identically to the Python backend's
+        ``__str__``: the FormatStr emitter's IoError branch (in
+        ``_strings.py``) branches on ``cause_len`` at runtime and
+        renders ``message`` when the cause is empty, ``message: cause``
+        otherwise -- so the constructed error's observable behaviour
+        (formatted / matched) matches Python for the one-arg and
+        two-arg forms alike."""
         if instr.dst is None:
             raise WasmEmissionError(
                 "IoError construction must bind a dst (its pointer)"
