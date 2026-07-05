@@ -8151,5 +8151,97 @@ class TestWasmFnRefInAggregate(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestWasmFunValuePositions(unittest.TestCase):
+    """End-to-end guards for ``Fun`` values in two positions that
+    only the Wasm backend previously rejected:
+
+    - a tuple slot whose element type is ``Fun(...) -> R`` (the
+      top-level comma splitters mistook the ``>`` in ``->`` for a
+      bracket close, so a tuple of Fun elements never split into
+      per-slot types); and
+    - a call whose callee is an *expression* of Fun type
+      (``fs[0](x)``, ``getf()(x)``), which the lowerer rejected
+      because it only handled a bare-identifier callee.
+
+    Each program executes on wasmtime and asserts the exact stdout
+    the Python backend produces for the same source."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_tuple_of_fun_unpacked_and_called(self):
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun dbl(x: Int) -> Int\n"
+            "    return x * 2\n"
+            "fun main(stdio: Stdio)\n"
+            "    let t = (add1, dbl)\n"
+            "    let (f, g) = t\n"
+            "    stdio.println(\"r=${g(f(10))}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "r=22\n",
+        )
+
+    def test_tuple_of_fun_returned_then_unpacked_and_called(self):
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun dbl(x: Int) -> Int\n"
+            "    return x * 2\n"
+            "fun make() -> (Fun(Int) -> Int, Fun(Int) -> Int)\n"
+            "    return (add1, dbl)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let (f, g) = make()\n"
+            "    stdio.println(\"r=${g(f(10))}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "r=22\n",
+        )
+
+    def test_index_of_fun_list_called_directly(self):
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun main(stdio: Stdio)\n"
+            "    let fs = [add1, add1]\n"
+            "    stdio.println(\"r=${fs[0](10)}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "r=11\n",
+        )
+
+    def test_call_result_called_directly(self):
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun getf() -> Fun(Int) -> Int\n"
+            "    return add1\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"r=${getf()(10)}\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "r=11\n",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

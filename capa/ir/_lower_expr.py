@@ -538,13 +538,18 @@ class _LowerExprMixin:
         return Value(kind="local", name=dst, ty=result_ty)
 
     def _lower_call(self, e: A.Call) -> Value:
-        # Phase 1: only supports direct identifier-callee calls (not
-        # method-on-value or function-in-variable forms). Resolves the
-        # callee by its source name.
+        # Phase 1: direct identifier-callee calls resolve by source
+        # name. A callee that is an *expression* (``fs[0](x)``,
+        # ``getf()(x)``, ``s.op(x)``) is supported when that
+        # expression's type is ``Fun(...)``: lower it to a Value,
+        # materialise it into a named local, and emit the same
+        # closure-call IR that ``let f = <expr>; f(x)`` produces --
+        # a Call whose ``callee_name`` is the temp local. The Wasm
+        # backend recognises a local of Fun type as a closure callee
+        # and routes through ``call_indirect``. Any other callee
+        # shape (a non-Fun expression) stays unsupported.
         if not isinstance(e.callee, A.Ident):
-            raise UnsupportedInIR(
-                f"call with callee {type(e.callee).__name__}"
-            )
+            return self._lower_call_expr_callee(e)
         callee_name = e.callee.name
         # Resolve the callee through the alpha-renaming alias stack,
         # exactly like ``_lower_ident`` does for value positions. A
@@ -609,6 +614,42 @@ class _LowerExprMixin:
             or result_ty.startswith("?")
         ):
             result_ty = "IoError"
+        dst = fresh_local(self._counter)
+        self._locals[dst] = result_ty
+        self._instrs.append(Call(dst=dst, callee_name=callee_name, args=args))
+        return Value(kind="local", name=dst, ty=result_ty)
+
+    def _lower_call_expr_callee(self, e: A.Call) -> Value:
+        """Lower a call whose callee is an expression, not a bare
+        identifier (``fs[0](x)``, ``getf()(x)``, ``s.op(x)``). Only
+        a callee whose type is ``Fun(...)`` is supported: the value
+        is materialised into a named local so the backend's closure-
+        call path (a local of Fun type -> ``call_indirect``) applies,
+        exactly as it does for ``let f = <expr>; f(x)``."""
+        callee_val = self._lower_expr(e.callee)
+        callee_ty = callee_val.ty or ""
+        if not callee_ty.startswith("Fun"):
+            raise UnsupportedInIR(
+                f"call with callee {type(e.callee).__name__}"
+            )
+        # ``_lower_expr`` of an Index / FieldAccess / Call already
+        # binds a fresh local; reuse it. A non-local Value (rare for
+        # a Fun-typed callee) is copied into a temp so the Call can
+        # reference it by name.
+        if callee_val.kind == "local":
+            callee_name = callee_val.name
+        else:
+            callee_name = fresh_local(self._counter)
+            self._locals[callee_name] = callee_ty
+            self._instrs.append(
+                AssignConst(dst=callee_name, src=callee_val)
+            )
+        args = [self._lower_expr(arg) for arg in e.args]
+        result_ty = "Unknown"
+        if self.types:
+            t = self.types.get(id(e))
+            if t is not None:
+                result_ty = _ty_to_str(t)
         dst = fresh_local(self._counter)
         self._locals[dst] = result_ty
         self._instrs.append(Call(dst=dst, callee_name=callee_name, args=args))

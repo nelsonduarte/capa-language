@@ -28,3 +28,14 @@ fun main(stdio: Stdio)
     let double_then_inc = compose(double, inc)
     stdio.println("double_then_inc(10) = ${double_then_inc(10)}")
     stdio.println("double_then_inc(20) = ${double_then_inc(20)}")
+
+    // Tuple whose elements are Fun values: unpack and call.
+    let pair = (double, inc)
+    let (pf, pg) = pair
+    stdio.println("pg(pf(10)) = ${pg(pf(10))}")
+
+    // Index a list/tuple of Fun values and CALL the result directly,
+    // without binding it to a local first.
+    let fns = [double, inc]
+    stdio.println("fns[1](10) = ${fns[1](10)}")
+    stdio.println("pair[1](10) = ${pair[1](10)}")

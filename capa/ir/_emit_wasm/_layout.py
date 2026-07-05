@@ -154,23 +154,11 @@ def _split_top_level_commas(s: str) -> list[str]:
     """Split ``s`` on commas that are not nested inside ``<...>`` or
     ``(...)``. Used by the Map K / V extractors so a tuple-key
     ``Map<(Int, String), Int>`` does not get sliced at the comma
-    inside the tuple."""
-    out: list[str] = []
-    depth = 0
-    buf = ""
-    for ch in s:
-        if ch in "<(":
-            depth += 1
-        elif ch in ">)":
-            depth -= 1
-        if ch == "," and depth == 0:
-            out.append(buf.strip())
-            buf = ""
-            continue
-        buf += ch
-    if buf.strip():
-        out.append(buf.strip())
-    return out
+    inside the tuple. Delegates to the lowerer's arrow-aware
+    primitive so a ``Fun(...) -> R`` component (e.g. a Map value type)
+    keeps its commas grouped."""
+    from .._lower_helpers import _split_top_level
+    return _split_top_level(s)
 
 
 def _map_value_type(map_ty: str) -> str:

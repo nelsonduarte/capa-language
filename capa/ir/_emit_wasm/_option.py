@@ -948,19 +948,5 @@ class _OptionEmissionMixin:
         """Depth-aware split on the first top-level comma. Used to
         separate ``T, E`` inside ``Result<T, E>`` when T itself is
         a nested type with its own commas (``Map<K, V>`` etc.)."""
-        depth = 0
-        out: list[str] = []
-        buf = ""
-        for ch in s:
-            if ch in "(<":
-                depth += 1
-            elif ch in ")>":
-                depth -= 1
-            if ch == "," and depth == 0:
-                out.append(buf.strip())
-                buf = ""
-                continue
-            buf += ch
-        if buf.strip():
-            out.append(buf.strip())
-        return out
+        from .._lower_helpers import _split_top_level
+        return _split_top_level(s)
