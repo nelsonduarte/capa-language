@@ -440,7 +440,7 @@ type_body = struct_body
 
 struct_body = "{" [ struct_field { "," struct_field } [ "," ] ] "}"
 
-struct_field = [ "pub" ] IDENT ":" type
+struct_field = IDENT ":" type
 
 sum_body = "=" NEWLINE INDENT sum_variant { sum_variant } DEDENT
 
@@ -450,6 +450,8 @@ variant_payload = "(" variant_field { "," variant_field } [ "," ] ")"
 
 variant_field = type
 ```
+
+Struct fields carry no visibility modifier: `pub` applies only to top-level declarations (`fun`, `type`, `trait`, `capability`, `const`, `typestate`), not to a field, and the parser rejects `pub` in a field position. A field's optional `@secret` / `@public` prefix is an information-flow **label** in type position (Section 5.8), part of the field's `type`, not a visibility qualifier.
 
 The optional `linear` qualifier (roadmap S1) marks a struct type as **must-consume**: a value of a `linear type` carries an affine, use-once obligation that the semantic analyzer's linearity check enforces (it must be consumed exactly once and cannot be used after consumption). `linear` is only valid on the struct form; it is rejected on a sum type. This is a semantic constraint, not a grammar rule, so it is noted here rather than encoded in the production.
 
