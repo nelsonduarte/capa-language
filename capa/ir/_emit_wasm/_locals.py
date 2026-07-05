@@ -25,7 +25,7 @@ from .._nodes import (
     BinOp, Call, MethodCall, TryUnwrap, For, FormatStr,
     If, While, Match, Index,
     MakeLambda, MakeList, MakeMap, MakeRange, MakeSet, MakeStruct, MakeTuple,
-    PatIdent, PatVariant,
+    PatIdent, PatVariant, PatTuple,
 )
 from .._lower_pattern import PatStruct
 from .._capa_types import BUILTIN_CAPS
@@ -272,29 +272,14 @@ class _LocalsCollectionMixin:
                         for arm in instr.arms:
                             if not hasattr(arm.pattern, "elements"):
                                 continue
-                            for idx, sub in enumerate(arm.pattern.elements):
-                                if isinstance(sub, PatVariant):
-                                    # A variant element (``Some(n)``)
-                                    # binds its payload sub-patterns.
-                                    # The concrete payload type comes
-                                    # from the inner variant's own sum
-                                    # layout (resolved via
-                                    # _variant_to_sum), same as a
-                                    # variant nested inside a variant.
-                                    self._refine_nested_variant_binds(
-                                        sub, fn,
-                                    )
-                                    continue
-                                if not isinstance(sub, PatIdent):
-                                    continue
-                                ety = (elem_tys[idx]
-                                       if idx < len(elem_tys)
-                                       else "Unknown")
-                                cur = fn.locals.get(sub.name, "")
-                                if (cur in ("", "Unknown", "?")
-                                        or cur.startswith("?")):
-                                    if ety and ety != "Unknown":
-                                        fn.locals[sub.name] = ety
+                            # A PatTuple arm binds each tuple slot; the
+                            # shared refinement threads per-position
+                            # element types into fn.locals, resolving
+                            # variant / nested-tuple / nested-struct
+                            # element binders through their own layouts.
+                            self._refine_tuple_pat_binds(
+                                arm.pattern.elements, elem_tys, fn,
+                            )
                         # Tuple match unpacks String slots via the
                         # packed-i64 dance; ensure the i64 scratch
                         # is declared even if the function has no
@@ -1223,3 +1208,50 @@ class _LocalsCollectionMixin:
                 )
                 if nested is not None:
                     self._refine_struct_pat_binds(sub, nested, fn)
+            elif isinstance(sub, PatVariant):
+                # Variant field (``P { tag: Some(n) }``): the payload
+                # binder's concrete type comes from the variant's own
+                # sum layout (the field slot type may be an opaque
+                # 'Any' for builtin Option / Result), resolved via
+                # _variant_to_sum -- same as a variant tuple element.
+                self._refine_nested_variant_binds(sub, fn)
+            elif isinstance(sub, PatTuple):
+                # Tuple field (``P { pair: (a, b) }``): refine each
+                # tuple element binder from the field's tuple type.
+                from ._tuples import _tuple_elem_types
+                self._refine_tuple_pat_binds(
+                    sub.elements, _tuple_elem_types(field_ty), fn,
+                )
+
+    def _refine_tuple_pat_binds(
+        self, elements: list, elem_tys: list, fn: Function,
+    ) -> None:
+        """Thread a tuple pattern's element types into ``fn.locals`` so
+        the local-decl sweep allocates the right Wasm shape for each
+        bound element. PatIdent elements take the per-position element
+        type; PatVariant elements resolve their payload binders through
+        the variant's own sum layout; nested PatTuple / PatStruct
+        elements recurse. Literal / wildcard elements bind nothing.
+        Shared by the tuple-scrutinee match refinement and the struct
+        tuple-field refinement above."""
+        from ._tuples import _tuple_elem_types
+        for idx, sub in enumerate(elements):
+            ety = elem_tys[idx] if idx < len(elem_tys) else "Unknown"
+            if isinstance(sub, PatVariant):
+                self._refine_nested_variant_binds(sub, fn)
+            elif isinstance(sub, PatTuple):
+                self._refine_tuple_pat_binds(
+                    sub.elements, _tuple_elem_types(ety), fn,
+                )
+            elif isinstance(sub, PatStruct):
+                nested = self._struct_layouts.get(
+                    ety.split("<", 1)[0].split("[", 1)[0],
+                )
+                if nested is not None:
+                    self._refine_struct_pat_binds(sub, nested, fn)
+            elif isinstance(sub, PatIdent):
+                cur = fn.locals.get(sub.name, "")
+                if (cur in ("", "Unknown", "?", "Any")
+                        or cur.startswith("?")):
+                    if ety and ety not in ("Unknown", "Any"):
+                        fn.locals[sub.name] = ety

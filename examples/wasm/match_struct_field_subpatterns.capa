@@ -1,0 +1,67 @@
+// Struct-field sub-patterns in a match: a PatVariant field
+// (``P { tag: Some(n) }``), a PatTuple field (``P { pair: (a, b) }``),
+// and a String-literal field (``P { name: "bob" }``), plus their
+// compositions with the pre-existing nested-struct machinery. The
+// parallel of the nested tuple-ELEMENT sub-patterns; pre-fix the Wasm
+// backend raised "sub-pattern PatVariant/PatTuple not supported" and
+// the String-literal field tripped "unknown func $str_eq" (a discovery
+// gap). Stdio + Int / String only, so output is byte-identical across
+// backends.
+
+type Q {
+    tag: Option<Int>
+}
+
+type Variant {
+    tag: Option<Int>,
+    y: Int
+}
+
+type Tup {
+    pair: (Int, Int),
+    y: Int
+}
+
+type Named {
+    a: String,
+    b: String
+}
+
+type Composed {
+    q: Q,
+    pair: (Option<Int>, Int)
+}
+
+// Variant field, Some + None; a String-literal field with fall-through.
+fun v(p: Variant) -> String
+    return match p
+        Variant { tag: Some(n), y: b } -> "some ${n} ${b}"
+        Variant { tag: None, y: b } -> "none ${b}"
+
+// Tuple field, plus a literal-in-tuple arm that gates the first arm.
+fun t(p: Tup) -> String
+    return match p
+        Tup { pair: (1, b), y: c } -> "one ${b} ${c}"
+        Tup { pair: (a, b), y: c } -> "rest ${a} ${b} ${c}"
+
+// Two String-literal fields; fall-through to the bind arm.
+fun n(p: Named) -> String
+    return match p
+        Named { a: "x", b: "y" } -> "xy"
+        Named { a: u, b: v } -> "${u} ${v}"
+
+// Nested struct with a variant field composed with a variant-in-tuple.
+fun c(p: Composed) -> String
+    return match p
+        Composed { q: Q { tag: Some(k) }, pair: (Some(n), b) } -> "both ${k} ${n} ${b}"
+        Composed { q: Q { tag: _ }, pair: (_, b) } -> "other ${b}"
+
+fun main(stdio: Stdio)
+    stdio.println(v(Variant { tag: Some(7), y: 2 }))
+    stdio.println(v(Variant { tag: None, y: 3 }))
+    stdio.println(t(Tup { pair: (1, 9), y: 3 }))
+    stdio.println(t(Tup { pair: (5, 9), y: 3 }))
+    stdio.println(n(Named { a: "x", b: "y" }))
+    stdio.println(n(Named { a: "p", b: "q" }))
+    stdio.println(c(Composed { q: Q { tag: Some(4) }, pair: (Some(7), 2) }))
+    stdio.println(c(Composed { q: Q { tag: None }, pair: (None, 5) }))

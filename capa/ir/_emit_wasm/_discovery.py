@@ -39,6 +39,7 @@ from .._nodes import (
     MakeList, MakeMap, MakeSet, MakeLambda,
     PatIdent, PatLiteral, PatTuple, PatVariant,
 )
+from .._lower_pattern import PatStruct, PatOr
 from .._capa_types import BUILTIN_CAPS
 from .._emit_wit import _WIT_SIGNATURES
 from .._walk import iter_functions, walk_instrs, walk_module
@@ -48,19 +49,25 @@ from ._layout import (
 )
 
 
-def _variant_pattern_has_str_literal(pat) -> bool:
-    """True iff ``pat`` is a variant pattern carrying a String
-    literal anywhere in its payload tree (flat ``Ok("yes")`` or
-    nested ``Some(Ok("yes"))``). The per-slot equality check for
-    such a literal calls ``$str_eq``, so the helper must be
-    registered in the module."""
-    if not isinstance(pat, PatVariant):
-        return False
-    for sub in pat.payloads:
-        if isinstance(sub, PatLiteral) and sub.kind == "str":
-            return True
-        if _variant_pattern_has_str_literal(sub):
-            return True
+def _pattern_has_str_literal(pat) -> bool:
+    """True iff ``pat`` carries a String literal anywhere in its
+    sub-pattern tree: a variant payload (``Ok("yes")`` / nested
+    ``Some(Ok("yes"))``), a tuple element (``("yes", n)``), or a
+    struct field (``P { name: "bob" }``), including any composition
+    of the three. The per-slot equality check for such a literal
+    calls ``$str_eq``, so the helper must be registered in the
+    module or wasm-tools parse fails with "unknown func: failed to
+    find name $str_eq"."""
+    if isinstance(pat, PatLiteral):
+        return pat.kind == "str"
+    if isinstance(pat, PatVariant):
+        return any(_pattern_has_str_literal(s) for s in pat.payloads)
+    if isinstance(pat, PatTuple):
+        return any(_pattern_has_str_literal(s) for s in pat.elements)
+    if isinstance(pat, PatStruct):
+        return any(_pattern_has_str_literal(s) for _f, s in pat.fields)
+    if isinstance(pat, PatOr):
+        return any(_pattern_has_str_literal(s) for s in pat.alternatives)
     return False
 
 
@@ -391,30 +398,17 @@ class _DiscoveryMixin:
                 # String-scrutinee match calls $str_eq per arm.
                 if (instr.scrutinee.ty or "") == "String":
                     return True
-                # Tuple-scrutinee match with a String literal
-                # sub-pattern: the per-slot equality check calls
-                # $str_eq to compare the slot against the interned
-                # literal. Without this branch a program like
-                # ``match (s, n) ; ("yes", x) -> ...`` would emit
-                # a $str_eq call into a module that never imported
-                # the helper, and wasm-tools parse would refuse
-                # with "unknown func: failed to find name $str_eq".
+                # Any arm pattern carrying a String literal sub-pattern
+                # compares that slot against the interned literal via
+                # $str_eq: a tuple element (``("yes", x)``), a variant
+                # payload (flat ``Ok("yes")`` / nested
+                # ``Some(Ok("y"))``), a struct field (``P { name:
+                # "bob" }``), or any composition. Without this the
+                # module would emit a $str_eq call it never imported
+                # and wasm-tools parse would refuse with "unknown func:
+                # failed to find name $str_eq".
                 for arm in instr.arms:
-                    if isinstance(arm.pattern, PatTuple):
-                        for sub in arm.pattern.elements:
-                            if (isinstance(sub, PatLiteral)
-                                    and sub.kind == "str"):
-                                return True
-                            # A variant element carrying a String
-                            # literal payload (``(Some("x"), n)``)
-                            # compares that payload slot via $str_eq.
-                            if _variant_pattern_has_str_literal(sub):
-                                return True
-                    # Variant-payload String literal (flat
-                    # ``Ok("yes")`` or nested ``Some(Ok("y"))``):
-                    # the arm predicate compares the payload slot
-                    # against the interned literal via $str_eq.
-                    if _variant_pattern_has_str_literal(arm.pattern):
+                    if _pattern_has_str_literal(arm.pattern):
                         return True
         return False
 

@@ -1035,6 +1035,180 @@ class TestWasmNestedTuplePattern(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmStructFieldSubPatterns(unittest.TestCase):
+    """A PatVariant / PatTuple / String-literal sitting as a FIELD of a
+    struct-match pattern (the parallel of the nested tuple-element case
+    above). The field slot holds the child value at its layout offset;
+    the emitter reuses the variant tag-test / tuple-destructuring
+    machinery one scratch level deeper, and the discovery pass registers
+    ``$str_eq`` for a String-literal field. Each case asserts byte-exact
+    stdout parity with the Python backend."""
+
+    def _run_capturing_stdout(self, src: str) -> tuple[str, str]:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out, err = io.StringIO(), io.StringIO()
+        saved_out, saved_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+        return out.getvalue(), err.getvalue()
+
+    def test_variant_field_some(self):
+        src = (
+            "type P { tag: Option<Int>, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { tag: Some(7), y: 2 }\n"
+            "    match p\n"
+            "        P { tag: Some(n), y: b } ->"
+            " stdio.println(\"some ${n} ${b}\")\n"
+            "        P { tag: None, y: b } ->"
+            " stdio.println(\"none ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "some 7 2\n")
+
+    def test_variant_field_none_falls_through(self):
+        src = (
+            "type P { tag: Option<Int>, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { tag: None, y: 3 }\n"
+            "    match p\n"
+            "        P { tag: Some(n), y: b } ->"
+            " stdio.println(\"some ${n} ${b}\")\n"
+            "        P { tag: None, y: b } ->"
+            " stdio.println(\"none ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "none 3\n")
+
+    def test_variant_field_second_position(self):
+        # Variant field is not the first field: the layout offset, not
+        # a fixed slot, drives the pointer load.
+        src = (
+            "type P { y: Int, tag: Option<Int> }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { y: 4, tag: Some(8) }\n"
+            "    match p\n"
+            "        P { y: b, tag: Some(n) } ->"
+            " stdio.println(\"some ${b} ${n}\")\n"
+            "        P { y: b, tag: None } ->"
+            " stdio.println(\"none ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "some 4 8\n")
+
+    def test_tuple_field(self):
+        src = (
+            "type P { pair: (Int, Int), y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { pair: (1, 2), y: 3 }\n"
+            "    match p\n"
+            "        P { pair: (a, b), y: c } ->"
+            " stdio.println(\"${a} ${b} ${c}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "1 2 3\n")
+
+    def test_tuple_field_with_literal_selects_arm(self):
+        src = (
+            "type P { pair: (Int, Int), y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { pair: (1, 9), y: 3 }\n"
+            "    match p\n"
+            "        P { pair: (1, b), y: c } ->"
+            " stdio.println(\"one ${b} ${c}\")\n"
+            "        P { pair: (a, b), y: c } ->"
+            " stdio.println(\"rest ${a} ${b} ${c}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "one 9 3\n")
+
+    def test_string_literal_field(self):
+        # Bug 3: the String-literal field compares via $str_eq; the
+        # discovery pass must register the helper or wasm-tools parse
+        # fails with "unknown func: failed to find name $str_eq".
+        src = (
+            "type P { name: String, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { name: \"bob\", y: 2 }\n"
+            "    match p\n"
+            "        P { name: \"bob\", y: b } ->"
+            " stdio.println(\"bob ${b}\")\n"
+            "        P { name: n, y: b } ->"
+            " stdio.println(\"${n} ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "bob 2\n")
+
+    def test_two_string_literal_fields(self):
+        src = (
+            "type P { a: String, b: String }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { a: \"x\", b: \"y\" }\n"
+            "    match p\n"
+            "        P { a: \"x\", b: \"y\" } -> stdio.println(\"xy\")\n"
+            "        P { a: u, b: v } -> stdio.println(\"${u} ${v}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "xy\n")
+
+    def test_variant_inside_tuple_field(self):
+        # Composition: a PatVariant nested inside a PatTuple field.
+        src = (
+            "type P { pair: (Option<Int>, Int), y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { pair: (Some(7), 2), y: 3 }\n"
+            "    match p\n"
+            "        P { pair: (Some(n), b), y: c } ->"
+            " stdio.println(\"some ${n} ${b} ${c}\")\n"
+            "        P { pair: (None, b), y: c } ->"
+            " stdio.println(\"none ${b} ${c}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "some 7 2 3\n")
+
+    def test_variant_field_in_nested_struct(self):
+        # Composition: a nested struct field whose own field is a variant.
+        src = (
+            "type Q { tag: Option<Int> }\n"
+            "type P { q: Q, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { q: Q { tag: Some(7) }, y: 2 }\n"
+            "    match p\n"
+            "        P { q: Q { tag: Some(n) }, y: b } ->"
+            " stdio.println(\"some ${n} ${b}\")\n"
+            "        P { q: Q { tag: None }, y: b } ->"
+            " stdio.println(\"none ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "some 7 2\n")
+
+    def test_guard_over_struct_field(self):
+        src = (
+            "type P { x: Int, y: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let p = P { x: 0, y: 9 }\n"
+            "    match p\n"
+            "        P { x: a, y: b } if a > 0 ->"
+            " stdio.println(\"pos ${a} ${b}\")\n"
+            "        P { x: a, y: b } ->"
+            " stdio.println(\"nonpos ${a} ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "nonpos 0 9\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmSumAndStruct(unittest.TestCase):
     """Phase 6C: sum types, structs, and pattern matching compile
     to a heap-allocator-backed memory layout and execute on

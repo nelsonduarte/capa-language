@@ -11,6 +11,41 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *A variant, tuple, or String-literal sub-pattern sitting as a struct
+  FIELD in a match now compiles on the Wasm backend.* Destructuring a
+  struct field with a nested pattern -- `match p; P { tag: Some(n), y: b }
+  -> ...` (variant), `P { pair: (a, b), y: c } -> ...` (tuple), or
+  `P { name: "bob", y: b } -> ...` (String literal) -- previously failed:
+  the variant / tuple fields raised `struct match: field '...' sub-pattern
+  PatVariant / PatTuple not supported` at codegen, and the String-literal
+  field tripped `unknown func: failed to find name $str_eq` at wasm-tools
+  parse time (a discovery gap: the field predicate compares the interned
+  literal via `$str_eq` but the pre-emit helper-discovery pass never
+  registered it for a struct-field literal). `--check` and the Python
+  backend accepted all three. This is the struct-field parallel of the
+  earlier nested tuple-ELEMENT fix: a struct field's slot holds the child
+  value at its layout offset, so the struct-match emitters now descend
+  into it -- a `PatVariant` field reuses the variant tag-test + payload
+  -literal + payload-binding machinery, and a `PatTuple` field recurses
+  into the tuple-destructuring machinery -- each threaded through the same
+  depth-indexed scratch pool so a parent pointer survives while a child is
+  decoded, and fails loud past the supported nesting depth rather than
+  mis-compiling. The discovery pass now registers `$str_eq` for a String
+  literal anywhere in an arm's sub-pattern tree (variant payload, tuple
+  element, or struct field, and any composition). Guards over a struct
+  match, which previously ran the arm bodies without ever evaluating the
+  guard (a silent divergence), now go through the flat-block guarded path
+  like the tuple and sum match paths. Parity holds byte-for-byte across
+  all four backends (`--run`, `--wasm`, `--wasm --component`, and
+  `--wasm --component --wasi`) for variant fields (`Some`/`None`, in first
+  and second field position), tuple fields (including a deeper `((a, b),
+  c)` field and literal / wildcard elements), one and two String-literal
+  fields with fall-through, and the compositions (variant inside a tuple
+  field, a nested struct with a variant field, a tuple field inside a
+  nested struct); the existing identifier / wildcard / Int-literal /
+  nested-struct struct match and the nested tuple / struct sub-patterns do
+  not regress (byte-identical WAT across every checked-in example).
+
 - *A top-level function used as a `Fun(...)` value INSIDE an aggregate
   literal now compiles on the Wasm backend.* Passing a free function by
   name as an element of a list (`[add1, add1]`), a tuple slot, or a
