@@ -864,6 +864,25 @@ class _OptionEmissionMixin:
         payload extracted from the receiver in ``$_m_scrut`` at
         offset 8. The closure's return value(s) end up on the
         operand stack."""
+        # A Unit-returning closure leaves NOTHING on the operand
+        # stack, but every consumer of this helper (map / map_err
+        # rebuild, filter, and_then) then stores or binds the
+        # result -- a store with an empty stack produces an invalid
+        # Wasm module. ``Option<Unit>`` / ``Result<Unit, E>`` is a
+        # near-useless type and out of scope for the closure ABI,
+        # so fail loud here, mirroring the list-HOF store guard in
+        # ``_emit_store_closure_result_into_slot``. (Before the
+        # Unit-result sig-key alignment, ``_closure_sig_key_for``
+        # itself raised on the Unit result; this keeps the same
+        # clean rejection now that the sig key is representable.)
+        if ret_ty in ("Unit", "()"):
+            raise WasmEmissionError(
+                f"Option/Result HOF: cannot store a closure result of "
+                f"type '()' (a Unit-returning ``map`` / ``map_err`` "
+                f"produces ``Option<Unit>`` / ``Result<Unit, E>``, which "
+                f"the Wasm backend cannot encode). Use the Python backend "
+                f"(``capa --run``), or return a scalar from the closure."
+            )
         sig_key = self._closure_sig_key_for([payload_ty], ret_ty)
         sig_idx = self._closure_sig_keys.get(sig_key)
         if sig_idx is None:

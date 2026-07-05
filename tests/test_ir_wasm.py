@@ -8402,6 +8402,71 @@ class TestWasmUnitReturnFnRef(unittest.TestCase):
         )
 
 
+class TestWasmOptResUnitReturnClosureFailsLoud(unittest.TestCase):
+    """Guards that ``Option.map`` / ``Result.map`` / ``Result.map_err``
+    with a Unit-RETURNING closure fail loud at compile time instead of
+    emitting an invalid Wasm module.
+
+    Aligning ``_wasm_result_tys_for`` (Unit -> empty result) so a
+    Unit-returning fn-ref could be registered also made the Option/
+    Result HOF sig key representable, which un-gated a neighbouring
+    store path (``_emit_store_stashed_payload_into_optres`` /
+    ``_stash_closure_return``) that is NOT Unit-aware: it would store a
+    nonexistent (empty-stack) result at offset 8, so ``compile_wasm``
+    succeeded but the module failed ``wasm-tools validate`` (and
+    ``--output`` wrote the broken module to disk with exit 0). The fix
+    adds the same Unit-result guard the list-HOF store already has, in
+    ``_emit_closure_call_from_optres_payload``. These tests never shell
+    out (``emit_wat`` raises before any module bytes exist), so they run
+    everywhere."""
+
+    def test_option_map_unit_closure_raises(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let o: Option<Int> = Some(1)\n"
+            "    let r2 = o.map(fun (x: Int) -> Unit => ())\n"
+            "    stdio.println(\"done\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError):
+            emit_wat(ir_mod)
+
+    def test_result_map_unit_closure_raises(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let r: Result<Int, String> = Ok(1)\n"
+            "    let r2 = r.map(fun (x: Int) -> Unit => ())\n"
+            "    stdio.println(\"done\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError):
+            emit_wat(ir_mod)
+
+    def test_result_map_err_unit_closure_raises(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let r: Result<Int, String> = Err(\"e\")\n"
+            "    let r2 = r.map_err(fun (e: String) -> Unit => ())\n"
+            "    stdio.println(\"done\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        with self.assertRaises(WasmEmissionError):
+            emit_wat(ir_mod)
+
+    def test_option_map_scalar_closure_still_compiles(self):
+        # The guard must NOT reject a normal (non-Unit) Option.map;
+        # a Unit-returning closure is the only rejected case.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let o: Option<Int> = Some(1)\n"
+            "    let r2 = o.map(fun (x: Int) -> Int => x + 10)\n"
+            "    stdio.println(\"done\")\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)
+        self.assertIn("(module", wat)
+
+
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",

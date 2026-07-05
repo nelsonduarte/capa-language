@@ -74,6 +74,10 @@ breaking changes and the discipline is still being shaped.
   higher-order function, and in a tuple slot / struct field; a
   Unit-returning LAMBDA already worked and stays consistent. A fn-ref whose
   PARAMETER is `Unit` (or a capability) still fails loud by design.
+  `Option.map` / `Result.map` / `Result.map_err` with a Unit-returning
+  closure (which would build the near-useless `Option<Unit>` /
+  `Result<Unit, E>`) also stays a clean compile-time rejection, matching the
+  existing `List.map` behaviour, rather than emitting an invalid module.
 
 - *`Fun` values now work in two more positions on the Wasm backend: a
   tuple slot of function type, and a call whose callee is an expression.*
