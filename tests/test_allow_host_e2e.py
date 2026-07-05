@@ -75,7 +75,10 @@ class DynamicUrlCompileGate(unittest.TestCase):
         # The remedy names --allow-host (mirroring --preopen for Fs).
         self.assertIn("--allow-host", msg)
 
+    @unittest.skipUnless(_has_wasm_tools(), "wasm-tools not installed")
     def test_compiles_with_grant(self):
+        # compile_wasm assembles via wasm-tools, so this one needs the
+        # toolchain (the reject / WAT tests above do not).
         from capa.ir import compile_wasm
         module, result = _parse_analyze(_DYN_SRC)
         blob = compile_wasm(
