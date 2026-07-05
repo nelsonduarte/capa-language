@@ -9,6 +9,31 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Added.**
+
+- *`--allow-host <host>`: an operator-declared Net grant for `--wasi`, the
+  network analogue of `--preopen`.* Under `--wasi` the compiler rejects a
+  program that passes a DYNAMIC (argv-derived / computed) URL to `net.get` /
+  `net.post` fail-closed, because it cannot derive the reachable-host ceiling
+  at compile time. `--allow-host api.example.com` (repeatable; the allowlist
+  is a set) grants the component authority to reach that host, so such a
+  program compiles and, at runtime, the guest extracts the URL's host, gates
+  it against the union of the compiler-derived ceiling and the operator
+  grant, and builds the request ONLY for a granted host -- everything else
+  stays fail-closed (`Err(IoError)`). The host is extracted guest-side by a
+  WAT parser validated byte-for-byte against a Python reference over an
+  adversarial corpus (userinfo `@`, fragment `#`, uppercase, trailing dot,
+  IPv6, non-http schemes); the authority handed to wasi:http is BUILT FROM
+  the verified host, so the host gated is exactly the host contacted (no
+  raw-URL re-parse). Granting an internal / link-local / loopback / private
+  IP prints an SSRF warning but is allowed. The fine `restrict_to` gate still
+  layers on top. Recorded in the SBOM (manifest / CycloneDX / SPDX) as an
+  operator-declared grant (`capa:operator_declared_grant:allow-host`),
+  distinct from the compiler-derived surface. LIMITATION: a hostname
+  allowlist cannot defend against DNS rebinding (wasi:http is host-side
+  allow-all, so the resolved IP is not filtered); `--allow-host` is
+  `--wasi`-only.
+
 **Fixed.**
 
 - *`Fun` values now work in two more positions on the Wasm backend: a

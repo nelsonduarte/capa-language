@@ -202,6 +202,7 @@ class WasmEmitter(
         manifest_json: Optional[str] = None,
         wasi: bool = False,
         wasi_dynamic_fs: bool = False,
+        net_operator_allow_hosts: Optional[frozenset] = None,
     ):
         # Experimental opt-in (2026-06-27): when True, Random.system_seed
         # and Clock.now_secs / now_monotonic import canonical WASI
@@ -235,6 +236,25 @@ class WasmEmitter(
         # i.e. exactly the dynamic case). The host computes the same index
         # (len(derived preopens)) so the two never disagree.
         self._wasi_dynamic_fs: bool = wasi_dynamic_fs
+        # WASI Net operator grant (--allow-host, 2026-07-05): the SYMMETRIC
+        # Net analogue of ``--preopen``. The set of operator-granted hosts
+        # (already normalized through ``capa.ir._net_host.normalize_host``,
+        # matching the guest gate's URL-host normalization) is UNIONED into
+        # the guest-side host ceiling ``$Net_host_allowed`` checks, so a
+        # program with a DYNAMIC (argv-derived) Net URL -- which the
+        # compiler otherwise rejects fail-closed -- reaches exactly the
+        # granted hosts. ``_net_operator_allow`` (True iff any host was
+        # granted) SUPPRESSES the compile-time dynamic-URL Net rejection,
+        # mirroring ``_wasi_dynamic_fs`` for Fs. Empty / False (the default)
+        # leaves the prior fail-closed behaviour untouched. Recorded in the
+        # SBOM as operator-declared, distinct from the compiler-derived
+        # surface. LIMITATION: a hostname allowlist cannot defend against
+        # DNS rebinding (wasi:http is host-side allow-all), documented in
+        # the flag help and ``capa.ir._net_host``.
+        self._net_operator_allow_hosts: frozenset = (
+            net_operator_allow_hosts or frozenset()
+        )
+        self._net_operator_allow: bool = bool(self._net_operator_allow_hosts)
         self._lines: List[str] = []
         self._indent = 0
         self._unit = indent_unit
@@ -744,6 +764,13 @@ class WasmEmitter(
             # url whose host extraction differs (defensive; url_host
             # lowercases).
             for h in self._net_ceiling.hosts:
+                self._intern_string(h)
+            # Operator-granted hosts (--allow-host): interned so the
+            # $Net_host_allowed gate's UNION (ceiling hosts | operator
+            # hosts) has a valid data segment for every membership key,
+            # even a granted host the program never names as a literal
+            # (the dynamic-URL case, the whole point of the grant).
+            for h in self._net_operator_allow_hosts:
                 self._intern_string(h)
             if ("Net", "get") in self._used_caps:
                 self._intern_string("HTTP GET failed")

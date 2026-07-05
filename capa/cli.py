@@ -1081,6 +1081,27 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--allow-host",
+        action="append",
+        default=None,
+        metavar="<host>",
+        help=(
+            "with --wasi, grant the component network authority to reach "
+            "<host> as an OPERATOR-DECLARED Net grant (the Net analogue of "
+            "--preopen), unblocking a DYNAMIC (argv-derived / computed) "
+            "URL that the compiler otherwise rejects fail-closed. Repeatable "
+            "(the allowlist is a set). <host> may be a bare host, host:port, "
+            "or a URL; it is normalized (lowercased, port/userinfo stripped, "
+            "trailing dot removed) to the exact-hostname key the guest gate "
+            "checks. Grants get AND post for that host. Recorded in the SBOM "
+            "as operator-declared, distinct from the compiler-derived "
+            "surface. LIMITATION: a hostname allowlist cannot defend against "
+            "DNS rebinding (wasi:http is host-side allow-all, so the "
+            "resolved IP is not filtered); granting an internal/link-local "
+            "IP warns but is allowed."
+        ),
+    )
+    parser.add_argument(
         "--wasi-surface",
         action="store_true",
         help=(
@@ -1356,7 +1377,8 @@ def _main_dispatch() -> int:
         # surfaced in the manifest / CycloneDX / SPDX as Level-2
         # operator-declared authority, distinct from the derived surface.
         _operator_grants = _operator_grants_from_args(
-            getattr(args, "preopen", None)
+            getattr(args, "preopen", None),
+            getattr(args, "allow_host", None),
         )
         if args.manifest:
             import json
@@ -1525,6 +1547,26 @@ def _main_dispatch() -> int:
             print(msg, file=sys.stderr)
         return 1
 
+    # ``--allow-host`` (the Net analogue of --preopen) is meaningful in
+    # --wasi mode (the operator-declared Net grant that unblocks a dynamic
+    # URL) AND when emitting an SBOM / manifest (it records the same grant
+    # as operator-declared authority). Reject it on any OTHER invocation
+    # with an actionable message, mirroring --preopen.
+    if (getattr(args, "allow_host", None)
+            and not bool(getattr(args, "wasi", False))
+            and not _emitting_sbom):
+        msg = (
+            "capa: --allow-host requires --wasi (or an SBOM / --manifest "
+            "command): it is the operator-declared Net grant for the WASI "
+            "mode, recorded in the SBOM; it has no effect on the default "
+            "execution backend"
+        )
+        if use_color:
+            print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+        else:
+            print(msg, file=sys.stderr)
+        return 1
+
     if (
         args.run and not args.wasm and prefer_wasm
         and _wasm_tooling_available()
@@ -1599,6 +1641,48 @@ def _main_dispatch() -> int:
                 return 1
             fs_operator_preopen = _parse_preopen_spec(preopen_specs[0])
             wasi_dynamic_fs = True
+        # Net operator grant (--allow-host, 2026-07-05): parse + normalize
+        # each granted host through the SAME normalizer the guest gate uses
+        # (capa.ir._net_host.normalize_host), so the operator's spelling and
+        # the URL host land on the same allowlist key. Unlike --preopen this
+        # is REPEATABLE (an allowlist is a set). The presence of any grant is
+        # the signal (``net_operator_allow``) that suppresses the compiler's
+        # dynamic-URL Net rejection; the normalized set is unioned into the
+        # guest-side host ceiling the emitter materialises.
+        net_operator_allow_hosts: frozenset[str] = frozenset()
+        net_operator_allow = False
+        allow_host_specs = getattr(args, "allow_host", None) or []
+        if allow_host_specs:
+            net_operator_allow_hosts, _bad_hosts = _normalize_allow_hosts(
+                allow_host_specs,
+            )
+            if _bad_hosts:
+                msg = (
+                    "capa: --allow-host: could not parse a host from "
+                    + ", ".join(repr(b) for b in _bad_hosts)
+                    + " (expected a bare host, host:port, or a URL)"
+                )
+                if use_color:
+                    print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+                else:
+                    print(msg, file=sys.stderr)
+                return 1
+            net_operator_allow = True
+            # SSRF footgun warning (warn, do NOT block, 2026-07-05): an
+            # operator may have a legitimate reason to grant an internal
+            # address, but granting one via a DYNAMIC URL is the classic
+            # SSRF sink, so it is called out loudly on stderr.
+            for _h in sorted(net_operator_allow_hosts):
+                _kind = _classify_internal_ip(_h)
+                if _kind is not None:
+                    warn = (
+                        f"capa: WARNING: --allow-host {_h} grants a {_kind} "
+                        "address; this is usually an SSRF risk"
+                    )
+                    if use_color:
+                        print(f"{C.YELLOW}{warn}{C.RESET}", file=sys.stderr)
+                    else:
+                        print(warn, file=sys.stderr)
         if result is None:
             result = analyze(module, source=source, filename=filename)
         # Component path only: validate ``main``'s return type BEFORE
@@ -1631,6 +1715,7 @@ def _main_dispatch() -> int:
                     filename=filename,
                     wasi=wasi_mode,
                     wasi_dynamic_fs=wasi_dynamic_fs,
+                    net_operator_allow_hosts=net_operator_allow_hosts,
                 )
                 print(wat)
                 return 0
@@ -1640,6 +1725,7 @@ def _main_dispatch() -> int:
                 filename=filename,
                 wasi=wasi_mode,
                 wasi_dynamic_fs=wasi_dynamic_fs,
+                net_operator_allow_hosts=net_operator_allow_hosts,
             )
         except Exception as e:
             msg = f"capa: --wasm: {e}"
@@ -1944,16 +2030,72 @@ def _parse_preopen_spec(spec: str) -> tuple[str, bool]:
     return (host_dir, read_write)
 
 
-def _operator_grants_from_args(preopen_specs) -> dict | None:
-    """Build the SBOM ``operator_declared_grants`` block from the
-    ``--preopen`` specs, or None when none were declared.
+def _classify_internal_ip(host: str) -> str | None:
+    """Return the kind of internal address ``host`` is (``loopback`` /
+    ``link-local`` / ``unspecified`` / ``private``) when it is an IP
+    LITERAL in a non-routable range, else None.
 
-    Each spec ``<dir>[:ro|:rw]`` becomes a preopen entry; the block is
-    honestly labelled operator-declared (Level 2) by
-    :func:`capa.manifest.build_operator_declared_grants`, distinct from
-    the compiler-derived surface."""
+    Drives the ``--allow-host`` SSRF warning: an operator who grants
+    169.254.169.254 (cloud metadata), 127.0.0.1, 10.x, 192.168.x, ::1,
+    fc00::/7, 0.0.0.0, etc. is warned it is almost always an SSRF footgun.
+    A domain name (not an IP literal) returns None (no warning): its
+    resolved address is not knowable here (the DNS-rebinding residual).
+    ``is_loopback`` / ``is_link_local`` / ``is_unspecified`` are checked
+    BEFORE ``is_private`` because Python folds them into ``is_private``
+    too; the more specific label is the useful one."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_link_local:
+        return "link-local"
+    if ip.is_unspecified:
+        return "unspecified"
+    if ip.is_private:
+        return "private"
+    return None
+
+
+def _normalize_allow_hosts(specs) -> tuple[frozenset[str], list[str]]:
+    """Normalize each ``--allow-host`` value to its guest allowlist key.
+
+    Returns ``(hosts, bad)`` where ``hosts`` is the frozenset of
+    normalized hosts and ``bad`` holds the raw values
+    :func:`capa.ir._net_host.normalize_host` rejected (empty, or still
+    carrying a path/scheme it could not resolve to a host). The caller
+    rejects a non-empty ``bad`` with an actionable message and emits the
+    internal-IP SSRF warning for each accepted host."""
+    from capa.ir._net_host import normalize_host
+    hosts: set[str] = set()
+    bad: list[str] = []
+    for spec in specs or []:
+        h = normalize_host(spec)
+        if h is None:
+            bad.append(spec)
+        else:
+            hosts.add(h)
+    return frozenset(hosts), bad
+
+
+def _operator_grants_from_args(
+    preopen_specs, allow_host_specs=None,
+) -> dict | None:
+    """Build the SBOM ``operator_declared_grants`` block from the
+    ``--preopen`` and ``--allow-host`` specs, or None when none were
+    declared.
+
+    Each ``--preopen`` spec ``<dir>[:ro|:rw]`` becomes an fs preopen entry;
+    each ``--allow-host`` spec becomes a net entry
+    ``{"kind": "net", "host": "<normalized>"}``. The block is honestly
+    labelled operator-declared (Level 2) by
+    :func:`capa.manifest.build_operator_declared_grants`, distinct from the
+    compiler-derived surface."""
     specs = preopen_specs or []
-    if not specs:
+    host_specs = allow_host_specs or []
+    if not specs and not host_specs:
         return None
     preopens = []
     for spec in specs:
@@ -1963,7 +2105,11 @@ def _operator_grants_from_args(preopen_specs) -> dict | None:
             "host_dir": host_dir,
             "permission": "rw" if read_write else "ro",
         })
-    return build_operator_declared_grants(preopens)
+    net_hosts, _bad = _normalize_allow_hosts(host_specs)
+    net_grants = [
+        {"kind": "net", "host": h} for h in sorted(net_hosts)
+    ]
+    return build_operator_declared_grants(preopens, net_hosts=net_grants)
 
 
 def _wrap_as_component(

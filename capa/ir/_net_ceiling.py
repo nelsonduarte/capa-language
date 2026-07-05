@@ -58,6 +58,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from ._net_host import strip_trailing_dot
 from .. import capa_ast as A
 from ._lower import Lowerer
 from ._nodes import MethodCall, Module
@@ -74,16 +75,20 @@ _NET_REQUEST_METHODS = frozenset({"get", "post"})
 
 
 def url_host(url: str) -> str:
-    """Return the HOST component of ``url`` (no port), lowercased.
+    """Return the HOST component of ``url`` (no port), lowercased and with
+    a single trailing dot stripped.
 
     Mirrors the oracle's host extraction (``Net.get`` uses
     ``urlparse(url).hostname``, which strips the port and lowercases the
-    host, ``capa/runtime/_capabilities.py:578-579``). An unparseable URL
-    or a URL with no host yields ``""`` (which no literal ceiling host
-    equals, so such a call is denied, the same fail-closed shape the
-    oracle's empty-host ``allows("")`` produces under a restriction)."""
+    host, ``capa/runtime/_capabilities.py:578-579``) PLUS the trailing-dot
+    normalization :func:`capa.ir._net_host.strip_trailing_dot` applies, so
+    a URL host (``api.com.``) agrees with an operator ``--allow-host``
+    grant (``api.com``) and with the ceiling. An unparseable URL or a URL
+    with no host yields ``""`` (which no literal ceiling host equals, so
+    such a call is denied, the same fail-closed shape the oracle's
+    empty-host ``allows("")`` produces under a restriction)."""
     try:
-        return (urlparse(url).hostname or "").lower()
+        return strip_trailing_dot((urlparse(url).hostname or "").lower())
     except ValueError:
         return ""
 

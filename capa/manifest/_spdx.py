@@ -164,7 +164,8 @@ def build_spdx(
     # so an SPDX consumer does not read them as program-proven authority.
     _grants = inner.get("operator_declared_grants") or {}
     _preopens = _grants.get("preopens") or []
-    if _preopens:
+    _allow_hosts = _grants.get("allow_hosts") or []
+    if _preopens or _allow_hosts:
         program_annotations.append(_annot(
             timestamp, "operator_declared_grants:trust_level",
             str(_grants.get("trust_level", "operator-declared")),
@@ -173,6 +174,13 @@ def build_spdx(
             program_annotations.append(_annot(
                 timestamp, "operator_declared_grant:preopen",
                 f"{_pre.get('host_dir', '')} [{_pre.get('permission', 'rw')}]",
+            ))
+        # One annotation per operator-granted Net host (--allow-host),
+        # Level-2 authority distinct from the compiler-derived surface.
+        for _nh in _allow_hosts:
+            program_annotations.append(_annot(
+                timestamp, "operator_declared_grant:allow-host",
+                str(_nh.get("host", "")),
             ))
     # WASI Layer 1: compiler-DERIVED, program-PROVEN argv -> sink surface
     # as program-package annotations, labelled compiler-derived (the
