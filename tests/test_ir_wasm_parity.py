@@ -275,6 +275,13 @@ _PARITY_PROGRAMS: list[str] = [
     "match_float_lit.capa",
     "match_or_pattern.capa",
     "match_struct_pattern.capa",
+    # Struct-field sub-patterns (2026-07): a PatVariant / PatTuple /
+    # String-literal sitting as a struct FIELD (the parallel of the
+    # nested tuple-ELEMENT sub-patterns), plus compositions with the
+    # nested-struct machinery. Pre-fix the Wasm backend raised
+    # "sub-pattern PatVariant/PatTuple not supported" and a
+    # String-literal field tripped "unknown func $str_eq".
+    "match_struct_field_subpatterns.capa",
     # Bound or-pattern slice (2026-06-04): or-patterns whose
     # alternatives are different variants each binding the SAME name(s)
     # (e.g. ``Pos(n) | Neg(n) -> n``). Pre-fix the Wasm CIR lowerer
@@ -1879,6 +1886,16 @@ class TestPythonWasmParity(unittest.TestCase):
         # struct layout offsets. Pre-fix the CIR lowerer raised
         # "match pattern StructPat".
         self._assert_parity("match_struct_pattern.capa")
+
+    def test_match_struct_field_subpatterns(self):
+        # Struct-field sub-pattern slice (2026-07): a PatVariant field
+        # (``P { tag: Some(n) }``), a PatTuple field (``P { pair: (a,
+        # b) }``), and a String-literal field (``P { name: "bob" }``),
+        # plus compositions with the nested-struct machinery. Reuses
+        # the tuple-element variant / tuple sub-pattern machinery one
+        # scratch level deeper; the String-literal field additionally
+        # exercises the discovery gate for ``$str_eq``.
+        self._assert_parity("match_struct_field_subpatterns.capa")
 
     def test_match_variant_payload_literal(self):
         # Variant-payload literal slice (2026-06-10): ``Some(true)``

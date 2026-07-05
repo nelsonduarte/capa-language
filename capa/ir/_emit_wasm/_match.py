@@ -1179,6 +1179,9 @@ class _MatchEmissionMixin:
         scrut_local = "_m_scrut"
         self._push_value(instr.scrutinee)
         self._write(f"local.set ${scrut_local}")
+        if _match_has_guards(instr):
+            self._emit_struct_match_with_guards(instr, layout, scrut_local)
+            return
         opened = 0
         for arm in instr.arms:
             pat = arm.pattern
@@ -1274,12 +1277,98 @@ class _MatchEmissionMixin:
 
                 checks.append(emit_nested)
                 continue
+            if isinstance(sub, PatVariant):
+                # Variant field (``P { tag: Some(n) }``): the field
+                # slot holds the sum record's i32 pointer directly
+                # (struct pointer-shape fields are a bare i32, unlike
+                # a tuple's i64-extended slot). Wrap it into the
+                # depth-``depth`` inner scratch, test the tag, and
+                # refine with any literal payload sub-patterns -- the
+                # exact machinery a PatVariant tuple element uses.
+                tag, payload_layouts = self._struct_field_variant_layout(
+                    field_ty, sub,
+                )
+
+                def emit_variant(
+                    off=offset, s=sub, t=tag,
+                    layouts=tuple(payload_layouts),
+                ):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"i32.load offset={off}")
+                    self._write(f"local.tee ${inner}")
+                    self._write("i32.load")
+                    self._write(f"i32.const {t}")
+                    self._write("i32.eq")
+                    self._refine_predicate_with_payload_literals(
+                        _literal_payload_checks(s, layouts, inner),
+                    )
+
+                checks.append(emit_variant)
+                continue
+            if isinstance(sub, PatTuple):
+                # Tuple field (``P { pair: (a, b) }``): the field slot
+                # holds the tuple record's i32 pointer directly; load
+                # it into the depth-``depth`` inner scratch and recurse
+                # into the tuple destructuring machinery one scratch
+                # level deeper (its grandchildren at ``depth + 1``).
+                inner_tys = self._struct_field_tuple_types(field_ty, sub)
+
+                def emit_tuple(
+                    off=offset, s=sub, tys=tuple(inner_tys),
+                ):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"i32.load offset={off}")
+                    self._write(f"local.set ${inner}")
+                    self._emit_and_of_checks(self._tuple_arm_checks(
+                        inner, list(tys), s.elements, depth + 1,
+                    ))
+
+                checks.append(emit_tuple)
+                continue
             raise WasmEmissionError(
                 f"struct match: field {fname!r} sub-pattern "
                 f"{type(sub).__name__} not supported (literal / "
-                f"identifier / wildcard / nested struct only)"
+                f"identifier / wildcard / nested struct / variant / "
+                f"tuple only)"
             )
         return checks
+
+    def _struct_field_variant_layout(self, field_ty: str, sub: PatVariant):
+        """Resolve ``(tag, payload_layouts)`` for a PatVariant struct
+        field from the field's declared sum type. Raises FAIL-LOUD
+        when the field type is not a known sum or the variant is not
+        one of its constructors -- the struct-field parallel of
+        ``_tuple_variant_layout``."""
+        sum_layout = self._sum_layouts.get(field_ty.split("<", 1)[0])
+        if sum_layout is None:
+            raise WasmEmissionError(
+                f"struct match: variant sub-pattern {sub.name!r} needs "
+                f"a sum-typed field, but the field type is {field_ty!r}"
+            )
+        entry = sum_layout["variants"].get(sub.name)
+        if entry is None:
+            raise WasmEmissionError(
+                f"struct match: variant {sub.name!r} is not a "
+                f"constructor of field type {field_ty!r}"
+            )
+        return entry
+
+    def _struct_field_tuple_types(
+        self, field_ty: str, sub: PatTuple,
+    ) -> list:
+        """Resolve the element types of a nested-tuple struct field
+        from the field's declared type. Raises FAIL-LOUD when the
+        field type is not a tuple of matching arity -- the struct-field
+        parallel of ``_tuple_elem_types_for``."""
+        from ._tuples import _tuple_elem_types
+        inner_tys = _tuple_elem_types(field_ty)
+        if not inner_tys or len(inner_tys) != len(sub.elements):
+            raise WasmEmissionError(
+                f"struct match: nested tuple sub-pattern of arity "
+                f"{len(sub.elements)} does not match field type "
+                f"{field_ty!r}"
+            )
+        return inner_tys
 
     def _struct_field_eq_thunk(
         self, scrut_local: str, offset: int, size: int, field_ty: str,
@@ -1363,6 +1452,34 @@ class _MatchEmissionMixin:
                 nested_layout = self._struct_layouts[sub.type_name]
                 self._emit_struct_pattern_binds(
                     sub, nested_layout, inner, depth + 1,
+                )
+                continue
+            if isinstance(sub, PatVariant):
+                # Variant field: re-extract the sum pointer from the
+                # field slot into the depth-``depth`` inner scratch and
+                # bind its payload sub-patterns (``Some(n)`` binds ``n``;
+                # a nullary ``None`` binds nothing) via the shared
+                # nested-variant binder.
+                _tag, payload_layouts = self._struct_field_variant_layout(
+                    field_ty, sub,
+                )
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i32.load offset={offset}")
+                self._write(f"local.set ${inner}")
+                self._emit_inner_variant_payload_binds(
+                    sub, payload_layouts, scrut_local_name=inner,
+                )
+                continue
+            if isinstance(sub, PatTuple):
+                # Tuple field: load the tuple pointer into the depth
+                # -``depth`` inner scratch and descend into the tuple
+                # binds one scratch level deeper.
+                inner_tys = self._struct_field_tuple_types(field_ty, sub)
+                self._write(f"local.get ${scrut_local}")
+                self._write(f"i32.load offset={offset}")
+                self._write(f"local.set ${inner}")
+                self._emit_tuple_arm_binds(
+                    inner, list(inner_tys), sub.elements, depth + 1,
                 )
                 continue
             if isinstance(sub, PatIdent):
@@ -1887,6 +2004,50 @@ class _MatchEmissionMixin:
                     f"Tuple match (guarded): pattern "
                     f"{type(pat).__name__} not supported "
                     f"(PatTuple / PatIdent / PatWildcard only)"
+                )
+            self._emit_guarded_arm(
+                arm, push_predicate, bind_payloads, done_label,
+            )
+        self._close_match_done_block()
+
+    def _emit_struct_match_with_guards(
+        self, instr: Match, layout: dict, scrut_local: str,
+    ) -> None:
+        """Flat-block emission for a struct match where at least one
+        arm carries a guard. Predicate is the AND of the arm's field
+        checks (literal / nested-variant / nested-tuple / nested
+        -struct; ``i32.const 1`` when the arm is irrefutable); the
+        field binders run only on full match + guard pass. Mirrors
+        ``_emit_tuple_match_with_guards`` over the struct layout."""
+        done_label = self._open_match_done_block()
+        for arm in instr.arms:
+            pat = arm.pattern
+            if isinstance(pat, PatStruct):
+                checks = self._struct_pattern_checks(pat, layout, scrut_local)
+
+                def push_predicate(checks=tuple(checks)):
+                    self._emit_and_of_checks(list(checks))
+
+                def bind_payloads(p=pat):
+                    self._emit_struct_pattern_binds(p, layout, scrut_local)
+            elif isinstance(pat, PatIdent):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads(p=pat):
+                    self._write(f"local.get ${scrut_local}")
+                    self._write(f"local.set ${p.name}")
+            elif isinstance(pat, PatWildcard):
+                def push_predicate():
+                    self._write("i32.const 1")
+
+                def bind_payloads():
+                    return
+            else:
+                raise WasmEmissionError(
+                    f"Struct match (guarded): pattern "
+                    f"{type(pat).__name__} not supported "
+                    f"(PatStruct / PatIdent / PatWildcard only)"
                 )
             self._emit_guarded_arm(
                 arm, push_predicate, bind_payloads, done_label,
