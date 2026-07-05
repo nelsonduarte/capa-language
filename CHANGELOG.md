@@ -36,6 +36,26 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *A PatTuple or PatStruct as the PAYLOAD of a variant match arm now
+  compiles on the Wasm backend, at parity with the Python interpreter.*
+  `match x { D((a, b)) -> ... }` (and `Ev(P { x: a, y: b })`) previously
+  failed at codegen with `Sum match: nested pattern PatTuple inside variant
+  payload not yet supported`; the interpreter already handled it, so the
+  same program printed on `--run` but was rejected under `--wasm`. The
+  variant payload slot is a pointer-shaped `i64`-extended pointer to the
+  child tuple / struct record, so the emitter now extracts it into the
+  inner-scrutinee scratch and descends into the SAME tuple-destructuring
+  and struct-field machinery the tuple-element and struct-field sub-pattern
+  paths already use, one scratch level deeper. Refutable sub-patterns
+  (`D((1, b))`) refine the arm's tag predicate under the existing tag gate;
+  the concrete payload type is resolved from the sum layout for user sums
+  and from the scrutinee's generic arguments for built-in `Option` /
+  `Result` (`Some((a, b))` over `Option<(Int, Int)>`). Covers deeper
+  nesting (`T(((a, b), c))`), literals / wildcards inside the payload,
+  variant-inside-tuple (`D((Some(n), b))`), tuple-inside-struct, and guards
+  (`D((a, b)) if a > 0`). Byte-identical stdout across `--run`, `--wasm`,
+  and both component / WASI backends.
+
 - *`Fun` values now work in two more positions on the Wasm backend: a
   tuple slot of function type, and a call whose callee is an expression.*
   A tuple whose element is a `Fun(...) -> R` value -- `let t = (add1, dbl);

@@ -1209,6 +1209,167 @@ class TestWasmStructFieldSubPatterns(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmTupleStructInVariantPayload(unittest.TestCase):
+    """A PatTuple / PatStruct sitting as the PAYLOAD of a variant arm
+    (``D((a, b))`` / ``Ev(P { x: a })``). The variant payload slot
+    holds the child record's pointer (i64-extended in the uniform sum
+    slot); the emitter descends into it, reusing the same tuple-
+    destructuring and struct-match machinery the tuple-element and
+    struct-field paths use, one scratch level deeper. Each case
+    asserts byte-exact stdout parity with the Python backend."""
+
+    def _run_capturing_stdout(self, src: str) -> tuple[str, str]:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out, err = io.StringIO(), io.StringIO()
+        saved_out, saved_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+        return out.getvalue(), err.getvalue()
+
+    def test_tuple_payload(self):
+        src = (
+            "type Duo =\n"
+            "    D((Int, Int))\n"
+            "fun main(stdio: Stdio)\n"
+            "    let x = D((1, 2))\n"
+            "    match x\n"
+            "        D((a, b)) -> stdio.println(\"${a} ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "1 2\n")
+
+    def test_deeper_tuple_payload(self):
+        src = (
+            "type Tri =\n"
+            "    T(((Int, Int), Int))\n"
+            "fun main(stdio: Stdio)\n"
+            "    let x = T(((1, 2), 3))\n"
+            "    match x\n"
+            "        T(((a, b), c)) ->"
+            " stdio.println(\"${a} ${b} ${c}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "1 2 3\n")
+
+    def test_literal_in_tuple_payload_selects_arm(self):
+        src = (
+            "type Duo =\n"
+            "    D((Int, Int))\n"
+            "fun main(stdio: Stdio)\n"
+            "    let x = D((1, 2))\n"
+            "    match x\n"
+            "        D((1, b)) -> stdio.println(\"one ${b}\")\n"
+            "        D((a, b)) -> stdio.println(\"${a} ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "one 2\n")
+
+    def test_literal_in_tuple_payload_falls_through(self):
+        src = (
+            "type Duo =\n"
+            "    D((Int, Int))\n"
+            "fun main(stdio: Stdio)\n"
+            "    let x = D((9, 2))\n"
+            "    match x\n"
+            "        D((1, b)) -> stdio.println(\"one ${b}\")\n"
+            "        D((a, b)) -> stdio.println(\"${a} ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "9 2\n")
+
+    def test_wildcard_in_tuple_payload(self):
+        src = (
+            "type Duo =\n"
+            "    D((Int, Int))\n"
+            "fun main(stdio: Stdio)\n"
+            "    let x = D((1, 2))\n"
+            "    match x\n"
+            "        D((_, b)) -> stdio.println(\"w ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "w 2\n")
+
+    def test_struct_payload_with_string_field(self):
+        src = (
+            "type P { x: Int, y: String }\n"
+            "type E =\n"
+            "    Ev(P)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let e = Ev(P { x: 7, y: \"hi\" })\n"
+            "    match e\n"
+            "        Ev(P { x: a, y: b }) ->"
+            " stdio.println(\"${a} ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "7 hi\n")
+
+    def test_variant_inside_tuple_payload(self):
+        src = (
+            "type Duo =\n"
+            "    D((Option<Int>, Int))\n"
+            "fun main(stdio: Stdio)\n"
+            "    let x = D((Some(5), 2))\n"
+            "    match x\n"
+            "        D((Some(n), b)) ->"
+            " stdio.println(\"some ${n} ${b}\")\n"
+            "        D((None, b)) -> stdio.println(\"none ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "some 5 2\n")
+
+    def test_tuple_inside_struct_payload(self):
+        src = (
+            "type Q { pair: (Int, Int), z: Int }\n"
+            "type E =\n"
+            "    Ev(Q)\n"
+            "fun main(stdio: Stdio)\n"
+            "    let e = Ev(Q { pair: (1, 2), z: 3 })\n"
+            "    match e\n"
+            "        Ev(Q { pair: (a, b), z: c }) ->"
+            " stdio.println(\"${a} ${b} ${c}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "1 2 3\n")
+
+    def test_builtin_option_of_tuple(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let opt = Some((3, 4))\n"
+            "    match opt\n"
+            "        Some((a, b)) ->"
+            " stdio.println(\"some ${a} ${b}\")\n"
+            "        None -> stdio.println(\"none\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "some 3 4\n")
+
+    def test_guard_over_tuple_payload(self):
+        src = (
+            "type Duo =\n"
+            "    D((Int, Int))\n"
+            "fun main(stdio: Stdio)\n"
+            "    let x = D((1, 2))\n"
+            "    match x\n"
+            "        D((a, b)) if a > 0 ->"
+            " stdio.println(\"pos ${a} ${b}\")\n"
+            "        D((a, b)) -> stdio.println(\"nonpos ${a} ${b}\")\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "pos 1 2\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmSumAndStruct(unittest.TestCase):
     """Phase 6C: sum types, structs, and pattern matching compile
     to a heap-allocator-backed memory layout and execute on

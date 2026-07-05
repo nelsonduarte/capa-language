@@ -150,7 +150,7 @@ class _MatchEmissionMixin:
         self._write(f"local.set ${tag_local}")
         if _match_has_guards(instr):
             self._emit_sum_match_with_guards(
-                instr, scrut_local, tag_local, sum_layout,
+                instr, scrut_local, tag_local, sum_layout, scrut_ty,
             )
             return
         # Emit arms as a nested if/else chain. Track how many
@@ -158,7 +158,9 @@ class _MatchEmissionMixin:
         # end. ``else`` blocks open implicitly when we cascade.
         opened = 0
         for arm in instr.arms:
-            opened += self._emit_match_arm(arm, scrut_local, tag_local, sum_layout)
+            opened += self._emit_match_arm(
+                arm, scrut_local, tag_local, sum_layout, scrut_ty,
+            )
         for _ in range(opened):
             self._indent -= 1
             self._write("end")
@@ -1531,12 +1533,15 @@ class _MatchEmissionMixin:
 
     def _emit_match_arm(
         self, arm: MatchArm, scrut_local: str, tag_local: str,
-        sum_layout: dict,
+        sum_layout: dict, scrut_ty: str = "",
     ) -> int:
         """Emit one arm. Returns the number of new ``if`` blocks
         opened (0 for a wildcard, 1 for a variant arm). The caller
         emits matching ``end`` instructions after all arms are
-        processed."""
+        processed. ``scrut_ty`` is the scrutinee's Capa type, used to
+        resolve a PatTuple / PatStruct variant-payload's concrete type
+        when the sum layout carries a uniform "Any" slot (built-in
+        Option / Result)."""
         pat = arm.pattern
         # Or-pattern arm (``A | B -> body``) against a sum scrutinee:
         # the body fires when the discriminant matches ANY of the
@@ -1569,16 +1574,18 @@ class _MatchEmissionMixin:
             self._write(f"local.get ${tag_local}")
             self._write(f"i32.const {tag}")
             self._write("i32.eq")
-            # Literal payload sub-patterns (``Some(true)``) refine
-            # the tag predicate; a literal mismatch falls through to
-            # the next arm exactly like a tag mismatch.
-            self._refine_predicate_with_payload_literals(
-                _literal_payload_checks(pat, payload_layouts, scrut_local),
+            # Refutable payload sub-patterns refine the tag predicate:
+            # a literal (``Some(true)``), or a nested PatTuple /
+            # PatStruct carrying its own literals (``D((1, b))``). A
+            # sub-pattern mismatch falls through to the next arm exactly
+            # like a tag mismatch.
+            self._refine_variant_predicate(
+                pat, tuple(payload_layouts), scrut_local, scrut_ty,
             )
             self._write("if")
             self._indent += 1
             self._emit_variant_payload_binds(
-                pat, tuple(payload_layouts), scrut_local,
+                pat, tuple(payload_layouts), scrut_local, scrut_ty=scrut_ty,
             )
             self._emit_body(arm.body)
             # Cascade into the else block where the next arm lives.
@@ -2058,7 +2065,7 @@ class _MatchEmissionMixin:
 
     def _emit_sum_match_with_guards(
         self, instr: Match, scrut_local: str, tag_local: str,
-        sum_layout: dict,
+        sum_layout: dict, scrut_ty: str = "",
     ) -> None:
         """Flat-block emission for a sum-type match where at least
         one arm carries a guard. Each arm's predicate is the tag
@@ -2101,15 +2108,15 @@ class _MatchEmissionMixin:
                     self._write(f"local.get ${tag_local}")
                     self._write(f"i32.const {t}")
                     self._write("i32.eq")
-                    self._refine_predicate_with_payload_literals(
-                        _literal_payload_checks(p, layouts, scrut_local),
+                    self._refine_variant_predicate(
+                        p, layouts, scrut_local, scrut_ty,
                     )
 
                 def bind_payloads(
                     p=pat, layouts=tuple(payload_layouts),
                 ):
                     self._emit_variant_payload_binds(
-                        p, layouts, scrut_local,
+                        p, layouts, scrut_local, scrut_ty=scrut_ty,
                     )
             elif isinstance(pat, PatWildcard):
                 def push_predicate():
@@ -2139,6 +2146,7 @@ class _MatchEmissionMixin:
     def _emit_variant_payload_binds(
         self, pat: PatVariant, payload_layouts: tuple,
         scrut_local: str, skip_nested: bool = False,
+        scrut_ty: str = "",
     ) -> None:
         """Bind a PatVariant's sub-patterns from the scrutinee
         record. Shared by the flat cascade path, the guard-present
@@ -2150,10 +2158,19 @@ class _MatchEmissionMixin:
         ``_emit_inner_variant_payload_binds``. PatLiteral
         sub-patterns bind nothing: they were already consumed by the
         arm predicate via
-        ``_refine_predicate_with_payload_literals``."""
-        for sub_pat, (offset, size, _ty) in zip(
+        ``_refine_predicate_with_payload_literals``.
+
+        A PatTuple / PatStruct payload (``D((a, b))`` /
+        ``E(P { x: a })``) is a pointer-shaped slot: extract the child
+        record's i32 pointer (i64-extended in the uniform sum slot)
+        into the depth-1 inner scratch and descend into the tuple /
+        struct binding machinery one scratch level deeper, so the
+        nested destructuring reuses exactly the code the tuple-element
+        and struct-field paths use."""
+        inner = _inner_scratch_local(1)
+        for idx, (sub_pat, (offset, size, _ty)) in enumerate(zip(
             pat.payloads, payload_layouts,
-        ):
+        )):
             if isinstance(sub_pat, PatIdent):
                 self._bind_variant_payload(
                     sub_pat, offset, size, _ty,
@@ -2161,18 +2178,184 @@ class _MatchEmissionMixin:
                 )
             elif isinstance(sub_pat, (PatWildcard, PatLiteral)):
                 continue
+            elif isinstance(sub_pat, PatTuple):
+                inner_tys = self._variant_payload_tuple_types(
+                    pat, idx, _ty, sub_pat, scrut_ty,
+                )
+                self._load_variant_payload_ptr(scrut_local, offset, inner)
+                self._emit_tuple_arm_binds(
+                    inner, list(inner_tys), sub_pat.elements, 2,
+                )
+            elif isinstance(sub_pat, PatStruct):
+                layout = self._variant_payload_struct_layout(
+                    pat, idx, _ty, sub_pat, scrut_ty,
+                )
+                self._load_variant_payload_ptr(scrut_local, offset, inner)
+                self._emit_struct_pattern_binds(
+                    sub_pat, layout, inner, 2,
+                )
             elif skip_nested and isinstance(sub_pat, PatVariant):
                 continue
             else:
                 # PatVariant payloads route through
                 # _emit_nested_variant_arm before this loop runs, so
-                # only the still-unsupported nested shapes (PatTuple,
-                # PatStruct, PatOr) reach here.
+                # only the still-unsupported nested shapes (PatOr)
+                # reach here.
                 raise WasmEmissionError(
                     f"Sum match: nested pattern "
                     f"{type(sub_pat).__name__} inside variant "
                     f"payload not yet supported"
                 )
+
+    def _load_variant_payload_ptr(
+        self, scrut_local: str, offset: int, dest_local: str,
+    ) -> None:
+        """Load a variant's pointer-shaped payload slot (i64-extended
+        in the uniform 8-byte sum slot, like every pointer payload)
+        as an i32 into ``$dest_local``. Used to descend into a
+        PatTuple / PatStruct variant payload -- the sum parallel of
+        ``_load_tuple_slot_ptr`` (whose slot is likewise i64-extended)
+        and the struct-field ``i32.load`` (a bare i32)."""
+        self._write(f"local.get ${scrut_local}")
+        self._write(f"i64.load offset={offset}")
+        self._write("i32.wrap_i64")
+        self._write(f"local.set ${dest_local}")
+
+    def _refine_variant_predicate(
+        self, pat: PatVariant, payload_layouts: tuple,
+        scrut_local: str, scrut_ty: str,
+    ) -> None:
+        """Refine the tag predicate already on the stack with a flat
+        variant arm's refutable payload sub-patterns: PatLiteral slots
+        (direct slot equality) and PatTuple / PatStruct slots (descend
+        into the pointed-to record and AND its own recursively-gathered
+        checks). Everything runs inside ONE tag-gated ``if (result
+        i32)`` so a different variant's slot bits are never decoded
+        under the wrong shape -- the same gating rationale as
+        ``_refine_predicate_with_payload_literals``, which this
+        generalises (a literal-only pattern emits byte-identical WAT).
+        PatIdent / PatWildcard payloads are irrefutable and add no
+        check; an all-irrefutable payload leaves the tag predicate
+        untouched."""
+        thunks = self._variant_payload_check_thunks(
+            pat, payload_layouts, scrut_local, scrut_ty,
+        )
+        if not thunks:
+            return
+        self._write("if (result i32)")
+        self._indent += 1
+        for n, thunk in enumerate(thunks):
+            thunk()
+            if n > 0:
+                self._write("i32.and")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("i32.const 0")
+        self._indent -= 1
+        self._write("end")
+
+    def _variant_payload_check_thunks(
+        self, pat: PatVariant, payload_layouts: tuple,
+        scrut_local: str, scrut_ty: str,
+    ) -> list:
+        """Build the 0-arg check thunks for a flat variant arm's
+        refutable payload sub-patterns (see ``_refine_variant_
+        predicate``). A PatTuple / PatStruct payload stashes its child
+        pointer in the depth-1 inner scratch and recurses into the
+        tuple / struct check machinery at depth 2, so a grandchild's
+        scratch never clobbers the parent pointer."""
+        inner = _inner_scratch_local(1)
+        thunks: list = []
+        for idx, (sub, (offset, size, p_ty)) in enumerate(zip(
+            pat.payloads, payload_layouts,
+        )):
+            if isinstance(sub, PatLiteral):
+                def lit_thunk(s=sub, o=offset, sz=size):
+                    self._push_variant_literal_eq(s, o, sz, scrut_local)
+                thunks.append(lit_thunk)
+            elif isinstance(sub, PatTuple):
+                inner_tys = self._variant_payload_tuple_types(
+                    pat, idx, p_ty, sub, scrut_ty,
+                )
+
+                def tup_thunk(o=offset, s=sub, tys=tuple(inner_tys)):
+                    self._load_variant_payload_ptr(scrut_local, o, inner)
+                    self._emit_and_of_checks(self._tuple_arm_checks(
+                        inner, list(tys), s.elements, 2,
+                    ))
+                thunks.append(tup_thunk)
+            elif isinstance(sub, PatStruct):
+                layout = self._variant_payload_struct_layout(
+                    pat, idx, p_ty, sub, scrut_ty,
+                )
+
+                def struct_thunk(o=offset, s=sub, lay=layout):
+                    self._load_variant_payload_ptr(scrut_local, o, inner)
+                    self._emit_and_of_checks(self._struct_pattern_checks(
+                        s, lay, inner, 2,
+                    ))
+                thunks.append(struct_thunk)
+        return thunks
+
+    def _resolved_variant_payload_ty(
+        self, pat: PatVariant, idx: int, payload_ty: str, scrut_ty: str,
+    ) -> str:
+        """Concrete Capa type of a variant payload slot. User sums
+        carry it in the layout (``D((Int, Int))`` -> ``(Int, Int)``);
+        built-in Option / Result use a uniform "Any" slot, so it comes
+        from the scrutinee's generic arguments (``Option<(Int, Int)>``
+        -> Some -> ``(Int, Int)``) via the shared
+        ``_resolve_sum_payload_ty``. Raises FAIL-LOUD when neither
+        source supplies it rather than mis-decode the slot."""
+        if payload_ty and payload_ty != "Any":
+            return payload_ty
+        if scrut_ty:
+            return self._resolve_sum_payload_ty(scrut_ty, pat.name, idx)
+        raise WasmEmissionError(
+            f"Sum match: cannot resolve the concrete payload type of "
+            f"{pat.name!r} (index {idx}) to destructure a nested "
+            f"tuple/struct pattern; the layout slot is 'Any' and no "
+            f"scrutinee type was available."
+        )
+
+    def _variant_payload_tuple_types(
+        self, pat: PatVariant, idx: int, payload_ty: str,
+        sub: PatTuple, scrut_ty: str,
+    ) -> list:
+        """Resolve the element types of a PatTuple variant payload,
+        FAIL-LOUD when the resolved payload type is not a tuple of
+        matching arity -- the variant-payload parallel of
+        ``_tuple_elem_types_for`` / ``_struct_field_tuple_types``."""
+        from ._tuples import _tuple_elem_types
+        ty = self._resolved_variant_payload_ty(pat, idx, payload_ty, scrut_ty)
+        inner_tys = _tuple_elem_types(ty)
+        if not inner_tys or len(inner_tys) != len(sub.elements):
+            raise WasmEmissionError(
+                f"Sum match: nested tuple sub-pattern of arity "
+                f"{len(sub.elements)} in {pat.name!r}'s payload does "
+                f"not match payload type {ty!r}"
+            )
+        return inner_tys
+
+    def _variant_payload_struct_layout(
+        self, pat: PatVariant, idx: int, payload_ty: str,
+        sub: PatStruct, scrut_ty: str,
+    ) -> dict:
+        """Resolve the struct layout of a PatStruct variant payload,
+        FAIL-LOUD when the resolved payload type is not a known struct
+        -- the variant-payload parallel of ``_tuple_struct_layout``."""
+        from ._layout import _strip_type_qualifiers
+        ty = self._resolved_variant_payload_ty(pat, idx, payload_ty, scrut_ty)
+        head = _strip_type_qualifiers(ty)
+        layout = self._struct_layouts.get(head)
+        if layout is None:
+            raise WasmEmissionError(
+                f"Sum match: struct sub-pattern {sub.type_name!r} in "
+                f"{pat.name!r}'s payload needs a struct-typed payload, "
+                f"but the payload type is {ty!r}"
+            )
+        return layout
 
     def _emit_nested_variant_arm_guarded(
         self, arm: MatchArm, scrut_local: str, tag_local: str,
