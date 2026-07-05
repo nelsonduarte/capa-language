@@ -8316,6 +8316,96 @@ class TestWasmFnRefInAggregate(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmUnitReturnFnRef(unittest.TestCase):
+    """Regression guards for a Unit-RETURNING top-level function
+    used as a ``Fun(...) -> Unit`` value.
+
+    The thunk-discovery pass computed a fn-ref's sig key via
+    ``_closure_sig_key_for(args, ret)``, whose result side went
+    through ``_wasm_result_tys_for`` -> ``_wasm_arg_tys_for``. That
+    argument mapping has no wire encoding for ``Unit`` and raised,
+    so discovery silently skipped the thunk. Emit then looked the
+    thunk up via ``_fun_type_to_sig_key``, which maps a ``Unit``
+    result to an empty result clause (``... -> ()``) and so asked
+    for a key that discovery never registered, failing with "no
+    thunk was registered for sig '(i32 i64) -> ()'". The fix makes
+    ``_wasm_result_tys_for("Unit")`` return ``[]`` so both paths
+    agree on ``... -> ()``. A lambda with a Unit return already
+    worked (it lowers via ``_register_lambda``, whose Unit-result
+    handling was already ``""``); the last test pins that symmetry."""
+
+    def _run_capturing_stdout(self, src: str) -> str:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out = io.StringIO()
+        saved_out = sys.stdout
+        sys.stdout = out
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout = saved_out
+        return out.getvalue()
+
+    def test_unit_return_fn_ref_in_list_iterated_and_called(self):
+        # The minimal repro: a Unit-returning top-level function in a
+        # list literal, iterated and applied. Pre-fix this failed to
+        # compile with "no thunk was registered for sig
+        # '(i32 i64) -> ()'".
+        src = (
+            "fun noop(x: Int) -> Unit\n"
+            "    return\n"
+            "fun main(stdio: Stdio)\n"
+            "    let fs = [noop, noop]\n"
+            "    for f in fs\n"
+            "        f(5)\n"
+            "    stdio.println(\"done\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "done\n",
+        )
+
+    def test_unit_return_fn_ref_passed_to_hof(self):
+        # A Unit-returning fn-ref passed to a higher-order function
+        # ``apply(f: Fun(Int) -> Unit, n: Int)`` and invoked there.
+        src = (
+            "fun noop(x: Int) -> Unit\n"
+            "    return\n"
+            "fun apply(f: Fun(Int) -> Unit, n: Int)\n"
+            "    f(n)\n"
+            "fun main(stdio: Stdio)\n"
+            "    apply(noop, 5)\n"
+            "    stdio.println(\"done\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "done\n",
+        )
+
+    def test_unit_return_lambda_in_list_matches_fn_ref(self):
+        # Symmetry check: a Unit-returning LAMBDA used the same way
+        # already worked; it must keep working so the fn-ref path
+        # (now aligned to the same ``... -> ()`` sig key) stays
+        # consistent with the lambda path.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let fs = [fun (x: Int) -> Unit => (), "
+            "fun (x: Int) -> Unit => ()]\n"
+            "    for f in fs\n"
+            "        f(5)\n"
+            "    stdio.println(\"done\")\n"
+        )
+        self.assertEqual(
+            self._run_capturing_stdout(src), "done\n",
+        )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmFunValuePositions(unittest.TestCase):
     """End-to-end guards for ``Fun`` values in two positions that
     only the Wasm backend previously rejected:

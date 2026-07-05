@@ -1122,8 +1122,19 @@ class _ClosureEmissionMixin:
 
     def _wasm_result_tys_for(self, capa_ty: str) -> list[str]:
         """Same as ``_wasm_arg_tys_for`` but for the result side.
-        Identical mapping today; kept as a separate name so a
-        future ABI divergence stays explicit at call sites."""
+
+        The one deliberate divergence from the argument mapping:
+        a Unit RESULT is legal (a Unit-returning function lowers to
+        a Wasm function with an empty result clause), whereas a Unit
+        ARGUMENT has no wire encoding. Returning ``[]`` here yields
+        the ``... -> ()`` sig key that ``_closure_sig_key_for``
+        renders, matching exactly what ``_fun_type_to_sig_key``
+        produces at the call site (``_wasm_type("Unit") == ""``).
+        Without this the thunk-discovery pass raised on a
+        Unit-returning fn-ref and silently skipped registering its
+        thunk, so emit later failed to find one for ``... -> ()``."""
+        if capa_ty in ("Unit", "()"):
+            return []
         return self._wasm_arg_tys_for(capa_ty)
 
     def _closure_sig_key_for(

@@ -56,6 +56,25 @@ breaking changes and the discipline is still being shaped.
   (`D((a, b)) if a > 0`). Byte-identical stdout across `--run`, `--wasm`,
   and both component / WASI backends.
 
+- *A Unit-returning top-level function used as a `Fun(...) -> Unit` value
+  now compiles on the Wasm backend.* `let fs = [noop, noop]; for f in fs:
+  f(5)` -- where `noop(x: Int) -> Unit` -- failed at codegen with "top-level
+  function 'noop' used as Fun(...) value, but no thunk was registered for
+  sig '(i32 i64) -> ()'", while the Python backend accepted it. The cause
+  was an asymmetry in the closure ABI's sig-key computation: the pre-emit
+  thunk-discovery pass built a fn-ref's key from `_wasm_result_tys_for`,
+  which mapped the RESULT type through the argument mapping and RAISED on
+  `Unit` (a Unit argument has no wire encoding), so discovery silently
+  skipped the thunk; emit then looked it up via `_fun_type_to_sig_key`,
+  which correctly lowers a `Unit` result to an empty result clause
+  (`... -> ()`) and so asked for a key that was never registered. The
+  result mapping now treats `Unit` as an empty result (`[]`), matching the
+  emit path, so a Unit-returning fn-ref is registered and found under the
+  same `... -> ()` key. Applies to fn-refs in a list, passed to a
+  higher-order function, and in a tuple slot / struct field; a
+  Unit-returning LAMBDA already worked and stays consistent. A fn-ref whose
+  PARAMETER is `Unit` (or a capability) still fails loud by design.
+
 - *`Fun` values now work in two more positions on the Wasm backend: a
   tuple slot of function type, and a call whose callee is an expression.*
   A tuple whose element is a `Fun(...) -> R` value -- `let t = (add1, dbl);
