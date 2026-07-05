@@ -137,6 +137,13 @@ class _LocalsCollectionMixin:
         # canonical-ABI indirect return; drives the ``$_ret_area``
         # scratch local declaration.
         has_indirect_cap_call = False
+        # WASI Net operator grant (--allow-host): a DYNAMIC (non-literal)
+        # net.get / net.post URL under an operator grant compiles to the
+        # runtime-extract call site, which needs three i32 scratch locals
+        # ($_url_ptr / $_url_len / $_url_buf). Only tripped when the grant
+        # is active (``self._net_operator_allow``); without a grant the
+        # call site fail-closes and never references them.
+        has_dynamic_net_url = False
         # GAP-2b (2026-06-21): ``cap.allows(arg)`` queries route
         # through the ``$<Cap>_allows`` host import now, so they need
         # no ``$_atten_*`` scratch locals (the old guest-side inline
@@ -180,6 +187,7 @@ class _LocalsCollectionMixin:
             nonlocal has_int_overflow_check
             nonlocal cur_for_depth, max_for_depth
             nonlocal has_indirect_cap_call
+            nonlocal has_dynamic_net_url
             nonlocal has_list_index_bounds
             nonlocal has_map_pointer_key
             nonlocal has_multi_impl_dispatch
@@ -485,6 +493,16 @@ class _LocalsCollectionMixin:
                         in _CANONICAL_INDIRECT_RETURN
                     ):
                         has_indirect_cap_call = True
+                    # Dynamic Net URL under an operator --allow-host grant:
+                    # a non-literal first arg to net.get / net.post reaches
+                    # the runtime-extract call site.
+                    if (getattr(self, "_net_operator_allow", False)
+                            and instr.cap_used == "Net"
+                            and instr.method in ("get", "post")
+                            and instr.args
+                            and not (instr.args[0].kind == "lit_str"
+                                     and isinstance(instr.args[0].literal, str))):
+                        has_dynamic_net_url = True
                     # GAP-2b (2026-06-21): ``cap.allows(arg)`` queries
                     # route through the ``$<Cap>_allows`` host import,
                     # so they need no ``$_atten_*`` scratch locals; the
@@ -915,6 +933,13 @@ class _LocalsCollectionMixin:
             # area; the materialiser reads flat fields from it. One
             # local serves every call site (calls do not overlap).
             out["_ret_area"] = "i32"
+        if has_dynamic_net_url:
+            # WASI Net --allow-host dynamic call site: the runtime URL
+            # string pointer / length, and the base of the combined
+            # out-struct(28) + scratch buffer $alloc'd for the extractor.
+            out["_url_ptr"] = "i32"
+            out["_url_len"] = "i32"
+            out["_url_buf"] = "i32"
         if has_int_overflow_check:
             # Audit fix C2: the overflow-detecting +/-/* path stashes
             # both operands and the candidate result in three

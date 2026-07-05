@@ -133,7 +133,8 @@ def build_cyclonedx(
     # ``capa:operator_declared_grant:preopen`` property per granted dir.
     _grants = inner.get("operator_declared_grants") or {}
     _preopens = _grants.get("preopens") or []
-    if _preopens:
+    _allow_hosts = _grants.get("allow_hosts") or []
+    if _preopens or _allow_hosts:
         metadata_properties.append({
             "name": "capa:operator_declared_grants:trust_level",
             "value": str(_grants.get("trust_level", "operator-declared")),
@@ -145,6 +146,14 @@ def build_cyclonedx(
                     f"{_pre.get('host_dir', '')}"
                     f" [{_pre.get('permission', 'rw')}]"
                 ),
+            })
+        # One ``capa:operator_declared_grant:allow-host`` property per
+        # operator-granted Net host (--allow-host), Level-2 authority
+        # distinct from the compiler-derived surface below.
+        for _nh in _allow_hosts:
+            metadata_properties.append({
+                "name": "capa:operator_declared_grant:allow-host",
+                "value": str(_nh.get("host", "")),
             })
 
     # WASI Layer 1: surface the COMPILER-DERIVED, program-PROVEN argv ->

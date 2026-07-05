@@ -32,12 +32,15 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
+from .._net_host import strip_trailing_dot
+
 
 def split_net_url(url: str) -> tuple[str, bool, str, str]:
     """Split a literal URL into ``(host, is_https, authority,
     path_with_query)``.
 
-    ``host`` is lowercased and port-stripped (the ceiling key);
+    ``host`` is lowercased, port-stripped, and trailing-dot normalized
+    (the ceiling key, agreeing with the ``--allow-host`` grant);
     ``authority`` keeps the explicit port when present; ``path_with_query``
     is ``path`` + ``?query`` (fragment dropped, empty path -> ``/``).
     An unparseable URL yields ``("", False, "", "/")`` so the gate denies
@@ -47,7 +50,7 @@ def split_net_url(url: str) -> tuple[str, bool, str, str]:
         parts = urlsplit(url)
     except ValueError:
         return ("", False, "", "/")
-    host = (parts.hostname or "").lower()
+    host = strip_trailing_dot((parts.hostname or "").lower())
     is_https = (parts.scheme or "").lower() == "https"
     # Authority: host:port when an explicit port is present, else host.
     if parts.port is not None:

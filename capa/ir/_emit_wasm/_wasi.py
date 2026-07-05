@@ -442,10 +442,21 @@ class _WasiEmissionMixin:
         # call-site emitter is RETAINED as defence-in-depth but is no longer
         # the normal path for a dynamic url. (Env stays at Level 2
         # inherit_env and is intentionally NOT aligned here.)
+        # WASI Net operator grant (--allow-host, 2026-07-05): when the
+        # operator declared ``--allow-host <host>`` (``self._net_operator_allow``),
+        # the granted hosts are UNIONED into the guest-side host ceiling
+        # (``$Net_host_allowed``), so a dynamic URL whose host is granted is
+        # reachable at runtime. The rejection is SUPPRESSED -- the operator
+        # has explicitly granted the network authority the compiler could not
+        # derive, a LEVEL-2 operator-DECLARED grant (recorded in the SBOM,
+        # distinct from the derived surface). This mirrors the Fs
+        # ``not self._wasi_dynamic_fs`` suppression above. Without
+        # ``--allow-host`` the rejection stands exactly as before.
         if any(
             cap == "Net" and method in ("get", "post")
             for cap, method in self._used_caps
-        ) and self._net_ceiling is not None and not self._net_ceiling.closed:
+        ) and self._net_ceiling is not None and not self._net_ceiling.closed \
+                and not self._net_operator_allow:
             raise WasmEmissionError(
                 "Net in WASI mode requires every URL passed to get/post to "
                 "be a string literal so the allowed-host ceiling can be "
@@ -453,7 +464,10 @@ class _WasiEmissionMixin:
                 "parameter, interpolated or computed value) to a Net "
                 "operation, so no host ceiling can be derived (fail-closed)."
                 + self._path_arg_hint("Net")
-                + " Use the default capa:host backend (drop --wasi)."
+                + " Run with --allow-host <host> to grant the component "
+                "network authority to reach that host (the operator-declared "
+                "Net grant, the Net analogue of --preopen), or use the "
+                "default capa:host backend (drop --wasi)."
             )
 
     def _path_arg_hint(self, cap: str) -> str:
@@ -1205,6 +1219,13 @@ class _WasiEmissionMixin:
         # is used; emit each wrapper on its own touch-point.
         if ("Net", "get") in used or ("Net", "post") in used:
             self._emit_wasi_net_host_allowed_helper()
+            # WASI Net operator grant (--allow-host): the RUNTIME URL
+            # extractor that unblocks a dynamic (argv-derived) net.get /
+            # net.post URL. Emitted only when a grant is active; without a
+            # grant the dynamic call site fail-closes and never calls it.
+            if self._net_operator_allow:
+                self._emit_wasi_is_url_ws_helper()
+                self._emit_wasi_net_url_extract_helper()
         # Net fine attenuation (2026-06-29, Phase 3, Level 2 guest-side):
         # the SHARED exact-hostname allow-list membership helper backs the
         # ``allows`` body, the ``restrict_to`` intersection, AND the
@@ -4710,8 +4731,16 @@ class _WasiEmissionMixin:
         wrongly-admitted host is real outbound authority). An EMPTY ceiling
         (only a dynamic ``net.get``) emits a helper that always returns 0,
         denying every host."""
+        # The runtime-reachable host set is the UNION of the
+        # compiler-derived literal hosts (``NetCeiling.hosts``) and the
+        # operator-granted hosts (``--allow-host``,
+        # ``self._net_operator_allow_hosts``), both already normalized to
+        # the same key by ``capa.ir._net_host``. The fine ``restrict_to``
+        # gate (``$Net_handle_allows``) still layers ON TOP of this union,
+        # so a granted host can still be narrowed away at runtime.
         ceiling = self._net_ceiling
-        hosts = sorted(ceiling.hosts) if ceiling is not None else []
+        ceiling_hosts = ceiling.hosts if ceiling is not None else frozenset()
+        hosts = sorted(ceiling_hosts | self._net_operator_allow_hosts)
         self._write(
             "(func $Net_host_allowed (param $host_ptr i32) "
             "(param $host_len i32) (result i32)"
@@ -5813,3 +5842,305 @@ class _WasiEmissionMixin:
         self._write("local.get $ret_area")
         self._write("i32.const 0")
         self._write("i32.store offset=16")
+
+    # ----- Net dynamic-URL runtime extractor (--allow-host) -------
+
+    def _emit_wasi_is_url_ws_helper(self) -> None:
+        """``$is_url_ws (c) -> i32`` -- 1 iff ``c`` is an ASCII whitespace
+        byte the runtime URL extractor trims (space / tab / LF / CR), the
+        exact set :data:`capa.ir._net_host._URL_TRIM` strips on the Python
+        reference side."""
+        self._write(
+            "(func $is_url_ws (param $c i32) (result i32)\n"
+            "  (i32.or\n"
+            "    (i32.or (i32.eq (local.get $c) (i32.const 9))\n"
+            "            (i32.eq (local.get $c) (i32.const 10)))\n"
+            "    (i32.or (i32.eq (local.get $c) (i32.const 13))\n"
+            "            (i32.eq (local.get $c) (i32.const 32)))))"
+        )
+
+    def _emit_wasi_net_url_extract_helper(self) -> None:
+        """``$ascii_lc`` + ``$Net_url_extract`` -- the guest-side RUNTIME URL
+        extractor that unblocks a DYNAMIC (argv-derived / computed) Net URL
+        under an operator ``--allow-host`` grant.
+
+        ``$Net_url_extract (url_ptr, url_len, scratch, out) -> i32`` parses a
+        runtime URL string into ``(host, is_https, authority, path)``, writing
+        the derived bytes sequentially into the caller's ``scratch`` buffer
+        and the ptr/len results into the 28-byte ``out`` struct
+        (host_ptr@0, host_len@4, is_https@8, auth_ptr@12, auth_len@16,
+        path_ptr@20, path_len@24). Returns 1 to PROCEED (the caller then gates
+        ``host`` through ``$Net_host_allowed`` and builds the request from
+        ``authority`` / ``path`` / ``is_https``) or 0 to FAIL-CLOSED (deny).
+
+        This is the WAT realization of
+        :func:`capa.ir._net_host.extract_url_parts` (its executable spec),
+        validated byte-for-byte against it by the differential WAT-vs-Python
+        harness over an adversarial corpus. The SECURITY CONTRACT:
+        ``authority`` is BUILT FROM the same ``host`` this returns (host,
+        optionally ``:port``), so the host verified against the allowlist is
+        exactly the host the wasi:http request contacts -- there is no second
+        parser (wasi:http receives this authority, never a re-parsed raw URL).
+        It FAILS CLOSED (returns 0) on: no ``://``; a scheme other than
+        http/https; a bracketed IPv6 authority; a non-numeric port; or an
+        empty host -- denying rather than guessing.
+
+        ``scratch`` must hold at least ``3 * url_len + 8`` bytes (host +
+        authority + path are each <= url_len + 1); the caller allocates it.
+
+        DNS-rebinding LIMITATION (honest residual): this is a hostname
+        allowlist. wasi:http is host-side allow-all, so a granted host that
+        resolves to an internal IP at connect time is NOT filtered here. See
+        ``capa.ir._net_host`` and ``docs/design/wasi_mode.md``."""
+        # ASCII lowercase: 'A'..'Z' -> +32, else unchanged.
+        self._write(
+            "(func $ascii_lc (param $c i32) (result i32)\n"
+            "  (select\n"
+            "    (i32.add (local.get $c) (i32.const 32))\n"
+            "    (local.get $c)\n"
+            "    (i32.and\n"
+            "      (i32.ge_u (local.get $c) (i32.const 65))\n"
+            "      (i32.le_u (local.get $c) (i32.const 90)))))"
+        )
+        body = r"""
+(func $Net_url_extract
+    (param $url_ptr i32) (param $url_len i32)
+    (param $scratch i32) (param $out i32) (result i32)
+  (local $b i32) (local $e i32) (local $i i32) (local $c i32)
+  (local $scheme_end i32) (local $found i32) (local $rest i32)
+  (local $auth_end i32) (local $tail i32) (local $at i32)
+  (local $hs i32) (local $he i32) (local $ps i32) (local $pe i32)
+  (local $has_port i32) (local $cur i32) (local $host_ptr i32)
+  (local $host_len i32) (local $is_https i32) (local $fe i32)
+  (local $auth_ptr i32) (local $path_ptr i32)
+  ;; --- trim leading/trailing ASCII whitespace (9,10,13,32) ---
+  (local.set $b (local.get $url_ptr))
+  (local.set $e (i32.add (local.get $url_ptr) (local.get $url_len)))
+  (block $tl_done (loop $tl
+    (br_if $tl_done (i32.ge_u (local.get $b) (local.get $e)))
+    (local.set $c (i32.load8_u (local.get $b)))
+    (br_if $tl_done (i32.eqz (call $is_url_ws (local.get $c))))
+    (local.set $b (i32.add (local.get $b) (i32.const 1)))
+    (br $tl)))
+  (block $tr_done (loop $tr
+    (br_if $tr_done (i32.ge_u (local.get $b) (local.get $e)))
+    (local.set $c (i32.load8_u (i32.sub (local.get $e) (i32.const 1))))
+    (br_if $tr_done (i32.eqz (call $is_url_ws (local.get $c))))
+    (local.set $e (i32.sub (local.get $e) (i32.const 1)))
+    (br $tr)))
+  (if (i32.ge_u (local.get $b) (local.get $e)) (then (return (i32.const 0))))
+  ;; --- find "://" ---
+  (local.set $found (i32.const 0))
+  (local.set $i (local.get $b))
+  (block $sc_done (loop $sc
+    (br_if $sc_done
+      (i32.gt_u (i32.add (local.get $i) (i32.const 3)) (local.get $e)))
+    (if (i32.and
+          (i32.eq (i32.load8_u (local.get $i)) (i32.const 58))
+          (i32.and
+            (i32.eq (i32.load8_u (i32.add (local.get $i) (i32.const 1)))
+                    (i32.const 47))
+            (i32.eq (i32.load8_u (i32.add (local.get $i) (i32.const 2)))
+                    (i32.const 47))))
+      (then
+        (local.set $scheme_end (local.get $i))
+        (local.set $found (i32.const 1))
+        (br $sc_done)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $sc)))
+  (if (i32.eqz (local.get $found)) (then (return (i32.const 0))))
+  ;; --- scheme: http (is_https=0) / https (is_https=1), else deny ---
+  (if (i32.and
+        (i32.eq (i32.sub (local.get $scheme_end) (local.get $b))
+                (i32.const 5))
+        (i32.and
+          (i32.eq (call $ascii_lc (i32.load8_u (local.get $b)))
+                  (i32.const 104))
+          (i32.and
+            (i32.eq (call $ascii_lc
+                      (i32.load8_u (i32.add (local.get $b) (i32.const 1))))
+                    (i32.const 116))
+            (i32.and
+              (i32.eq (call $ascii_lc
+                        (i32.load8_u (i32.add (local.get $b) (i32.const 2))))
+                      (i32.const 116))
+              (i32.and
+                (i32.eq (call $ascii_lc
+                          (i32.load8_u (i32.add (local.get $b) (i32.const 3))))
+                        (i32.const 112))
+                (i32.eq (call $ascii_lc
+                          (i32.load8_u (i32.add (local.get $b) (i32.const 4))))
+                        (i32.const 115)))))))
+    (then (local.set $is_https (i32.const 1)))
+    (else
+      (if (i32.and
+            (i32.eq (i32.sub (local.get $scheme_end) (local.get $b))
+                    (i32.const 4))
+            (i32.and
+              (i32.eq (call $ascii_lc (i32.load8_u (local.get $b)))
+                      (i32.const 104))
+              (i32.and
+                (i32.eq (call $ascii_lc
+                          (i32.load8_u (i32.add (local.get $b) (i32.const 1))))
+                        (i32.const 116))
+                (i32.and
+                  (i32.eq (call $ascii_lc
+                            (i32.load8_u (i32.add (local.get $b) (i32.const 2))))
+                          (i32.const 116))
+                  (i32.eq (call $ascii_lc
+                            (i32.load8_u (i32.add (local.get $b) (i32.const 3))))
+                          (i32.const 112))))))
+        (then (local.set $is_https (i32.const 0)))
+        (else (return (i32.const 0))))))
+  ;; --- authority region: [rest, auth_end) ends at first / ? # ---
+  (local.set $rest (i32.add (local.get $scheme_end) (i32.const 3)))
+  (local.set $auth_end (local.get $e))
+  (local.set $i (local.get $rest))
+  (block $ae_done (loop $ae
+    (br_if $ae_done (i32.ge_u (local.get $i) (local.get $e)))
+    (local.set $c (i32.load8_u (local.get $i)))
+    (if (i32.or
+          (i32.eq (local.get $c) (i32.const 47))
+          (i32.or (i32.eq (local.get $c) (i32.const 63))
+                  (i32.eq (local.get $c) (i32.const 35))))
+      (then (local.set $auth_end (local.get $i)) (br $ae_done)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $ae)))
+  (local.set $tail (local.get $auth_end))
+  ;; --- userinfo: strip up to the LAST '@' in [rest, auth_end) ---
+  (local.set $at (i32.const -1))
+  (local.set $i (local.get $rest))
+  (block $ui_done (loop $ui
+    (br_if $ui_done (i32.ge_u (local.get $i) (local.get $auth_end)))
+    (if (i32.eq (i32.load8_u (local.get $i)) (i32.const 64))
+      (then (local.set $at (local.get $i))))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $ui)))
+  (local.set $hs
+    (if (result i32) (i32.ge_s (local.get $at) (i32.const 0))
+      (then (i32.add (local.get $at) (i32.const 1)))
+      (else (local.get $rest))))
+  ;; --- bracketed IPv6 -> deny ---
+  (local.set $i (local.get $hs))
+  (block $brk_done (loop $brk
+    (br_if $brk_done (i32.ge_u (local.get $i) (local.get $auth_end)))
+    (local.set $c (i32.load8_u (local.get $i)))
+    (if (i32.or (i32.eq (local.get $c) (i32.const 91))
+                (i32.eq (local.get $c) (i32.const 93)))
+      (then (return (i32.const 0))))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $brk)))
+  ;; --- port: first ':' in [hs, auth_end) ---
+  (local.set $he (local.get $auth_end))
+  (local.set $ps (local.get $auth_end))
+  (local.set $pe (local.get $auth_end))
+  (local.set $has_port (i32.const 0))
+  (local.set $i (local.get $hs))
+  (block $pt_done (loop $pt
+    (br_if $pt_done (i32.ge_u (local.get $i) (local.get $auth_end)))
+    (if (i32.eq (i32.load8_u (local.get $i)) (i32.const 58))
+      (then
+        (local.set $he (local.get $i))
+        (local.set $ps (i32.add (local.get $i) (i32.const 1)))
+        (local.set $pe (local.get $auth_end))
+        (local.set $has_port (i32.const 1))
+        (br $pt_done)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $pt)))
+  ;; an empty port (``host:``) is treated as NO port (matches urlsplit);
+  ;; a present port must be all digits, else deny.
+  (if (local.get $has_port)
+    (then
+      (if (i32.ge_u (local.get $ps) (local.get $pe))
+        (then (local.set $has_port (i32.const 0)))
+        (else
+          (local.set $i (local.get $ps))
+          (block $pv_done (loop $pv
+            (br_if $pv_done (i32.ge_u (local.get $i) (local.get $pe)))
+            (local.set $c (i32.load8_u (local.get $i)))
+            (if (i32.or (i32.lt_u (local.get $c) (i32.const 48))
+                        (i32.gt_u (local.get $c) (i32.const 57)))
+              (then (return (i32.const 0))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $pv)))))))
+  ;; --- build host into scratch (lowercased) ---
+  (local.set $cur (local.get $scratch))
+  (local.set $host_ptr (local.get $cur))
+  (local.set $i (local.get $hs))
+  (block $hb_done (loop $hb
+    (br_if $hb_done (i32.ge_u (local.get $i) (local.get $he)))
+    (i32.store8 (local.get $cur)
+      (call $ascii_lc (i32.load8_u (local.get $i))))
+    (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $hb)))
+  (local.set $host_len (i32.sub (local.get $cur) (local.get $host_ptr)))
+  ;; strip a single trailing dot
+  (if (i32.and (i32.gt_s (local.get $host_len) (i32.const 0))
+               (i32.eq (i32.load8_u (i32.sub (local.get $cur) (i32.const 1)))
+                       (i32.const 46)))
+    (then
+      (local.set $cur (i32.sub (local.get $cur) (i32.const 1)))
+      (local.set $host_len (i32.sub (local.get $host_len) (i32.const 1)))))
+  (if (i32.eqz (local.get $host_len)) (then (return (i32.const 0))))
+  ;; --- build authority into scratch (host [+ ':' port]) ---
+  (local.set $auth_ptr (local.get $cur))
+  (local.set $i (i32.const 0))
+  (block $ab_done (loop $ab
+    (br_if $ab_done (i32.ge_u (local.get $i) (local.get $host_len)))
+    (i32.store8 (local.get $cur)
+      (i32.load8_u (i32.add (local.get $host_ptr) (local.get $i))))
+    (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $ab)))
+  (if (local.get $has_port)
+    (then
+      (i32.store8 (local.get $cur) (i32.const 58))
+      (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+      (local.set $i (local.get $ps))
+      (block $pb_done (loop $pb
+        (br_if $pb_done (i32.ge_u (local.get $i) (local.get $pe)))
+        (i32.store8 (local.get $cur) (i32.load8_u (local.get $i)))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $pb)))))
+  ;; --- build path into scratch (drop #fragment; empty -> '/') ---
+  (local.set $path_ptr (local.get $cur))
+  (local.set $fe (local.get $e))
+  (local.set $i (local.get $tail))
+  (block $fg_done (loop $fg
+    (br_if $fg_done (i32.ge_u (local.get $i) (local.get $e)))
+    (if (i32.eq (i32.load8_u (local.get $i)) (i32.const 35))
+      (then (local.set $fe (local.get $i)) (br $fg_done)))
+    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+    (br $fg)))
+  (if (i32.ge_u (local.get $tail) (local.get $fe))
+    (then
+      (i32.store8 (local.get $cur) (i32.const 47))
+      (local.set $cur (i32.add (local.get $cur) (i32.const 1))))
+    (else
+      (if (i32.eq (i32.load8_u (local.get $tail)) (i32.const 63))
+        (then
+          (i32.store8 (local.get $cur) (i32.const 47))
+          (local.set $cur (i32.add (local.get $cur) (i32.const 1)))))
+      (local.set $i (local.get $tail))
+      (block $cp_done (loop $cp
+        (br_if $cp_done (i32.ge_u (local.get $i) (local.get $fe)))
+        (i32.store8 (local.get $cur) (i32.load8_u (local.get $i)))
+        (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $cp)))))
+  ;; --- write the out struct + proceed ---
+  (i32.store offset=0 (local.get $out) (local.get $host_ptr))
+  (i32.store offset=4 (local.get $out) (local.get $host_len))
+  (i32.store offset=8 (local.get $out) (local.get $is_https))
+  (i32.store offset=12 (local.get $out) (local.get $auth_ptr))
+  (i32.store offset=16 (local.get $out)
+    (i32.sub (local.get $path_ptr) (local.get $auth_ptr)))
+  (i32.store offset=20 (local.get $out) (local.get $path_ptr))
+  (i32.store offset=24 (local.get $out)
+    (i32.sub (local.get $cur) (local.get $path_ptr)))
+  (i32.const 1))
+"""
+        for line in body.strip("\n").split("\n"):
+            self._write(line)

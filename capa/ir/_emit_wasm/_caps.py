@@ -1185,9 +1185,16 @@ class _CapDispatchMixin:
             )
         arg = instr.args[0]
         if arg.kind != "lit_str" or not isinstance(arg.literal, str):
-            # Dynamic url: fail-closed. Allocate the 20-byte ret area,
-            # write Err(IoError) directly, and lift it -- no $Net_get call,
-            # so no request is built and no host is reached. The Err
+            # Dynamic url WITH an operator --allow-host grant: extract the
+            # host at RUNTIME and gate it through $Net_host_allowed (the
+            # union ceiling + grant), building the request only for a
+            # granted host. See _emit_wasi_net_dynamic_request.
+            if self._net_operator_allow:
+                self._emit_wasi_net_dynamic_request(instr, is_post=False)
+                return
+            # Dynamic url, NO grant: fail-closed. Allocate the 20-byte ret
+            # area, write Err(IoError) directly, and lift it -- no $Net_get
+            # call, so no request is built and no host is reached. The Err
             # message is the fixed ``HTTP GET failed`` interned up front.
             msg_off, msg_len = self._intern_string("HTTP GET failed")
             self._write("i32.const 20")
@@ -1262,11 +1269,16 @@ class _CapDispatchMixin:
             )
         arg = instr.args[0]
         if arg.kind != "lit_str" or not isinstance(arg.literal, str):
-            # Dynamic url: fail-closed. Allocate the 20-byte ret area, write
-            # Err(IoError) directly, and lift it -- no $Net_post call, so no
-            # request is built and no host is reached (the body is not
-            # touched either). The Err message is the fixed ``HTTP POST
-            # failed`` interned up front.
+            # Dynamic url WITH an operator --allow-host grant: runtime
+            # extract + host gate, then build the POST for a granted host.
+            if self._net_operator_allow:
+                self._emit_wasi_net_dynamic_request(instr, is_post=True)
+                return
+            # Dynamic url, NO grant: fail-closed. Allocate the 20-byte ret
+            # area, write Err(IoError) directly, and lift it -- no $Net_post
+            # call, so no request is built and no host is reached (the body
+            # is not touched either). The Err message is the fixed ``HTTP
+            # POST failed`` interned up front.
             msg_off, msg_len = self._intern_string("HTTP POST failed")
             self._write("i32.const 20")
             self._write("call $alloc")
@@ -1310,6 +1322,119 @@ class _CapDispatchMixin:
         self._push_string_arg(instr.args[1])
         self._write("local.get $_ret_area")
         self._write("call $Net_post")
+        self._emit_cap_indirect_materialise(
+            "result_string_io_error", instr.dst,
+        )
+
+    def _emit_wasi_net_dynamic_request(
+        self, instr: MethodCall, *, is_post: bool,
+    ) -> None:
+        """Emit a DYNAMIC (non-literal) ``net.get`` / ``net.post`` under an
+        operator ``--allow-host`` grant (2026-07-05).
+
+        Without a grant a dynamic URL fail-closes at the call site (no
+        request is built). WITH a grant, the URL is a runtime string, so the
+        host cannot be resolved at compile time; instead the guest:
+
+        1. captures the runtime URL ``(ptr, len)``;
+        2. allocates a combined ``out``-struct(28) + scratch buffer and runs
+           ``$Net_url_extract`` (the WAT extractor, validated byte-for-byte
+           against ``capa.ir._net_host.extract_url_parts``) to derive
+           ``(host, is_https, authority, path)`` -- or fail-closed (rc 0);
+        3. on rc 0, materialises ``Err(IoError)`` directly (no request);
+        4. on rc 1, calls the SAME ``$Net_get`` / ``$Net_post`` wrapper the
+           literal path uses, which gates ``host`` against
+           ``$Net_host_allowed`` (the union ceiling + grant) AND the fine
+           ``restrict_to`` allow-list before building the request.
+
+        SECURITY: the ``authority`` handed to wasi:http is BUILT FROM the same
+        ``host`` the wrapper verifies (the extractor guarantees the authority
+        begins with the host), so the host gated is exactly the host
+        contacted -- there is no re-parse of a raw URL anywhere. Everything
+        not granted stays fail-closed."""
+        msg = "HTTP POST failed" if is_post else "HTTP GET failed"
+        msg_off, msg_len = self._intern_string(msg)
+        arg = instr.args[0]
+        # (1) capture the runtime URL (ptr, len). _push_string_arg leaves
+        # (ptr, len) on the stack (len on top).
+        self._push_string_arg(arg)
+        self._write("local.set $_url_len")
+        self._write("local.set $_url_ptr")
+        # (2) alloc out(28) + scratch(3*len + 8) = 3*len + 36 bytes.
+        self._write("local.get $_url_len")
+        self._write("i32.const 3")
+        self._write("i32.mul")
+        self._write("i32.const 36")
+        self._write("i32.add")
+        self._write("call $alloc")
+        self._write("local.set $_url_buf")
+        # (3) extract(url_ptr, url_len, scratch = buf+28, out = buf).
+        self._write("local.get $_url_ptr")
+        self._write("local.get $_url_len")
+        self._write("local.get $_url_buf")
+        self._write("i32.const 28")
+        self._write("i32.add")
+        self._write("local.get $_url_buf")
+        self._write("call $Net_url_extract")
+        # rc on stack: 1 -> proceed, 0 -> fail-closed.
+        self._write("if")
+        self._indent += 1
+        # ret area for the wrapper's canonical-ABI result.
+        self._write("i32.const 20")
+        self._write("call $alloc")
+        self._write("local.set $_ret_area")
+        self._push_net_handle(instr.receiver)
+        # host (out+0, out+4).
+        self._write("local.get $_url_buf")
+        self._write("i32.load offset=0")
+        self._write("local.get $_url_buf")
+        self._write("i32.load offset=4")
+        # scheme (out+8).
+        self._write("local.get $_url_buf")
+        self._write("i32.load offset=8")
+        # authority (out+12, out+16).
+        self._write("local.get $_url_buf")
+        self._write("i32.load offset=12")
+        self._write("local.get $_url_buf")
+        self._write("i32.load offset=16")
+        # path (out+20, out+24).
+        self._write("local.get $_url_buf")
+        self._write("i32.load offset=20")
+        self._write("local.get $_url_buf")
+        self._write("i32.load offset=24")
+        if is_post:
+            self._push_string_arg(instr.args[1])
+            self._write("local.get $_ret_area")
+            self._write("call $Net_post")
+        else:
+            self._write("local.get $_ret_area")
+            self._write("call $Net_get")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # Fail-closed: allocate the ret area and write Err(IoError) directly
+        # into $_ret_area (the call-site local; $Net_url_extract denied the
+        # URL, so no request is built and no host is reached).
+        self._write("i32.const 20")
+        self._write("call $alloc")
+        self._write("local.set $_ret_area")
+        self._write("local.get $_ret_area")
+        self._write("i32.const 1")
+        self._write("i32.store offset=0")
+        self._write("local.get $_ret_area")
+        self._write(f"i32.const {msg_off}")
+        self._write("i32.store offset=4")
+        self._write("local.get $_ret_area")
+        self._write(f"i32.const {msg_len}")
+        self._write("i32.store offset=8")
+        self._write("local.get $_ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=12")
+        self._write("local.get $_ret_area")
+        self._write("i32.const 0")
+        self._write("i32.store offset=16")
+        self._indent -= 1
+        self._write("end")
         self._emit_cap_indirect_materialise(
             "result_string_io_error", instr.dst,
         )

@@ -156,6 +156,7 @@ def emit_wat(
     manifest_json: str | None = None,
     wasi: bool = False,
     wasi_dynamic_fs: bool = False,
+    net_operator_allow_hosts: "frozenset[str] | None" = None,
 ) -> str:
     """Emit WebAssembly text format (WAT) from a CIR module.
 
@@ -183,6 +184,7 @@ def emit_wat(
         manifest_json=manifest_json,
         wasi=wasi,
         wasi_dynamic_fs=wasi_dynamic_fs,
+        net_operator_allow_hosts=net_operator_allow_hosts,
     ).emit(ir_module)
 
 
@@ -195,6 +197,7 @@ def compile_wat(
     embed_manifest: bool = True,
     wasi: bool = False,
     wasi_dynamic_fs: bool = False,
+    net_operator_allow_hosts: "frozenset[str] | None" = None,
 ) -> str:
     """End-to-end AST -> CIR -> WAT convenience helper. Mirrors
     :func:`compile` but targets the Wasm Component Model text form
@@ -272,6 +275,7 @@ def compile_wat(
         manifest_json=manifest_json,
         wasi=wasi,
         wasi_dynamic_fs=wasi_dynamic_fs,
+        net_operator_allow_hosts=net_operator_allow_hosts,
     )
 
 
@@ -375,6 +379,7 @@ def compile_wasm(
     embed_manifest: bool = True,
     wasi: bool = False,
     wasi_dynamic_fs: bool = False,
+    net_operator_allow_hosts: "frozenset[str] | None" = None,
 ) -> bytes:
     """End-to-end AST -> CIR -> WAT -> binary Wasm assembly.
 
@@ -397,6 +402,7 @@ def compile_wasm(
         embed_manifest=embed_manifest,
         wasi=wasi,
         wasi_dynamic_fs=wasi_dynamic_fs,
+        net_operator_allow_hosts=net_operator_allow_hosts,
     )
     proc = subprocess.run(
         [wasm_tools_path, "parse", "-"],

@@ -1138,6 +1138,52 @@ Finer attenuation of the request body (e.g. setting an explicit
 `content-length` header to align the server's framing observation) is a
 later refinement.
 
+### `--allow-host`: the operator Net grant (dynamic URLs)
+
+A DYNAMIC (argv-derived / computed) URL to `net.get` / `net.post` cannot
+have its host resolved at compile time, so the static ceiling cannot be
+materialised and the program is **rejected fail-closed** by default (the
+symmetric analogue of a dynamic Fs path). `--allow-host <host>` is the
+operator's escape, the Net analogue of `--preopen`: it grants the component
+authority to reach `<host>` (repeatable; the allowlist is a set), which
+suppresses the rejection and **unions the granted hosts into the guest-side
+ceiling** `$Net_host_allowed` checks. It is `--wasi`-only and recorded in
+the SBOM as an operator-declared grant
+(`capa:operator_declared_grant:allow-host`), distinct from the
+compiler-derived surface.
+
+**Runtime host extraction (the security core).** Because the URL is now a
+runtime string, the guest extracts its host at runtime via `$Net_url_extract`
+(the WAT realization of `capa.ir._net_host.extract_url_parts`), then runs the
+SAME two gates the literal path does (`$Net_host_allowed`, then the fine
+`$Net_handle_allows` restrict_to gate), building the request only for a host
+that passes both. Everything else stays `Err(IoError)`, fail-closed.
+
+The extractor is validated **byte-for-byte against its Python reference** by
+a differential WAT-vs-Python harness (`tests/test_allow_host_wat_diff.py`)
+over an adversarial corpus (userinfo `@`, fragment `#`, uppercase, trailing
+dot, IPv6, bad port, non-http schemes, whitespace). Its **security
+contract**: the `authority` handed to wasi:http is BUILT FROM the same host
+it verifies (host `[+ ":" port]`), so **the host gated is exactly the host
+contacted** -- wasi:http receives that authority, never a re-parsed raw URL,
+so no second parser can disagree. It **fails closed** (denies) rather than
+guess on: no `://`; a scheme other than http/https; a bracketed IPv6
+authority; a non-numeric port; or an empty host.
+
+**SSRF posture.** A redirect from an allowed host to an internal one is
+already refused (the guest treats any non-2xx as `Err`, see below).
+Granting an internal / link-local / loopback / private IP prints a warning
+but is allowed (the operator may have a reason). The one **honest residual
+limitation**: this is a **hostname** allowlist, and wasi:http is host-side
+allow-all, so Capa **cannot defend against DNS rebinding** -- a granted
+hostname that resolves to an internal IP at connect time is not filtered at
+this layer. `docs/design/wasi_mode.md` and `capa.ir._net_host` document this.
+
+`tests/test_allow_host_oracle.py` (the normalization + reference oracle),
+`tests/test_allow_host_wat_diff.py` (the differential extractor oracle), and
+`tests/test_allow_host_e2e.py` (runtime reachability + deny-by-default +
+bypass vectors + restrict_to-on-top over a local wasi:http server) cover it.
+
 Excluded (rejected with a clear compile-time error so a program never
 silently miscompiles):
 

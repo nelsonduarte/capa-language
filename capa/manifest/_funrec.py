@@ -232,35 +232,40 @@ def _demangle_type_text(s: str) -> str:
 
 def build_operator_declared_grants(
     preopens: Optional[list[dict[str, Any]]] = None,
+    *,
+    net_hosts: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Build the ``operator_declared_grants`` manifest block (WASI Fs
-    layer b1, 2026-06-30).
+    layer b1, 2026-06-30; Net ``--allow-host``, 2026-07-05).
 
     This block records authority the OPERATOR declared at build / run
-    time (e.g. ``--preopen <dir>``), as DISTINCT from the
-    compiler-DERIVED capability surface that the rest of the manifest
-    proves. A regulator MUST read it as Level-2 operator-DECLARED
+    time (e.g. ``--preopen <dir>``, ``--allow-host <host>``), as DISTINCT
+    from the compiler-DERIVED capability surface that the rest of the
+    manifest proves. A regulator MUST read it as Level-2 operator-DECLARED
     authority, NOT as program-proven: the compiler could not derive
     these grants (that is precisely why the operator had to declare
     them), so they are an explicit trust the operator placed in the
     deployment, not a property the type system established.
 
     ``preopens`` is a list of ``{"host_dir": str, "permission":
-    "ro"|"rw", "kind": "fs"}`` entries (or None / empty when no operator
-    grant was declared). The block is always present so a consumer can
-    rely on its shape; an empty ``preopens`` means "no operator grant
-    was declared"."""
+    "ro"|"rw", "kind": "fs"}`` entries; ``net_hosts`` is a list of
+    ``{"kind": "net", "host": str}`` entries (each an operator-granted Net
+    host from ``--allow-host``). Either may be None / empty when no grant
+    of that kind was declared. The block is always present so a consumer
+    can rely on its shape; empty lists mean "no operator grant was
+    declared"."""
     return {
         # The honest label a regulator-facing consumer keys on: this is
         # NOT derived/proven authority.
         "trust_level": "operator-declared",
         "note": (
             "Authority declared by the operator at build/run time "
-            "(e.g. --preopen). DISTINCT from the compiler-derived, "
-            "program-proven capability surface; the compiler could not "
-            "derive these grants."
+            "(e.g. --preopen, --allow-host). DISTINCT from the "
+            "compiler-derived, program-proven capability surface; the "
+            "compiler could not derive these grants."
         ),
         "preopens": list(preopens or []),
+        "allow_hosts": list(net_hosts or []),
     }
 
 
