@@ -58,6 +58,16 @@ ADVERSARIAL_URL_CORPUS = [
     "http://user@@host/",                          # double '@'
 ]
 
+# The subset whose ``urlsplit`` (and thus ``split_net_url``) parse is STABLE
+# across every supported Python version. ``urlsplit``'s handling of a
+# BACKSLASH and of surrounding WHITESPACE changed between 3.10 and later, so
+# those entries are excluded from the ``split_net_url`` cross-check (the
+# extractor is deterministic and version-independent; the WAT differential
+# harness and the explicit expected-value cases below pin them instead).
+_SPLIT_STABLE_URLS = [
+    u for u in ADVERSARIAL_URL_CORPUS if "\\" not in u and u == u.strip()
+]
+
 
 class ExtractUrlPartsReference(unittest.TestCase):
     """Phase B0 part 1: the runtime extractor reference (``extract_url_parts``)
@@ -66,7 +76,7 @@ class ExtractUrlPartsReference(unittest.TestCase):
     contact (authority prefix == verified host)."""
 
     def test_admitted_host_matches_literal_splitter(self):
-        for u in ADVERSARIAL_URL_CORPUS:
+        for u in _SPLIT_STABLE_URLS:
             host, is_https, authority, path = extract_url_parts(u)
             if host == "":
                 continue  # fail-closed: deny is always safe
@@ -98,7 +108,7 @@ class ExtractUrlPartsReference(unittest.TestCase):
         # the URL's real target (per the literal splitter) is a different
         # host -- that would be the SSRF the whole design prevents.
         granted = {"api.example.com"}
-        for u in ADVERSARIAL_URL_CORPUS:
+        for u in _SPLIT_STABLE_URLS:
             host, *_ = extract_url_parts(u)
             if host in granted:
                 # If admitted as the granted host, the literal splitter must
@@ -139,6 +149,21 @@ class ExtractUrlPartsReference(unittest.TestCase):
         self.assertEqual(
             extract_url_parts("http://user:pw@api.example.com:443/p"),
             ("api.example.com", False, "api.example.com:443", "/p"),
+        )
+        # The version-fragile entries (excluded from the split_net_url
+        # cross-check) pinned explicitly: the extractor is deterministic, so
+        # these hold on every Python version regardless of urlsplit.
+        self.assertEqual(
+            extract_url_parts("http://a\\@b/"),
+            ("b", False, "b", "/"),
+        )
+        self.assertEqual(
+            extract_url_parts("   http://api.example.com/x   "),
+            ("api.example.com", False, "api.example.com", "/x"),
+        )
+        self.assertEqual(
+            extract_url_parts("\thttp://host/\n"),
+            ("host", False, "host", "/"),
         )
 
 
