@@ -251,22 +251,8 @@ class _EqualityMixin:
         inner = ty[lt + 1:-1].strip()
         if not inner:
             return []
-        out: list[str] = []
-        buf = ""
-        depth = 0
-        for ch in inner:
-            if ch in "(<":
-                depth += 1
-            elif ch in ")>":
-                depth -= 1
-            if ch == "," and depth == 0:
-                out.append(buf.strip())
-                buf = ""
-                continue
-            buf += ch
-        if buf.strip():
-            out.append(buf.strip())
-        return out
+        from .._lower_helpers import _split_top_level
+        return _split_top_level(inner)
 
     def _resolve_sum_payload_ty(
         self, ty: str, variant: str, payload_idx: int,

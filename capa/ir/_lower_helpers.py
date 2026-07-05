@@ -77,31 +77,48 @@ def _type_name(te: object) -> str:
     return _ty_to_str(te)
 
 
+def _split_top_level(s: str) -> list[str]:
+    """Split ``s`` on commas that sit at bracket-depth zero, treating
+    ``(`` / ``<`` as openers and ``)`` / ``>`` as closers. The ``>``
+    in a function-type arrow ``->`` is NOT a closing bracket, so a
+    tuple / generic argument that is itself a ``Fun(...) -> R`` value
+    splits correctly: ``"Fun(Int) -> Int, Fun(Int) -> Int"`` yields
+    two elements, not one. This is the shared primitive behind every
+    top-level type-string comma split (tuple elements, Fun params,
+    Map<K, V> / Result<T, E> / generic args)."""
+    out: list[str] = []
+    buf = ""
+    depth = 0
+    prev = ""
+    for ch in s:
+        if ch in "(<":
+            depth += 1
+        elif ch == ")" or (ch == ">" and prev != "-"):
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(buf.strip())
+            buf = ""
+            prev = ch
+            continue
+        buf += ch
+        prev = ch
+    if buf.strip():
+        out.append(buf.strip())
+    return out
+
+
 def _split_tuple_elem_types(ty: str) -> list[str]:
     """``(String, Int)`` -> ``['String', 'Int']``. Returns an empty
     list when ``ty`` isn't shaped like a parenthesised tuple, so
-    callers can fall back to per-element ``Unknown``."""
+    callers can fall back to per-element ``Unknown``. Arrow-aware via
+    ``_split_top_level`` so a tuple of ``Fun(...) -> R`` elements
+    splits at the right commas."""
     if not ty.startswith("(") or not ty.endswith(")"):
         return []
     inner = ty[1:-1].strip()
     if not inner:
         return []
-    out: list[str] = []
-    buf = ""
-    depth = 0
-    for ch in inner:
-        if ch in "(<":
-            depth += 1
-        elif ch in ")>":
-            depth -= 1
-        if ch == "," and depth == 0:
-            out.append(buf.strip())
-            buf = ""
-            continue
-        buf += ch
-    if buf.strip():
-        out.append(buf.strip())
-    return out
+    return _split_top_level(inner)
 
 
 def _split_top_level_comma(s: str) -> tuple[str, str]:
@@ -112,15 +129,19 @@ def _split_top_level_comma(s: str) -> tuple[str, str]:
     ``("(JsonValue, Int)", "String")``. Returns the whole string
     and an empty string if there is no comma at depth zero, which
     matches Result with a single generic arg (unusual but
-    possible)."""
+    possible). The ``>`` in a ``->`` arrow is not treated as a
+    bracket close, so a ``Fun(...) -> R`` component keeps its
+    commas grouped."""
     depth = 0
+    prev = ""
     for i, ch in enumerate(s):
         if ch in "<(":
             depth += 1
-        elif ch in ">)":
+        elif ch == ")" or (ch == ">" and prev != "-"):
             depth -= 1
         elif ch == "," and depth == 0:
             return s[:i].strip(), s[i + 1:].strip()
+        prev = ch
     return s.strip(), ""
 
 

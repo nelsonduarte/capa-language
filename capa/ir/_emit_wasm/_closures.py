@@ -1021,22 +1021,12 @@ class _ClosureEmissionMixin:
         else:
             ret_ty_str = ""
         # Each param is a Capa type; split on top-level commas.
+        # Arrow-aware so a higher-order param that is itself a
+        # ``Fun(...) -> R`` value does not split at the wrong comma.
         param_capa_tys: list[str] = []
         if params_str.strip():
-            buf = ""
-            d = 0
-            for ch in params_str:
-                if ch in "(<":
-                    d += 1
-                elif ch in ")>":
-                    d -= 1
-                if ch == "," and d == 0:
-                    param_capa_tys.append(buf.strip())
-                    buf = ""
-                    continue
-                buf += ch
-            if buf.strip():
-                param_capa_tys.append(buf.strip())
+            from .._lower_helpers import _split_top_level
+            param_capa_tys = _split_top_level(params_str)
         # Build wasm sig: env_ptr + each param + result.
         wasm_params = ["i32"]
         for pt in param_capa_tys:

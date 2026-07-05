@@ -11,6 +11,25 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *`Fun` values now work in two more positions on the Wasm backend: a
+  tuple slot of function type, and a call whose callee is an expression.*
+  A tuple whose element is a `Fun(...) -> R` value -- `let t = (add1, dbl);
+  let (f, g) = t; g(f(10))` -- failed at codegen with `Capa type
+  '... Fun(Int) -> Int' has no Wasm encoding yet`. The root cause was the
+  top-level comma splitters that parse tuple / generic type strings: they
+  counted the `>` in a `->` arrow as a closing bracket, so a tuple of Fun
+  elements never split into per-slot types and a whole `Fun(...) -> R`
+  fragment reached `_wasm_type`. All the splitters now share one arrow-aware
+  primitive, so a Fun element rides the same packed-i64 tuple slot every
+  other 8-byte element uses. Separately, calling the result of an
+  expression directly -- `fs[0](10)` (Index), `getf()(10)` (call result),
+  `(s.op)(10)` (field access) -- raised `CIR lowering does not yet support:
+  call with callee Index`; the lowerer only accepted a bare-identifier
+  callee. A callee expression of `Fun` type is now materialised into a
+  temp local and dispatched through the existing closure-call path -- the
+  same IR `let f = fs[0]; f(10)` already produced. Both were accepted by
+  `--check` and the Python backend; only the Wasm backend rejected them.
+
 - *A variant, tuple, or String-literal sub-pattern sitting as a struct
   FIELD in a match now compiles on the Wasm backend.* Destructuring a
   struct field with a nested pattern -- `match p; P { tag: Some(n), y: b }

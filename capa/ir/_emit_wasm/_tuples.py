@@ -30,54 +30,23 @@ many bytes; ``_emit_tuple_index`` reads slot ``i * 8``.
 from __future__ import annotations
 
 from .._nodes import Index, MakeTuple, Value
+from .._lower_helpers import _split_tuple_elem_types
 from ._layout import WasmEmissionError
 
 
 def _tuple_arity(tuple_ty: str) -> int:
     """Count elements in a tuple type string. ``(A, B)`` -> 2.
     Returns 0 when the string isn't tuple-shaped."""
-    if not tuple_ty.startswith("(") or not tuple_ty.endswith(")"):
-        return 0
-    inner = tuple_ty[1:-1].strip()
-    if not inner:
-        return 0
-    depth = 0
-    n = 1
-    for ch in inner:
-        if ch in "(<":
-            depth += 1
-        elif ch in ")>":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            n += 1
-    return n
+    return len(_split_tuple_elem_types(tuple_ty))
 
 
 def _tuple_elem_types(tuple_ty: str) -> list[str]:
-    """``(String, Int)`` -> ``['String', 'Int']``. Mirrors
-    capa.ir._lower._split_tuple_elem_types so the emitter can
-    parse the same shape the lowerer produced."""
-    if not tuple_ty.startswith("(") or not tuple_ty.endswith(")"):
-        return []
-    inner = tuple_ty[1:-1].strip()
-    if not inner:
-        return []
-    out: list[str] = []
-    buf = ""
-    depth = 0
-    for ch in inner:
-        if ch in "(<":
-            depth += 1
-        elif ch in ")>":
-            depth -= 1
-        if ch == "," and depth == 0:
-            out.append(buf.strip())
-            buf = ""
-            continue
-        buf += ch
-    if buf.strip():
-        out.append(buf.strip())
-    return out
+    """``(String, Int)`` -> ``['String', 'Int']``. Delegates to the
+    lowerer's arrow-aware ``_split_tuple_elem_types`` so the emitter
+    parses the same shape the lowerer produced -- including a tuple
+    whose elements are ``Fun(...) -> R`` values, whose ``->`` arrows
+    must not be mistaken for bracket closes."""
+    return _split_tuple_elem_types(tuple_ty)
 
 
 class _TupleEmissionMixin:
