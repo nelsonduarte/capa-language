@@ -3547,6 +3547,146 @@ class TestWasmClosures(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmMapFunValue(unittest.TestCase):
+    """A ``Map`` whose value type is ``Fun(...)``. A closure value is
+    a packed i64 ``(fn_idx << 32) | env_ptr``; it rides the map's
+    uniform 8-byte value slot verbatim (no extend / reinterpret),
+    ``m.get`` reads the slot back into the Option<Fun> payload, and
+    the bound ``f`` dispatches through the closure-call
+    (call_indirect) path. Covers set+get+call, a string-keyed
+    dispatch table, a CAPTURING closure as a map value, an Int key,
+    and ``m.values()`` over a Map of Fun."""
+
+    def _instantiate(self, src: str):
+        import wasmtime
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        engine = wasmtime.Engine()
+        mod = wasmtime.Module(engine, blob)
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        instance = linker.instantiate(store, mod)
+        return store, instance.exports(store)
+
+    def test_map_string_fun_set_get_call(self):
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun main() -> Int\n"
+            "    let m: Map<String, Fun(Int) -> Int> = new_map()\n"
+            "    m.set(\"inc\", add1)\n"
+            "    match m.get(\"inc\")\n"
+            "        Some(f) -> return f(10)\n"
+            "        None -> return -1\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 11)
+
+    def test_map_fun_dispatch_table(self):
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun dbl(x: Int) -> Int\n"
+            "    return x * 2\n"
+            "fun main() -> Int\n"
+            "    let m: Map<String, Fun(Int) -> Int> = new_map()\n"
+            "    m.set(\"inc\", add1)\n"
+            "    m.set(\"dbl\", dbl)\n"
+            "    var acc = 0\n"
+            "    match m.get(\"inc\")\n"
+            "        Some(f) -> acc = acc + f(10)\n"
+            "        None -> acc = acc - 1\n"
+            "    match m.get(\"dbl\")\n"
+            "        Some(g) -> acc = acc + g(10)\n"
+            "        None -> acc = acc - 1\n"
+            "    return acc\n"
+        )
+        store, exp = self._instantiate(src)
+        # add1(10)=11, dbl(10)=20 -> 31.
+        self.assertEqual(exp["main"](store), 31)
+
+    def test_map_capturing_closure_value(self):
+        src = (
+            "fun make_adder(n: Int) -> Fun(Int) -> Int\n"
+            "    return fun (x: Int) -> Int => x + n\n"
+            "fun main() -> Int\n"
+            "    let m: Map<String, Fun(Int) -> Int> = new_map()\n"
+            "    m.set(\"a5\", make_adder(5))\n"
+            "    m.set(\"a100\", make_adder(100))\n"
+            "    var acc = 0\n"
+            "    match m.get(\"a5\")\n"
+            "        Some(f) -> acc = acc + f(1)\n"
+            "        None -> acc = acc - 1\n"
+            "    match m.get(\"a100\")\n"
+            "        Some(g) -> acc = acc + g(1)\n"
+            "        None -> acc = acc - 1\n"
+            "    return acc\n"
+        )
+        store, exp = self._instantiate(src)
+        # (1+5) + (1+100) = 107.
+        self.assertEqual(exp["main"](store), 107)
+
+    def test_map_int_key_fun_value(self):
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun main() -> Int\n"
+            "    let m: Map<Int, Fun(Int) -> Int> = new_map()\n"
+            "    m.set(7, add1)\n"
+            "    match m.get(7)\n"
+            "        Some(f) -> return f(41)\n"
+            "        None -> return -1\n"
+        )
+        store, exp = self._instantiate(src)
+        self.assertEqual(exp["main"](store), 42)
+
+    def test_map_values_of_fun(self):
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun dbl(x: Int) -> Int\n"
+            "    return x * 2\n"
+            "fun main() -> Int\n"
+            "    let m: Map<String, Fun(Int) -> Int> = new_map()\n"
+            "    m.set(\"inc\", add1)\n"
+            "    m.set(\"dbl\", dbl)\n"
+            "    let fs: List<Fun(Int) -> Int> = m.values()\n"
+            "    var total = 0\n"
+            "    for f in fs\n"
+            "        total = total + f(10)\n"
+            "    return total\n"
+        )
+        store, exp = self._instantiate(src)
+        # add1(10)=11, dbl(10)=20 -> 31 (order-independent sum).
+        self.assertEqual(exp["main"](store), 31)
+
+    def test_map_fun_alongside_map_int_no_cross_contamination(self):
+        src = (
+            "fun add1(x: Int) -> Int\n"
+            "    return x + 1\n"
+            "fun main() -> Int\n"
+            "    let fm: Map<String, Fun(Int) -> Int> = new_map()\n"
+            "    let im: Map<String, Int> = new_map()\n"
+            "    fm.set(\"inc\", add1)\n"
+            "    im.set(\"count\", 42)\n"
+            "    var acc = 0\n"
+            "    match fm.get(\"inc\")\n"
+            "        Some(f) -> acc = acc + f(9)\n"
+            "        None -> acc = acc - 1\n"
+            "    match im.get(\"count\")\n"
+            "        Some(n) -> acc = acc + n\n"
+            "        None -> acc = acc - 1\n"
+            "    return acc\n"
+        )
+        store, exp = self._instantiate(src)
+        # add1(9)=10, +42 = 52.
+        self.assertEqual(exp["main"](store), 52)
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmNestedClosures(unittest.TestCase):
     """Phase 6E extension (2026-05-25): lambdas inside lambdas via
     lambda-lifting with flat envs. Each nested closure gets its own

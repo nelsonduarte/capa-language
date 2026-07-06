@@ -668,8 +668,11 @@ class _MapEmissionMixin:
         """With the destination slot address on the operand stack,
         load the pair's value (i64 @8 in pair) and emit the store
         with the right encoding for the list's per-V slot layout."""
-        if value_ty in ("Int", "String"):
+        if value_ty in ("Int", "String") or value_ty.startswith("Fun"):
             # Same 8-byte packed encoding in pair and in list slot.
+            # A Fun value is a packed i64 closure and rides the same
+            # 8-byte slot verbatim, so ``m.values()`` yields a
+            # List<Fun> of directly-callable closures.
             self._write(f"local.get ${pair_addr_local}")
             self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
             self._write("i64.store offset=0")
@@ -741,6 +744,17 @@ class _MapEmissionMixin:
             self._write("i64.extend_i32_u")  # ptr -> i64
             self._write("local.get $_alloc_tmp_i64")
             self._write("i64.or")
+            return
+        if value_ty.startswith("Fun"):
+            # A closure value is ALREADY a packed i64
+            # ``(fn_idx << 32) | env_ptr`` (see _closures.py), so it
+            # drops straight into the 8-byte value slot with no
+            # extend / reinterpret -- exactly how Fun-as-i64 rides in
+            # list / tuple / struct aggregate slots. Map.get reads the
+            # slot back verbatim into the Option<Fun> payload, and the
+            # bound ``f`` becomes a Fun local dispatched via the
+            # closure-call (call_indirect) path.
+            self._push_value(v)
             return
         # Pointer-shaped types (struct, sum, list, map, set, tuple,
         # trait value). Extend i32 to i64 to fit the uniform value slot.
