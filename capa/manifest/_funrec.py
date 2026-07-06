@@ -249,10 +249,14 @@ def build_operator_declared_grants(
 
     ``preopens`` is a list of ``{"host_dir": str, "permission":
     "ro"|"rw", "kind": "fs"}`` entries; ``net_hosts`` is a list of
-    ``{"kind": "net", "host": str}`` entries (each an operator-granted Net
-    host from ``--allow-host``). Either may be None / empty when no grant
-    of that kind was declared. The block is always present so a consumer
-    can rely on its shape; empty lists mean "no operator grant was
+    ``{"kind": "net", "host": str, "access": "get"|"post"|"connect"}``
+    entries (each an operator-granted Net host from ``--allow-host``). The
+    ``access`` field records the method SCOPE of the grant (Phase 2,
+    2026-07-06): ``"get"`` for a ``--allow-host h:get`` read-only grant,
+    ``"post"`` for ``h:post``, and ``"connect"`` for a suffix-less
+    ``--allow-host h`` (get+post). Either list may be None / empty when no
+    grant of that kind was declared. The block is always present so a
+    consumer can rely on its shape; empty lists mean "no operator grant was
     declared"."""
     return {
         # The honest label a regulator-facing consumer keys on: this is

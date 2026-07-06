@@ -284,8 +284,10 @@ class _WasiNetMixin:
 
 
     def _emit_wasi_net_host_allowed_helper(self) -> None:
-        """``$Net_host_allowed (host_ptr i32, host_len i32) -> i32`` ->
-        1 iff ``host`` is in the program's static Net ceiling.
+        """Emit the TWO per-method guest-side host-ceiling gates,
+        ``$Net_host_allowed_get`` and ``$Net_host_allowed_post`` (each
+        ``(host_ptr i32, host_len i32) -> i32``, 1 iff ``host`` is admitted
+        for that method).
 
         The GUEST-SIDE host ceiling (codegen-enforced, the honest Net
         guarantee). Unlike Fs preopens / Env env-set -- both Level 1,
@@ -293,33 +295,54 @@ class _WasiNetMixin:
         C-API (``set-wasi-http``) is ALLOW-ALL with no allowed-hosts
         surface in this release, so there is no host ceiling to map onto.
         The ceiling is enforced HERE, in compiler-generated guest code:
-        the helper scans the set of hosts the program names as a string
-        LITERAL in ``net.get`` (the static ``NetCeiling.hosts``), each a
-        data-segment literal interned up front, and returns 1 on the first
-        ``$str_eq`` match, 0 if none match.
+        each helper scans a set of hosts, each a data-segment literal
+        interned up front, and returns 1 on the first ``$str_eq`` match, 0
+        if none match.
 
-        A DYNAMIC ``net.get`` url contributes no literal host, so its host
-        is never in this set and the call is denied at runtime
-        (fail-closed), matching the Fs dynamic-path fail-closed policy (a
-        wrongly-admitted host is real outbound authority). An EMPTY ceiling
-        (only a dynamic ``net.get``) emits a helper that always returns 0,
+        PER-METHOD SCOPE (--allow-host Phase 2, 2026-07-06): the admitted
+        set is the UNION of the compiler-derived literal hosts
+        (``NetCeiling.hosts``, COMBINED into both methods -- the literal
+        ``net.get`` / ``net.post`` source is the truth) and the
+        method-scoped operator grant: ``$Net_host_allowed_get`` adds the
+        get-granted hosts, ``$Net_host_allowed_post`` adds the post-granted
+        hosts. So a ``--allow-host h:get`` grant admits a dynamic
+        ``net.get`` to ``h`` but the post gate denies a dynamic
+        ``net.post`` to ``h`` (h is not in the post set), the least-
+        authority point. A no-suffix grant lands in both sets, so both
+        gates admit it (Phase-1 behaviour preserved). The fine
+        ``restrict_to`` gate (``$Net_handle_allows``) still layers ON TOP,
+        so a granted host can still be narrowed away at runtime.
+
+        A DYNAMIC url contributes no literal host, so its host is never in
+        the ceiling and, absent a matching method-scoped grant, the call is
+        denied at runtime (fail-closed), matching the Fs dynamic-path
+        fail-closed policy. An EMPTY set emits a gate that always returns 0,
         denying every host."""
-        # The runtime-reachable host set is the UNION of the
-        # compiler-derived literal hosts (``NetCeiling.hosts``) and the
-        # operator-granted hosts (``--allow-host``,
-        # ``self._net_operator_allow_hosts``), both already normalized to
-        # the same key by ``capa.ir._net_host``. The fine ``restrict_to``
-        # gate (``$Net_handle_allows``) still layers ON TOP of this union,
-        # so a granted host can still be narrowed away at runtime.
         ceiling = self._net_ceiling
         ceiling_hosts = ceiling.hosts if ceiling is not None else frozenset()
-        hosts = sorted(ceiling_hosts | self._net_operator_allow_hosts)
+        self._emit_wasi_net_host_allowed_variant(
+            "$Net_host_allowed_get",
+            ceiling_hosts | self._net_operator_get_hosts,
+        )
+        self._emit_wasi_net_host_allowed_variant(
+            "$Net_host_allowed_post",
+            ceiling_hosts | self._net_operator_post_hosts,
+        )
+
+    def _emit_wasi_net_host_allowed_variant(
+        self, name: str, hosts: "frozenset[str]",
+    ) -> None:
+        """Emit one host-ceiling gate ``name (host_ptr, host_len) -> i32``
+        that returns 1 iff ``host`` is in ``hosts`` (a linear ``$str_eq``
+        scan). Shared body of the get / post gates; the only difference
+        between them is the host set (see
+        :meth:`_emit_wasi_net_host_allowed_helper`)."""
         self._write(
-            "(func $Net_host_allowed (param $host_ptr i32) "
+            f"(func {name} (param $host_ptr i32) "
             "(param $host_len i32) (result i32)"
         )
         self._indent += 1
-        for h in hosts:
+        for h in sorted(hosts):
             off, length = self._intern_string(h)
             self._write("local.get $host_ptr")
             self._write("local.get $host_len")
@@ -353,10 +376,11 @@ class _WasiNetMixin:
         directly).
 
         GUEST-SIDE HOST GATE (codegen-enforced ceiling): consult
-        ``$Net_host_allowed(host)`` FIRST; a host not in the static ceiling
-        writes ``Err(IoError)`` and returns WITHOUT building any request --
-        the honest Net guarantee (wasi:http is allow-all host-side, so the
-        ceiling lives here).
+        ``$Net_host_allowed_get(host)`` FIRST (the GET-scoped gate: the
+        static ceiling plus the ``--allow-host h[:get]`` grant); a host not
+        admitted for GET writes ``Err(IoError)`` and returns WITHOUT
+        building any request -- the honest Net guarantee (wasi:http is
+        allow-all host-side, so the ceiling lives here).
 
         wasi:http GET chain (validated end-to-end by the oracle spike
         against wasm-tools 1.249.0 / wasmtime 45.0.0; the scratch offsets
@@ -434,11 +458,12 @@ class _WasiNetMixin:
                     "$buf_cap", "$buf_len", "$chunk_ptr", "$chunk_len",
                     "$need", "$newcap", "$newbuf"):
             self._write(f"(local {loc} i32)")
-        # Host gate (static ceiling): a host the program never names as a
-        # literal is denied here.
+        # Host gate (static ceiling + GET-scoped operator grant): a host
+        # not admitted for GET (never named as a literal and not granted
+        # via --allow-host h[:get]) is denied here.
         self._write("local.get $host_ptr")
         self._write("local.get $host_len")
-        self._write("call $Net_host_allowed")
+        self._write("call $Net_host_allowed_get")
         self._write("i32.eqz")
         self._write("if")
         self._indent += 1
@@ -855,11 +880,14 @@ class _WasiNetMixin:
                     "$chunk_len", "$need", "$newcap", "$newbuf",
                     "$cursor", "$remaining", "$n", "$budget", "$wp"):
             self._write(f"(local {loc} i32)")
-        # Host gate (shared with get; a host outside the static ceiling
-        # writes Err WITHOUT building any request).
+        # Host gate (static ceiling + POST-scoped operator grant): a host
+        # not admitted for POST (never named as a literal and not granted
+        # via --allow-host h[:post]) writes Err WITHOUT building any
+        # request. A host granted only for GET (--allow-host h:get) is
+        # denied HERE, the least-authority point.
         self._write("local.get $host_ptr")
         self._write("local.get $host_len")
-        self._write("call $Net_host_allowed")
+        self._write("call $Net_host_allowed_post")
         self._write("i32.eqz")
         self._write("if")
         self._indent += 1

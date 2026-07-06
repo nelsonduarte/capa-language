@@ -149,11 +149,17 @@ def build_cyclonedx(
             })
         # One ``capa:operator_declared_grant:allow-host`` property per
         # operator-granted Net host (--allow-host), Level-2 authority
-        # distinct from the compiler-derived surface below.
+        # distinct from the compiler-derived surface below. The access scope
+        # (get / post / connect, the --allow-host method suffix) is rendered
+        # in-band so a consumer sees a read-only (get) grant is narrower than
+        # a connect (get+post) one.
         for _nh in _allow_hosts:
             metadata_properties.append({
                 "name": "capa:operator_declared_grant:allow-host",
-                "value": str(_nh.get("host", "")),
+                "value": (
+                    f"{_nh.get('host', '')}"
+                    f" [{_nh.get('access', 'connect')}]"
+                ),
             })
 
     # WASI Layer 1: surface the COMPILER-DERIVED, program-PROVEN argv ->

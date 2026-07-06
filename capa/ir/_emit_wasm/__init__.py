@@ -202,7 +202,7 @@ class WasmEmitter(
         manifest_json: Optional[str] = None,
         wasi: bool = False,
         wasi_dynamic_fs: bool = False,
-        net_operator_allow_hosts: Optional[frozenset] = None,
+        net_operator_allow_hosts=None,
     ):
         # Experimental opt-in (2026-06-27): when True, Random.system_seed
         # and Clock.now_secs / now_monotonic import canonical WASI
@@ -251,10 +251,23 @@ class WasmEmitter(
         # surface. LIMITATION: a hostname allowlist cannot defend against
         # DNS rebinding (wasi:http is host-side allow-all), documented in
         # the flag help and ``capa.ir._net_host``.
-        self._net_operator_allow_hosts: frozenset = (
-            net_operator_allow_hosts or frozenset()
-        )
-        self._net_operator_allow: bool = bool(self._net_operator_allow_hosts)
+        # Phase 2 (--allow-host method scope, 2026-07-06): the grant is
+        # scoped per HTTP method. ``coerce_net_grant`` accepts either the
+        # new ``NetGrant`` (get-hosts / post-hosts) or the Phase-1 plain
+        # iterable of hosts (backward-compatible: every host granted BOTH
+        # get and post). The get-set is unioned into ``$Net_host_allowed_get``
+        # and the post-set into ``$Net_host_allowed_post``; the literal
+        # ceiling is combined into both. ``_net_operator_allow_hosts`` is the
+        # UNION (the interning membership keys); ``_net_operator_allow`` is
+        # True iff ANY host is granted (for either method), which suppresses
+        # the compile-time dynamic-URL rejection so the per-method runtime
+        # gate does the scoped enforcement.
+        from .._net_host import coerce_net_grant
+        _grant = coerce_net_grant(net_operator_allow_hosts)
+        self._net_operator_get_hosts: frozenset = _grant.get_hosts
+        self._net_operator_post_hosts: frozenset = _grant.post_hosts
+        self._net_operator_allow_hosts: frozenset = _grant.all_hosts
+        self._net_operator_allow: bool = bool(_grant)
         self._lines: List[str] = []
         self._indent = 0
         self._unit = indent_unit

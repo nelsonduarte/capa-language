@@ -176,11 +176,14 @@ def build_spdx(
                 f"{_pre.get('host_dir', '')} [{_pre.get('permission', 'rw')}]",
             ))
         # One annotation per operator-granted Net host (--allow-host),
-        # Level-2 authority distinct from the compiler-derived surface.
+        # Level-2 authority distinct from the compiler-derived surface. The
+        # access scope (get / post / connect, the --allow-host method
+        # suffix) is rendered in-band so a read-only (get) grant reads as
+        # narrower than a connect (get+post) one.
         for _nh in _allow_hosts:
             program_annotations.append(_annot(
                 timestamp, "operator_declared_grant:allow-host",
-                str(_nh.get("host", "")),
+                f"{_nh.get('host', '')} [{_nh.get('access', 'connect')}]",
             ))
     # WASI Layer 1: compiler-DERIVED, program-PROVEN argv -> sink surface
     # as program-package annotations, labelled compiler-derived (the

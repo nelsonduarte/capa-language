@@ -919,7 +919,9 @@ surface in this release, so there is **no host ceiling to map onto**. The
 ceiling is therefore enforced **guest-side** (codegen): the compiler
 collects the HOSTS of the LITERAL urls passed to `net.get` (the static
 `NetCeiling`, `capa/ir/_net_ceiling.py`) and the guest wrapper's
-`$Net_host_allowed` gate refuses any host the program never names. A
+per-method `$Net_host_allowed_get` / `$Net_host_allowed_post` gates refuse
+any host the program never names (nor the operator grants for that
+method). A
 **dynamic** url (built at runtime) cannot be split into a wasi:http
 request at compile time, so the call site **fail-closes** to `Err`
 WITHOUT reaching the network -- the same fail-closed policy a dynamic Fs
@@ -1117,15 +1119,18 @@ The guest wrappers (no `capa:host/net` import):
 
 **Layered on top of the ceiling.** Every Net request op (`$Net_get` /
 `$Net_post`) consults **two** guest-side gates before building any
-request: first `$Net_host_allowed` (the static ceiling), then
+request: first the per-method ceiling gate (`$Net_get` calls
+`$Net_host_allowed_get`, `$Net_post` calls `$Net_host_allowed_post`), then
 `$Net_handle_allows` (the receiver cap's fine allow-list). A request passes
-only when the host is in the ceiling **AND** in the fine allow-list; a host
-outside either **fail-closes** to `Err(IoError)` before touching the
-network, exactly as the oracle's `if not self.allows(host): return
-Err(...)` prologue does (the fine gate; the ceiling gate has no oracle
-counterpart -- it is the codegen-enforced asymmetry). The unrestricted
-root (handle `0`) passes the fine gate trivially, so it is a no-op for an
-unrestricted Net.
+only when the host is in the (method-scoped) ceiling **AND** in the fine
+allow-list; a host outside either **fail-closes** to `Err(IoError)` before
+touching the network, exactly as the oracle's `if not self.allows(host):
+return Err(...)` prologue does (the fine gate; the ceiling gate has no
+oracle counterpart -- it is the codegen-enforced asymmetry). The
+unrestricted root (handle `0`) passes the fine gate trivially, so it is a
+no-op for an unrestricted Net. The two ceiling gates differ only in the
+operator grant they fold in (see `--allow-host` below); the
+compiler-derived literal ceiling is combined into both.
 
 `TestWasiNetAttenuation` / `TestWasiNetRejections` in
 `tests/test_wasi_mode.py` cover restrict + allowed + denied (get and post),
@@ -1147,15 +1152,33 @@ symmetric analogue of a dynamic Fs path). `--allow-host <host>` is the
 operator's escape, the Net analogue of `--preopen`: it grants the component
 authority to reach `<host>` (repeatable; the allowlist is a set), which
 suppresses the rejection and **unions the granted hosts into the guest-side
-ceiling** `$Net_host_allowed` checks. It is `--wasi`-only and recorded in
+ceiling** the per-method gates check. It is `--wasi`-only and recorded in
 the SBOM as an operator-declared grant
 (`capa:operator_declared_grant:allow-host`), distinct from the
 compiler-derived surface.
 
+**Per-method scope (`:get` / `:post`).** The grant is scoped per HTTP
+method: `--allow-host h:get` grants **read (GET) only**, `h:post` grants
+**write (POST) only**, and a suffix-less `--allow-host h` grants **both**
+(backward-compatible). This is least-authority: an operator can let a
+program read from a host without also permitting a POST to it. The suffix is
+recognised only when the tail after the **last** `:` is exactly `get` /
+`post` **and** the head is a valid host, so a port (`h:8080`) or a bracketed
+IPv6 authority (`[::1]:8080`) is never mistaken for a suffix while
+`[::1]:get` is. Enforcement is guest-side: `$Net_host_allowed_get` admits
+`ceiling | get-granted-hosts`, `$Net_host_allowed_post` admits `ceiling |
+post-granted-hosts`; the compiler-derived literal ceiling is combined into
+both (the literal `net.get` / `net.post` source is the truth). So a `h:get`
+grant lets a dynamic `net.get` to `h` through, but a dynamic `net.post` to
+`h` is denied at runtime by the post gate (`h` is not in the post set) --
+proven by `tests/test_allow_host_method_scope.py`. The SBOM `access` field
+records the scope (`get` / `post` / `connect`, the last for get+post).
+
 **Runtime host extraction (the security core).** Because the URL is now a
 runtime string, the guest extracts its host at runtime via `$Net_url_extract`
 (the WAT realization of `capa.ir._net_host.extract_url_parts`), then runs the
-SAME two gates the literal path does (`$Net_host_allowed`, then the fine
+SAME two gates the literal path does (the method-scoped
+`$Net_host_allowed_get` / `$Net_host_allowed_post`, then the fine
 `$Net_handle_allows` restrict_to gate), building the request only for a host
 that passes both. Everything else stays `Err(IoError)`, fail-closed.
 
