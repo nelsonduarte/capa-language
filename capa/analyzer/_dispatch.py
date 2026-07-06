@@ -481,6 +481,11 @@ class _DispatchMixin:
         # not launder it back to public.
         self._check_ifc_container_mutation(e, recv_ty)
 
+        # Roadmap S2 (higher-order IFC): inserting a secret-returning
+        # closure into a public-declared container launders the secret
+        # through the container's declared element / value type.
+        self._check_container_closure_store(e, recv_ty)
+
         # Roadmap S4: in a @constant_time function, a lookup keyed by a
         # secret (list.get / map.get / set.contains / str.char_at) is a
         # data-dependent memory access.

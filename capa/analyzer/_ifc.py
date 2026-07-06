@@ -847,19 +847,53 @@ class _IfcMixin:
 
     def _lambda_body_result_label(self, e: A.LambdaExpr) -> str:
         """The IFC label of the value an INVOCATION of ``e`` produces --
-        its body's result label. An expression-bodied lambda returns its
-        expression; a block-bodied one returns its trailing bare
-        expression (block-as-expression), or Unit (PUBLIC) when there is
-        none. Unlike the capture label, this is what flows out of ``f()``,
-        so a body that DECLASSIFIES its captured secret returns PUBLIC
-        here -- the precise input to the invoke-sink-reaching boundary
-        check, avoiding a false positive on a declassifying closure."""
+        the JOIN of the labels of every value the closure can return along
+        ANY path. An expression-bodied lambda returns its expression; a
+        block-bodied one can return via its trailing bare expression
+        (block-as-expression) AND via any ``return <expr>`` statement,
+        including returns nested inside ``if`` / ``match`` / loop branches.
+        If a secret is returned on any path the result label is secret;
+        Unit (no returnable value) is PUBLIC.
+
+        Unlike the capture label, this is what flows out of ``f()``, so a
+        path that DECLASSIFIES its captured secret contributes PUBLIC --
+        the precise input to the store-site and boundary checks, avoiding a
+        false positive on a closure that only ever returns public /
+        declassified values."""
         body = e.body
-        if isinstance(body, A.Block):
-            if body.stmts and isinstance(body.stmts[-1], A.ExprStmt):
-                return self._label_of(body.stmts[-1].expr)
+        if not isinstance(body, A.Block):
+            return self._label_of(body)
+        labels = []
+        if body.stmts and isinstance(body.stmts[-1], A.ExprStmt):
+            labels.append(self._label_of(body.stmts[-1].expr))
+        for rexpr in self._lambda_return_exprs(body.stmts):
+            labels.append(self._label_of(rexpr))
+        if not labels:
             return L.PUBLIC
-        return self._label_of(body)
+        return L.join_all(labels)
+
+    def _lambda_return_exprs(self, node):
+        """Yield the value expression of every ``return <expr>`` reachable
+        from ``node`` along any control-flow path (``if`` / ``match`` /
+        loop branches), WITHOUT descending into a nested lambda's body (a
+        nested closure's ``return`` produces that closure's value, not
+        this one's). ``return`` with no value yields nothing (Unit)."""
+        import dataclasses
+        if isinstance(node, A.LambdaExpr):
+            return
+        if isinstance(node, A.ReturnStmt):
+            if node.value is not None:
+                yield node.value
+            return
+        if node is None or isinstance(node, str):
+            return
+        if dataclasses.is_dataclass(node):
+            for f in dataclasses.fields(node):
+                yield from self._lambda_return_exprs(getattr(node, f.name))
+            return
+        if isinstance(node, (list, tuple)):
+            for x in node:
+                yield from self._lambda_return_exprs(x)
 
     def _sink_param_arg_label(self, arg: A.Expr, ptype):
         """The label to test for an argument bound to a SINK-REACHING
@@ -1274,6 +1308,30 @@ class _IfcMixin:
         sym = self.bindings.get(id(e.receiver))
         if sym is not None:
             sym.label = L.join(sym.label, L.SECRET)
+
+    def _check_container_closure_store(self, e: A.MethodCall, recv_ty) -> None:
+        """Higher-order IFC: inserting a secret-returning closure into a
+        public-declared container (``List.push`` / ``Set.add`` /
+        ``Map.set``) launders the secret through the container's declared
+        element / value type, so a later read-and-invoke at a public sink
+        would leak it. Flag it at the insertion -- the container analogue
+        of the struct-field store check. Argument position ``i`` binds to
+        the container's ``i``-th type argument (List / Set element, Map key
+        then value), so the declared slot type and the closure's actual
+        return label are both in hand."""
+        cap_name = getattr(recv_ty, "name", None)
+        if cap_name is None:
+            return
+        positions = _CONTAINER_MUTATORS.get((cap_name, e.method))
+        if not positions:
+            return
+        args = getattr(recv_ty, "args", ())
+        for i in positions:
+            if i < len(e.args) and i < len(args):
+                self._check_closure_ret_flow(
+                    args[i], self.types.get(id(e.args[i])),
+                    e.args[i].pos, f"stored into a {cap_name}",
+                )
 
     def _ifc_alias_link(self, new_sym, src_expr: A.Expr) -> None:
         """Record that ``new_sym`` aliases the struct binding named by
@@ -1868,6 +1926,62 @@ class _IfcMixin:
                 for e, a in zip(expected.args, actual.args)
             )
         return False
+
+    def _raise_fun_labels(self, template, actuals):
+        """Build a type with ``template``'s STRUCTURE but its function-type
+        return labels RAISED to the join of the corresponding actual types'
+        return labels. Used when an aggregate literal (a ``List`` literal,
+        ...) is inferred against a DECLARED element type: the declared
+        element carries the type structure (so a heterogeneous annotated
+        list still type-checks), but the actual elements' ret_labels must
+        survive, otherwise a secret-returning closure stored in a public-
+        declared container is laundered and the store-site check misses it.
+
+        Recurses through the function return chain, tuple elements and
+        generic type arguments (List / Option / Result / Map value ...),
+        which is where a closure element can hide."""
+        from ..typesys import TyFun, TyTuple, TyName
+        from .. import _labels as L
+        if isinstance(template, TyFun):
+            funs = [a for a in actuals if isinstance(a, TyFun)]
+            if not funs:
+                return template
+            ret_label = L.join_all(
+                [template.ret_label] + [a.ret_label for a in funs]
+            )
+            new_ret = self._raise_fun_labels(
+                template.ret, [a.ret for a in funs],
+            )
+            return TyFun(
+                template.params, new_ret,
+                param_labels=template.param_labels, ret_label=ret_label,
+            )
+        if isinstance(template, TyTuple):
+            tups = [
+                a for a in actuals
+                if isinstance(a, TyTuple)
+                and len(a.elements) == len(template.elements)
+            ]
+            if not tups:
+                return template
+            elems = tuple(
+                self._raise_fun_labels(te, [t.elements[i] for t in tups])
+                for i, te in enumerate(template.elements)
+            )
+            return TyTuple(elems)
+        if isinstance(template, TyName) and template.args:
+            names = [
+                a for a in actuals
+                if isinstance(a, TyName) and len(a.args) == len(template.args)
+            ]
+            if not names:
+                return template
+            args = tuple(
+                self._raise_fun_labels(ta, [n.args[i] for n in names])
+                for i, ta in enumerate(template.args)
+            )
+            return TyName(template.name, args, state=template.state)
+        return template
 
     def _check_closure_ret_flow(
         self, expected, actual, pos, where: str,

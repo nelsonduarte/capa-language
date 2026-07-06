@@ -1237,15 +1237,23 @@ class _ExpressionsMixin:
         # element (unchanged behaviour), so an unannotated heterogeneous
         # list is still an error.
         if expected_elem is not None:
+            actual_elems = []
             for el in e.elements:
                 ety = self._check_expr(el)
+                actual_elems.append(ety)
                 if not self._assignable(expected_elem, ety, el):
                     self._err(
                         f"list literal: element has type {ty_str(ety)}, "
                         f"expected {ty_str(expected_elem)}",
                         el.pos,
                     )
-            return TyName("List", (expected_elem,))
+            # Higher-order IFC: keep the declared element STRUCTURE (so a
+            # heterogeneous annotated list still type-checks) but preserve
+            # the actual elements' function return labels, so a secret-
+            # returning closure in a public-declared list is not laundered
+            # -- the store-site check then sees List<Fun -> secret>.
+            elem = self._raise_fun_labels(expected_elem, actual_elems)
+            return TyName("List", (elem,))
         first_ty = self._check_expr(e.elements[0])
         for el in e.elements[1:]:
             ety = self._check_expr(el)
