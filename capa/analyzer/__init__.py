@@ -207,6 +207,18 @@ class Symbol:
     # field read only while the symbol's id is NOT in
     # ``_escaped_struct_syms``.
     field_labels: Optional[dict] = None
+    # Roadmap S2 (higher-order IFC precision, Phase B1). For a
+    # LOCAL / LOCAL_VAR binding whose value is a built-in combinator
+    # result (``xs.map(f)`` / ``opt.and_then(g)`` / ...): the pair
+    # ``(structure_label, element_label)`` splitting the container's
+    # SHAPE label (read by ``length`` / ``is_empty`` / ``is_some`` and
+    # the other count/shape queries) from its ELEMENT / payload label
+    # (read by an element access, indexing, iteration, or a payload
+    # unwrap). ``None`` means no split (fall back to ``label``, the
+    # collapsed whole-value join, for every read). Set from the
+    # combinator label-flow table at the call-site seam and propagated
+    # onto the binding by ``_copy_container_split``.
+    container_split: Optional[tuple] = None
     # Roadmap S3.5: for a method registered from ``impl Type[State]``,
     # the typestate state the receiver must be in for the call to be
     # legal. ``None`` for an ordinary (state-agnostic) method.
@@ -430,6 +442,18 @@ class Analyzer(
         # fallback. Set for ``StructLit`` and for a precise field-read
         # chain whose result is itself a struct.
         self._expr_field_labels: dict[int, dict] = {}
+        # Roadmap S2 (higher-order IFC precision, Phase B1). Parallel to
+        # ``self._expr_labels`` for a built-in COMBINATOR result
+        # (``xs.map(f)`` / ``opt.map(g)`` / ...): id(expr) -> the pair
+        # ``(structure_label, element_label)``. The whole-value label in
+        # ``_expr_labels`` stays the join of the two (so passing / sinking
+        # the whole container is caught), while a STRUCTURE op (length /
+        # is_empty / is_some / ...) reads only the structure part and so is
+        # not over-tainted by a secret-returning element closure. Set from
+        # the combinator label-flow table at the call-site seam
+        # (``_record_combinator_split``) and propagated onto a binding's
+        # ``Symbol.container_split`` by ``_copy_container_split``.
+        self._container_split: dict[int, tuple] = {}
         # Roadmap S2 (per-field IFC precision, soundness). The set of
         # ``id(Symbol)`` for struct bindings whose per-field map can no
         # longer be trusted because the value ESCAPED or was ALIASED

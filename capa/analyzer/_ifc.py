@@ -144,6 +144,52 @@ _CT_SHORT_CIRCUIT_METHODS: dict[tuple[str, str], set[int]] = {
     ("List",   "contains"):    {0},
 }
 
+# Higher-order IFC precision (Phase B1). Built-in combinators whose
+# result is element-granular: the closure's return label taints the
+# result's ELEMENTS / payload, not its SHAPE. Keyed ``(owner, method)``
+# -> ``(rule, closure_index, init_index)`` where ``closure_index`` is
+# the parameter position of the transforming closure and ``init_index``
+# is the position of a seed value (``fold`` only, else ``None``). The
+# ``rule`` selects how the result's (structure, element) labels are
+# derived at the call-site seam (see ``_record_combinator_split``):
+#   "transform" -- element = join(input element, closure ret_label);
+#                  structure = input structure. Covers map / and_then /
+#                  map_err / flat_map (the closure's returned value
+#                  becomes the new element / payload).
+#   "filter"    -- element = input element; structure = input structure.
+#                  The predicate's label is dropped: the elements that
+#                  pass through are exactly (a subset of) the input's.
+#   "fold"      -- a SCALAR result: whole-value =
+#                  join(init, input element, closure ret_label).
+_COMBINATOR_SPECS: dict[tuple[str, str], tuple[str, int, "int | None"]] = {
+    ("List",   "map"):      ("transform", 0, None),
+    ("List",   "filter"):   ("filter",    0, None),
+    ("List",   "fold"):     ("fold",      1, 0),
+    ("List",   "flat_map"): ("transform", 0, None),
+    ("Range",  "map"):      ("transform", 0, None),
+    ("Range",  "filter"):   ("filter",    0, None),
+    ("Range",  "fold"):     ("fold",      1, 0),
+    ("Option", "map"):      ("transform", 0, None),
+    ("Option", "and_then"): ("transform", 0, None),
+    ("Option", "filter"):   ("filter",    0, None),
+    ("Result", "map"):      ("transform", 0, None),
+    ("Result", "and_then"): ("transform", 0, None),
+    ("Result", "map_err"):  ("transform", 0, None),
+}
+
+# Structure / shape queries that read only a container's STRUCTURE
+# label, never its element / payload label. Over an element-granular
+# combinator result (``xs.map(secretClosure)``) these stay PUBLIC while
+# an element read stays tainted. Keyed ``(owner, method)``. Restricted
+# to the owners a combinator split can attach to; for every other
+# receiver the query falls back to the whole-value label unchanged.
+_STRUCTURE_OPS: frozenset[tuple[str, str]] = frozenset({
+    ("List",   "length"),   ("List",   "is_empty"),
+    ("Range",  "length"),   ("Range",  "is_empty"),
+    ("Option", "is_some"),  ("Option", "is_none"),
+    ("Result", "is_ok"),    ("Result", "is_err"),
+})
+
 
 class _IfcMixin:
     def _label_expr(self, e: A.Expr) -> str:
@@ -215,6 +261,105 @@ class _IfcMixin:
         """The recorded label of an already-visited expression, or
         PUBLIC if it has none (e.g. a node the walk doesn't label)."""
         return self._expr_labels.get(id(e), L.PUBLIC)
+
+    # ---- element-granular container labels (roadmap S2, Phase B1) ----
+    #
+    # A built-in combinator result carries, besides its collapsed
+    # whole-value label, a ``(structure, element)`` split so a SHAPE
+    # query (``length`` / ``is_empty`` / ``is_some`` / ...) reads the
+    # structure label while an ELEMENT read (indexing, iteration, a
+    # payload unwrap, ``first`` / ``last`` / ``get``) reads the element
+    # label. The whole-value label is always kept as the join of the two
+    # -- so a container passed / sunk WHOLE is caught -- and is the sound
+    # fallback the moment no split is recorded. The split for an
+    # expression lives in ``_container_split`` (keyed by id); the split
+    # for a binding lives on ``Symbol.container_split``.
+
+    def _split_of(self, e: A.Expr):
+        """The recorded ``(structure, element)`` split of ``e`` -- from
+        the binding's Symbol when ``e`` is a name, else from the
+        per-expression side table -- or ``None`` when ``e`` carries no
+        split (a plain value, whose structure and element labels both
+        equal its whole-value label)."""
+        if isinstance(e, A.Ident):
+            sym = self.bindings.get(id(e))
+            split = getattr(sym, "container_split", None) if sym else None
+            if split is not None:
+                return split
+        return self._container_split.get(id(e))
+
+    def _structure_label_of(self, e: A.Expr) -> str:
+        """The STRUCTURE (shape) label of ``e``: the structure part of a
+        combinator split, else the whole-value label (a plain container's
+        shape is as tainted as the container)."""
+        split = self._split_of(e)
+        return split[0] if split is not None else self._label_of(e)
+
+    def _element_label_of(self, e: A.Expr) -> str:
+        """The ELEMENT / payload label of ``e``: the element part of a
+        combinator split, else the whole-value label (a plain container's
+        elements are as tainted as the container)."""
+        split = self._split_of(e)
+        return split[1] if split is not None else self._label_of(e)
+
+    def _copy_container_split(self, sym, value: A.Expr) -> None:
+        """Copy a combinator-result split from a binding's RHS ``value``
+        onto its ``Symbol`` (``let ys = xs.map(f)``), so later reads
+        through the name stay element-granular. A RHS with no split (a
+        plain value, or a ``declassify`` that cleared the taint) leaves
+        the binding with ``container_split = None`` -- every read then
+        uses the whole-value label."""
+        if sym is None:
+            return
+        sym.container_split = self._split_of(value)
+
+    def _record_combinator_split(
+        self, e: A.MethodCall, owner: str, args: list, arg_tys: list,
+    ) -> None:
+        """Publish the element-granular ``(structure, element)`` split of
+        a built-in combinator call into the IFC channel (Phase B1). Runs
+        at the call-site seam, AFTER inferred-lambda re-checking has fixed
+        every closure argument's ``TyFun.ret_label`` and BEFORE the
+        result label is computed for ``e``. Overrides the conservative
+        whole-value join for the specific ``(owner, method)`` keys in
+        ``_COMBINATOR_SPECS`` and is a no-op for every other method.
+
+        ``args`` and ``arg_tys`` are the argument expressions and types in
+        PARAMETER order (so the closure / seed indices from the spec
+        address them directly, independent of named-argument order)."""
+        from ..typesys import TyFun
+        spec = _COMBINATOR_SPECS.get((owner, e.method))
+        if spec is None:
+            return
+        rule, closure_idx, init_idx = spec
+        recv = e.receiver
+        struct_in = self._structure_label_of(recv)
+        elem_in = self._element_label_of(recv)
+        ret_label = L.PUBLIC
+        if 0 <= closure_idx < len(arg_tys):
+            closure_ty = arg_tys[closure_idx]
+            if isinstance(closure_ty, TyFun):
+                ret_label = L.normalize(getattr(closure_ty, "ret_label", None))
+        if rule == "fold":
+            init_label = L.PUBLIC
+            if init_idx is not None and init_idx < len(args):
+                init_label = self._label_of(args[init_idx])
+            whole = L.join(init_label, L.join(elem_in, ret_label))
+            self._container_split[id(e)] = (whole, whole)
+            return
+        if rule == "filter":
+            # The predicate's label is dropped: the surviving elements
+            # are exactly (a subset of) the input's, so the result keeps
+            # the input's structure and element labels.
+            self._container_split[id(e)] = (struct_in, elem_in)
+            return
+        # "transform": the closure's returned value becomes the new
+        # element / payload. Join the input element label in as well --
+        # a closure PARAMETER is labelled public (Phase A), so an
+        # identity / element-derived transform would otherwise drop a
+        # secret input element; joining ``elem_in`` keeps it sound.
+        elem_out = L.join(elem_in, ret_label)
+        self._container_split[id(e)] = (struct_in, elem_out)
 
     # ---- per-field IFC precision (roadmap S2) --------------------
     #
@@ -504,6 +649,13 @@ class _IfcMixin:
         if sym is None:
             return
         sym.label = self._join_decl_and_value_label(decl_label, value)
+        # Higher-order IFC precision (Phase B1): carry a combinator-result
+        # element/structure split from the RHS onto the binding. An
+        # explicit @secret annotation raises the whole value, so the
+        # collapsed label already governs -- do not keep a split that
+        # could read narrower than the annotation.
+        if L.normalize(decl_label) != L.SECRET:
+            self._copy_container_split(sym, value)
         fmap = self._field_map_of(value)
         if (
             fmap is not None
@@ -696,6 +848,21 @@ class _IfcMixin:
             cap_name = getattr(recv_ty, "name", None)
             if cap_name is not None and (cap_name, e.method) in _SECRET_SOURCES:
                 return L.SECRET
+            # Higher-order IFC precision (Phase B1). A SHAPE query on a
+            # container (``length`` / ``is_empty`` / ``is_some`` / ...)
+            # reads only the receiver's STRUCTURE label, so a
+            # ``map``-of-secret-closure result whose ELEMENTS are secret
+            # still answers a PUBLIC count. For a receiver with no split
+            # this is exactly the whole-value label (unchanged behavior).
+            if cap_name is not None and (cap_name, e.method) in _STRUCTURE_OPS:
+                return self._structure_label_of(e.receiver)
+            # A built-in combinator whose element-granular split was
+            # recorded at the call-site seam: the whole-value label is the
+            # join of its structure and element labels (overriding the
+            # conservative receiver+args join for these specific keys).
+            split = self._container_split.get(id(e))
+            if split is not None:
+                return L.join(split[0], split[1])
             # The result label follows the method's RETURN-EFFECT (which
             # sources flow into the returned value), NOT the whole-value
             # taint of the receiver: a method whose return derives only

@@ -345,6 +345,11 @@ class _StatementsMixin:
             and not isinstance(s.value, (A.Ident, A.FieldAccess))
         ):
             sym.field_labels = _deepcopy_field_map(_fmap)
+        # Higher-order IFC precision (Phase B1): carry a combinator-result
+        # element/structure split onto the ``var`` binding, unless an
+        # explicit @secret annotation already raised the whole value.
+        if L.normalize(_decl_label) != L.SECRET:
+            self._copy_container_split(sym, s.value)
         self.scope.define(sym)
         # Roadmap S2 (two-hop closure-by-name): record a lambda-literal
         # RHS on the fresh ``var`` binding. A subsequent reassignment in

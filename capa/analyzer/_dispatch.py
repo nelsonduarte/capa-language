@@ -685,6 +685,18 @@ class _DispatchMixin:
             substituted_params, reordered_args, reordered_tys, mapping,
         )
 
+        # Higher-order IFC precision (Phase B1). With every closure
+        # argument's ``TyFun.ret_label`` now fixed, publish the built-in
+        # combinator's element-granular result label into the IFC channel
+        # (a no-op for non-combinator methods). The built-in combinators
+        # -- List / Range map/filter/fold/flat_map, Option map/and_then/
+        # filter, Result map/and_then/map_err -- are all METHODS, so this
+        # is the only seam B1 needs; user-defined generic higher-order
+        # functions (the free-call seam) arrive in B2/B3.
+        self._record_combinator_split(
+            e, recv_ty.name, reordered_args, reordered_tys,
+        )
+
         for i, (param_ty, arg_ty) in enumerate(
             zip(method_fun_ty.params, reordered_tys)
         ):
