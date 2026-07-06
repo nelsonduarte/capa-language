@@ -219,6 +219,173 @@ class TestSyntacticReturnLabel(unittest.TestCase):
         self.assertEqual(_ho_errors(r), [])
 
 
+class TestBlockReturnClosureLabel(unittest.TestCase):
+    """A block-bodied closure that returns a value via a ``return``
+    statement (idiomatic form) must have its return label computed from
+    every value it can return along any path -- not just a trailing bare
+    expression. Each shape below returns a @secret via ``return`` and must
+    ERROR under @strict_ifc; the public / declassified forms stay clean."""
+
+    def test_block_return_secret_in_struct_field(self):
+        r = _analyze(
+            "type Box { thunk: Fun() -> String }\n"
+            + _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String)\n"
+            "    let c = fun () -> String =>\n"
+            "        return s\n"
+            "    let b = Box { thunk: c }\n"
+            "    invoke(b.thunk, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_block_return_secret_in_typed_let_slot(self):
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String)\n"
+            "    let t: Fun() -> String = fun () -> String =>\n"
+            "        return s\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_block_return_secret_nested_in_if_branch(self):
+        # A secret returned on ONE path (inside an ``if`` branch) taints
+        # the closure's return label; the other path returns public.
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String, flag: Bool)\n"
+            "    let t: Fun() -> String = fun () -> String =>\n"
+            "        if flag\n"
+            "            return s\n"
+            "        return \"pub\"\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_block_return_secret_in_reassigned_var(self):
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String)\n"
+            "    var f = fun () -> String =>\n"
+            "        return \"pub\"\n"
+            "    f = fun () -> String =>\n"
+            "        return s\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_block_return_secret_laundered_by_return(self):
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun make(s: @secret String) -> Fun() -> String\n"
+            "    return fun () -> String =>\n"
+            "        return s\n"
+            + _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String)\n"
+            "    let g = make(s)\n"
+            "    invoke(g, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_block_return_public_is_clean(self):
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String)\n"
+            "    let t: Fun() -> String = fun () -> String =>\n"
+            "        return \"pub\"\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_ho_errors(r), [])
+        self.assertEqual(_crossfn_errors(r), [])
+
+    def test_block_return_declassified_is_clean(self):
+        r = _analyze(
+            "const TOKEN: @secret String = \"sk\"\n"
+            + _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio)\n"
+            "    let t: Fun() -> String = fun () -> String =>\n"
+            "        return declassify(TOKEN, reason: \"ok\")\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_ho_errors(r), [])
+        self.assertEqual(_crossfn_errors(r), [])
+
+
+class TestContainerOfClosuresLabel(unittest.TestCase):
+    """An aggregate literal / container populated with a secret-returning
+    closure must not launder it through the container's declared (public)
+    element / value type. A public-declared ``List`` / ``Map`` of a
+    secret-returning closure is a store-site leak; a container of public
+    closures stays clean."""
+
+    def test_list_of_secret_closures_rejected(self):
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun main(s: @secret String)\n"
+            "    let xs: List<Fun() -> String> = [fun () -> String => s]\n"
+            "    let _ = xs\n"
+            "    ()\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_map_of_secret_closures_rejected(self):
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun main(s: @secret String)\n"
+            "    let m: Map<String, Fun() -> String> = new_map()\n"
+            "    m.set(\"k\", fun () -> String => s)\n"
+            "    let _ = m\n"
+            "    ()\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_list_of_public_closures_is_clean(self):
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun main(s: @secret String)\n"
+            "    let xs: List<Fun() -> String> = [fun () -> String => \"pub\"]\n"
+            "    let _ = xs\n"
+            "    ()\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_ho_errors(r), [])
+
+    def test_map_of_public_closures_is_clean(self):
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun main(s: @secret String)\n"
+            "    let m: Map<String, Fun() -> String> = new_map()\n"
+            "    m.set(\"k\", fun () -> String => \"pub\")\n"
+            "    let _ = m\n"
+            "    ()\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_ho_errors(r), [])
+
+
 class TestCombinatorNoFalsePositive(unittest.TestCase):
     """Built-in higher-order combinators must NOT become false positives on
     a secret-returning closure: passing one as a call ARGUMENT is not a
