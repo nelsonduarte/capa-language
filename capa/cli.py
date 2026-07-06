@@ -1379,10 +1379,18 @@ def _main_dispatch() -> int:
         # WASI Fs layer b1: the operator-declared grant block (--preopen),
         # surfaced in the manifest / CycloneDX / SPDX as Level-2
         # operator-declared authority, distinct from the derived surface.
-        _operator_grants = _operator_grants_from_args(
-            getattr(args, "preopen", None),
-            getattr(args, "allow_host", None),
-        )
+        try:
+            _operator_grants = _operator_grants_from_args(
+                getattr(args, "preopen", None),
+                getattr(args, "allow_host", None),
+            )
+        except _AllowHostSpecError as e:
+            msg = f"capa: --allow-host: {e}"
+            if use_color:
+                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+            else:
+                print(msg, file=sys.stderr)
+            return 1
         if args.manifest:
             import json
             manifest = build_manifest(
@@ -1657,9 +1665,17 @@ def _main_dispatch() -> int:
         net_operator_allow = False
         allow_host_specs = getattr(args, "allow_host", None) or []
         if allow_host_specs:
-            net_operator_allow_hosts, _bad_hosts = _normalize_allow_hosts(
-                allow_host_specs,
-            )
+            try:
+                net_operator_allow_hosts, _bad_hosts = _normalize_allow_hosts(
+                    allow_host_specs,
+                )
+            except _AllowHostSpecError as e:
+                msg = f"capa: --allow-host: {e}"
+                if use_color:
+                    print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+                else:
+                    print(msg, file=sys.stderr)
+                return 1
             if _bad_hosts:
                 msg = (
                     "capa: --allow-host: could not parse a host from "
@@ -2064,6 +2080,13 @@ def _classify_internal_ip(host: str) -> str | None:
     return None
 
 
+class _AllowHostSpecError(ValueError):
+    """A ``--allow-host`` value whose method suffix is malformed (a
+    near-miss of ``:get`` / ``:post`` the operator plainly intended as a
+    scope). Raised rather than silently broadened to a both-methods grant,
+    the least-authority posture: never grant more authority than asked."""
+
+
 def _parse_allow_host_spec(spec: str) -> tuple[str | None, str]:
     """Parse one ``--allow-host`` value ``<host>[:get|:post]`` into
     ``(normalized_host_or_None, access)`` where ``access`` is ``"get"``,
@@ -2079,17 +2102,44 @@ def _parse_allow_host_spec(spec: str) -> tuple[str | None, str]:
     port 8080. The head is normalized through the SAME
     :func:`capa.ir._net_host.normalize_host` the guest gate's URL-host
     normalization uses, so the operator's spelling and the URL host land on
-    the same allowlist key. Returns ``(None, access)`` when the host cannot
-    be parsed (the caller collects it as a bad spec)."""
+    the same allowlist key.
+
+    A MALFORMED method suffix -- a last colon-segment that READS as a
+    method keyword (ignoring case / surrounding whitespace) but is not
+    EXACTLY ``:get`` / ``:post`` on a valid single-suffix host -- raises
+    :class:`_AllowHostSpecError` rather than falling through to a
+    both-methods grant. This catches ``h:GET`` / ``h:Get`` (mis-cased),
+    ``h:get `` / ``  h:get`` (surrounding whitespace), and ``h:get:post``
+    (two method segments / ambiguous): granting BOTH when the operator
+    clearly meant ONE is a least-authority footgun. A genuine port
+    (``h:8080``) or IPv6 authority (``[::1]:8080``) never reads as a method
+    keyword, so it is untouched. Returns ``(None, access)`` (not an error)
+    only when the host itself cannot be parsed AND no method suffix was
+    attempted (the caller collects it as a bad spec)."""
     from capa.ir._net_host import normalize_host
-    access = "both"
-    head = spec
     if ":" in spec:
-        h, _, tail = spec.rpartition(":")
-        if tail in ("get", "post") and h and normalize_host(h) is not None:
-            head = h
-            access = tail
-    return normalize_host(head), access
+        head, _, tail = spec.rpartition(":")
+        # Does the last colon-segment read as a method keyword? If so the
+        # operator plainly intended a scoped grant, so require it to be
+        # WELL-FORMED; anything else is a rejectable near-miss.
+        if tail.strip().lower() in ("get", "post"):
+            prior_segment = head.rpartition(":")[2].strip().lower()
+            well_formed = (
+                tail in ("get", "post")            # exact, lowercase
+                and spec == spec.strip()           # no surrounding space
+                and bool(head)                     # non-empty host head
+                and normalize_host(head) is not None
+                and prior_segment not in ("get", "post")  # single suffix
+            )
+            if not well_formed:
+                raise _AllowHostSpecError(
+                    f"{spec!r}: malformed method suffix; use "
+                    "'<host>:get' or '<host>:post' (lowercase, no "
+                    "surrounding spaces, a single suffix), or omit the "
+                    "suffix to grant both"
+                )
+            return normalize_host(head), tail
+    return normalize_host(spec), "both"
 
 
 def _normalize_allow_hosts(specs):
@@ -2101,9 +2151,12 @@ def _normalize_allow_hosts(specs):
     :func:`_parse_allow_host_spec` could not resolve to a host (empty, or
     still carrying a path/scheme). A ``h:get`` spec adds ``h`` to the
     get-set only, ``h:post`` to the post-set only, and a suffix-less ``h``
-    to BOTH (backward-compatible with Phase 1). The caller rejects a
-    non-empty ``bad`` with an actionable message and emits the internal-IP
-    SSRF warning for each accepted host."""
+    to BOTH (backward-compatible with Phase 1). A MALFORMED method suffix
+    PROPAGATES as :class:`_AllowHostSpecError` (a near-miss of ``:get`` /
+    ``:post`` is rejected, not silently broadened to both). The caller
+    catches that error and rejects a non-empty ``bad`` with an actionable
+    message, and emits the internal-IP SSRF warning for each accepted
+    host."""
     from capa.ir._net_host import NetGrant
     get_hosts: set[str] = set()
     post_hosts: set[str] = set()

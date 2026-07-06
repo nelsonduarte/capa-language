@@ -1165,7 +1165,12 @@ program read from a host without also permitting a POST to it. The suffix is
 recognised only when the tail after the **last** `:` is exactly `get` /
 `post` **and** the head is a valid host, so a port (`h:8080`) or a bracketed
 IPv6 authority (`[::1]:8080`) is never mistaken for a suffix while
-`[::1]:get` is. Enforcement is guest-side: `$Net_host_allowed_get` admits
+`[::1]:get` is. A **malformed** method suffix -- a near-miss the operator
+plainly meant as a scope (`h:GET` mis-cased, `h:get ` with a stray space,
+`h:get:post` ambiguous) -- is **rejected** with an actionable error rather
+than silently broadened to a both-methods grant (least-authority: never
+grant more than asked). Enforcement is guest-side: `$Net_host_allowed_get`
+admits
 `ceiling | get-granted-hosts`, `$Net_host_allowed_post` admits `ceiling |
 post-granted-hosts`; the compiler-derived literal ceiling is combined into
 both (the literal `net.get` / `net.post` source is the truth). So a `h:get`
