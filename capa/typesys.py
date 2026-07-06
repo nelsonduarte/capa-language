@@ -63,9 +63,33 @@ class TyVar(Ty):
 
 @dataclass(frozen=True)
 class TyFun(Ty):
-    """Function type: ``fun(T1, T2) -> R``."""
+    """Function type: ``fun(T1, T2) -> R``.
+
+    Roadmap S2 (higher-order IFC): a function type carries an
+    information-flow LABEL channel alongside the ordinary types. In
+    Phase A these are CONSTANTS drawn from the two-point lattice
+    (``"public"`` / ``"secret"``):
+
+    - ``ret_label`` is the label of the value a call to the function
+      produces (its RETURN label). ``fun () -> @secret String`` resolves
+      to a ``TyFun`` whose ``ret_label`` is ``"secret"``; a closure that
+      captures a secret and returns it is stamped ``ret_label="secret"``.
+      This is the channel that closes the higher-order false negatives:
+      a secret-returning closure stored where a public-returning slot is
+      declared can leak the secret when invoked at a public sink.
+    - ``param_labels`` is the per-parameter label tuple (bottom / public
+      when omitted). Threaded for completeness; the return label is the
+      channel Phase A acts on.
+
+    The labels DEFAULT to public so the thousands of call sites that
+    build ``TyFun(params, ret)`` keep producing a public-labelled
+    function type unchanged. Labels are part of structural equality, so
+    a public-returning and a secret-returning function type are distinct
+    -- which is exactly what the store-site leak check relies on."""
     params: tuple[Ty, ...]
     ret: Ty
+    param_labels: tuple[str, ...] = ()
+    ret_label: str = "public"
 
 
 @dataclass(frozen=True)
@@ -140,8 +164,19 @@ def ty_str(t: Ty) -> str:
     if isinstance(t, TyVar):
         return t.name
     if isinstance(t, TyFun):
-        params = ", ".join(ty_str(p) for p in t.params)
-        return f"fun({params}) -> {ty_str(t.ret)}"
+        def _lbl(ty: Ty, label: str) -> str:
+            s = ty_str(ty)
+            # Only decorate a non-default (secret) label, so the common
+            # public function type renders exactly as before and existing
+            # diagnostics that quote ``fun(..) -> ..`` are unchanged.
+            return f"@secret {s}" if label == "secret" else s
+        plabels = t.param_labels or ()
+        parts = []
+        for i, p in enumerate(t.params):
+            lbl = plabels[i] if i < len(plabels) else "public"
+            parts.append(_lbl(p, lbl))
+        params = ", ".join(parts)
+        return f"fun({params}) -> {_lbl(t.ret, t.ret_label)}"
     if isinstance(t, TyTuple):
         if len(t.elements) == 1:
             return f"({ty_str(t.elements[0])},)"
@@ -174,6 +209,8 @@ def substitute(t: Ty, mapping: dict[str, Ty]) -> Ty:
         return TyFun(
             tuple(substitute(p, mapping) for p in t.params),
             substitute(t.ret, mapping),
+            param_labels=t.param_labels,
+            ret_label=t.ret_label,
         )
     if isinstance(t, TyTuple):
         return TyTuple(tuple(substitute(e, mapping) for e in t.elements))
@@ -276,6 +313,14 @@ def compatible(expected: Ty, actual: Ty) -> bool:
     if isinstance(expected, TyFun) and isinstance(actual, TyFun):
         if len(expected.params) != len(actual.params):
             return False
+        # Structural type compatibility is deliberately LABEL-BLIND: the
+        # information-flow label channel on a ``TyFun`` (``ret_label`` /
+        # ``param_labels``) does NOT decide type compatibility here, so
+        # passing a secret-returning closure where a public-returning one
+        # is expected is still a well-TYPED program. The label ordering is
+        # enforced separately by the IFC pass (a warn-by-default / strict-
+        # error store-site check), which keeps the two-tier information-flow
+        # discipline out of the hard type checker.
         return (
             all(compatible(e, a) for e, a in zip(expected.params, actual.params))
             and compatible(expected.ret, actual.ret)

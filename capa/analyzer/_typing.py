@@ -51,6 +51,8 @@ class _TypingMixin:
             return TyFun(
                 tuple(self._resolve_ty(p) for p in ty.params),
                 self._resolve_ty(ty.ret),
+                param_labels=ty.param_labels,
+                ret_label=ty.ret_label,
             )
         return ty
 
@@ -88,5 +90,7 @@ class _TypingMixin:
             return TyFun(
                 tuple(self._apply_mapping(p, mapping) for p in ty.params),
                 self._apply_mapping(ty.ret, mapping),
+                param_labels=ty.param_labels,
+                ret_label=ty.ret_label,
             )
         return ty

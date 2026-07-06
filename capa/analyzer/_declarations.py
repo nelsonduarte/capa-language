@@ -484,9 +484,23 @@ class _DeclarationsMixin:
                 self._resolve_type(e) for e in te.elements
             ))
         if isinstance(te, A.FunType):
+            from .. import _labels as L
+            # Roadmap S2 (higher-order IFC): carry the information-flow
+            # label written on a function type onto the resolved ``TyFun``
+            # instead of dropping it. ``Fun() -> @secret String`` has the
+            # ``@secret`` label on its RETURN type expression, so the
+            # resolved function type gets ``ret_label="secret"``; each
+            # parameter type's own label becomes a ``param_label``. An
+            # omitted label is public (the lattice bottom), unchanged.
+            ret_te = te.return_type
             return TyFun(
                 tuple(self._resolve_type(p) for p in te.param_types),
-                self._resolve_type(te.return_type),
+                self._resolve_type(ret_te),
+                param_labels=tuple(
+                    L.normalize(getattr(p, "label", None))
+                    for p in te.param_types
+                ),
+                ret_label=L.normalize(getattr(ret_te, "label", None)),
             )
         if isinstance(te, A.TypeName):
             name = te.name

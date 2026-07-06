@@ -213,14 +213,27 @@ class _ExpressionsMixin:
         # closure's RESULT (``f()``), not the closure value itself. A body
         # that declassifies its captured secret returns PUBLIC here even
         # though the capture label above is SECRET.
-        self._lambda_result_labels[id(e)] = self._lambda_body_result_label(e)
+        result_label = self._lambda_body_result_label(e)
+        self._lambda_result_labels[id(e)] = result_label
 
         self._lambda_local_names_stack.pop()
         self._loop_depth = prev_loop_depth
         self._consumed = prev_consumed
         self._pop_scope()
 
-        return TyFun(tuple(param_tys), ret_ty)
+        # Roadmap S2 (higher-order IFC): stamp the closure's inferred
+        # RETURN label onto its function type. It is the body-result label
+        # -- which already sees THROUGH an in-body ``declassify`` (a
+        # closure that declassifies its captured secret is public here) --
+        # so a secret-capturing closure that returns the secret is
+        # ``ret_label="secret"`` while a declassifying one is public. This
+        # is the channel the store-site leak check reads.
+        param_labels = tuple(L.PUBLIC for _ in param_tys)
+        return TyFun(
+            tuple(param_tys), ret_ty,
+            param_labels=param_labels,
+            ret_label=L.normalize(result_label),
+        )
 
     # -----------------------------------------------------------
     # Lambda parameter / return-type inference
@@ -1172,6 +1185,14 @@ class _ExpressionsMixin:
                     f"{ty_str(substituted)}, got {ty_str(actual_ty)}",
                     fexpr.pos,
                 )
+            # Higher-order IFC: storing a secret-returning closure into a
+            # public-returning struct field launders the secret through
+            # the field's declared (public) type; a later read-and-invoke
+            # at a public sink would leak it. Flag it at the store.
+            self._check_closure_ret_flow(
+                substituted, actual_ty, fexpr.pos,
+                f"stored in field {fname!r}",
+            )
             # Audit hole D (2026-06): the function-call path rejects a
             # capability substituted into a generic type parameter
             # (``_reject_cap_leak_via_substitution``); the same must hold
