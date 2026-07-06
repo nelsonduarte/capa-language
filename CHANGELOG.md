@@ -34,6 +34,17 @@ breaking changes and the discipline is still being shaped.
   allow-all, so the resolved IP is not filtered); `--allow-host` is
   `--wasi`-only.
 
+**Changed.**
+
+- *Internal refactor: the WASI emitter (`capa/ir/_emit_wasm/_wasi.py`, the
+  compiler's largest file at ~6150 lines) is split into a
+  `capa/ir/_emit_wasm/_wasi/` sub-package of per-capability mixins
+  (`_core` = validation / imports / dispatch / Stdio / Clock, `_env`, `_fs`,
+  `_net`, plus a dependency-free `_constants`).* The combined
+  `_WasiEmissionMixin` and every `_WASI_*` constant re-export unchanged, so
+  the emitted WAT is byte-for-byte identical for every example on both
+  backends. No observable effect.
+
 **Fixed.**
 
 - *A `Map` whose VALUE type is `Fun(...)` now compiles on the Wasm backend,
