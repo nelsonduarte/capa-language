@@ -29,6 +29,7 @@ from test_wasi_mode import (  # noqa: E402
 from capa.ir._net_host import NetGrant  # noqa: E402
 from capa.cli import (  # noqa: E402
     _parse_allow_host_spec, _normalize_allow_hosts, _operator_grants_from_args,
+    _AllowHostSpecError,
 )
 
 
@@ -94,11 +95,47 @@ class SpecParsing(unittest.TestCase):
         host, access = _parse_allow_host_spec("https://api.example.com/x:get")
         self.assertEqual((host, access), ("api.example.com", "get"))
 
-    def test_empty_head_before_suffix_is_bad(self):
-        # ":get" has an empty head, so :get is NOT a suffix and the whole
-        # thing fails to normalize to a host.
-        host, _access = _parse_allow_host_spec(":get")
-        self.assertIsNone(host)
+    def test_empty_head_before_suffix_is_rejected(self):
+        # ":get" reads as a method suffix on an empty host: a malformed
+        # near-miss, rejected rather than treated as a plain host.
+        with self.assertRaises(_AllowHostSpecError):
+            _parse_allow_host_spec(":get")
+
+    def test_reject_miscased_suffix(self):
+        # Any non-lowercase casing of a method keyword is a near-miss the
+        # operator clearly meant as a scope: reject, never broaden to both.
+        for spec in ("h:GET", "h:Get", "h:POST", "h:Post"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(_AllowHostSpecError):
+                    _parse_allow_host_spec(spec)
+
+    def test_reject_whitespace_around_suffix(self):
+        for spec in ("h:get ", "h:post ", " h:get"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(_AllowHostSpecError):
+                    _parse_allow_host_spec(spec)
+
+    def test_reject_double_method_segment(self):
+        for spec in ("h:get:post", "h:post:get"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(_AllowHostSpecError):
+                    _parse_allow_host_spec(spec)
+
+    def test_reject_message_names_spec_and_valid_forms(self):
+        with self.assertRaises(_AllowHostSpecError) as cm:
+            _parse_allow_host_spec("h:GET")
+        text = str(cm.exception)
+        self.assertIn("h:GET", text)
+        self.assertIn(":get", text)
+        self.assertIn(":post", text)
+
+    def test_malformed_suffix_propagates_through_normalize(self):
+        with self.assertRaises(_AllowHostSpecError):
+            _normalize_allow_hosts(["ok.example", "h:GET"])
+
+    def test_ipv6_post_suffix_still_accepted(self):
+        host, access = _parse_allow_host_spec("[::1]:post")
+        self.assertEqual((host, access), ("::1", "post"))
 
     def test_normalize_partitions_by_method(self):
         grant, bad = _normalize_allow_hosts(

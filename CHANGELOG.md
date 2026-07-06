@@ -24,7 +24,13 @@ breaking changes and the discipline is still being shaped.
   dynamic `net.post` against `ceiling | post-granted-hosts` (the
   compiler-derived literal ceiling is combined into both), so a `h:get` grant
   denies a dynamic `net.post` to `h` at runtime, and vice versa. The SBOM
-  records the scope as an `access` field (`get` / `post` / `connect`).
+  records the scope as an `access` field (`get` / `post` / `connect`). A
+  MALFORMED method suffix (a near-miss of `:get` / `:post` such as `h:GET`,
+  `h:get ` with a stray space, or the ambiguous `h:get:post`) is REJECTED
+  with an actionable error rather than silently broadened to a
+  both-methods grant, the least-authority posture; a genuine port
+  (`h:8080`) or IPv6 authority (`[::1]:8080`) never reads as a method
+  keyword and is untouched.
 - *`--allow-host <host>`: an operator-declared Net grant for `--wasi`, the
   network analogue of `--preopen`.* Under `--wasi` the compiler rejects a
   program that passes a DYNAMIC (argv-derived / computed) URL to `net.get` /
