@@ -36,6 +36,23 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed.**
 
+- *A `Map` whose VALUE type is `Fun(...)` now compiles on the Wasm backend,
+  at parity with the Python interpreter.* `let m: Map<String, Fun(Int) -> Int>`
+  followed by `m.set("inc", add1)` and `match m.get("inc") { Some(f) -> f(10) }`
+  previously failed at codegen with `Map value type 'Fun(Int) -> Int' not
+  supported on the Wasm backend`; the interpreter already ran it. A closure
+  value is a packed `i64` `(fn_idx << 32) | env_ptr`, so it drops straight
+  into the map's uniform 8-byte value slot with no `extend` / `reinterpret`
+  (exactly how Fun-as-i64 rides in list / tuple / struct aggregate slots).
+  `m.get` reads the slot verbatim into the `Option<Fun>` payload and the
+  bound `f` becomes a Fun local dispatched through the existing closure-call
+  (`call_indirect`) path; `m.values()` yields a `List<Fun>` of
+  directly-callable closures. Covers set+get+call, a string-keyed dispatch
+  table, a CAPTURING closure stored as a map value, an `Int` key,
+  `m.values()`, and a Fun-valued map alongside an `Int`-valued map with no
+  cross-contamination. Byte-identical output across `--run`, `--wasm`,
+  `--wasm --component`, and `--wasm --component --wasi`.
+
 - *A PatTuple or PatStruct as the PAYLOAD of a variant match arm now
   compiles on the Wasm backend, at parity with the Python interpreter.*
   `match x { D((a, b)) -> ... }` (and `Ev(P { x: a, y: b })`) previously
