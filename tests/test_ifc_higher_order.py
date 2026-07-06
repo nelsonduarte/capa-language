@@ -386,6 +386,145 @@ class TestContainerOfClosuresLabel(unittest.TestCase):
         self.assertEqual(_ho_errors(r), [])
 
 
+class TestBlockTailValueClosureLabel(unittest.TestCase):
+    """A block-bodied closure whose value is produced by a trailing
+    statement-form ``if`` (block-as-value, no ``then`` / no ``return``) or
+    a trailing nested block must have that yielded value's label counted in
+    its return label. The label is computed from a single tail-value
+    routine over every block-value node form, so it cannot diverge from the
+    block-value type. Each secret-yielding shape must ERROR under
+    @strict_ifc across all three consumers; the public / declassified forms
+    and the already-caught match / if-expression forms stay as expected."""
+
+    def test_trailing_if_stmt_secret_typed_let(self):
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String, flag: Bool)\n"
+            "    let t: Fun() -> String = fun () -> String =>\n"
+            "        if flag\n"
+            "            s\n"
+            "        else\n"
+            "            \"pub\"\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_trailing_if_stmt_secret_by_name_invoke_sink(self):
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String, flag: Bool)\n"
+            "    let t = fun () -> String =>\n"
+            "        if flag\n"
+            "            s\n"
+            "        else\n"
+            "            \"pub\"\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertEqual(len(_crossfn_errors(r)), 1,
+                         [e.message for e in r.errors])
+
+    def test_trailing_if_stmt_secret_return_laundering(self):
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun make(s: @secret String, flag: Bool) -> Fun() -> String\n"
+            "    return fun () -> String =>\n"
+            "        if flag\n"
+            "            s\n"
+            "        else\n"
+            "            \"pub\"\n"
+            + _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String, flag: Bool)\n"
+            "    let g = make(s, flag)\n"
+            "    invoke(g, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_trailing_nested_block_secret(self):
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String)\n"
+            "    let t: Fun() -> String = fun () -> String =>\n"
+            "        let x = 1\n"
+            "        s\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_trailing_if_stmt_both_public_is_clean(self):
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String, flag: Bool)\n"
+            "    let t: Fun() -> String = fun () -> String =>\n"
+            "        if flag\n"
+            "            \"a\"\n"
+            "        else\n"
+            "            \"pub\"\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_ho_errors(r), [])
+        self.assertEqual(_crossfn_errors(r), [])
+
+    def test_trailing_if_stmt_declassified_branch_is_clean(self):
+        r = _analyze(
+            "const TOKEN: @secret String = \"sk\"\n"
+            + _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, flag: Bool)\n"
+            "    let t: Fun() -> String = fun () -> String =>\n"
+            "        if flag\n"
+            "            declassify(TOKEN, reason: \"ok\")\n"
+            "        else\n"
+            "            \"pub\"\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_ho_errors(r), [])
+        self.assertEqual(_crossfn_errors(r), [])
+
+    def test_trailing_match_secret_still_caught(self):
+        # Regression guard: a trailing match-as-value was already caught.
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String, flag: Bool)\n"
+            "    let t: Fun() -> String = fun () -> String =>\n"
+            "        match flag\n"
+            "            true -> s\n"
+            "            false -> \"pub\"\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_trailing_if_expression_secret_still_caught(self):
+        # Regression guard: the if-EXPRESSION (then) form was already caught.
+        r = _analyze(
+            _INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String, flag: Bool)\n"
+            "    let t: Fun() -> String = "
+            "fun () -> String => if flag then s else \"pub\"\n"
+            "    invoke(t, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_ho_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+
 class TestCombinatorNoFalsePositive(unittest.TestCase):
     """Built-in higher-order combinators must NOT become false positives on
     a secret-returning closure: passing one as a call ARGUMENT is not a

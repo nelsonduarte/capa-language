@@ -863,14 +863,44 @@ class _IfcMixin:
         body = e.body
         if not isinstance(body, A.Block):
             return self._label_of(body)
-        labels = []
-        if body.stmts and isinstance(body.stmts[-1], A.ExprStmt):
-            labels.append(self._label_of(body.stmts[-1].expr))
+        labels = [self._block_tail_value_label(body)]
         for rexpr in self._lambda_return_exprs(body.stmts):
             labels.append(self._label_of(rexpr))
-        if not labels:
-            return L.PUBLIC
         return L.join_all(labels)
+
+    def _block_tail_value_label(self, block) -> str:
+        """The IFC label of the value a BLOCK yields as an expression
+        (block-as-value). Handles every trailing statement form the parser
+        admits as a block's tail value, anchored to the SAME node set the
+        block-value TYPE derivation uses so the label channel cannot
+        diverge from the type channel:
+
+        * a trailing bare expression (``ExprStmt``) -- which already covers
+          an ``if`` EXPRESSION (``if c then a else b``) and a ``match``
+          expression, since those are expressions labelled by ``_label_of``;
+        * a trailing statement-form ``if`` whose branches are blocks (join
+          every branch's tail-value label; a missing ``else`` yields Unit
+          on that path, contributing PUBLIC);
+        * a trailing nested ``Block`` (recurse).
+
+        Any other trailing statement yields no block value (PUBLIC); values
+        produced via ``return`` are joined separately by the caller. A
+        secret on ANY yielding path makes the whole result secret."""
+        if not isinstance(block, A.Block) or not block.stmts:
+            return L.PUBLIC
+        last = block.stmts[-1]
+        if isinstance(last, A.ExprStmt):
+            return self._label_of(last.expr)
+        if isinstance(last, A.IfStmt):
+            labels = [self._block_tail_value_label(last.then_block)]
+            for _cond, blk in last.elif_arms:
+                labels.append(self._block_tail_value_label(blk))
+            if last.else_block is not None:
+                labels.append(self._block_tail_value_label(last.else_block))
+            return L.join_all(labels)
+        if isinstance(last, A.Block):
+            return self._block_tail_value_label(last)
+        return L.PUBLIC
 
     def _lambda_return_exprs(self, node):
         """Yield the value expression of every ``return <expr>`` reachable
