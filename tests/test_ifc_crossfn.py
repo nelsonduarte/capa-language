@@ -959,30 +959,47 @@ class TestCrossFnClosureByNameTwoHop(unittest.TestCase):
         self.assertEqual(len(_crossfn_warnings(r)), 1,
                          [w.message for w in r.warnings])
 
-    def test_var_reassigned_lambdas_stays_skip(self):
-        # A ``var`` REASSIGNED across two lambda literals is ambiguous
-        # (it may denote a different closure), so the boundary check keeps
-        # its documented skip rather than joining -- deliberately trading a
-        # residual false negative for ZERO false positive. Public->secret
-        # AND secret->public are both skipped (no over-approximation, no
-        # false positive even under strict). This remains a documented FN.
-        for first, second in (
-            ("\"pub\"", "s"),   # public then secret
-            ("s", "\"pub\""),   # secret then public
-        ):
-            r = _analyze(
-                self._INVOKE
-                + "@strict_ifc()\n"
-                "fun main(stdio: Stdio, s: @secret String)\n"
-                f"    var f = fun () -> String => {first}\n"
-                f"    f = fun () -> String => {second}\n"
-                "    invoke(f, stdio)\n"
-            )
-            self.assertTrue(r.ok, [e.message for e in r.errors])
-            self.assertEqual(len(_crossfn_warnings(r)), 0,
-                             [w.message for w in r.warnings])
-            self.assertEqual(len(_crossfn_errors(r)), 0,
-                             [e.message for e in r.errors])
+    def test_var_reassigned_public_then_secret_lambda_rejected(self):
+        # Higher-order IFC (roadmap S2): a ``var`` first bound to a PUBLIC
+        # closure has a public-returning slot TYPE; reassigning a
+        # SECRET-returning closure into it is a store-site leak (the slot
+        # can be invoked at a public sink), rejected under @strict_ifc.
+        # This closes the reassigned-var false negative uniformly via the
+        # closure's return label riding on its function type.
+        r = _analyze(
+            self._INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String)\n"
+            "    var f = fun () -> String => \"pub\"\n"
+            "    f = fun () -> String => s\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertTrue(
+            any("closure that returns a @secret value" in e.message
+                for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_var_reassigned_secret_then_public_lambda_stays_clean(self):
+        # The reverse order keeps the ``var``'s FIRST-inferred
+        # secret-returning slot type; reassigning a public closure does
+        # not lower it, and the closure-by-name boundary check keeps its
+        # documented poison-skip for the reassigned name -- so this stays
+        # clean (no false positive), the conservative but FP-free outcome.
+        r = _analyze(
+            self._INVOKE
+            + "@strict_ifc()\n"
+            "fun main(stdio: Stdio, s: @secret String)\n"
+            "    var f = fun () -> String => s\n"
+            "    f = fun () -> String => \"pub\"\n"
+            "    invoke(f, stdio)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        self.assertEqual(len(_crossfn_errors(r)), 0,
+                         [e.message for e in r.errors])
 
     def test_var_reassigned_non_lambda_stays_skip(self):
         # A ``var`` reassigned a NON-lambda value (a call result) can no

@@ -217,6 +217,11 @@ class _StatementsMixin:
                     f"got {ty_str(actual)}",
                     s.value.pos,
                 )
+            # Higher-order IFC: a secret-returning closure bound to a
+            # public-returning ``let`` slot can leak when later invoked.
+            self._check_closure_ret_flow(
+                declared, actual, s.value.pos, "bound to a 'let'",
+            )
             actual = declared
         # Capabilities normally cannot be bound to a ``let`` to
         # prevent aliasing. Exception: a fresh capability
@@ -307,6 +312,11 @@ class _StatementsMixin:
                     f"got {ty_str(actual)}",
                     s.value.pos,
                 )
+            # Higher-order IFC: a secret-returning closure bound to a
+            # public-returning ``var`` slot can leak when later invoked.
+            self._check_closure_ret_flow(
+                declared, actual, s.value.pos, "bound to a 'var'",
+            )
             actual = declared
         if not isinstance(s.value, (A.MethodCall, A.Call)):
             self._check_no_capability(actual, s.pos, "a 'var' binding")
@@ -370,6 +380,17 @@ class _StatementsMixin:
             self._linear_names.discard(s.target.name)
         target_ty = self._check_expr(s.target)
         value_ty = self._check_expr(s.value)
+        # Higher-order IFC: reassigning a secret-returning closure into a
+        # public-returning slot (a ``var`` whose type is public-returning,
+        # or a public-returning struct field) can leak the captured secret
+        # when that slot is later invoked at a public sink. The target's
+        # type is flow-insensitive (a ``var`` keeps its declared / first-
+        # inferred return label), so a public-then-secret reassignment is
+        # caught here while a secret-then-public one keeps the secret slot
+        # type and is caught wherever it is invoked.
+        self._check_closure_ret_flow(
+            target_ty, value_ty, s.value.pos, "assigned into a slot",
+        )
         if isinstance(s.target, A.Ident):
             sym = self.bindings.get(id(s.target))
             # Roadmap S2.3: a reassignment ``x = rhs`` is an EXPLICIT data
@@ -812,6 +833,13 @@ class _StatementsMixin:
             self._err(
                 f"return: expected {ty_str(expected)}, got {ty_str(actual)}",
                 s.pos,
+            )
+        # Higher-order IFC: returning a secret-returning closure as a
+        # public-returning function result launders the captured secret to
+        # the caller, who can invoke it at a public sink. Flag it here.
+        if s.value is not None:
+            self._check_closure_ret_flow(
+                expected, actual, s.pos, "returned",
             )
         # Roadmap S1: ``return h`` transfers the linear obligation to
         # the caller -- discharge it here so it isn't reported as a

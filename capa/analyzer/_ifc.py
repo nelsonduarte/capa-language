@@ -1828,6 +1828,77 @@ class _IfcMixin:
         else:
             self._warn(msg, pos)
 
+    # ---- higher-order closure return-label flow (roadmap S2) -----
+
+    def _closure_ret_label_leak(self, expected, actual) -> bool:
+        """True when ``actual`` carries a function type whose RETURN label
+        is @secret in a position where ``expected`` declares it public --
+        i.e. a secret-returning closure flowing into a public-returning
+        slot. Covariant in the return label: ``secret`` must flow to a
+        ``secret`` (or looser) slot only. Recurses through the return
+        chain and through aggregate positions (tuple elements, generic
+        type arguments) so a closure nested one level deep (a struct field
+        typed ``List<Fun() -> String>``, a tuple of closures) is covered.
+
+        Parameter labels are intentionally NOT walked here: in Phase A a
+        lambda stamps public parameter labels and an unannotated ``Fun``
+        parameter type is public, so the return label is the only channel
+        that carries taint, and skipping the (contravariant) parameter
+        positions avoids a spurious report."""
+        from ..typesys import TyFun, TyTuple, TyName
+        from .. import _labels as L
+        if isinstance(expected, TyFun) and isinstance(actual, TyFun):
+            if not L.flows_to(actual.ret_label, expected.ret_label):
+                return True
+            return self._closure_ret_label_leak(expected.ret, actual.ret)
+        if (
+            isinstance(expected, TyTuple) and isinstance(actual, TyTuple)
+            and len(expected.elements) == len(actual.elements)
+        ):
+            return any(
+                self._closure_ret_label_leak(e, a)
+                for e, a in zip(expected.elements, actual.elements)
+            )
+        if (
+            isinstance(expected, TyName) and isinstance(actual, TyName)
+            and len(expected.args) == len(actual.args)
+        ):
+            return any(
+                self._closure_ret_label_leak(e, a)
+                for e, a in zip(expected.args, actual.args)
+            )
+        return False
+
+    def _check_closure_ret_flow(
+        self, expected, actual, pos, where: str,
+    ) -> None:
+        """Store-site higher-order IFC check. When a secret-returning
+        closure is stored where a public-returning function type is
+        declared -- a struct field, a typed ``let`` / ``var``, a ``var``
+        reassignment, or a function ``return`` -- the secret can leak the
+        moment that stored closure is invoked at a public sink, even
+        though the leak surfaces cross-function and by-name. Flag it here,
+        where the declared slot's public return label and the closure's
+        secret return label are both in hand. Warn by default, hard error
+        under ``@strict_ifc`` -- the same two-tier discipline as the
+        intra-procedural and cross-function sink checks."""
+        if expected is None or actual is None:
+            return
+        if not self._closure_ret_label_leak(expected, actual):
+            return
+        msg = (
+            "information-flow: a closure that returns a @secret value is "
+            f"{where} where a public-returning function type is declared; "
+            "it can leak the secret when the closure is later invoked at a "
+            "public sink. Declare the slot 'Fun(...) -> @secret ...', or "
+            "route the closure's result through declassify(value, reason: "
+            "\"...\") if the disclosure is intended."
+        )
+        if getattr(self, "_strict_ifc", False):
+            self._err(msg, pos)
+        else:
+            self._warn(msg, pos)
+
     # ---- cross-function field-write effect (closes gap 1) --------
 
     def _check_ifc_call_field_effect(
