@@ -11,6 +11,20 @@ breaking changes and the discipline is still being shaped.
 
 **Added.**
 
+- *`--allow-host <host>[:get|:post]`: per-method scope on the operator Net
+  grant.* A grant can now be scoped to READ (`:get`) or WRITE (`:post`)
+  network authority for a host; a suffix-less `--allow-host h` still grants
+  BOTH (backward-compatible). This is least-authority: `--allow-host
+  api.example.com:get` lets a program read from the host over a dynamic URL
+  without permitting a POST to it. The suffix is recognised only when the tail
+  after the last `:` is exactly `get` / `post` and the head is a valid host,
+  so a port (`h:8080`) or a bracketed IPv6 authority (`[::1]:8080`) is never
+  mistaken for a suffix while `[::1]:get` is. Enforcement is guest-side: a
+  dynamic `net.get` is gated against `ceiling | get-granted-hosts` and a
+  dynamic `net.post` against `ceiling | post-granted-hosts` (the
+  compiler-derived literal ceiling is combined into both), so a `h:get` grant
+  denies a dynamic `net.post` to `h` at runtime, and vice versa. The SBOM
+  records the scope as an `access` field (`get` / `post` / `connect`).
 - *`--allow-host <host>`: an operator-declared Net grant for `--wasi`, the
   network analogue of `--preopen`.* Under `--wasi` the compiler rejects a
   program that passes a DYNAMIC (argv-derived / computed) URL to `net.get` /

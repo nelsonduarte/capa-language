@@ -156,7 +156,7 @@ def emit_wat(
     manifest_json: str | None = None,
     wasi: bool = False,
     wasi_dynamic_fs: bool = False,
-    net_operator_allow_hosts: "frozenset[str] | None" = None,
+    net_operator_allow_hosts: "NetGrant | frozenset[str] | None" = None,
 ) -> str:
     """Emit WebAssembly text format (WAT) from a CIR module.
 
@@ -197,7 +197,7 @@ def compile_wat(
     embed_manifest: bool = True,
     wasi: bool = False,
     wasi_dynamic_fs: bool = False,
-    net_operator_allow_hosts: "frozenset[str] | None" = None,
+    net_operator_allow_hosts: "NetGrant | frozenset[str] | None" = None,
 ) -> str:
     """End-to-end AST -> CIR -> WAT convenience helper. Mirrors
     :func:`compile` but targets the Wasm Component Model text form
@@ -379,7 +379,7 @@ def compile_wasm(
     embed_manifest: bool = True,
     wasi: bool = False,
     wasi_dynamic_fs: bool = False,
-    net_operator_allow_hosts: "frozenset[str] | None" = None,
+    net_operator_allow_hosts: "NetGrant | frozenset[str] | None" = None,
 ) -> bytes:
     """End-to-end AST -> CIR -> WAT -> binary Wasm assembly.
 

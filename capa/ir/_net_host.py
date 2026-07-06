@@ -34,7 +34,73 @@ defended here; ``--allow-host`` is a name-level grant only. See
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Iterable, Union
 from urllib.parse import urlparse, urlsplit
+
+
+@dataclass(frozen=True)
+class NetGrant:
+    """The operator ``--allow-host`` grant, scoped PER HTTP METHOD
+    (Phase 2, 2026-07-06).
+
+    ``get_hosts`` are hosts the operator granted READ (GET) network
+    authority; ``post_hosts`` are hosts granted WRITE (POST) authority.
+    A grant with NO method suffix (``--allow-host h``) places the host in
+    BOTH sets, backward-compatible with Phase 1 where a grant meant
+    get+post; ``--allow-host h:get`` grants GET only, ``h:post`` POST
+    only. This is LEAST-AUTHORITY: an operator can grant read-only network
+    to a host without also permitting a write (POST).
+
+    The guest-side gate the emitter materialises is likewise split: the
+    ``$Net_host_allowed_get`` gate admits ``ceiling | get_hosts`` and the
+    ``$Net_host_allowed_post`` gate admits ``ceiling | post_hosts`` (the
+    compiler-derived literal ceiling is COMBINED into both; the operator
+    grant is the only per-method scope). So a ``h:get`` grant lets a
+    dynamic ``net.get`` to ``h`` through but a dynamic ``net.post`` to
+    ``h`` is denied, and vice versa for ``h:post``."""
+
+    get_hosts: frozenset[str] = field(default_factory=frozenset)
+    post_hosts: frozenset[str] = field(default_factory=frozenset)
+
+    @property
+    def all_hosts(self) -> frozenset[str]:
+        """The union of the get- and post-granted hosts (the membership
+        keys the emitter interns; a host granted for either method needs a
+        data segment)."""
+        return self.get_hosts | self.post_hosts
+
+    def access_of(self, host: str) -> str:
+        """The SBOM access label for ``host``: ``"connect"`` when granted
+        for BOTH methods (the no-suffix / get+post grant), else ``"get"``
+        or ``"post"`` for a method-scoped grant."""
+        in_get = host in self.get_hosts
+        in_post = host in self.post_hosts
+        if in_get and in_post:
+            return "connect"
+        return "get" if in_get else "post"
+
+    def __bool__(self) -> bool:
+        return bool(self.get_hosts or self.post_hosts)
+
+
+def coerce_net_grant(
+    value: Union["NetGrant", Iterable[str], None],
+) -> NetGrant:
+    """Coerce a caller-supplied grant value into a :class:`NetGrant`.
+
+    Accepts a :class:`NetGrant` (returned unchanged), ``None`` / empty
+    (an empty grant), or any iterable of host strings -- the Phase-1
+    BACKWARD-COMPATIBLE form, where every host is granted BOTH get and
+    post (a bare ``frozenset({"h"})`` still means get+post). The library
+    callers and the ``--allow-host``-free CLI path never construct a
+    ``NetGrant`` themselves; only the CLI's per-method parse does."""
+    if value is None:
+        return NetGrant()
+    if isinstance(value, NetGrant):
+        return value
+    hosts = frozenset(value)
+    return NetGrant(hosts, hosts)
 
 
 def strip_trailing_dot(host: str) -> str:

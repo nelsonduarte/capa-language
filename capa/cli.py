@@ -1084,7 +1084,7 @@ def _main_dispatch() -> int:
         "--allow-host",
         action="append",
         default=None,
-        metavar="<host>",
+        metavar="<host>[:get|:post]",
         help=(
             "with --wasi, grant the component network authority to reach "
             "<host> as an OPERATOR-DECLARED Net grant (the Net analogue of "
@@ -1093,12 +1093,15 @@ def _main_dispatch() -> int:
             "(the allowlist is a set). <host> may be a bare host, host:port, "
             "or a URL; it is normalized (lowercased, port/userinfo stripped, "
             "trailing dot removed) to the exact-hostname key the guest gate "
-            "checks. Grants get AND post for that host. Recorded in the SBOM "
-            "as operator-declared, distinct from the compiler-derived "
-            "surface. LIMITATION: a hostname allowlist cannot defend against "
-            "DNS rebinding (wasi:http is host-side allow-all, so the "
-            "resolved IP is not filtered); granting an internal/link-local "
-            "IP warns but is allowed."
+            "checks. Append ':get' to grant READ (GET) only or ':post' to "
+            "grant WRITE (POST) only; with no suffix the host is granted for "
+            "BOTH (least-authority: ':get' lets a program read from a host "
+            "without permitting a POST). Recorded in the SBOM as "
+            "operator-declared, distinct from the compiler-derived surface. "
+            "LIMITATION: a hostname allowlist cannot defend against DNS "
+            "rebinding (wasi:http is host-side allow-all, so the resolved IP "
+            "is not filtered); granting an internal/link-local IP warns but "
+            "is allowed."
         ),
     )
     parser.add_argument(
@@ -1649,7 +1652,8 @@ def _main_dispatch() -> int:
         # the signal (``net_operator_allow``) that suppresses the compiler's
         # dynamic-URL Net rejection; the normalized set is unioned into the
         # guest-side host ceiling the emitter materialises.
-        net_operator_allow_hosts: frozenset[str] = frozenset()
+        from capa.ir._net_host import NetGrant
+        net_operator_allow_hosts: NetGrant = NetGrant()
         net_operator_allow = False
         allow_host_specs = getattr(args, "allow_host", None) or []
         if allow_host_specs:
@@ -1660,19 +1664,20 @@ def _main_dispatch() -> int:
                 msg = (
                     "capa: --allow-host: could not parse a host from "
                     + ", ".join(repr(b) for b in _bad_hosts)
-                    + " (expected a bare host, host:port, or a URL)"
+                    + " (expected a bare host, host:port, or a URL, "
+                    "optionally with a :get / :post method suffix)"
                 )
                 if use_color:
                     print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
                 else:
                     print(msg, file=sys.stderr)
                 return 1
-            net_operator_allow = True
+            net_operator_allow = bool(net_operator_allow_hosts)
             # SSRF footgun warning (warn, do NOT block, 2026-07-05): an
             # operator may have a legitimate reason to grant an internal
             # address, but granting one via a DYNAMIC URL is the classic
             # SSRF sink, so it is called out loudly on stderr.
-            for _h in sorted(net_operator_allow_hosts):
+            for _h in sorted(net_operator_allow_hosts.all_hosts):
                 _kind = _classify_internal_ip(_h)
                 if _kind is not None:
                     warn = (
@@ -2059,25 +2064,61 @@ def _classify_internal_ip(host: str) -> str | None:
     return None
 
 
-def _normalize_allow_hosts(specs) -> tuple[frozenset[str], list[str]]:
-    """Normalize each ``--allow-host`` value to its guest allowlist key.
+def _parse_allow_host_spec(spec: str) -> tuple[str | None, str]:
+    """Parse one ``--allow-host`` value ``<host>[:get|:post]`` into
+    ``(normalized_host_or_None, access)`` where ``access`` is ``"get"``,
+    ``"post"``, or ``"both"`` (no method suffix, the Phase-1 get+post
+    grant).
 
-    Returns ``(hosts, bad)`` where ``hosts`` is the frozenset of
-    normalized hosts and ``bad`` holds the raw values
-    :func:`capa.ir._net_host.normalize_host` rejected (empty, or still
-    carrying a path/scheme it could not resolve to a host). The caller
-    rejects a non-empty ``bad`` with an actionable message and emits the
-    internal-IP SSRF warning for each accepted host."""
+    Mirrors :func:`_parse_preopen_spec`: a trailing ``:get`` / ``:post`` is
+    treated as the method suffix ONLY when the head before the LAST ``:``
+    is itself a valid host (``normalize_host`` does not reject it). This
+    keeps a host that carries a genuine ``:`` intact -- ``h:8080`` is host
+    ``h`` port 8080 (``8080`` is not a suffix), ``[::1]:get`` grants GET to
+    ``::1`` (``[::1]`` is a valid host), and ``[::1]:8080`` is host ``::1``
+    port 8080. The head is normalized through the SAME
+    :func:`capa.ir._net_host.normalize_host` the guest gate's URL-host
+    normalization uses, so the operator's spelling and the URL host land on
+    the same allowlist key. Returns ``(None, access)`` when the host cannot
+    be parsed (the caller collects it as a bad spec)."""
     from capa.ir._net_host import normalize_host
-    hosts: set[str] = set()
+    access = "both"
+    head = spec
+    if ":" in spec:
+        h, _, tail = spec.rpartition(":")
+        if tail in ("get", "post") and h and normalize_host(h) is not None:
+            head = h
+            access = tail
+    return normalize_host(head), access
+
+
+def _normalize_allow_hosts(specs):
+    """Normalize each ``--allow-host`` value to a per-method
+    :class:`capa.ir._net_host.NetGrant`.
+
+    Returns ``(grant, bad)`` where ``grant`` is a ``NetGrant`` (get-hosts /
+    post-hosts, each normalized) and ``bad`` holds the raw values
+    :func:`_parse_allow_host_spec` could not resolve to a host (empty, or
+    still carrying a path/scheme). A ``h:get`` spec adds ``h`` to the
+    get-set only, ``h:post`` to the post-set only, and a suffix-less ``h``
+    to BOTH (backward-compatible with Phase 1). The caller rejects a
+    non-empty ``bad`` with an actionable message and emits the internal-IP
+    SSRF warning for each accepted host."""
+    from capa.ir._net_host import NetGrant
+    get_hosts: set[str] = set()
+    post_hosts: set[str] = set()
     bad: list[str] = []
     for spec in specs or []:
-        h = normalize_host(spec)
-        if h is None:
+        host, access = _parse_allow_host_spec(spec)
+        if host is None:
             bad.append(spec)
-        else:
-            hosts.add(h)
-    return frozenset(hosts), bad
+            continue
+        if access in ("get", "both"):
+            get_hosts.add(host)
+        if access in ("post", "both"):
+            post_hosts.add(host)
+    grant = NetGrant(frozenset(get_hosts), frozenset(post_hosts))
+    return grant, bad
 
 
 def _operator_grants_from_args(
@@ -2088,9 +2129,11 @@ def _operator_grants_from_args(
     declared.
 
     Each ``--preopen`` spec ``<dir>[:ro|:rw]`` becomes an fs preopen entry;
-    each ``--allow-host`` spec becomes a net entry
-    ``{"kind": "net", "host": "<normalized>"}``. The block is honestly
-    labelled operator-declared (Level 2) by
+    each ``--allow-host`` spec becomes a net entry ``{"kind": "net",
+    "host": "<normalized>", "access": "get"|"post"|"connect"}`` -- the
+    method SCOPE of the grant, ``"connect"`` for a suffix-less (get+post)
+    grant, else the granted method. The block is honestly labelled
+    operator-declared (Level 2) by
     :func:`capa.manifest.build_operator_declared_grants`, distinct from the
     compiler-derived surface."""
     specs = preopen_specs or []
@@ -2105,9 +2148,10 @@ def _operator_grants_from_args(
             "host_dir": host_dir,
             "permission": "rw" if read_write else "ro",
         })
-    net_hosts, _bad = _normalize_allow_hosts(host_specs)
+    grant, _bad = _normalize_allow_hosts(host_specs)
     net_grants = [
-        {"kind": "net", "host": h} for h in sorted(net_hosts)
+        {"kind": "net", "host": h, "access": grant.access_of(h)}
+        for h in sorted(grant.all_hosts)
     ]
     return build_operator_declared_grants(preopens, net_hosts=net_grants)
 
