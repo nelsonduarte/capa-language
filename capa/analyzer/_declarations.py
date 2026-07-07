@@ -35,21 +35,6 @@ from ..typesys import (
 )
 
 
-def _te_contains_fun(te) -> bool:
-    """True if the AST type expression ``te`` is, or transitively
-    contains, a ``FunType`` (feature #4, F1). A bare closure type has no
-    canonical-ABI lowering, so it cannot cross a Wasm component boundary."""
-    if te is None:
-        return False
-    if isinstance(te, A.FunType):
-        return True
-    if isinstance(te, A.TypeName):
-        return any(_te_contains_fun(a) for a in (te.args or ()))
-    if isinstance(te, A.TupleType):
-        return any(_te_contains_fun(e) for e in te.elements)
-    return False
-
-
 _RESERVED_VARIANT_NAMES = frozenset({
     "Ok",    # built-in Result variant
     "Err",   # built-in Result variant
@@ -455,22 +440,24 @@ class _DeclarationsMixin:
                 # explicit authority the component may receive.
                 continue
             self._check_foreign_crossing_type(
-                p.type_expr, pty, p.pos,
+                pty, p.pos,
                 f"parameter {p.name!r} of foreign-component method {label!r}",
             )
         if method.return_type is not None:
             rty = self._resolve_type(method.return_type)
             self._check_foreign_crossing_type(
-                method.return_type, rty, method.pos,
+                rty, method.pos,
                 f"return type of foreign-component method {label!r}",
             )
 
     def _check_foreign_crossing_type(
-        self, te: A.TypeExpr, ty: Ty, pos, context: str,
+        self, ty: Ty, pos, context: str,
     ) -> None:
         """Reject a type that cannot cross a Wasm component boundary in
         ``context``: an ``Unsafe`` anywhere, any capability nested in the
-        crossing value, or a bare ``Fun(...)`` closure type."""
+        crossing value, or a ``Fun(...)`` closure reachable anywhere in
+        the type (including through named struct fields / variant
+        payloads)."""
         unsafe = self._contains_unsafe(ty)
         if unsafe is not None:
             self._err(
@@ -490,7 +477,7 @@ class _DeclarationsMixin:
                 pos,
             )
             return
-        if _te_contains_fun(te):
+        if self._ty_contains_fun_deep(ty):
             self._err(
                 f"a function / closure type cannot appear in {context}; a "
                 f"bare `Fun(...)` is not expressible across a Wasm component "
@@ -499,6 +486,57 @@ class _DeclarationsMixin:
                 pos,
             )
             return
+
+    def _ty_contains_fun_deep(
+        self, ty: Ty, _seen: "frozenset[str] | None" = None,
+    ) -> bool:
+        """True if ``ty`` is, or transitively REACHES, a function /
+        closure type (feature #4, F1). Unlike the shallow syntactic
+        check, this resolves a NAMED type to its STRUCT FIELDS and
+        SUM-VARIANT PAYLOADS and recurses, so a ``Fun`` reachable only
+        through a named type's field / payload (``type Box { f: Fun() ->
+        Unit }``, ``type Wrap = W(Fun() -> Unit)``, ``List<Fun() ->
+        Unit>`` inside a field, struct-of-struct, ...) is caught.
+
+        A ``Fun`` reaching a crossing type is both non-canonical-ABI-
+        expressible AND can carry undeclared CAPTURED authority (the
+        exact quarantine violation F2 relies on being impossible), so it
+        must be rejected wherever it is reachable, not only as a literal
+        head. The walk mirrors the Wasm backend's
+        ``_unsafe_bearing_type_names`` fixpoint (struct fields +
+        variant payloads + generic args) and is cycle-guarded on the
+        type name for recursive types (``type Tree { kids: List<Tree>
+        }``)."""
+        from . import SymbolKind
+
+        if isinstance(ty, TyFun):
+            return True
+        if isinstance(ty, TyTuple):
+            return any(self._ty_contains_fun_deep(e, _seen) for e in ty.elements)
+        if isinstance(ty, TyName):
+            seen = _seen if _seen is not None else frozenset()
+            # Generic arguments and built-in collection payloads
+            # (List<T>, Set<T>, Option<T>, Result<T, E>, Map<K, V>) are
+            # all carried in ``args``.
+            for a in ty.args:
+                if self._ty_contains_fun_deep(a, seen):
+                    return True
+            if ty.name in seen:
+                return False
+            sym = self.global_scope.lookup(ty.name)
+            if sym is None:
+                return False
+            deeper = seen | {ty.name}
+            if sym.kind == SymbolKind.TYPE_STRUCT:
+                for fty in sym.struct_fields.values():
+                    if self._ty_contains_fun_deep(fty, deeper):
+                        return True
+            elif sym.kind == SymbolKind.TYPE_SUM:
+                for vsym in sym.sum_variants.values():
+                    for pty in vsym.variant_payload_tys:
+                        if self._ty_contains_fun_deep(pty, deeper):
+                            return True
+        return False
 
     def _register_impl_methods(self, impl: A.ImplBlock) -> None:
         """Attach impl-block methods to the target type's Symbol.
