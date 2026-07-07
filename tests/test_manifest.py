@@ -34,11 +34,19 @@ from typing import Any
 
 from capa import Lexer, Parser, analyze
 from capa.manifest import (
+    CANONICALIZATION_SCHEME,
+    CONTENT_INTEGRITY_KEY,
+    DIGEST_ALGORITHM,
     SCHEMA_VERSION,
     build_cyclonedx,
     build_manifest,
     build_provenance,
     build_spdx,
+    canonical_bytes,
+    canonical_json,
+    canonical_manifest,
+    content_integrity_block,
+    manifest_digest,
 )
 from capa.loader import ModuleLoader
 
@@ -2170,6 +2178,157 @@ class TestSelImportDemangle(unittest.TestCase):
         leak = re.compile(r"sel__")
         for uc in m["user_defined_capabilities"]:
             self.assertIsNone(leak.search(uc["name"]))
+
+
+class TestCanonicalForm(unittest.TestCase):
+    """Composition S1: a canonical, byte-stable serialisation of the
+    manifest that is identical for semantically-equal manifests
+    regardless of dict key-insertion order, and hashable."""
+
+    _SRC = (
+        "capability SendEmail\n"
+        "    fun send(self, to: String) -> Bool\n"
+        "type SmtpMailer { net: Net }\n"
+        "impl SendEmail for SmtpMailer\n"
+        "    fun send(self, to: String) -> Bool\n"
+        "        return true\n"
+        "fun main(stdio: Stdio)\n"
+        "    stdio.println(\"ok\")\n"
+    )
+
+    def test_canonical_json_is_compact_and_sorted(self):
+        # Fixed separators (no spaces) and recursively sorted keys.
+        obj = {"b": 1, "a": {"d": 2, "c": 3}}
+        self.assertEqual(canonical_json(obj), '{"a":{"c":3,"d":2},"b":1}')
+
+    def test_canonical_bytes_are_utf8_of_canonical_json(self):
+        obj = {"name": "café"}
+        self.assertEqual(
+            canonical_bytes(obj), canonical_json(obj).encode("utf-8"),
+        )
+        # ensure_ascii=False: the non-ASCII char is UTF-8, not \\u escaped.
+        self.assertIn("café", canonical_json(obj))
+
+    def test_key_order_independence(self):
+        # Two semantically-equal dicts, keys inserted in different order,
+        # canonicalise to identical bytes + identical digest.
+        a = {"x": 1, "y": {"p": True, "q": [1, 2, 3]}}
+        b = {"y": {"q": [1, 2, 3], "p": True}, "x": 1}
+        self.assertEqual(canonical_json(a), canonical_json(b))
+        self.assertEqual(manifest_digest(a), manifest_digest(b))
+
+    def test_list_order_is_preserved(self):
+        # Array order is semantic and must NOT be sorted.
+        self.assertEqual(canonical_json([3, 1, 2]), "[3,1,2]")
+
+    def test_manifest_canonical_bytes_are_permutation_stable(self):
+        # Rebuild the manifest, deep-permute every dict's key order, and
+        # assert the canonical bytes + digest are unchanged.
+        m = build_manifest(_analysed(self._SRC))
+        permuted = _reverse_key_order(m)
+        self.assertNotEqual(
+            list(m.keys()), list(permuted.keys()),
+        )  # the permutation actually reordered top-level keys
+        self.assertEqual(canonical_json(m), canonical_json(permuted))
+        self.assertEqual(manifest_digest(m), manifest_digest(permuted))
+
+    def test_digest_is_stable_across_builds(self):
+        m1 = build_manifest(_analysed(self._SRC))
+        m2 = build_manifest(_analysed(self._SRC))
+        self.assertEqual(manifest_digest(m1), manifest_digest(m2))
+
+    def test_digest_changes_when_a_capability_flips(self):
+        # Drop main's Stdio capability (a genuine capability-surface
+        # change) and the digest must move.
+        base = build_manifest(_analysed(self._SRC))
+        flipped_src = self._SRC.replace(
+            "fun main(stdio: Stdio)\n    stdio.println(\"ok\")\n",
+            "fun main()\n    return\n",
+        )
+        flipped = build_manifest(_analysed(flipped_src))
+        self.assertNotEqual(manifest_digest(base), manifest_digest(flipped))
+
+    def test_digest_is_hex_sha256(self):
+        d = manifest_digest(build_manifest(_analysed(self._SRC)))
+        self.assertRegex(d, r"^[0-9a-f]{64}$")
+
+
+class TestContentIntegrityEnvelope(unittest.TestCase):
+    """The content_integrity envelope: digest + detached-signature slot,
+    attached additively and self-reference-free."""
+
+    _SRC = "fun main(stdio: Stdio)\n    stdio.println(\"ok\")\n"
+
+    def test_build_manifest_has_no_envelope(self):
+        # The pretty manifest is unchanged: no content_integrity key.
+        m = build_manifest(_analysed(self._SRC))
+        self.assertNotIn(CONTENT_INTEGRITY_KEY, m)
+
+    def test_canonical_manifest_attaches_envelope(self):
+        m = build_manifest(_analysed(self._SRC))
+        wrapped = canonical_manifest(m)
+        self.assertIn(CONTENT_INTEGRITY_KEY, wrapped)
+        ci = wrapped[CONTENT_INTEGRITY_KEY]
+        self.assertEqual(ci["canonicalization"], CANONICALIZATION_SCHEME)
+        self.assertEqual(ci["digest"]["algorithm"], DIGEST_ALGORITHM)
+        self.assertEqual(ci["digest"]["value"], manifest_digest(m))
+
+    def test_signature_slot_is_present_and_empty(self):
+        wrapped = canonical_manifest(build_manifest(_analysed(self._SRC)))
+        sig = wrapped[CONTENT_INTEGRITY_KEY]["signature"]
+        self.assertEqual(
+            set(sig.keys()), {"algorithm", "value", "key_id"},
+        )
+        # Unsigned by construction: the compiler holds no keys (SLSA-L1).
+        self.assertIsNone(sig["algorithm"])
+        self.assertIsNone(sig["value"])
+        self.assertIsNone(sig["key_id"])
+
+    def test_digest_is_self_reference_free(self):
+        # Attaching the envelope must not change the digest, and the
+        # digest inside the envelope must equal the bare-manifest digest.
+        m = build_manifest(_analysed(self._SRC))
+        bare_digest = manifest_digest(m)
+        wrapped = canonical_manifest(m)
+        self.assertEqual(
+            wrapped[CONTENT_INTEGRITY_KEY]["digest"]["value"], bare_digest,
+        )
+        # The digest of the WRAPPED manifest (envelope stripped) is the
+        # same as the bare digest.
+        self.assertEqual(manifest_digest(wrapped), bare_digest)
+
+    def test_canonical_manifest_is_idempotent(self):
+        m = build_manifest(_analysed(self._SRC))
+        once = canonical_manifest(m)
+        twice = canonical_manifest(once)
+        self.assertEqual(canonical_json(once), canonical_json(twice))
+
+    def test_canonical_manifest_does_not_mutate_input(self):
+        m = build_manifest(_analysed(self._SRC))
+        before = canonical_json(m)
+        canonical_manifest(m)
+        self.assertNotIn(CONTENT_INTEGRITY_KEY, m)
+        self.assertEqual(canonical_json(m), before)
+
+    def test_content_integrity_block_matches_helper(self):
+        m = build_manifest(_analysed(self._SRC))
+        block = content_integrity_block(m)
+        self.assertEqual(block["digest"]["value"], manifest_digest(m))
+
+
+def _reverse_key_order(obj):
+    """Recursively rebuild ``obj`` with every dict's keys in reversed
+    insertion order (and list elements themselves reversed-then-restored
+    is NOT done -- list order is left intact). Used to prove the canonical
+    form is invariant under key-insertion-order permutation."""
+    if isinstance(obj, dict):
+        return {
+            k: _reverse_key_order(v)
+            for k, v in reversed(list(obj.items()))
+        }
+    if isinstance(obj, list):
+        return [_reverse_key_order(v) for v in obj]
+    return obj
 
 
 if __name__ == "__main__":

@@ -381,6 +381,43 @@ class TestCliInProcess(unittest.TestCase):
             doc = json.loads(out)
             self.assertIsInstance(doc, dict)
 
+    def test_manifest_digest_emits_canonical_artifact(self):
+        import json
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            p = _write_capa(td_path, "hello.capa", _HELLO)
+            rc, out, err = _run_main(
+                ["--manifest-digest", str(p)], cwd=td_path,
+            )
+            self.assertEqual(rc, 0, err)
+            doc = json.loads(out)
+            self.assertIn("content_integrity", doc)
+            ci = doc["content_integrity"]
+            self.assertRegex(ci["digest"]["value"], r"^[0-9a-f]{64}$")
+            self.assertEqual(ci["digest"]["algorithm"], "sha256")
+            # The printed bytes ARE the canonical form: re-parsing and
+            # re-canonicalising the output reproduces it exactly.
+            from capa.manifest import canonical_json
+            self.assertEqual(out.rstrip("\n"), canonical_json(doc))
+
+    def test_manifest_digest_is_reproducible_across_cwd(self):
+        # Same source built from two different working directories with
+        # SOURCE_DATE_EPOCH pinned yields byte-identical canonical output.
+        env = {"SOURCE_DATE_EPOCH": "1700000000"}
+        with tempfile.TemporaryDirectory() as td1, \
+                tempfile.TemporaryDirectory() as td2:
+            p1 = _write_capa(Path(td1), "hello.capa", _HELLO)
+            p2 = _write_capa(Path(td2), "hello.capa", _HELLO)
+            rc1, out1, err1 = _run_main(
+                ["--manifest-digest", str(p1)], cwd=td1, env=env,
+            )
+            rc2, out2, err2 = _run_main(
+                ["--manifest-digest", str(p2)], cwd=td2, env=env,
+            )
+            self.assertEqual(rc1, 0, err1)
+            self.assertEqual(rc2, 0, err2)
+            self.assertEqual(out1, out2)
+
     def test_cyclonedx_emits_json(self):
         import json
         with tempfile.TemporaryDirectory() as td:

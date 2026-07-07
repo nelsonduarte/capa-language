@@ -907,6 +907,19 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--manifest-digest",
+        action="store_true",
+        help=(
+            "emit the CANONICAL, content-addressable capability manifest: "
+            "the same manifest as --manifest, serialised in a byte-stable "
+            "key-sorted form and wrapped with a content_integrity envelope "
+            "carrying a sha256 digest over the canonical bytes plus an "
+            "(empty) detached-signature slot. Byte-reproducible across "
+            "runs and machines; the digest is what an external signer "
+            "signs (the compiler holds no keys)."
+        ),
+    )
+    parser.add_argument(
         "--cyclonedx",
         action="store_true",
         help=(
@@ -1234,7 +1247,8 @@ def _main_dispatch() -> int:
         return 1
 
     needs_analysis = (
-        args.check or args.run or args.manifest or args.cyclonedx
+        args.check or args.run or args.manifest or args.manifest_digest
+        or args.cyclonedx
         or args.spdx or args.vex or args.provenance or args.doc
         or args.wit or args.wasm
     )
@@ -1317,7 +1331,8 @@ def _main_dispatch() -> int:
         return 0
 
     result = None
-    if (args.check or args.run or args.manifest or args.cyclonedx
+    if (args.check or args.run or args.manifest or args.manifest_digest
+            or args.cyclonedx
             or args.spdx or args.vex or args.provenance or args.doc
             or args.wit or args.wasm):
         # Semantic analysis is required before running. If the
@@ -1399,6 +1414,19 @@ def _main_dispatch() -> int:
                 operator_declared_grants=_operator_grants,
             )
             emit_artifact(json.dumps(manifest, indent=2))
+            return 0
+        if args.manifest_digest:
+            from capa.manifest import canonical_json, canonical_manifest
+            manifest = build_manifest(
+                module, filename=filename,
+                expr_labels=result.expr_labels,
+                operator_declared_grants=_operator_grants,
+            )
+            # Emit the canonical bytes verbatim (key-sorted, fixed
+            # separators): what is printed is exactly what the digest in
+            # the content_integrity envelope is taken over, minus the
+            # envelope itself. Content-addressable and byte-reproducible.
+            emit_artifact(canonical_json(canonical_manifest(manifest)))
             return 0
         if args.cyclonedx or args.spdx or args.vex or args.provenance:
             # Each invocation emits exactly one artefact (every branch
@@ -1540,7 +1568,9 @@ def _main_dispatch() -> int:
     # Reject it on any OTHER invocation with an actionable message rather
     # than silently ignore it.
     _emitting_sbom = bool(
-        getattr(args, "manifest", False) or getattr(args, "cyclonedx", False)
+        getattr(args, "manifest", False)
+        or getattr(args, "manifest_digest", False)
+        or getattr(args, "cyclonedx", False)
         or getattr(args, "spdx", False)
     )
     if (getattr(args, "preopen", None)
