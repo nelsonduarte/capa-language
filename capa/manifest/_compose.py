@@ -17,7 +17,13 @@ The three moving parts, in order:
    package; the DEEPEST enclosing package wins, so a function under
    ``vendor/a/vendor/b`` is attributed to ``b``, not ``a``. ``caps(P)``
    is the union of the (transitively-reachable) capabilities of the
-   functions attributed to ``P``.
+   functions attributed to ``P``. ``caps(P)`` is REACHABILITY-SCOPED: it
+   is drawn from the flattened manifest, which holds only the source the
+   loader LINKED, so a declared + vendored + analyzable but never-
+   IMPORTED dependency shows an empty attributed set (dead code is not
+   shipped). Its declared-but-unresolvable sub-dependencies still compose
+   as TOP through the DAG edges below, which are read from ``capa.toml``
+   independently of what the program imports.
 
 2. THE PACKAGE DAG. Built by reading the root ``capa.toml``'s declared
    ``[dependencies]`` and RECURSIVELY each resolvable dependency's OWN
@@ -152,15 +158,38 @@ class PackageNode:
 
 def _rel_display(path: Path, root_dir: Path) -> str:
     """Root-relative POSIX display of ``path`` (``"."`` for the root
-    itself). A path outside the root tree keeps its absolute form -- it
-    has no stable base, and "this came from outside the product tree" is
-    information the auditor wants -- mirroring the single-program
-    manifest's ``_display_path``."""
+    itself).
+
+    A path OUTSIDE the root tree (a ``../sib`` path dependency) is
+    emitted relative to the root with ``..`` segments, NEVER as an
+    absolute path: an absolute path would serialise the builder's
+    machine-specific filesystem layout into the artifact, so two builds
+    of the same product at different absolute locations would produce
+    different digests -- breaking the canonical/reproducible contract and
+    leaking local layout. A ``..``-relative path stays stable across
+    machines and working directories as long as the relative layout
+    between the product and its path dep holds (the reproducibility
+    contract for path deps). ``os.path.relpath`` is computed purely
+    lexically over the resolved paths, so it never touches the
+    filesystem and is deterministic."""
+    import os
+
     try:
-        rel = path.resolve().relative_to(root_dir.resolve())
-    except (ValueError, OSError):
+        resolved = path.resolve()
+        root = root_dir.resolve()
+    except OSError:
         return path.as_posix()
-    return rel.as_posix() if rel.parts else "."
+    try:
+        rel = resolved.relative_to(root)
+        return rel.as_posix() if rel.parts else "."
+    except ValueError:
+        # Outside the root tree: fall back to a lexical, ``..``-bearing
+        # relative path. On different drives (Windows) relpath raises;
+        # only then is there genuinely no relative base.
+        try:
+            return Path(os.path.relpath(resolved, root)).as_posix()
+        except ValueError:
+            return resolved.as_posix()
 
 
 def _classify_dependency(
@@ -375,41 +404,75 @@ def _pos_line_col(pos: str) -> tuple[int, int]:
 def _compose_node(
     node: PackageNode,
     nodes: dict[Path, PackageNode],
-    memo: dict[Path, Authority],
-    in_progress: set[Path],
 ) -> Authority:
-    """Roll ``node``'s subtree up bottom-up, with TOP domination."""
-    if node.manifest_dir in memo:
-        return memo[node.manifest_dir]
-    own = _own_authority(node)
-    if node.manifest_dir in in_progress:
-        # Dependency cycle: the node's own authority is already being
-        # accumulated on the enclosing path. Return it (never drop caps)
-        # without recursing again.
-        return own
-    in_progress.add(node.manifest_dir)
+    """``composed(node)``: the join of ``node``'s OWN authority over its
+    ENTIRE transitively-reachable dependency set.
 
-    result = own
-    for edge in node.dep_edges:
-        if edge.resolved and edge.target_dir is not None:
-            child = nodes[edge.target_dir.resolve()]
-            result = result.join(
-                _compose_node(child, nodes, memo, in_progress)
-            )
-        else:
-            result = result.join(Authority(
-                unknown=True,
-                reasons=((node.name, edge.name, edge.reason or "unresolved"),),
-            ))
+    Computed as an explicit closure walk rather than a recursive
+    subtree fold, so a DEPENDENCY CYCLE can never cause a node to
+    under-count capabilities or drop a TOP flag. A recursive fold that
+    cut a cycle by returning a node's own (partial) authority and then
+    memoised that partial would leave a cycle-closer's ``composed_*``
+    fields under-approximating everything reachable only through the cut
+    edge -- unsound, and S3 will check ceilings against exactly these
+    per-package composed sets.
 
-    in_progress.discard(node.manifest_dir)
-    memo[node.manifest_dir] = result
+    The walk collects every node reachable from ``node`` over resolved
+    edges (``seen`` makes it cycle-safe) and joins each reachable node's
+    own authority; every UNRESOLVED edge encountered anywhere in the
+    closure contributes a TOP element. Because :meth:`Authority.join` is
+    commutative and associative (union of caps, OR of unknown, union of
+    reasons), the result is independent of visit order, and TOP dominates
+    naturally: a single unresolved (or Unsafe-crossing) node anywhere in
+    the closure marks the whole composed value authority-unknown."""
+    result = Authority()
+    seen: set[Path] = set()
+    stack: list[Path] = [node.manifest_dir]
+    while stack:
+        d = stack.pop()
+        if d in seen:
+            continue
+        seen.add(d)
+        n = nodes[d]
+        result = result.join(_own_authority(n))
+        for edge in n.dep_edges:
+            if edge.resolved and edge.target_dir is not None:
+                target = edge.target_dir.resolve()
+                if target not in seen:
+                    stack.append(target)
+            else:
+                result = result.join(Authority(
+                    unknown=True,
+                    reasons=((n.name, edge.name, edge.reason or "unresolved"),),
+                ))
     return result
 
 
 def _own_authority(node: PackageNode) -> Authority:
     """The package's OWN (non-transitive) authority: its attributed
-    capabilities, plus a TOP mark when it crosses ``Unsafe``."""
+    capabilities, plus a TOP mark when it crosses ``Unsafe``.
+
+    The TOP trigger for an ANALYZED package is ``has_unsafe`` ONLY, even
+    though the single-program manifest drops ``provably_excluded`` on
+    ``has_unsafe OR has_fun_in_sig OR sig_unprovable``. This is a
+    deliberate, sound choice, NOT an oversight:
+
+    - ``Unsafe`` is a genuine escape to unanalyzable (FFI) code that can
+      exercise authority the type system never sees, so a package that
+      crosses it cannot have a vouched-for capability set -> TOP.
+
+    - ``has_fun_in_sig`` / ``sig_unprovable`` (a package that TAKES a
+      ``Fun(...)`` and invokes it) is NOT a product-level authority
+      escape. A closure's authority is accounted at the package where the
+      closure is CREATED -- its captures require THAT package to hold the
+      capability, so the capability is attributed there. A dependency
+      exposing ``invoke(f: Fun() -> Unit)`` gains no authority of its own;
+      when the root passes it a ``Stdio``-capturing closure, ``Stdio`` is
+      attributed to the ROOT (the creator) and composes up into the
+      product regardless. Marking every higher-order-taking package TOP
+      would therefore be an unsound-for-usability over-approximation: it
+      would flag most real packages authority-unknown for zero soundness
+      gain. (Pinned by ``test_invoke_closure_product_is_sound_without_top``.)"""
     reasons: tuple[tuple[str, str, str], ...] = ()
     if node.crosses_unsafe:
         reasons = ((node.name, node.name, (
@@ -453,9 +516,9 @@ def build_composed_sbom(
     nodes, root = build_package_dag(root_dir)
     _attribute(module, manifest, nodes, root.manifest_dir)
 
-    memo: dict[Path, Authority] = {}
-    for node in nodes.values():
-        _compose_node(node, nodes, memo, set())
+    composed_by_dir: dict[Path, Authority] = {
+        d: _compose_node(node, nodes) for d, node in nodes.items()
+    }
 
     # Deterministic package ordering: by root-relative path, then name.
     ordered = sorted(nodes.values(), key=lambda n: (n.rel_path, n.name))
@@ -464,7 +527,7 @@ def build_composed_sbom(
     edges: list[dict[str, Any]] = []
     unresolved: list[dict[str, str]] = []
     for node in ordered:
-        composed = memo[node.manifest_dir]
+        composed = composed_by_dir[node.manifest_dir]
         own = _own_authority(node)
         packages.append({
             "name": node.name,
@@ -498,7 +561,7 @@ def build_composed_sbom(
     edges.sort(key=lambda e: (e["from"], e["dependency"]))
     unresolved.sort(key=lambda u: (u["declared_in"], u["dependency"]))
 
-    product = memo[root.manifest_dir]
+    product = composed_by_dir[root.manifest_dir]
     return {
         "capa_version": capa_version,
         "composed_schema_version": COMPOSED_SCHEMA_VERSION,

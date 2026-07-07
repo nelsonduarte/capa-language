@@ -43,6 +43,9 @@ from capa.manifest import (
     find_package_root,
     manifest_digest,
 )
+from capa.manifest._compose import (
+    Authority, DepEdge, PackageNode, _compose_node,
+)
 
 
 def _write(base: Path, rel: str, text: str) -> None:
@@ -426,6 +429,158 @@ class TestPackageDag(_TmpTree):
         names = sorted(n.name for n in nodes.values())
         self.assertEqual(names, ["mid", "prod"])
         self.assertEqual(node_root.name, "prod")
+
+
+def _node(name, caps=(), unsafe=False):
+    d = Path(f"/pkg/{name}").resolve()
+    return PackageNode(
+        name=name, version="0", manifest_dir=d, rel_path=name,
+        attributed_caps=frozenset(caps), crosses_unsafe=unsafe,
+    )
+
+
+def _edge(target_node, resolved=True, name=None, reason=None):
+    return DepEdge(
+        name=name or (target_node.name if target_node else "x"),
+        target_dir=target_node.manifest_dir if target_node else None,
+        resolved=resolved,
+        reason=reason,
+    )
+
+
+class TestCycleSoundness(unittest.TestCase):
+    """A dependency CYCLE must never make a node under-count capabilities
+    or drop a TOP flag: each node's composed_* is the join of its OWN
+    authority over its ENTIRE transitively-reachable dependency set."""
+
+    def _nodes(self, *ns):
+        return {n.manifest_dir: n for n in ns}
+
+    def test_cycle_closer_sees_caps_through_the_cut_edge(self):
+        # Declared cycle: R->B, B->C, B->D, C->B; D carries Net.
+        # C reaches Net only through the cut edge C->B->D.
+        R = _node("R")
+        B = _node("B")
+        C = _node("C")
+        D = _node("D", caps=["Net"])
+        R.dep_edges = [_edge(B)]
+        B.dep_edges = [_edge(C), _edge(D)]
+        C.dep_edges = [_edge(B)]
+        nodes = self._nodes(R, B, C, D)
+        composed_C = _compose_node(C, nodes)
+        self.assertIn("Net", composed_C.caps)
+        # And the root sees it too.
+        self.assertIn("Net", _compose_node(R, nodes).caps)
+
+    def test_cycle_closer_inherits_top_through_the_cut_edge(self):
+        # Same cycle, but D is unresolved (TOP). C must be authority-unknown.
+        R = _node("R")
+        B = _node("B")
+        C = _node("C")
+        R.dep_edges = [_edge(B)]
+        B.dep_edges = [_edge(C), _edge(None, resolved=False, name="D",
+                                       reason="no vendored package directory")]
+        C.dep_edges = [_edge(B)]
+        nodes = self._nodes(R, B, C)
+        composed_C = _compose_node(C, nodes)
+        self.assertTrue(composed_C.unknown)
+        self.assertTrue(_compose_node(R, nodes).unknown)
+
+    def test_two_cycle_both_nodes_see_the_full_union(self):
+        # A<->B; A has Fs, B has Net; both composed = {Fs, Net}.
+        A = _node("A", caps=["Fs"])
+        B = _node("B", caps=["Net"])
+        A.dep_edges = [_edge(B)]
+        B.dep_edges = [_edge(A)]
+        nodes = self._nodes(A, B)
+        self.assertEqual(_compose_node(A, nodes).caps, frozenset({"Fs", "Net"}))
+        self.assertEqual(_compose_node(B, nodes).caps, frozenset({"Fs", "Net"}))
+
+    def test_join_is_order_independent(self):
+        # Edge order must not change the composed result (join is
+        # commutative + associative).
+        A = _node("A", caps=["Fs"])
+        B = _node("B", caps=["Net"])
+        C = _node("C", caps=["Stdio"])
+        A.dep_edges = [_edge(B), _edge(C)]
+        r1 = _compose_node(A, self._nodes(A, B, C))
+        A.dep_edges = [_edge(C), _edge(B)]
+        r2 = _compose_node(A, self._nodes(A, B, C))
+        self.assertEqual(r1.caps, r2.caps)
+        self.assertEqual(r1.unknown, r2.unknown)
+        self.assertEqual(r1.reasons, r2.reasons)
+
+
+class TestHigherOrderTopTrigger(_TmpTree):
+    """ASSESS-3: has_unsafe is the ONLY analyzed-package TOP trigger. A
+    package that merely TAKES a Fun(...) is not authority-unknown, and
+    the product stays sound because a closure's authority is accounted at
+    its CREATION site."""
+
+    def test_invoke_closure_product_is_sound_without_top(self):
+        root = self.tmp / "app"
+        _write(root, "capa.toml", (
+            '[package]\nname = "app"\nversion = "0.1.0"\n\n'
+            '[dependencies.hof]\n'
+            'git = "https://github.com/example/hof"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa", (
+            "import hof.api\n\n"
+            "pub fun run(io: Stdio)\n"
+            "    let l = fun () => io.println(\"x\")\n"
+            "    invoke(l)\n"
+            "    return\n"
+        ))
+        _write(root, "vendor/hof/capa.toml",
+               '[package]\nname = "hof"\nversion = "0.1.0"\n')
+        _write(root, "vendor/hof/api.capa",
+               "pub fun invoke(f: Fun() -> Unit)\n    f()\n    return\n")
+        composed, _ = _compose(root, "main.capa")
+        # Stdio is accounted at the ROOT (the closure creator) and
+        # composes into the product; hof stays authority-KNOWN.
+        self.assertEqual(composed["composed"]["capabilities"], ["Stdio"])
+        self.assertFalse(composed["composed"]["authority_unknown"])
+        self.assertEqual(_pkg(composed, "app")["attributed_capabilities"], ["Stdio"])
+        hof = _pkg(composed, "hof")
+        self.assertEqual(hof["attributed_capabilities"], [])
+        self.assertFalse(hof["authority_unknown"])
+
+
+class TestOutOfTreePathDep(_TmpTree):
+    """FIX 2: an out-of-tree (``../sib``) path dependency must serialise a
+    ``..``-relative path, never an absolute one, so the artifact stays
+    byte-reproducible across absolute locations and leaks no local
+    layout."""
+
+    def _product_with_sib(self, base: Path) -> Path:
+        root = base / "product"
+        _write(root, "capa.toml", (
+            '[package]\nname = "product"\nversion = "0.1.0"\n\n'
+            '[dependencies.sib]\n'
+            'path = "../sib"\n'
+        ))
+        _write(root, "main.capa", "pub fun f()\n    return\n")
+        sib = base / "sib"
+        _write(sib, "capa.toml", '[package]\nname = "sib"\nversion = "0.1.0"\n')
+        _write(sib, "mod.capa", "pub fun g()\n    return\n")
+        return root
+
+    def test_path_field_is_relative_not_absolute(self):
+        root = self._product_with_sib(self.tmp)
+        composed, _ = _compose(root, "main.capa")
+        sib = _pkg(composed, "sib")
+        self.assertEqual(sib["path"], "../sib")
+        # No absolute path anywhere in the artifact.
+        blob = canonical_json(composed)
+        self.assertNotIn(str(self.tmp.resolve()), blob)
+        self.assertNotIn(":\\", blob)  # no Windows drive-letter path
+
+    def test_digest_stable_across_absolute_locations(self):
+        a = self._product_with_sib(self.tmp / "locationA")
+        b = self._product_with_sib(self.tmp / "an_entirely_different_locationB")
+        ca, _ = _compose(a, "main.capa")
+        cb, _ = _compose(b, "main.capa")
+        self.assertEqual(manifest_digest(ca), manifest_digest(cb))
 
 
 if __name__ == "__main__":
