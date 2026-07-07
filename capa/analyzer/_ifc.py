@@ -407,17 +407,27 @@ class _IfcMixin:
         each parameter's type-var lands in ``fun_ty.ret`` classifies its
         contribution. ``args`` / ``arg_tys`` are in PARAMETER order.
 
-        The ELEMENT (and hence whole-value) label is pinned to the SOUND
-        FLOOR -- the declassify-aware whole-value label the return-effect
-        summary already computes (``_call_return_label``) -- so a generic
-        body's internal ``declassify`` wins (element / whole stay public)
-        and a secret that genuinely flows out on return still taints every
-        element read and whole-container sink. The STRUCTURE is only ever
-        LOWERED below that floor: it is the join of the STRUCTURE-affecting
-        contributions, met with the floor (never exceeding the true
-        whole-value). A structure / shape query (``length`` / ``is_empty``
-        / ``is_some`` / ...) then reads that refined structure label."""
-        from ..typesys import TyName, TyVar
+        The ELEMENT (and hence whole-value) label is the declassify-aware
+        whole-value label the return-effect summary computes
+        (``_call_return_label``): a generic body's internal ``declassify``
+        wins (element / whole stay public), and a secret that genuinely
+        flows out on return -- whether captured by a closure or sourced
+        INSIDE its body (an ``env.get`` in a transform closure, seen via
+        the closure's ``ret_label``) -- taints every element read and
+        whole-container sink, exactly as the built-in ``map`` does.
+
+        The STRUCTURE stands on its OWN channel: the join of the
+        STRUCTURE-affecting contributions, NEVER capped at the element /
+        whole-value floor. A container's cardinality / presence can depend
+        on a secret that never becomes an element value (``for x in xs: if
+        s > 0: out.push(...)``), so lowering the structure to the floor
+        would DROP a real structure-channel leak. A shape query (``length``
+        / ``is_empty`` / ``is_some`` / ...) reads this independent
+        structure label. Residual structure FALSE POSITIVES (a secret
+        non-passthrough input that does not actually affect cardinality, or
+        a body that declassifies the structure) are disclosed and sound --
+        soundness wins over that precision."""
+        from ..typesys import TyName
         ret = fun_ty.ret
         if not isinstance(ret, TyName):
             return
@@ -428,9 +438,8 @@ class _IfcMixin:
         # split and falls back to the conservative whole-value label.
         if elem_var is None or elem_var not in mapping:
             return
-        floor = self._call_return_label(e)
-        element = floor
-        structure_raw = self._callee_label(e.callee)
+        element = self._call_return_label(e)
+        structure = self._callee_label(e.callee)
         for i, param_ty in enumerate(fun_ty.params):
             if i >= len(args):
                 break
@@ -438,15 +447,16 @@ class _IfcMixin:
             if kind == "transform":
                 # A transform closure (its return type-var IS the result
                 # payload var) affects only the ELEMENT -- map preserves
-                # presence / cardinality -- and the floor already carries
-                # its taint. It contributes nothing to the STRUCTURE.
+                # presence / cardinality -- and the element floor already
+                # carries its taint (via the return-effect + ret_label).
+                # It contributes nothing to the STRUCTURE.
                 continue
             if kind == "passthrough":
                 # A passthrough container input (its element type-var IS
                 # the result payload var) contributes its STRUCTURE label
                 # to the result structure; its element flows via the floor.
-                structure_raw = L.join(
-                    structure_raw, self._structure_label_of(args[i]),
+                structure = L.join(
+                    structure, self._structure_label_of(args[i]),
                 )
                 continue
             # "bind" (a container-RETURNING closure, which decides
@@ -456,10 +466,9 @@ class _IfcMixin:
             # return label (tier-aware, matching the built-in specs); any
             # other argument its whole-value label.
             arg_ty = arg_tys[i] if i < len(arg_tys) else None
-            structure_raw = L.join(
-                structure_raw, self._structure_contribution(args[i], arg_ty),
+            structure = L.join(
+                structure, self._structure_contribution(args[i], arg_ty),
             )
-        structure = _meet(structure_raw, floor)
         self._container_split[id(e)] = (structure, element)
 
     def _structure_contribution(self, arg: A.Expr, arg_ty) -> str:
@@ -481,12 +490,19 @@ class _IfcMixin:
         A summarised callee's result carries source ``s`` iff ``s`` is in
         its ``return_effects``: ``INTERNAL_SECRET`` -> secret
         unconditionally (a declared-@secret field read / ``env.get``
-        returned); a real param ``s`` -> the label of the argument bound to
-        it. A body that ``declassify``s the returned value has an empty
-        return-effect and so is PUBLIC here even when it captured a secret.
-        When the callee is not a summarised free function, fall back to the
-        conservative callee + argument + closure-capture join (unchanged
-        from the pre-split whole-value rule)."""
+        returned); a real param ``s`` -> the label the argument bound to it
+        CONTRIBUTES to the callee's return. For a Fun-typed parameter the
+        callee INVOKES and returns the result of, that is the closure's
+        RETURN label (``TyFun.ret_label``), NOT its capture label: a
+        transform / bind closure whose body sources a secret internally
+        (``env.get`` inside ``fun (n) => ...``) has ``ret_label = secret``
+        even with an empty capture set, so its result taints the return
+        exactly as the built-in ``map`` sees it. A body that ``declassify``s
+        the returned value has an empty return-effect and so is PUBLIC here
+        even when a closure captured a secret. When the callee is not a
+        summarised free function, fall back to the conservative callee +
+        argument + closure-capture join (unchanged from the pre-split
+        whole-value rule)."""
         conservative = L.join(
             self._callee_label(e.callee),
             L.join(
@@ -510,8 +526,24 @@ class _IfcMixin:
                 continue
             arg_idx = perm.get(s)
             if arg_idx is not None and arg_idx < len(e.args):
-                label = L.join(label, self._label_of(e.args[arg_idx]))
+                label = L.join(
+                    label, self._return_arg_contribution(e.args[arg_idx]),
+                )
         return label
+
+    def _return_arg_contribution(self, arg: A.Expr) -> str:
+        """The label an argument CONTRIBUTES when it flows into the
+        callee's return. For a Fun-typed argument (a closure the callee
+        invokes and returns the result of) that is its RETURN label -- what
+        the closure yields, which sees a body-internal secret (``env.get``)
+        and sees THROUGH an in-body declassify -- mirroring the built-in
+        combinator element rule. For any other argument it is the
+        argument's own whole-value label."""
+        from ..typesys import TyFun
+        arg_ty = self.types.get(id(arg))
+        if isinstance(arg_ty, TyFun):
+            return L.normalize(getattr(arg_ty, "ret_label", None))
+        return self._label_of(arg)
 
     # ---- per-field IFC precision (roadmap S2) --------------------
     #
@@ -2563,16 +2595,6 @@ def _classify_call_param(param_ty, elem_var: str, result) -> str:
     if pvar is not None and pvar == elem_var:
         return "passthrough"
     return "other"
-
-
-def _meet(a: str, b: str) -> str:
-    """Greatest lower bound in the two-point lattice: ``secret`` iff BOTH
-    are ``secret``, else ``public``. Used to cap a derived structure label
-    at the sound whole-value floor so it is only ever LOWERED, never
-    raised above the true value."""
-    if L.normalize(a) == L.SECRET and L.normalize(b) == L.SECRET:
-        return L.SECRET
-    return L.PUBLIC
 
 
 def _is_ty_name(ty) -> bool:
