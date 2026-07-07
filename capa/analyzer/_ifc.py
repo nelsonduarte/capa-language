@@ -153,9 +153,17 @@ _CT_SHORT_CIRCUIT_METHODS: dict[tuple[str, str], set[int]] = {
 # ``rule`` selects how the result's (structure, element) labels are
 # derived at the call-site seam (see ``_record_combinator_split``):
 #   "transform" -- element = join(input element, closure ret_label);
-#                  structure = input structure. Covers map / and_then /
-#                  map_err / flat_map (the closure's returned value
-#                  becomes the new element / payload).
+#                  structure = input structure. Covers map / map_err (the
+#                  closure's returned value becomes the new element /
+#                  payload without changing presence / cardinality).
+#   "bind"      -- a CONTAINER-RETURNING closure (and_then / flat_map):
+#                  the closure returns the result container itself, so it
+#                  decides BOTH the payload (element = join(input element,
+#                  closure ret_label)) AND presence / cardinality
+#                  (structure = join(input structure, closure ret_label)).
+#                  Folding ret_label into the STRUCTURE closes the strict-
+#                  tier presence leak where ``and_then(x => if s then
+#                  Some(x) else None).is_some()`` read public (Phase B2').
 #   "filter"    -- element = input element; structure = input structure.
 #                  The predicate's label is dropped: the elements that
 #                  pass through are exactly (a subset of) the input's.
@@ -165,15 +173,15 @@ _COMBINATOR_SPECS: dict[tuple[str, str], tuple[str, int, "int | None"]] = {
     ("List",   "map"):      ("transform", 0, None),
     ("List",   "filter"):   ("filter",    0, None),
     ("List",   "fold"):     ("fold",      1, 0),
-    ("List",   "flat_map"): ("transform", 0, None),
+    ("List",   "flat_map"): ("bind",      0, None),
     ("Range",  "map"):      ("transform", 0, None),
     ("Range",  "filter"):   ("filter",    0, None),
     ("Range",  "fold"):     ("fold",      1, 0),
     ("Option", "map"):      ("transform", 0, None),
-    ("Option", "and_then"): ("transform", 0, None),
+    ("Option", "and_then"): ("bind",      0, None),
     ("Option", "filter"):   ("filter",    0, None),
     ("Result", "map"):      ("transform", 0, None),
-    ("Result", "and_then"): ("transform", 0, None),
+    ("Result", "and_then"): ("bind",      0, None),
     ("Result", "map_err"):  ("transform", 0, None),
 }
 
@@ -362,6 +370,19 @@ class _IfcMixin:
                 L.join(struct_in, ret_label), elem_in,
             )
             return
+        if rule == "bind":
+            # A CONTAINER-RETURNING closure (and_then / flat_map): the
+            # closure returns the result container itself, so its label
+            # decides BOTH the payload (element) AND presence /
+            # cardinality (structure). Folding ret_label into the
+            # STRUCTURE closes the strict-tier presence leak where
+            # ``and_then(x => if s then Some(x) else None).is_some()``
+            # read public (a container-returning closure choosing
+            # Some/None on a secret makes the shape query secret-derived).
+            self._container_split[id(e)] = (
+                L.join(struct_in, ret_label), L.join(elem_in, ret_label),
+            )
+            return
         # "transform": the closure's returned value becomes the new
         # element / payload. Join the input element label in as well --
         # a closure PARAMETER is labelled public (Phase A), so an
@@ -369,6 +390,128 @@ class _IfcMixin:
         # secret input element; joining ``elem_in`` keeps it sound.
         elem_out = L.join(elem_in, ret_label)
         self._container_split[id(e)] = (struct_in, elem_out)
+
+    def _record_call_split(
+        self, e: A.Call, fun_ty, mapping: dict, args: list, arg_tys: list,
+    ) -> None:
+        """Publish the element-granular ``(structure, element)`` split of
+        a USER-DEFINED generic higher-order call into the IFC channel
+        (Phase B2'). Runs at the FREE-CALL seam, AFTER inferred-lambda
+        re-checking has fixed every closure argument's ``TyFun.ret_label``
+        and BEFORE ``instantiate`` (so ``fun_ty`` still carries its
+        ``TyVar``s and ``mapping`` records which were inferred).
+
+        By parametricity the SIGNATURE is a sound per-call summary for the
+        split: a rigid type-var in the body can only originate from a
+        matching-typed input or a matching-typed closure result, so where
+        each parameter's type-var lands in ``fun_ty.ret`` classifies its
+        contribution. ``args`` / ``arg_tys`` are in PARAMETER order.
+
+        The ELEMENT (and hence whole-value) label is pinned to the SOUND
+        FLOOR -- the declassify-aware whole-value label the return-effect
+        summary already computes (``_call_return_label``) -- so a generic
+        body's internal ``declassify`` wins (element / whole stay public)
+        and a secret that genuinely flows out on return still taints every
+        element read and whole-container sink. The STRUCTURE is only ever
+        LOWERED below that floor: it is the join of the STRUCTURE-affecting
+        contributions, met with the floor (never exceeding the true
+        whole-value). A structure / shape query (``length`` / ``is_empty``
+        / ``is_some`` / ...) then reads that refined structure label."""
+        from ..typesys import TyName, TyVar
+        ret = fun_ty.ret
+        if not isinstance(ret, TyName):
+            return
+        elem_var = _result_payload_var(ret)
+        # Parametric only: the result must be a container whose payload is
+        # a type-var that this call actually inferred. A concrete result
+        # (``List<Int>``) or an un-inferred payload carries no parametric
+        # split and falls back to the conservative whole-value label.
+        if elem_var is None or elem_var not in mapping:
+            return
+        floor = self._call_return_label(e)
+        element = floor
+        structure_raw = self._callee_label(e.callee)
+        for i, param_ty in enumerate(fun_ty.params):
+            if i >= len(args):
+                break
+            kind = _classify_call_param(param_ty, elem_var, ret)
+            if kind == "transform":
+                # A transform closure (its return type-var IS the result
+                # payload var) affects only the ELEMENT -- map preserves
+                # presence / cardinality -- and the floor already carries
+                # its taint. It contributes nothing to the STRUCTURE.
+                continue
+            if kind == "passthrough":
+                # A passthrough container input (its element type-var IS
+                # the result payload var) contributes its STRUCTURE label
+                # to the result structure; its element flows via the floor.
+                structure_raw = L.join(
+                    structure_raw, self._structure_label_of(args[i]),
+                )
+                continue
+            # "bind" (a container-RETURNING closure, which decides
+            # presence) and "other" (a predicate / seed / non-passthrough
+            # input, conservatively structure-affecting): fold the
+            # structure-deciding label in. A closure contributes its
+            # return label (tier-aware, matching the built-in specs); any
+            # other argument its whole-value label.
+            arg_ty = arg_tys[i] if i < len(arg_tys) else None
+            structure_raw = L.join(
+                structure_raw, self._structure_contribution(args[i], arg_ty),
+            )
+        structure = _meet(structure_raw, floor)
+        self._container_split[id(e)] = (structure, element)
+
+    def _structure_contribution(self, arg: A.Expr, arg_ty) -> str:
+        """The STRUCTURE-affecting label of a non-passthrough argument: a
+        closure contributes its (tier-aware) return label -- what a
+        container-returning closure yields decides presence -- while any
+        other value contributes its whole-value label."""
+        from ..typesys import TyFun
+        if isinstance(arg_ty, TyFun):
+            return L.normalize(getattr(arg_ty, "ret_label", None))
+        return self._label_of(arg)
+
+    def _call_return_label(self, e: A.Call) -> str:
+        """The declassify-aware whole-value label of a free-function call,
+        following its RETURN-EFFECT summary rather than the crude argument
+        join -- the free-function analogue of ``_method_call_return_label``,
+        and the SOUND FLOOR for a generic HO split.
+
+        A summarised callee's result carries source ``s`` iff ``s`` is in
+        its ``return_effects``: ``INTERNAL_SECRET`` -> secret
+        unconditionally (a declared-@secret field read / ``env.get``
+        returned); a real param ``s`` -> the label of the argument bound to
+        it. A body that ``declassify``s the returned value has an empty
+        return-effect and so is PUBLIC here even when it captured a secret.
+        When the callee is not a summarised free function, fall back to the
+        conservative callee + argument + closure-capture join (unchanged
+        from the pre-split whole-value rule)."""
+        conservative = L.join(
+            self._callee_label(e.callee),
+            L.join(
+                L.join_all(self._label_of(a) for a in e.args),
+                self._call_arg_closure_label(e),
+            ),
+        )
+        if not isinstance(e.callee, A.Ident):
+            return conservative
+        sources = self._ifc_return_effects.get(("fun", e.callee.name))
+        if sources is None:
+            return conservative
+        from ._ifc_summary import INTERNAL_SECRET, _bind
+        sym = self.bindings.get(id(e.callee))
+        param_names = getattr(sym, "param_names", []) if sym is not None else []
+        perm = _bind(e.args, e.arg_names, param_names)
+        label = L.PUBLIC
+        for s in sources:
+            if s == INTERNAL_SECRET:
+                label = L.SECRET
+                continue
+            arg_idx = perm.get(s)
+            if arg_idx is not None and arg_idx < len(e.args):
+                label = L.join(label, self._label_of(e.args[arg_idx]))
+        return label
 
     # ---- per-field IFC precision (roadmap S2) --------------------
     #
@@ -838,6 +981,17 @@ class _IfcMixin:
             # value's label (roadmap S2.5).
             if self._is_declassify_call(e):
                 return L.PUBLIC
+            # Higher-order IFC precision (Phase B2'): a user-defined
+            # generic combinator whose element-granular split was derived
+            # from its signature at the free-call seam. Mirrors the
+            # MethodCall branch -- the whole-value label is the join of the
+            # structure and element labels, so a structure op reads the
+            # (refined) structure while an element / whole read reads the
+            # join. Absent a split this is a no-op and the base join below
+            # governs, so ordinary calls are unchanged.
+            split = self._container_split.get(id(e))
+            if split is not None:
+                return L.join(split[0], split[1])
             # The callee's own label flows into the result: calling a
             # local binding that holds a @secret-capturing CLOSURE
             # produces a secret value (``let leak = fun () => s; leak()``).
@@ -2361,6 +2515,64 @@ def _join_field_map(a, b):
             return L.join_all(_collapse(v) for v in n.values())
         return L.normalize(n)
     return L.join(_collapse(a), _collapse(b))
+
+
+def _result_payload_var(ty) -> "str | None":
+    """The name of the element / payload TYPE-VAR of a container result
+    type, or ``None`` when the result is not a container-with-type-var.
+    The payload is the FIRST type argument -- ``List<U>`` / ``Option<U>``
+    / ``Result<U, E>`` / ``Range<U>`` / ``Set<U>`` all carry it there. A
+    concrete payload (``List<Int>``) or a bare type name yields ``None``,
+    so no parametric split is derived for it."""
+    from ..typesys import TyName, TyVar
+    if not isinstance(ty, TyName) or not ty.args:
+        return None
+    first = ty.args[0]
+    return first.name if isinstance(first, TyVar) else None
+
+
+def _classify_call_param(param_ty, elem_var: str, result) -> str:
+    """Classify a generic function parameter by WHERE its type-var lands
+    in the result, for the free-call split derivation (Phase B2'):
+
+    * ``"transform"`` -- a closure whose RETURN type-var IS the result
+      payload var (``f: Fun(T) -> U`` for a ``List<U>`` result). Its
+      value becomes the new element; it does not change presence.
+    * ``"bind"`` -- a closure whose RETURN TYPE is the result container
+      itself (``f: Fun(T) -> Option<U>`` for an ``Option<U>`` result).
+      It decides presence / cardinality (and the payload), so it is
+      STRUCTURE-affecting.
+    * ``"passthrough"`` -- a container input whose element type-var IS the
+      result payload var (``xs: List<T>`` for a ``List<T>`` result). Its
+      structure flows to the result structure, its element to the element.
+    * ``"other"`` -- anything else (a predicate ``Fun(T) -> Bool``, a
+      scalar seed, a non-passthrough container): conservatively
+      STRUCTURE-affecting via its whole-value / return label."""
+    from ..typesys import TyFun, TyName, TyVar
+    if isinstance(param_ty, TyFun):
+        cret = param_ty.ret
+        if isinstance(cret, TyVar) and cret.name == elem_var:
+            return "transform"
+        if (
+            isinstance(cret, TyName) and isinstance(result, TyName)
+            and cret.name == result.name
+        ):
+            return "bind"
+        return "other"
+    pvar = _result_payload_var(param_ty)
+    if pvar is not None and pvar == elem_var:
+        return "passthrough"
+    return "other"
+
+
+def _meet(a: str, b: str) -> str:
+    """Greatest lower bound in the two-point lattice: ``secret`` iff BOTH
+    are ``secret``, else ``public``. Used to cap a derived structure label
+    at the sound whole-value floor so it is only ever LOWERED, never
+    raised above the true value."""
+    if L.normalize(a) == L.SECRET and L.normalize(b) == L.SECRET:
+        return L.SECRET
+    return L.PUBLIC
 
 
 def _is_ty_name(ty) -> bool:

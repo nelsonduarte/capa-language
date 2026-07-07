@@ -435,6 +435,20 @@ class _DispatchMixin:
             fun_ty.params, args_in_order, arg_tys, mapping,
         )
 
+        # Higher-order IFC precision (Phase B2'). With every closure
+        # argument's ``TyFun.ret_label`` now fixed and ``mapping``
+        # recording which type-vars were inferred, derive the element-
+        # granular result split of a USER-DEFINED generic higher-order
+        # call from its signature by parametricity (a no-op for a call
+        # whose result is not a container-with-type-var). This is the
+        # free-call analogue of ``_record_combinator_split`` at the method
+        # seam; ``fun_ty`` still carries its ``TyVar``s here (before
+        # ``instantiate``), so the classifier can see where each
+        # parameter's type-var lands in the result.
+        self._record_call_split(
+            e, fun_ty, mapping, args_in_order, arg_tys,
+        )
+
         for i, (param_ty, arg_ty) in enumerate(zip(fun_ty.params, arg_tys)):
             substituted = substitute(param_ty, mapping)
             if not self._assignable(substituted, arg_ty, args_in_order[i]):
