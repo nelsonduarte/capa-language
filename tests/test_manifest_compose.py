@@ -389,7 +389,9 @@ class TestNonRegression(_TmpTree):
         self.assertEqual(canonical_json(manifest), before)
 
     def test_schema_version_constant(self):
-        self.assertEqual(COMPOSED_SCHEMA_VERSION, 1)
+        # Bumped to 2 in S3 (per-package declared_ceiling /
+        # ceiling_violations + the product-level capability_ceilings block).
+        self.assertEqual(COMPOSED_SCHEMA_VERSION, 2)
 
     def test_find_package_root(self):
         root = self.tmp / "prod"

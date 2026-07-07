@@ -60,18 +60,26 @@ byte-identical artifact and an identical digest.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from .. import capa_ast as A
 from ..lexer import SYNTHETIC_FILENAME
+
+if TYPE_CHECKING:
+    from ..pkg import CapabilityCeiling
 
 
 # Version of the COMPOSED-SBOM schema, independent of the per-program
 # manifest ``SCHEMA_VERSION``. Bump on any incompatible shape change so
 # a consumer can refuse a shape it does not recognise.
-COMPOSED_SCHEMA_VERSION = 1
+#
+#   1 - initial composed SBOM (S2).
+#   2 - per-package ``declared_ceiling`` / ``ceiling_violations`` and the
+#       product-level ``capability_ceilings`` pass/fail block (S3).
+COMPOSED_SCHEMA_VERSION = 2
 
 
 class ComposeError(Exception):
@@ -154,6 +162,9 @@ class PackageNode:
     dep_edges: list[DepEdge] = field(default_factory=list)
     attributed_caps: frozenset[str] = frozenset()
     crosses_unsafe: bool = False
+    # The package's DECLARED capability ceiling (S3), or ``None`` when it
+    # declares no ``[capabilities]`` section (unconstrained; not checked).
+    ceiling: Optional["CapabilityCeiling"] = None
 
 
 def _rel_display(path: Path, root_dir: Path) -> str:
@@ -271,6 +282,7 @@ def build_package_dag(
             version=manifest.version,
             manifest_dir=pkg_dir,
             rel_path=_rel_display(pkg_dir, root_dir),
+            ceiling=manifest.capability_ceiling,
         )
         # Register BEFORE recursing so a dependency cycle terminates.
         nodes[pkg_dir] = node
@@ -495,6 +507,191 @@ def _reason_dicts(
     ]
 
 
+# ---------------------------------------------------------------------------
+# Ceiling conflict detection (S3).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CeilingViolation:
+    """One way a declared-ceiling package is NOT provably within its bound.
+
+    ``kind`` is either ``"exceeds"`` (a KNOWN capability outside ``max``)
+    or ``"authority_unknown"`` (the composed authority is TOP: an
+    unanalyzable subtree that cannot be proven within ANY ceiling -- the
+    fail-closed rule). The two are deliberately distinguished so an
+    auditor can tell "this product reaches Net, which you forbade" apart
+    from "part of this product is unanalyzable, so the ceiling claim is
+    unverifiable".
+
+    ``path`` is the transitive package path from the declaring package to
+    the source of the violation (``P -> ... -> D``), so the offending edge
+    is attributed, never left as "somewhere in the tree"."""
+
+    package: str
+    kind: str
+    capability: Optional[str]
+    introduced_by: str
+    path: tuple[str, ...]
+    detail: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "package": self.package,
+            "kind": self.kind,
+            "capability": self.capability,
+            "introduced_by": self.introduced_by,
+            "path": list(self.path),
+            "detail": self.detail,
+        }
+
+    def sort_key(self) -> tuple:
+        return (
+            self.package,
+            self.kind,
+            self.capability or "",
+            self.introduced_by,
+            self.path,
+        )
+
+
+def _shortest_name_paths(
+    start: PackageNode, nodes: dict[Path, PackageNode],
+) -> dict[Path, tuple[str, ...]]:
+    """Shortest transitive path (as a tuple of PACKAGE NAMES) from
+    ``start`` to every node reachable over resolved edges. Neighbours are
+    visited in a canonical (name, then dependency-name) order so the
+    chosen path is deterministic when several shortest paths exist."""
+    paths: dict[Path, tuple[str, ...]] = {start.manifest_dir: (start.name,)}
+    q: deque[Path] = deque([start.manifest_dir])
+    while q:
+        d = q.popleft()
+        n = nodes[d]
+        neighbours = []
+        for edge in n.dep_edges:
+            if edge.resolved and edge.target_dir is not None:
+                t = edge.target_dir.resolve()
+                if t in nodes:
+                    neighbours.append((nodes[t].name, edge.name, t))
+        for _, _, t in sorted(neighbours, key=lambda x: (x[0], x[1])):
+            if t not in paths:
+                paths[t] = paths[d] + (nodes[t].name,)
+                q.append(t)
+    return paths
+
+
+def _ceiling_violations(
+    node: PackageNode,
+    composed: Authority,
+    nodes: dict[Path, PackageNode],
+) -> list[CeilingViolation]:
+    """Every way ``node``'s composed authority breaches its declared
+    ceiling. Empty when ``node`` declares no ceiling (unconstrained) or is
+    provably within it.
+
+    Two independent failure modes, each reported separately:
+
+    - EXCEEDS: a concrete capability in ``composed.caps`` that is not in
+      ``max``. Attributed to the nearest reachable package whose OWN code
+      introduces it, with the transitive path.
+
+    - AUTHORITY-UNKNOWN (fail closed): ``composed.unknown`` is true (a TOP
+      element anywhere in the subtree). You cannot bound what you cannot
+      analyze, so a declared ceiling FAILS unless ``allow_unknown`` opts
+      out explicitly. The known-capability EXCEEDS check still runs even
+      when unknown is waived: the waiver forgives only the unanalyzable
+      part, never a capability we positively observed outside the bound."""
+    ceiling = node.ceiling
+    if ceiling is None:
+        return []
+
+    violations: list[CeilingViolation] = []
+    paths = _shortest_name_paths(node, nodes)
+    max_set = set(ceiling.max)
+    max_display = sorted(max_set)
+
+    # 1. EXCEEDS-BY-CAPABILITY: known caps outside the ceiling.
+    over = sorted(set(composed.caps) - max_set)
+    for cap in over:
+        introducers = sorted(
+            (
+                (paths.get(d, (node.name,)), n.name)
+                for d, n in nodes.items()
+                if d in paths and cap in n.attributed_caps
+            ),
+            key=lambda x: (len(x[0]), x[0]),
+        )
+        if not introducers:
+            # The capability is reachable but no single node's ATTRIBUTED
+            # set carries it (it can only arrive through a node we walked);
+            # attribute to the declaring package itself so it is never
+            # dropped.
+            introducers = [((node.name,), node.name)]
+        for path, who in introducers:
+            if who == node.name and len(path) == 1:
+                detail = (
+                    f"package {node.name!r} declares max={max_display} but "
+                    f"its own code introduces {cap!r}"
+                )
+            else:
+                detail = (
+                    f"package {node.name!r} declares max={max_display} but "
+                    f"dependency {who!r} introduces {cap!r} (via "
+                    f"{' -> '.join(path)})"
+                )
+            violations.append(CeilingViolation(
+                package=node.name, kind="exceeds", capability=cap,
+                introduced_by=who, path=path, detail=detail,
+            ))
+
+    # 2. AUTHORITY-UNKNOWN (TOP) fails closed unless explicitly waived.
+    if composed.unknown and not ceiling.allow_unknown:
+        for (declared_in, dependency, why) in composed.reasons:
+            path = _path_to_named(node, declared_in, paths)
+            via = " -> ".join(path)
+            if dependency == declared_in:
+                # An Unsafe-crossing package: source == the package itself.
+                detail = (
+                    f"package {node.name!r} declares a capability ceiling "
+                    f"but its composed authority is UNKNOWN: package "
+                    f"{declared_in!r} ({why}) (via {via}); an unanalyzable "
+                    f"subtree cannot be proven within any ceiling"
+                )
+            else:
+                detail = (
+                    f"package {node.name!r} declares a capability ceiling "
+                    f"but its composed authority is UNKNOWN: dependency "
+                    f"{dependency!r} of {declared_in!r} is not analyzable "
+                    f"({why}) (via {via}); an unanalyzable subtree cannot be "
+                    f"proven within any ceiling"
+                )
+            violations.append(CeilingViolation(
+                package=node.name, kind="authority_unknown", capability=None,
+                introduced_by=dependency, path=path, detail=detail,
+            ))
+
+    violations.sort(key=lambda v: v.sort_key())
+    return violations
+
+
+def _path_to_named(
+    node: PackageNode,
+    target_name: str,
+    paths: dict[Path, tuple[str, ...]],
+) -> tuple[str, ...]:
+    """Shortest reachable path (by name) ending at ``target_name``. Falls
+    back to ``(node.name,)`` when the name is the declaring package itself
+    or cannot be located (defensive; keeps a path always present)."""
+    if target_name == node.name:
+        return (node.name,)
+    candidates = [
+        p for p in paths.values() if p and p[-1] == target_name
+    ]
+    if not candidates:
+        return (node.name, target_name)
+    return min(candidates, key=lambda p: (len(p), p))
+
+
 def build_composed_sbom(
     module: A.Module,
     manifest: dict[str, Any],
@@ -526,9 +723,20 @@ def build_composed_sbom(
     packages: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     unresolved: list[dict[str, str]] = []
+    all_violations: list[CeilingViolation] = []
+    any_ceiling = False
     for node in ordered:
         composed = composed_by_dir[node.manifest_dir]
         own = _own_authority(node)
+        violations = _ceiling_violations(node, composed, nodes)
+        all_violations.extend(violations)
+        if node.ceiling is not None:
+            any_ceiling = True
+            declared_ceiling: Optional[list[str]] = sorted(node.ceiling.max)
+            allow_unknown: Optional[bool] = node.ceiling.allow_unknown
+        else:
+            declared_ceiling = None
+            allow_unknown = None
         packages.append({
             "name": node.name,
             "version": node.version,
@@ -539,6 +747,9 @@ def build_composed_sbom(
             "dependencies": sorted(e.name for e in node.dep_edges),
             "composed_capabilities": sorted(composed.caps),
             "composed_authority_unknown": composed.unknown,
+            "declared_ceiling": declared_ceiling,
+            "ceiling_allow_unknown": allow_unknown,
+            "ceiling_violations": [v.to_dict() for v in violations],
         })
         for e in node.dep_edges:
             to_pkg = None
@@ -561,6 +772,7 @@ def build_composed_sbom(
     edges.sort(key=lambda e: (e["from"], e["dependency"]))
     unresolved.sort(key=lambda u: (u["declared_in"], u["dependency"]))
 
+    all_violations.sort(key=lambda v: v.sort_key())
     product = composed_by_dir[root.manifest_dir]
     return {
         "capa_version": capa_version,
@@ -569,6 +781,23 @@ def build_composed_sbom(
         "packages": packages,
         "edges": edges,
         "unresolved_dependencies": unresolved,
+        "capability_ceilings": {
+            "checked": any_ceiling,
+            "pass": not all_violations,
+            "violations": [v.to_dict() for v in all_violations],
+            "note": (
+                "each package that declares a capa.toml [capabilities] "
+                "ceiling (max = [...] or pure = true) is checked: its "
+                "composed capability set must be a subset of its ceiling. A "
+                "package whose composed authority is UNKNOWN (a TOP element "
+                "from an unresolvable / native / Unsafe-crossing dependency) "
+                "FAILS CLOSED - an unanalyzable subtree cannot be proven "
+                "within any bound - unless it sets allow_unknown = true. "
+                "pass is product-wide: false if ANY declared ceiling is "
+                "breached. A package with no [capabilities] section is "
+                "unconstrained and not checked."
+            ),
+        },
         "composed": {
             "capabilities": sorted(product.caps),
             "authority_unknown": product.unknown,
