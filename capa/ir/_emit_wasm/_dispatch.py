@@ -22,7 +22,7 @@ from .._nodes import (
     If, While, Break, Continue, Return, TryUnwrap,
     MakeStruct, MakeList, MakeMap, MakeRange, MakeSet, MakeTuple,
     FieldAccess, FieldStore, Index, For,
-    FormatStr, MakeLambda, Match,
+    FormatStr, MakeLambda, Match, ForeignCall,
 )
 from ._layout import WasmEmissionError, _strip_type_qualifiers
 
@@ -269,6 +269,9 @@ class _InstrDispatchMixin:
             return
         if isinstance(instr, Call):
             self._emit_user_call(instr)
+            return
+        if isinstance(instr, ForeignCall):
+            self._emit_foreign_call(instr)
             return
         if isinstance(instr, TryUnwrap):
             self._emit_try_unwrap(instr)

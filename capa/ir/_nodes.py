@@ -449,6 +449,43 @@ class ExprStmt(Instr):
     value: Value
 
 
+@dataclass
+class ForeignCall(Instr):
+    """``dst = Component.method(args...)`` across a typed foreign-
+    component boundary (feature #4, F2a).
+
+    Unlike a :class:`MethodCall`, the receiver is NOT a value: it is the
+    source-level name of an ``extern component`` declaration, a callable
+    namespace. The call crosses into an external Wasm Component Model
+    artifact that the Wasm runtime sandboxes to exactly the capabilities
+    passed here (the ``cap`` params). It lowers to a single host import
+    call on the core ``--wasm`` path (``capa:foreign/<component>`` /
+    ``<method>``): the guest pushes each capability argument's i32 handle
+    plus each scalar argument, and the host closure resolves the handles
+    to the caller's pre-attenuated caps, instantiates the child component
+    with a restricted linker that binds ONLY those caps, calls the child's
+    scalar export, and returns the scalar result.
+
+    ``args`` are the lowered operands in declared-parameter order.
+    ``param_kinds`` is a parallel list of ``("cap", CapName)`` or
+    ``("scalar", SourceTy)`` tags describing each argument, so the emitter
+    knows which operand is a handle (i32) and which is a scalar (and its
+    wasm type), and the host knows which caps to bind. ``return_type`` is
+    the source-level scalar return type (``Int`` / ``Bool`` / ``Float``)
+    or ``Unit``. ``artifact`` is the declared path to the child ``.wasm``.
+
+    F2a is SCALAR-only (Int / Bool / Float); a String or aggregate
+    crossing type is rejected earlier (the CLI's F2b guard), so this node
+    only ever carries scalar params + return."""
+    dst: Optional[str]
+    component: str
+    method: str
+    artifact: str
+    args: list[Value]
+    param_kinds: list
+    return_type: str
+
+
 # ----------------------------------------------------------------
 # Top-level: functions and modules.
 # ----------------------------------------------------------------

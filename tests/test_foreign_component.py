@@ -478,20 +478,26 @@ class TestCliRunGuard(unittest.TestCase):
         p.write_text(source, encoding="utf-8")
         return p
 
-    def test_run_invoking_foreign_fails_with_f2_message(self):
+    def test_run_invoking_aggregate_foreign_fails_f2b(self):
+        # ``_DECL_AND_CALL`` crosses aggregate types (Report / Receipt),
+        # which F2a does not marshal at runtime yet: any execution path
+        # (here the Python backend) reports the clean F2b error.
         with tempfile.TemporaryDirectory() as td:
             p = self._write(td, _DECL_AND_CALL + "fun main() -> Int\n    return 0\n")
             rc, _out, err = _run_cli(["--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("foreign-component runtime is not yet available", err)
-            self.assertIn("F2", err)
+            self.assertIn("String or aggregate crossing type", err)
+            self.assertIn("F2b", err)
 
-    def test_wasm_invoking_foreign_fails(self):
+    def test_wasm_invoking_aggregate_foreign_fails_f2b(self):
+        # Same aggregate call on the Wasm backend: still the F2b error
+        # (the parent-import leg needs the linear-memory canonical ABI).
         with tempfile.TemporaryDirectory() as td:
             p = self._write(td, _DECL_AND_CALL + "fun main() -> Int\n    return 0\n")
             rc, _out, err = _run_cli(["--wasm", "--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("foreign-component runtime is not yet available", err)
+            self.assertIn("String or aggregate crossing type", err)
+            self.assertIn("F2b", err)
 
     def test_check_unaffected(self):
         with tempfile.TemporaryDirectory() as td:

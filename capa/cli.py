@@ -1605,9 +1605,18 @@ def _main_dispatch() -> int:
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
             )
+            # Feature #4 (F2a): claim the Wasm-sandbox enforcement posture
+            # only when the product targets the Wasm backend (--wasm),
+            # under which the runtime host-enforces each foreign child's
+            # declared capability SET, so a foreign-component call composes
+            # as a BOUNDED node instead of authority-unknown TOP. Without
+            # --wasm the composed SBOM is backend-agnostic and a foreign
+            # call stays TOP (honest: nothing enforces the bound there).
+            _enforcement = "wasm-sandbox" if args.wasm else "none"
             try:
                 composed = build_composed_sbom(
                     module, manifest, root_dir,
+                    enforcement=_enforcement,
                 )
             except ComposeError as e:
                 msg = f"capa: --compose-sbom: {e}"
@@ -1753,37 +1762,86 @@ def _main_dispatch() -> int:
                 print(f"capa: --wit: {e}", file=sys.stderr)
                 return 1
 
-    # Feature #4 (F1): a program that actually INVOKES a typed foreign
-    # component cannot be run or codegen'd until the sandboxed runtime
-    # (F2) lands. --check / --manifest / the SBOM emitters work fully and
-    # have already returned above; every execution / codegen path fails
-    # here with a clear, actionable error rather than a crash or a silent
-    # broken artifact. The bare DECLARATION is inert, so a program that
-    # only DECLARES a foreign component (and never calls one) runs
-    # normally.
+    # Feature #4 (F2a): a program that actually INVOKES a typed foreign
+    # component. --check / --manifest / the SBOM emitters work fully and
+    # have already returned above. A SCALAR foreign call (Int / Bool /
+    # Float crossing types) now runs end-to-end on the Wasm backend: the
+    # core module imports ``capa:foreign/<component>`` and the host
+    # dispatches into a sandboxed child sub-component that physically
+    # cannot exceed the declared capability set. The remaining paths are
+    # guarded here with clear, actionable errors:
+    #   - a String or aggregate crossing type is not yet marshalled at
+    #     runtime (feature #4 F2b) -- clean error on any backend;
+    #   - the Python backend cannot sandbox a foreign component, so a
+    #     foreign call requires the Wasm backend (--wasm);
+    #   - the Component Model (--component) wrapping path does not yet
+    #     carry foreign imports; F2a runs on the core --wasm path.
+    # The bare DECLARATION is inert, so a program that only DECLARES a
+    # foreign component (and never calls one) runs normally.
     if (args.run or args.wasm or args.transpile
             or getattr(args, "output", None)):
-        from capa.foreign import extern_component_names, foreign_call_sites
+        from capa.foreign import (
+            extern_component_names, extern_components, foreign_call_sites,
+            method_is_scalar,
+        )
+
+        def _foreign_err(_msg: str) -> None:
+            if use_color:
+                print(f"{C.RED}{_msg}{C.RESET}", file=sys.stderr)
+            else:
+                print(_msg, file=sys.stderr)
+
         _foreign_sites = foreign_call_sites(
             module, extern_component_names(module),
         )
         if _foreign_sites:
-            _comp, _method, _fpos = _foreign_sites[0]
-            msg = (
-                "capa: the foreign-component runtime is not yet available "
-                f"(feature #4 F2). This program invokes a foreign component "
-                f"({_comp}.{_method} at line {_fpos.line}:{_fpos.col}), which "
-                "cannot be run or compiled yet: the typed boundary is "
-                "declared and type-checked (--check) and recorded in the "
-                "SBOM (--manifest), but the sandboxed sub-component runtime "
-                "that enforces the declared capability bound is a later "
-                "increment."
-            )
-            if use_color:
-                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
-            else:
-                print(msg, file=sys.stderr)
-            return 1
+            _ec_by_name = {ec.name: ec for ec in extern_components(module)}
+            # F2b: an invoked method using a String / aggregate crossing
+            # type cannot be marshalled across the boundary at runtime
+            # yet (the parent-import leg needs the linear-memory canonical
+            # ABI). Reject it on every backend with a clear pointer.
+            for _comp, _method, _fpos in _foreign_sites:
+                _ec = _ec_by_name.get(_comp)
+                _msig = (
+                    next((m for m in _ec.methods if m.name == _method), None)
+                    if _ec is not None else None
+                )
+                if _msig is not None and not method_is_scalar(_msig):
+                    _foreign_err(
+                        f"capa: foreign call {_comp}.{_method} at line "
+                        f"{_fpos.line}:{_fpos.col} uses a String or aggregate "
+                        "crossing type, which is not yet supported at runtime "
+                        "(feature #4 F2b). F2a marshals scalar crossing types "
+                        "(Int / Bool / Float) only; the typed boundary is "
+                        "still fully checked (--check) and recorded in the "
+                        "SBOM (--manifest)."
+                    )
+                    return 1
+            # The Wasm sandbox is what makes the declared bound SOUND; the
+            # Python backend cannot physically confine a foreign component.
+            if not args.wasm:
+                _comp, _method, _fpos = _foreign_sites[0]
+                _foreign_err(
+                    f"capa: this program invokes a foreign component "
+                    f"({_comp}.{_method} at line {_fpos.line}:{_fpos.col}); "
+                    "foreign components require the Wasm backend (--wasm), "
+                    "whose sandbox physically confines the component to the "
+                    "declared capabilities. The Python backend cannot sandbox "
+                    "it, so a foreign call is unsupported there."
+                )
+                return 1
+            # F2a runs on the core --wasm path; the --component wrapping
+            # path does not yet carry the capa:foreign imports.
+            if getattr(args, "component", False):
+                _comp, _method, _fpos = _foreign_sites[0]
+                _foreign_err(
+                    f"capa: this program invokes a foreign component "
+                    f"({_comp}.{_method} at line {_fpos.line}:{_fpos.col}); "
+                    "foreign-component calls run on the core --wasm path, not "
+                    "the --component wrapping path yet (feature #4 F2a). Drop "
+                    "--component."
+                )
+                return 1
 
     # Auto-prefer the Wasm pipeline when --prefer-wasm or the
     # CAPA_PREFER_WASM env var is set AND the user did not pass
@@ -2174,6 +2232,23 @@ def _main_dispatch() -> int:
                 # values it would see under --run on the Python
                 # path.
                 host = WasmHost(args=program_args)
+                # Feature #4 (F2a): register the typed foreign-component
+                # imports BEFORE instantiation so the host can dispatch
+                # each ``capa:foreign/<component>`` call into a sandboxed
+                # child sub-component. Artifact paths are resolved
+                # relative to the source file.
+                from capa.foreign import foreign_runtime_methods
+                _foreign_methods = foreign_runtime_methods(module)
+                if _foreign_methods:
+                    _base = os.path.dirname(os.path.abspath(filename))
+                    for _m in _foreign_methods:
+                        _art = _m["artifact"]
+                        if not os.path.isabs(_art):
+                            _art = os.path.normpath(
+                                os.path.join(_base, _art)
+                            )
+                        _m["artifact"] = _art
+                    host.register_foreign_methods(_foreign_methods)
                 host.run_main(blob)
             return 0
         except Exception as e:
@@ -2189,6 +2264,26 @@ def _main_dispatch() -> int:
             # real defects worth surfacing.
             if host is not None and getattr(host, "panicked", False):
                 return 1
+            # Feature #4 (F2a): a ForeignDenied is an EXPECTED, actionable
+            # sandbox outcome -- the child sub-component imported a
+            # capability the call did not grant (structural host-enforced
+            # cap-set deny), or its artifact was missing / malformed. It
+            # surfaces here wrapped in the wasmtime trap that unwound the
+            # foreign import; walk the cause chain and print it cleanly
+            # (like a capa diagnostic) instead of a host traceback.
+            from capa.runtime._foreign import ForeignDenied
+            _cur = e
+            _seen: set[int] = set()
+            while _cur is not None and id(_cur) not in _seen:
+                _seen.add(id(_cur))
+                if isinstance(_cur, ForeignDenied):
+                    _fmsg = f"capa: {_cur}"
+                    if use_color:
+                        print(f"{C.RED}{_fmsg}{C.RESET}", file=sys.stderr)
+                    else:
+                        print(_fmsg, file=sys.stderr)
+                    return 1
+                _cur = _cur.__cause__ or _cur.__context__
             import traceback
             traceback.print_exc(file=sys.stderr)
             return 1

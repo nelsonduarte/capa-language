@@ -78,6 +78,7 @@ from ._tuples import _TupleEmissionMixin
 from ._caps import _CapDispatchMixin, _CANONICAL_INDIRECT_RETURN  # noqa: F401
 from ._encoding import _EncodingMixin
 from ._dispatch import _InstrDispatchMixin
+from ._foreign import _ForeignCallEmissionMixin
 from ._structs import _StructEmissionMixin
 from ._values import _ValueEmissionMixin
 from ._locals import _LocalsCollectionMixin
@@ -186,6 +187,7 @@ class WasmEmitter(
     _TupleEmissionMixin,
     _EncodingMixin,
     _InstrDispatchMixin,
+    _ForeignCallEmissionMixin,
     _StructEmissionMixin,
     _ValueEmissionMixin,
     _LocalsCollectionMixin,
@@ -561,6 +563,10 @@ class WasmEmitter(
                 )
         self._discover(module)
         self._discover_lambdas(module)
+        # Feature #4 (F2a): collect the typed foreign-component boundaries
+        # this module invokes so the ``capa:foreign/<comp>`` imports are
+        # declared alongside the capability imports below.
+        self._discover_foreign_calls(module)
 
         # Experimental WASI mode: compute the static Fs preopen ceiling
         # so ``_validate_wasi_caps`` can fail-closed on a dynamic Fs
@@ -1145,6 +1151,10 @@ class WasmEmitter(
                 '(import "capa:host/panic" "panic" '
                 '(func $panic (param i32) (param i32)))'
             )
+        # Feature #4 (F2a): typed foreign-component imports. Each declared
+        # foreign method the program invokes becomes a host import the
+        # ``WasmHost`` satisfies with a sandboxed sub-component dispatch.
+        self._emit_foreign_imports()
         # Memory + data segment for string literals. Always declare
         # at least one page (64KB) so any string fits without growth
         # logic; the host reads from this memory to materialise
