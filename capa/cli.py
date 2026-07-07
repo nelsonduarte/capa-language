@@ -920,6 +920,25 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--compose-sbom",
+        action="store_true",
+        help=(
+            "emit the COMPOSED capability SBOM for the whole PRODUCT: "
+            "attribute the flattened manifest's functions to their owning "
+            "package (root or vendor/<dep>), walk the dependency DAG "
+            "(reading each vendored dependency's own capa.toml), and roll "
+            "the capability surface up bottom-up. A declared dependency "
+            "that is not analyzable (no vendored Capa source, an "
+            "absent/unreadable capa.toml, a native/non-Capa dependency) "
+            "composes as a distinguished authority-UNKNOWN element that "
+            "dominates the join and is visibly labelled, so an "
+            "unanalyzable subtree makes the product authority-unknown, not "
+            "dishonestly clean. Requires a capa.toml project root. "
+            "Canonical / content-addressable (reuses --manifest-digest's "
+            "byte-stable form)."
+        ),
+    )
+    parser.add_argument(
         "--cyclonedx",
         action="store_true",
         help=(
@@ -1248,6 +1267,7 @@ def _main_dispatch() -> int:
 
     needs_analysis = (
         args.check or args.run or args.manifest or args.manifest_digest
+        or args.compose_sbom
         or args.cyclonedx
         or args.spdx or args.vex or args.provenance or args.doc
         or args.wit or args.wasm
@@ -1332,6 +1352,7 @@ def _main_dispatch() -> int:
 
     result = None
     if (args.check or args.run or args.manifest or args.manifest_digest
+            or args.compose_sbom
             or args.cyclonedx
             or args.spdx or args.vex or args.provenance or args.doc
             or args.wit or args.wasm):
@@ -1427,6 +1448,45 @@ def _main_dispatch() -> int:
             # the content_integrity envelope is taken over, minus the
             # envelope itself. Content-addressable and byte-reproducible.
             emit_artifact(canonical_json(canonical_manifest(manifest)))
+            return 0
+        if args.compose_sbom:
+            from capa.manifest import (
+                build_composed_sbom, canonical_json, canonical_manifest,
+                find_package_root, ComposeError,
+            )
+            root_dir = find_package_root(Path(filename))
+            if root_dir is None:
+                msg = (
+                    "capa: --compose-sbom requires a capa.toml project root "
+                    f"(none found at or above {filename}). Composing a "
+                    "product SBOM needs the package + dependency declarations."
+                )
+                if use_color:
+                    print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+                else:
+                    print(msg, file=sys.stderr)
+                return 1
+            manifest = build_manifest(
+                module, filename=filename,
+                expr_labels=result.expr_labels,
+                operator_declared_grants=_operator_grants,
+            )
+            try:
+                composed = build_composed_sbom(
+                    module, manifest, root_dir,
+                )
+            except ComposeError as e:
+                msg = f"capa: --compose-sbom: {e}"
+                if use_color:
+                    print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+                else:
+                    print(msg, file=sys.stderr)
+                return 1
+            # Canonical, content-addressable bytes: the composed SBOM is
+            # wrapped with the same S1 content_integrity envelope as
+            # --manifest-digest, so the product artifact is itself
+            # hashable and byte-reproducible across runs / machines.
+            emit_artifact(canonical_json(canonical_manifest(composed)))
             return 0
         if args.cyclonedx or args.spdx or args.vex or args.provenance:
             # Each invocation emits exactly one artefact (every branch
