@@ -784,6 +784,80 @@ def _dispatch_test(argv: list[str]) -> int:
     return run_tests(root, mode=mode)
 
 
+def _dispatch_capability_diff(
+    paths: list[str], *, fail_on_widening: bool,
+) -> int:
+    """Handle ``capa --capability-diff <old.json> <new.json>``.
+
+    Reads two capability artifacts (a --manifest / --manifest-digest
+    per-function manifest, or a --compose-sbom composed product SBOM),
+    builds the signed authority changelog between them, and emits it as
+    the canonical, content-addressable bytes (wrapped in the S1
+    content_integrity envelope). With ``--fail-on-widening`` the process
+    exits non-zero when the changelog contains any widening or an
+    authority-unknown transition; otherwise it always exits 0 (a pure
+    report).
+    """
+    import json
+    from capa.manifest import (
+        build_capability_diff, canonical_json, canonical_manifest, DiffError,
+    )
+
+    old_path, new_path = paths
+    docs: list[dict] = []
+    for p in (old_path, new_path):
+        try:
+            text = Path(p).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"capa: --capability-diff: cannot read {p}: {e}",
+                  file=sys.stderr)
+            return 2
+        except UnicodeDecodeError:
+            print(f"capa: --capability-diff: {p}: not valid UTF-8",
+                  file=sys.stderr)
+            return 2
+        try:
+            doc = json.loads(text)
+        except json.JSONDecodeError as e:
+            print(f"capa: --capability-diff: {p}: not valid JSON ({e})",
+                  file=sys.stderr)
+            return 2
+        if not isinstance(doc, dict):
+            print(
+                f"capa: --capability-diff: {p}: expected a JSON object "
+                "(a capability manifest or composed SBOM)",
+                file=sys.stderr,
+            )
+            return 2
+        docs.append(doc)
+
+    try:
+        diff = build_capability_diff(
+            docs[0], docs[1], capa_version=_CAPA_VERSION,
+        )
+    except DiffError as e:
+        print(f"capa: --capability-diff: {e}", file=sys.stderr)
+        return 2
+
+    emit_artifact(canonical_json(canonical_manifest(diff)))
+
+    if fail_on_widening:
+        summary = diff["summary"]
+        transition = diff["product"]["authority_unknown_transition"]
+        if summary["widenings"] > 0 or transition == "gained":
+            print(
+                "capa: --capability-diff: FAILED --fail-on-widening: "
+                f"{summary['widenings']} widening(s)"
+                + (
+                    " including a product authority-UNKNOWN transition"
+                    if transition == "gained" else ""
+                ),
+                file=sys.stderr,
+            )
+            return 1
+    return 0
+
+
 def main() -> int:
     """CLI entry point. Wraps the dispatch in a fail-closed guard for
     ``VendorVerificationError`` (PKG-1): an unverifiable ./vendor tree
@@ -953,6 +1027,41 @@ def _main_dispatch() -> int:
             "unless it sets allow_unknown = true. A clean product (or one "
             "with no declared ceiling) exits 0. Requires a capa.toml project "
             "root."
+        ),
+    )
+    parser.add_argument(
+        "--capability-diff",
+        nargs=2,
+        metavar=("<old.json>", "<new.json>"),
+        dest="capability_diff",
+        default=None,
+        help=(
+            "emit a signed AUTHORITY CHANGELOG between two capability "
+            "artifacts (the JSON --manifest / --manifest-digest / "
+            "--compose-sbom already produce): for each EXPORTED function "
+            "and for the product, which capabilities were GAINED "
+            "(widening) or LOST (narrowing), which provably-excluded "
+            "GUARANTEE was lost, and any operator-grant / authority-unknown "
+            "transition. Functions are matched by the stable "
+            "(container, name) identity, never by source position, so a "
+            "line-only move produces no entry. The changelog records both "
+            "inputs' content digests (from_digest / to_digest) and is "
+            "wrapped in the same content_integrity envelope as "
+            "--manifest-digest (byte-reproducible, signABLE; the compiler "
+            "holds no keys). Takes no .capa file."
+        ),
+    )
+    parser.add_argument(
+        "--fail-on-widening",
+        action="store_true",
+        dest="fail_on_widening",
+        help=(
+            "CI GATE for --capability-diff: EXIT NON-ZERO when the "
+            "changelog contains any WIDENING (a function or the product "
+            "gained authority, a guarantee was lost, or an operator grant "
+            "was added / widened) or an authority-UNKNOWN transition, so a "
+            "release pipeline can block or require sign-off on an authority "
+            "increase. A pure narrowing / no-change exits 0."
         ),
     )
     parser.add_argument(
@@ -1194,6 +1303,14 @@ def _main_dispatch() -> int:
         help="omit layout tokens (NEWLINE/INDENT/DEDENT/EOF) in the output",
     )
     args = parser.parse_args(cli_argv)
+
+    # --capability-diff operates on two JSON artifacts, not a .capa
+    # source, so it is handled here before the file/lex/analyze flow.
+    if getattr(args, "capability_diff", None) is not None:
+        return _dispatch_capability_diff(
+            args.capability_diff,
+            fail_on_widening=bool(getattr(args, "fail_on_widening", False)),
+        )
 
     # --watch wraps the regular --run flow in a re-run-on-change
     # loop. Implemented as an outer process that spawns a fresh
