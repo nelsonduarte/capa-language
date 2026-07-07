@@ -1753,6 +1753,38 @@ def _main_dispatch() -> int:
                 print(f"capa: --wit: {e}", file=sys.stderr)
                 return 1
 
+    # Feature #4 (F1): a program that actually INVOKES a typed foreign
+    # component cannot be run or codegen'd until the sandboxed runtime
+    # (F2) lands. --check / --manifest / the SBOM emitters work fully and
+    # have already returned above; every execution / codegen path fails
+    # here with a clear, actionable error rather than a crash or a silent
+    # broken artifact. The bare DECLARATION is inert, so a program that
+    # only DECLARES a foreign component (and never calls one) runs
+    # normally.
+    if (args.run or args.wasm or args.transpile
+            or getattr(args, "output", None)):
+        from capa.foreign import extern_component_names, foreign_call_sites
+        _foreign_sites = foreign_call_sites(
+            module, extern_component_names(module),
+        )
+        if _foreign_sites:
+            _comp, _method, _fpos = _foreign_sites[0]
+            msg = (
+                "capa: the foreign-component runtime is not yet available "
+                f"(feature #4 F2). This program invokes a foreign component "
+                f"({_comp}.{_method} at line {_fpos.line}:{_fpos.col}), which "
+                "cannot be run or compiled yet: the typed boundary is "
+                "declared and type-checked (--check) and recorded in the "
+                "SBOM (--manifest), but the sandboxed sub-component runtime "
+                "that enforces the declared capability bound is a later "
+                "increment."
+            )
+            if use_color:
+                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
+            else:
+                print(msg, file=sys.stderr)
+            return 1
+
     # Auto-prefer the Wasm pipeline when --prefer-wasm or the
     # CAPA_PREFER_WASM env var is set AND the user did not pass
     # --wasm explicitly AND the Wasm toolchain is available

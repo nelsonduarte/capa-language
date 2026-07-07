@@ -115,6 +115,16 @@ class _ItemsMixin:
                     "(v1 supports them on 'fun' only)"
                 )
             return self._parse_capability_decl(is_pub, doc=doc)
+        if self._check(T.KW_EXTERN):
+            # ``extern component Name from "artifact.wasm"`` + indented
+            # method signatures -- a typed foreign-component declaration
+            # (feature #4, F1).
+            if attributes:
+                raise self._error(
+                    "attributes are not valid on 'extern component' "
+                    "(v1 supports them on 'fun' only)"
+                )
+            return self._parse_extern_component(is_pub, doc=doc)
         if self._check(T.KW_IMPL):
             if is_pub:
                 raise self._error("'pub' is not valid before 'impl'")
@@ -523,6 +533,75 @@ class _ItemsMixin:
             methods=methods,
             is_pub=is_pub,
             is_capability=is_capability,
+            doc=doc,
+        )
+
+    # -------- extern component (typed foreign component) --------
+
+    def _parse_extern_component(
+        self,
+        is_pub: bool,
+        *,
+        doc: Optional[str] = None,
+    ) -> A.ExternComponent:
+        """Parse a typed foreign-component declaration (feature #4, F1)::
+
+            extern component Bureau from "vendor/bureau.wasm"
+                fun submit(net: Net, payload: Report) -> Receipt
+
+        The body is an INDENT / DEDENT block of method signatures, reusing
+        :meth:`_parse_method_sig` exactly like a ``trait`` / ``capability``
+        block -- the closest existing declaration machinery. ``component``
+        and ``from`` are CONTEXTUAL keywords (matched by identifier text)
+        so they stay usable as ordinary identifiers elsewhere; only
+        ``extern`` is a reserved word.
+        """
+        start = self._peek().start
+        self._expect(T.KW_EXTERN, "expected 'extern'")
+        # Contextual ``component``: the only ``extern`` form Capa has.
+        comp = self._peek()
+        if comp.kind != T.IDENT or comp.text != "component":
+            raise self._error(
+                "expected 'component' after 'extern' (the only 'extern' "
+                "form is 'extern component Name from \"artifact.wasm\"')",
+                comp,
+            )
+        self._advance()
+        name_tok = self._expect(T.IDENT, "expected foreign-component name")
+        # Contextual ``from`` before the artifact path.
+        frm = self._peek()
+        if frm.kind != T.IDENT or frm.text != "from":
+            raise self._error(
+                "expected 'from' after the foreign-component name "
+                "(write `extern component Name from \"artifact.wasm\"`)",
+                frm,
+            )
+        self._advance()
+        artifact_tok = self._expect(
+            T.STRING_LIT,
+            "expected a string-literal path to the .wasm Component Model "
+            "artifact after 'from'",
+        )
+        self._expect(
+            T.NEWLINE, "expected newline after extern component header",
+        )
+        self._expect(T.INDENT, "expected indented method signatures")
+        methods: list[A.MethodSig] = []
+        while not self._check(T.DEDENT) and not self._at_end():
+            methods.append(self._parse_method_sig())
+            self._skip_newlines()
+        self._expect(T.DEDENT, "expected dedent at end of extern component body")
+        if not methods:
+            raise self._error(
+                "extern component must declare at least one method"
+            )
+        return A.ExternComponent(
+            pos=start,
+            name=name_tok.text,
+            name_pos=name_tok.start,
+            artifact=artifact_tok.value,
+            methods=methods,
+            is_pub=is_pub,
             doc=doc,
         )
 

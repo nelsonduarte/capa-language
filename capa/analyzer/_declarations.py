@@ -35,6 +35,21 @@ from ..typesys import (
 )
 
 
+def _te_contains_fun(te) -> bool:
+    """True if the AST type expression ``te`` is, or transitively
+    contains, a ``FunType`` (feature #4, F1). A bare closure type has no
+    canonical-ABI lowering, so it cannot cross a Wasm component boundary."""
+    if te is None:
+        return False
+    if isinstance(te, A.FunType):
+        return True
+    if isinstance(te, A.TypeName):
+        return any(_te_contains_fun(a) for a in (te.args or ()))
+    if isinstance(te, A.TupleType):
+        return any(_te_contains_fun(e) for e in te.elements)
+    return False
+
+
 _RESERVED_VARIANT_NAMES = frozenset({
     "Ok",    # built-in Result variant
     "Err",   # built-in Result variant
@@ -167,6 +182,15 @@ class _DeclarationsMixin:
                         pos=item.pos, type_params=list(item.type_params),
                     )
                 )
+            elif isinstance(item, A.ExternComponent):
+                # Feature #4 (F1): a typed foreign component lands as an
+                # EXTERN_COMPONENT symbol -- a callable namespace, not a
+                # value or a type. Its method signatures are resolved and
+                # checked in the second sub-pass below.
+                self._declare_global(Symbol(
+                    name=item.name, kind=SymbolKind.EXTERN_COMPONENT,
+                    pos=item.pos, extern_artifact=item.artifact,
+                ))
             elif isinstance(item, A.ImplBlock):
                 pass  # impls only add methods to the target type
 
@@ -313,6 +337,168 @@ class _DeclarationsMixin:
         for item in module.items:
             if isinstance(item, A.ImplBlock):
                 self._register_impl_methods(item)
+
+        # Fourth sub-pass: resolve + check typed foreign-component method
+        # signatures (feature #4, F1). Runs AFTER impl-method
+        # registration so a type's ``implements`` set is populated: the
+        # crossing check must reject a CAP-BEARING struct (one that
+        # implements a user capability, so carries a built-in cap in a
+        # field) handed across the boundary as a crossing value type --
+        # otherwise a struct like ``SmtpMailer { net: Net }`` would
+        # smuggle Net past the declared-parameter discipline.
+        for item in module.items:
+            if isinstance(item, A.ExternComponent):
+                self._register_extern_component(item)
+
+    def _register_extern_component(self, ec: A.ExternComponent) -> None:
+        """Resolve and typecheck a typed foreign-component declaration
+        (feature #4, F1).
+
+        Each method signature is checked like an ordinary
+        capability-bearing signature, with the extra CROSSING discipline
+        the Wasm Component Model boundary imposes:
+
+        - a method may declare EXPLICIT capability parameters, but ONLY
+          built-in host capabilities (``net: Net``, ``fs: Fs``, ...):
+          those are the granted authority the sandbox will physically
+          confine the component to (F2). A user-defined capability (a
+          Capa struct / trait) cannot cross a component boundary, so it
+          is rejected;
+        - ``Unsafe`` is the Python-only FFI escape hatch and can NEVER be
+          handed to a foreign Wasm component -- rejected with a clear
+          message;
+        - every ordinary (non-capability) parameter and the return type
+          must be WASM-COMPONENT-EXPRESSIBLE: no capability nested
+          anywhere, and no bare ``Fun(...)`` / closure (the canonical ABI
+          has no closure form), so those cannot smuggle authority across
+          the boundary.
+
+        The resolved method signatures are stored on the symbol's
+        ``methods`` table so a call ``Bureau.submit(net, payload)``
+        typechecks against them (see ``_dispatch._check_foreign_call``).
+        """
+        from . import Symbol, SymbolKind
+
+        sym = self.global_scope.lookup(ec.name)
+        if sym is None:
+            return
+        for method in ec.methods:
+            # A foreign-component boundary crosses concrete canonical-ABI
+            # types; a generic type variable has no lowering, so a
+            # generic method is rejected up front.
+            if method.type_params:
+                self._err(
+                    f"foreign-component method {method.name!r} cannot be "
+                    f"generic; a component boundary crosses concrete "
+                    f"canonical-ABI types, not type variables",
+                    method.pos,
+                )
+            # ``self`` is meaningless on a foreign-component method: the
+            # component is a namespace, not an instance.
+            if method.params and method.params[0].name == "self":
+                self._err(
+                    f"foreign-component method {method.name!r} cannot take "
+                    f"'self'; call it as {ec.name}.{method.name}(...)",
+                    method.pos,
+                )
+            self._check_foreign_method_sig(ec, method)
+            fty = self._method_type_from_decl(method)
+            sym.methods[method.name] = Symbol(
+                name=method.name, kind=SymbolKind.FUNCTION,
+                pos=method.pos, ty=fty,
+                type_params=list(method.type_params),
+                param_names=[
+                    p.name for p in method.params if p.name != "self"
+                ],
+                has_self=False,
+            )
+
+    def _check_foreign_method_sig(
+        self, ec: A.ExternComponent, method: A.MethodSig,
+    ) -> None:
+        """Enforce the crossing discipline on one foreign-component
+        method signature. See :meth:`_register_extern_component`."""
+        from ..typesys import CAPABILITY_NAMES
+        label = f"{ec.name}.{method.name}"
+        for p in method.params:
+            if p.name == "self":
+                continue
+            if p.type_expr is None:
+                self._err(
+                    f"parameter {p.name!r} of foreign-component method "
+                    f"{label!r} must have a type annotation",
+                    p.pos,
+                )
+                continue
+            pty = self._resolve_type(p.type_expr)
+            if isinstance(pty, TyName) and self._ty_is_capability(pty):
+                # A top-level capability parameter: the granted authority.
+                if pty.name == "Unsafe":
+                    self._err(
+                        f"'Unsafe' cannot be a capability parameter of "
+                        f"foreign-component method {label!r}: Unsafe is the "
+                        f"Python-only FFI escape hatch, and a sandboxed Wasm "
+                        f"component can never receive it",
+                        p.pos,
+                    )
+                elif pty.name not in CAPABILITY_NAMES:
+                    self._err(
+                        f"parameter {p.name!r} of foreign-component method "
+                        f"{label!r} is a user-defined capability "
+                        f"{pty.name!r}; only built-in host capabilities "
+                        f"(Net, Fs, Env, ...) can be granted to a foreign "
+                        f"Wasm component -- a user-defined capability is a "
+                        f"Capa value and cannot cross a component boundary",
+                        p.pos,
+                    )
+                # A built-in host cap (Net, Fs, ...): allowed, this is the
+                # explicit authority the component may receive.
+                continue
+            self._check_foreign_crossing_type(
+                p.type_expr, pty, p.pos,
+                f"parameter {p.name!r} of foreign-component method {label!r}",
+            )
+        if method.return_type is not None:
+            rty = self._resolve_type(method.return_type)
+            self._check_foreign_crossing_type(
+                method.return_type, rty, method.pos,
+                f"return type of foreign-component method {label!r}",
+            )
+
+    def _check_foreign_crossing_type(
+        self, te: A.TypeExpr, ty: Ty, pos, context: str,
+    ) -> None:
+        """Reject a type that cannot cross a Wasm component boundary in
+        ``context``: an ``Unsafe`` anywhere, any capability nested in the
+        crossing value, or a bare ``Fun(...)`` closure type."""
+        unsafe = self._contains_unsafe(ty)
+        if unsafe is not None:
+            self._err(
+                f"'Unsafe' cannot appear in {context}: it is the "
+                f"Python-only FFI escape hatch and cannot cross a Wasm "
+                f"component boundary",
+                pos,
+            )
+            return
+        cap = self._contains_any_capability(ty)
+        if cap is not None:
+            self._err(
+                f"capability {cap.name!r} cannot appear in {context}; a "
+                f"foreign component may only receive a capability as an "
+                f"explicit top-level parameter (e.g. `net: Net`), never "
+                f"nested inside a crossing value type",
+                pos,
+            )
+            return
+        if _te_contains_fun(te):
+            self._err(
+                f"a function / closure type cannot appear in {context}; a "
+                f"bare `Fun(...)` is not expressible across a Wasm component "
+                f"boundary (the canonical ABI has no closure form, and a "
+                f"closure could smuggle authority the boundary cannot see)",
+                pos,
+            )
+            return
 
     def _register_impl_methods(self, impl: A.ImplBlock) -> None:
         """Attach impl-block methods to the target type's Symbol.

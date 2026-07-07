@@ -81,7 +81,10 @@ class TestEmptyModule(unittest.TestCase):
             "functions_crossing_unsafe": 0,
             "declassification_sites": 0,
             "protocol_states": 0,
+            "foreign_components": 0,
+            "functions_calling_foreign_components": 0,
         })
+        self.assertEqual(m["foreign_components"], [])
 
     def test_empty_module_still_carries_schema_version(self):
         m = build_manifest(_analysed(""))
@@ -270,6 +273,9 @@ class TestTopLevelShape(unittest.TestCase):
         "filename",
         "user_defined_capabilities",
         "typestates",
+        # Feature #4 (F1): typed foreign-component boundaries, always
+        # present (empty when none declared).
+        "foreign_components",
         "functions",
         # WASI Fs layer b1: operator-declared authority (e.g. --preopen),
         # always present (empty when none declared), distinct from the
@@ -289,6 +295,10 @@ class TestTopLevelShape(unittest.TestCase):
         "functions_crossing_unsafe",
         "declassification_sites",
         "protocol_states",
+        # Feature #4 (F1): count of declared foreign-component boundaries
+        # and of functions that invoke one (the latter compose as TOP).
+        "foreign_components",
+        "functions_calling_foreign_components",
     }
 
     def test_required_top_level_keys_present(self):
@@ -312,6 +322,9 @@ class TestTopLevelShape(unittest.TestCase):
             "provably_excluded_capabilities",
             "linear_obligations",
             "has_unsafe", "attributes", "calls",
+            # Feature #4 (F1): whether the function invokes a typed
+            # foreign component (composes as TOP), and which boundaries.
+            "calls_foreign_component", "foreign_component_calls",
             # Roadmap S4: constant-time guarantee flag.
             "constant_time",
             # Roadmap S2.5: the auditable @secret -> @public bridges.

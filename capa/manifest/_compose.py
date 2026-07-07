@@ -162,6 +162,11 @@ class PackageNode:
     dep_edges: list[DepEdge] = field(default_factory=list)
     attributed_caps: frozenset[str] = frozenset()
     crosses_unsafe: bool = False
+    # Feature #4 (F1): a function in this package INVOKES a typed foreign
+    # component. The declared bound is NOT yet runtime-enforced (that is
+    # F2), so the boundary composes as authority-unknown TOP -- claiming
+    # a bound nothing enforces would be unsound.
+    calls_foreign_component: bool = False
     # The package's DECLARED capability ceiling (S3), or ``None`` when it
     # declares no ``[capabilities]`` section (unconstrained; not checked).
     ceiling: Optional["CapabilityCeiling"] = None
@@ -382,6 +387,7 @@ def _attribute(
 
     caps: dict[Path, set[str]] = {d: set() for d in nodes}
     unsafe: dict[Path, bool] = {d: False for d in nodes}
+    foreign: dict[Path, bool] = {d: False for d in nodes}
 
     for rec in manifest["functions"]:
         line, col = _pos_line_col(rec["pos"])
@@ -393,10 +399,16 @@ def _attribute(
         caps[owner] |= set(rec["transitively_reachable_capabilities"])
         if rec["has_unsafe"]:
             unsafe[owner] = True
+        # Feature #4 (F1): invoking a foreign component composes as TOP
+        # until F2 enforces the declared bound. Defensive .get(): a
+        # manifest serialised before F1 has no such key.
+        if rec.get("calls_foreign_component"):
+            foreign[owner] = True
 
     for d, node in nodes.items():
         node.attributed_caps = frozenset(caps[d])
         node.crosses_unsafe = unsafe[d]
+        node.calls_foreign_component = foreign[d]
 
 
 def _pos_line_col(pos: str) -> tuple[int, int]:
@@ -487,13 +499,27 @@ def _own_authority(node: PackageNode) -> Authority:
       gain. (Pinned by ``test_invoke_closure_product_is_sound_without_top``.)"""
     reasons: tuple[tuple[str, str, str], ...] = ()
     if node.crosses_unsafe:
-        reasons = ((node.name, node.name, (
+        reasons = reasons + ((node.name, node.name, (
             "a function in this package crosses Unsafe; its capability "
             "set is not a sound upper bound (provably-excluded is dropped)"
         )),)
+    # Feature #4 (F1): calling a typed foreign component is authority
+    # UNKNOWN until F2 enforces the declared bound. Recording the boundary
+    # in the manifest is honest INFORMATION; claiming the composed
+    # authority is BOUNDED now -- with no runtime enforcement -- would be
+    # unsound, so the calling package composes as TOP with its own
+    # distinct reason (F2 is what flips this to a bounded node).
+    if node.calls_foreign_component:
+        reasons = reasons + ((node.name, node.name, (
+            "a function in this package invokes a typed foreign component; "
+            "the declared capability bound is not yet runtime-enforced "
+            "(feature #4 F1 is the source-side declaration only), so the "
+            "boundary composes as authority-unknown until F2 enforces it"
+        )),)
+    unknown = node.crosses_unsafe or node.calls_foreign_component
     return Authority(
         caps=node.attributed_caps,
-        unknown=node.crosses_unsafe,
+        unknown=unknown,
         reasons=reasons,
     )
 

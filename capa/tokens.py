@@ -47,6 +47,7 @@ class TokenKind(Enum):
     KW_LINEAR = auto()
     KW_TYPESTATE = auto()
     KW_BECOME = auto()
+    KW_EXTERN = auto()
     KW_IMPORT = auto()
     KW_AS = auto()
 
@@ -158,6 +159,7 @@ KEYWORDS: dict[str, TokenKind] = {
     "linear":     TokenKind.KW_LINEAR,
     "typestate":  TokenKind.KW_TYPESTATE,
     "become":     TokenKind.KW_BECOME,
+    "extern":     TokenKind.KW_EXTERN,
     "import":     TokenKind.KW_IMPORT,
     "as":         TokenKind.KW_AS,
     "let":        TokenKind.KW_LET,

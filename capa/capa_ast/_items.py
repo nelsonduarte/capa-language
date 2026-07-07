@@ -202,6 +202,37 @@ class TraitDecl(Item):
 
 
 @dataclass(kw_only=True)
+class ExternComponent(Item):
+    """A typed foreign-component declaration (feature #4, F1)::
+
+        extern component Bureau from "vendor/bureau.wasm"
+            fun submit(net: Net, payload: Report) -> Receipt
+
+    A reference to an external Wasm Component Model artifact and the
+    method signatures Capa may call across the boundary. Each method
+    declares its EXPLICIT capability parameters (``net: Net``) plus
+    ordinary param / return types; the capability parameters are the
+    ONLY authority the component may receive.
+
+    This is the SOURCE-side (front-end) increment. The declaration is
+    parsed, typechecked, and its boundary is recorded in the SBOM, but
+    the sandboxed runtime that ENFORCES the bound is a separate later
+    increment (F2). Until F2 lands, a program that actually INVOKES a
+    foreign-component method cannot be run or codegen'd.
+
+    - ``name`` is the component's Capa-side name (``Bureau``).
+    - ``artifact`` is the string literal path to the ``.wasm`` artifact.
+    - ``methods`` are the callable method signatures (:class:`MethodSig`).
+    """
+    name: str
+    artifact: str
+    methods: list[MethodSig]
+    is_pub: bool = False
+    doc: Optional[str] = None
+    name_pos: Optional[Pos] = None
+
+
+@dataclass(kw_only=True)
 class Attribute(Node):
     """A function attribute: ``@name(key: "value", key: "value")``.
 

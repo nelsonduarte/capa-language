@@ -63,6 +63,7 @@ from ._exprs import (
 from ._items import (
     Attribute,
     ConstDecl,
+    ExternComponent,
     Field,
     FunDecl,
     ImplBlock,
