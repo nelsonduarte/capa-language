@@ -28,6 +28,10 @@ The package is split internally:
 - :mod:`._calls` - call-site extraction (``_collect_calls``).
 - :mod:`._funrec` - top-level ``build_manifest`` and per-function
   record assembly.
+- :mod:`._canonical` - canonical byte form of the manifest plus a
+  content digest over those bytes and a detached-signature slot
+  (``canonical_manifest`` / ``manifest_digest``); the content-addressable
+  substrate for composed SBOMs and signed capability diffs.
 - :mod:`._cyclonedx` - CycloneDX 1.5 SBOM wrapper around the
   internal manifest (``build_cyclonedx``).
 - :mod:`._spdx` - SPDX 2.3 SBOM wrapper around the internal
@@ -37,6 +41,11 @@ The package is split internally:
 
 from __future__ import annotations
 
+from ._canonical import (
+    CANONICALIZATION_SCHEME, CONTENT_INTEGRITY_KEY, DIGEST_ALGORITHM,
+    canonical_bytes, canonical_json, canonical_manifest,
+    content_integrity_block, manifest_digest,
+)
 from ._cyclonedx import CYCLONEDX_SPEC_VERSION, build_cyclonedx
 from ._funrec import (
     SCHEMA_VERSION, build_manifest, build_operator_declared_grants,
@@ -54,6 +63,14 @@ from ._vex import build_vex_document, build_vex_entries
 
 __all__ = [
     "SCHEMA_VERSION",
+    "CANONICALIZATION_SCHEME",
+    "CONTENT_INTEGRITY_KEY",
+    "DIGEST_ALGORITHM",
+    "canonical_bytes",
+    "canonical_json",
+    "canonical_manifest",
+    "content_integrity_block",
+    "manifest_digest",
     "CYCLONEDX_SPEC_VERSION",
     "SPDX_SPEC_VERSION",
     "CAPA_BUILD_TYPE",
