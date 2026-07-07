@@ -721,9 +721,14 @@ class _StatementsMixin:
     def _check_for(self, s: A.ForStmt) -> None:
         iter_ty = self._check_expr(s.iter)
         # Roadmap S2: an element drawn from a tainted iterable is
-        # tainted, so the loop variable inherits the iterable's label
-        # (mirrors the element-of-tainted-container rule for indexing).
-        iter_label = self._label_of(s.iter)
+        # tainted, so the loop variable inherits the iterable's ELEMENT
+        # label (mirrors the element-of-tainted-container rule for
+        # indexing). For a combinator result with an element-granular
+        # split this can be LOWER than the whole value (a ``filter`` on a
+        # secret predicate has secret STRUCTURE but public ELEMENTS); for
+        # a plain iterable the element label equals the whole-value label,
+        # so the loop variable's label is unchanged.
+        iter_label = self._element_label_of(s.iter)
         elem_ty: Ty = TyUnknown
         # Capa's iterables are exactly ``List<T>``, ``Set<T>``,
         # ``Range`` and ``String`` (code-point-by-code-point). Each
