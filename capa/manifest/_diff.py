@@ -47,8 +47,13 @@ WIDENING (more authority, the thing a release gate blocks) or NARROWING
   NARROWING.
 
 Only EXPORTED (pub) functions appear in the per-function changelog: they
-are the public contract. A widening in a PRIVATE function is not hidden -
-it surfaces in the PRODUCT composed-set delta below.
+are the public contract. A widening in a PRIVATE function is not shown
+per-function; it instead CONTRIBUTES to the PRODUCT composed-set delta
+below. That contribution is at SET granularity, so it can be cancelled:
+if a private function gains ``Net`` while another package in the product
+loses ``Net``, the product union is unchanged and nothing surfaces. The
+composed delta is a sound statement about the product's TOTAL reachable
+authority, not a per-function attribution.
 
 Functions ADDED (a new pub function that carries authority) are a
 widening of the public surface; REMOVED pub functions that carried
@@ -77,7 +82,29 @@ To avoid DOUBLE-COUNTING, a product-gained capability that is already
 explained by a function-level widening does not count again in the
 summary; the summary's product contribution is exactly the caps the
 product gained that NO per-function widening accounts for (the
-"transitive dep with no exported-signature change" case).
+"transitive dep with no exported-signature change" case). The per-function
+part of the count is EVENT-based (a (function, capability) pair), so two
+functions each gaining ``Net`` counts two, keeping the summary monotone
+with how many functions widened.
+
+## Same-shape inputs, and a known limitation
+
+Both inputs must be the SAME artifact shape - manifest vs manifest, or
+composed SBOM vs composed SBOM. Diffing a per-function manifest against a
+composed SBOM is a category error (the manifest's functions would read as
+"removed" against a doc that has no function records), so it is rejected
+with a :class:`DiffError` rather than emitting a misleading, can-exit-0
+changelog.
+
+KNOWN LIMITATION (capability-universe drift): ``guarantee_lost`` /
+``guarantee_gained`` are set differences over ``provably_excluded``, which
+is ``{all capability names} - {reachable}`` in each input. If the two
+inputs were built by compiler versions with a DIFFERENT capability
+universe (a capability added / renamed between releases), the exclusion
+sets shift for reasons unrelated to the program, which can manufacture a
+spurious ``guarantee_lost`` / ``guarantee_gained``. This FAILS SAFE: a
+spurious entry is a false WIDENING, which BLOCKS the gate (never a false
+pass). It is a documented, accepted limitation.
 """
 
 from __future__ import annotations
@@ -120,35 +147,45 @@ class _FunctionView:
 class _View:
     """A version-N (or N+1) artifact reduced to what the diff needs.
 
-    ``pub_functions`` keys on the STABLE ``(container, name)`` identity
-    (never ``pos``), so a line-only move is invisible. ``composed_caps``
-    /``authority_unknown`` are the product-level roll-up (S2's composed
-    set for a composed-SBOM input, or the union over functions for a bare
-    manifest). ``grants`` is ``{"fs": {dir: {methods}}, "net": {host:
-    {methods}}}`` from the operator-declared block."""
+    ``pub_functions`` keys on the STABLE ``(container, name,
+    module_index)`` identity (never ``pos``), so a line-only move is
+    invisible. ``composed_caps`` /``authority_unknown`` are the
+    product-level roll-up (S2's composed set for a composed-SBOM input, or
+    the union over functions for a bare manifest). ``grants`` is
+    ``{"fs": {dir: {methods}}, "net": {host: {methods}}}`` from the
+    operator-declared block. ``shape`` is ``"manifest"`` or
+    ``"composed"`` (the two inputs must agree)."""
 
-    pub_functions: dict[tuple[Optional[str], str], _FunctionView] = field(
-        default_factory=dict
-    )
+    pub_functions: dict[
+        tuple[Optional[str], str, Optional[int]], _FunctionView
+    ] = field(default_factory=dict)
     composed_caps: frozenset[str] = frozenset()
     authority_unknown: bool = False
     grants: dict[str, dict[str, frozenset[str]]] = field(
         default_factory=lambda: {"fs": {}, "net": {}}
     )
     digest: str = ""
+    shape: str = ""
 
 
-def _fn_key(rec: dict[str, Any]) -> tuple[Optional[str], str]:
-    """The stable ``(container, name)`` identity of a manifest function
-    record. The DISPLAY (demangled) ``source_*`` fields are preferred so
-    a shift in a loader mangle prefix (``_capa_m{N}__``) between releases
-    does not manufacture a false rename; a bare manifest with only
-    ``name`` / ``container`` still keys correctly."""
+def _fn_key(rec: dict[str, Any]) -> tuple[Optional[str], str, Optional[int]]:
+    """The stable identity of a manifest function record.
+
+    The DISPLAY (demangled) ``source_*`` fields are preferred so a shift
+    in a loader mangle prefix (``_capa_m{N}__``) between releases does not
+    manufacture a false rename; a bare manifest with only ``name`` /
+    ``container`` still keys correctly. ``source_module_index`` is part of
+    the key (never ``pos``): the manifest deliberately preserves it to
+    tell two same-``source_name`` helpers imported from DIFFERENT modules
+    apart, so keying on ``(container, name)`` alone would let one such
+    function's delta silently overwrite the other's. It is stable across
+    releases as long as the import order is stable; a re-order shows up as
+    a matched-key change, never a dropped delta."""
     container = rec.get("source_container")
     if container is None:
         container = rec.get("container")
     name = rec.get("source_name") or rec.get("name") or ""
-    return (container, name)
+    return (container, name, rec.get("source_module_index"))
 
 
 def _grants_from_block(doc: dict[str, Any]) -> dict[str, dict[str, frozenset[str]]]:
@@ -210,6 +247,11 @@ def _build_view(doc: dict[str, Any]) -> _View:
             "composed product SBOM (no 'composed'); expected the JSON that "
             "--manifest / --manifest-digest / --compose-sbom emits"
         )
+    # A doc carrying per-function records is a manifest; the shape drives
+    # the same-shape guard in ``build_capability_diff`` so a manifest is
+    # never diffed against a composed SBOM (a misleading, false-all-clear
+    # comparison).
+    view.shape = "manifest" if has_functions else "composed"
 
     if has_functions:
         union: set[str] = set()
@@ -222,7 +264,14 @@ def _build_view(doc: dict[str, Any]) -> _View:
             if rec.get("has_unsafe"):
                 any_unsafe = True
             if rec.get("is_pub"):
-                view.pub_functions[_fn_key(rec)] = _FunctionView(
+                key = _fn_key(rec)
+                if key in view.pub_functions:
+                    raise DiffError(
+                        f"ambiguous function identity {key!r}: two exported "
+                        "records share the same (container, name, module "
+                        "index); cannot diff soundly"
+                    )
+                view.pub_functions[key] = _FunctionView(
                     declared=frozenset(rec.get("declared_capabilities") or []),
                     reachable=reachable,
                     excluded=frozenset(
@@ -254,18 +303,26 @@ def _build_view(doc: dict[str, Any]) -> _View:
 
 def _function_deltas(
     old: _View, new: _View,
-) -> tuple[list[dict[str, Any]], set[str], set[str]]:
-    """Per matched PUB function, the four-view delta. Returns the sorted
-    changelog entries (only functions with a non-empty delta) plus the
-    UNION of caps that widened / narrowed at the function level (used to
-    de-duplicate the product-level contribution)."""
+) -> tuple[list[dict[str, Any]], set[str], set[str], int, int]:
+    """Per matched PUB function, the four-view delta.
+
+    Returns the sorted changelog entries (only functions with a non-empty
+    delta), the UNION of caps that widened / narrowed at the function
+    level (a SET, used only to de-duplicate the product-level
+    contribution), and the widening / narrowing EVENT counts. An event is
+    a (function, capability) pair: two functions each gaining ``Net`` is
+    two widening events, so the summary is monotone with how many
+    functions actually widened, never collapsing distinct functions to
+    one cap string."""
     entries: list[dict[str, Any]] = []
     widened_caps: set[str] = set()
     narrowed_caps: set[str] = set()
+    widen_events = 0
+    narrow_events = 0
 
     for key in sorted(
         set(old.pub_functions) & set(new.pub_functions),
-        key=lambda k: (k[0] or "", k[1]),
+        key=lambda k: (k[0] or "", k[1], k[2] if k[2] is not None else -1),
     ):
         o = old.pub_functions[key]
         n = new.pub_functions[key]
@@ -275,27 +332,36 @@ def _function_deltas(
         guarantee_gained = n.excluded - o.excluded
         if not (added or removed or guarantee_lost or guarantee_gained):
             continue
-        widening = bool(added or guarantee_lost)
-        narrowing = bool(removed or guarantee_gained)
+        # Per-function widening / narrowing caps, de-duplicated across the
+        # (overlapping) reachable and provably-excluded views so a single
+        # Fs gain that shows in both ``added`` and ``guarantee_lost``
+        # counts as one event for THIS function.
+        fn_widened = added | guarantee_lost
+        fn_narrowed = removed | guarantee_gained
+        widening = bool(fn_widened)
+        narrowing = bool(fn_narrowed)
         if widening and narrowing:
             classification = "mixed"
         elif widening:
             classification = "widening"
         else:
             classification = "narrowing"
-        widened_caps |= added | guarantee_lost
-        narrowed_caps |= removed | guarantee_gained
-        container, name = key
+        widened_caps |= fn_widened
+        narrowed_caps |= fn_narrowed
+        widen_events += len(fn_widened)
+        narrow_events += len(fn_narrowed)
+        container, name, module_index = key
         entries.append({
             "container": container,
             "name": name,
+            "source_module_index": module_index,
             "added": sorted(added),
             "removed": sorted(removed),
             "guarantee_lost": sorted(guarantee_lost),
             "guarantee_gained": sorted(guarantee_gained),
             "classification": classification,
         })
-    return entries, widened_caps, narrowed_caps
+    return entries, widened_caps, narrowed_caps, widen_events, narrow_events
 
 
 def _function_membership_deltas(
@@ -311,10 +377,11 @@ def _function_membership_deltas(
     narrowing counts they contribute."""
     added_keys = set(new.pub_functions) - set(old.pub_functions)
     removed_keys = set(old.pub_functions) - set(new.pub_functions)
+    sort_key = lambda k: (k[0] or "", k[1], k[2] if k[2] is not None else -1)
 
     added_functions: list[dict[str, Any]] = []
     n_widen = 0
-    for key in sorted(added_keys, key=lambda k: (k[0] or "", k[1])):
+    for key in sorted(added_keys, key=sort_key):
         fv = new.pub_functions[key]
         caps = sorted(fv.reachable)
         classification = "widening" if caps else "neutral"
@@ -323,13 +390,14 @@ def _function_membership_deltas(
         added_functions.append({
             "container": key[0],
             "name": key[1],
+            "source_module_index": key[2],
             "capabilities": caps,
             "classification": classification,
         })
 
     removed_functions: list[dict[str, Any]] = []
     n_narrow = 0
-    for key in sorted(removed_keys, key=lambda k: (k[0] or "", k[1])):
+    for key in sorted(removed_keys, key=sort_key):
         fv = old.pub_functions[key]
         caps = sorted(fv.reachable)
         classification = "narrowing" if caps else "neutral"
@@ -338,6 +406,7 @@ def _function_membership_deltas(
         removed_functions.append({
             "container": key[0],
             "name": key[1],
+            "source_module_index": key[2],
             "capabilities": caps,
             "classification": classification,
         })
@@ -420,7 +489,23 @@ def build_capability_diff(
     old = _build_view(old_doc)
     new = _build_view(new_doc)
 
-    functions, fn_widened, fn_narrowed = _function_deltas(old, new)
+    # Both inputs MUST be the same artifact shape. Diffing a per-function
+    # manifest against a composed SBOM is a category error: the manifest's
+    # pub functions would read as "removed" against a composed doc that has
+    # no function records at all, producing a misleading changelog that can
+    # exit 0 and MASK a genuine product-level change (a false all-clear on
+    # the exact gate this feature protects). Reject it, like an
+    # unrecognized shape.
+    if old.shape != new.shape:
+        raise DiffError(
+            f"input shape mismatch: old is a {old.shape!r} and new is a "
+            f"{new.shape!r}. Both inputs must be the same shape (manifest "
+            "vs manifest, or composed SBOM vs composed SBOM); a manifest "
+            "cannot be diffed against a composed SBOM"
+        )
+
+    (functions, fn_widened, fn_narrowed,
+     fn_widen_events, fn_narrow_events) = _function_deltas(old, new)
     (added_functions, removed_functions,
      addfn_widen, rmfn_narrow) = _function_membership_deltas(old, new)
     grant_changes, grant_widen, grant_narrow = _grant_deltas(old, new)
@@ -446,15 +531,23 @@ def build_capability_diff(
     product_only_widen = composed_added - fn_widened
     product_only_narrow = composed_removed - fn_narrowed
 
+    # The summary counts EVENTS, not distinct cap strings: per-function
+    # widenings are counted (function, capability)-wise (two functions
+    # each gaining Net = 2), so the count is monotone with how many
+    # functions widened and never under-reports. The product contribution
+    # is the de-duplicated remainder (caps the product gained that no
+    # per-function widening explains), counted once per cap at product
+    # granularity. Since events >= distinct strings, the gate (fires iff
+    # widenings > 0) stays safe.
     widenings = (
-        len(fn_widened)
+        fn_widen_events
         + addfn_widen
         + grant_widen
         + len(product_only_widen)
         + (1 if transition == "gained" else 0)
     )
     narrowings = (
-        len(fn_narrowed)
+        fn_narrow_events
         + rmfn_narrow
         + grant_narrow
         + len(product_only_narrow)
@@ -491,11 +584,18 @@ def build_capability_diff(
             "provably_excluded, e.g. an exclusion proof voided by a new "
             "Unsafe / higher-order parameter); removed / guarantee_gained "
             "are NARROWINGS. Only exported (pub) functions appear per "
-            "function; a private widening surfaces in product.composed_added. "
+            "function; a private widening is not shown per function and "
+            "instead contributes to product.composed_added (subject to "
+            "set-union cancellation: if another package loses the same "
+            "capability the product union may be unchanged). "
             "authority_unknown_transition='gained' is a high-severity "
-            "widening: the product became unanalyzable. from_digest / "
-            "to_digest are the S1 content digests of the two exact inputs; "
-            "this changelog's own content_integrity envelope is signABLE "
-            "(the compiler holds no keys)."
+            "widening: the product became unanalyzable. guarantee_lost / "
+            "guarantee_gained compare exclusion sets that may come from "
+            "different compiler versions, so a change to the capability "
+            "universe between releases can produce a spurious entry; this "
+            "fails safe (a false widening blocks, never passes). "
+            "from_digest / to_digest are the S1 content digests of the two "
+            "exact inputs; this changelog's own content_integrity envelope "
+            "is signABLE (the compiler holds no keys)."
         ),
     }

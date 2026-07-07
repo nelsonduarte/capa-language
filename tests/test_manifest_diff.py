@@ -60,6 +60,7 @@ def _fn(
     excluded=None,
     has_unsafe=False,
     pos="main.capa:1:1",
+    module_index=None,
 ):
     """Build one manifest function record. ``reachable`` defaults to
     ``declared``; ``excluded`` defaults to the provable complement (every
@@ -73,6 +74,7 @@ def _fn(
         "source_name": name,
         "container": container,
         "source_container": container,
+        "source_module_index": module_index,
         "pos": pos,
         "is_pub": is_pub,
         "declared_capabilities": list(declared),
@@ -365,6 +367,94 @@ class TestProductLevel(unittest.TestCase):
         diff = _diff(old, new)
         self.assertEqual(diff["product"]["composed_added"], ["Fs"])
         self.assertEqual(diff["summary"]["widenings"], 1)
+
+
+class TestShapeMismatch(unittest.TestCase):
+    """W1: a manifest must never be diffed against a composed SBOM (a
+    false all-clear)."""
+
+    def test_manifest_vs_composed_raises(self):
+        manifest = _manifest([_fn("root", declared=["Net"])])
+        composed = _composed(["Net"])
+        with self.assertRaises(DiffError):
+            _diff(manifest, composed)
+        with self.assertRaises(DiffError):
+            _diff(composed, manifest)
+
+    def test_cli_shape_mismatch_exits_nonzero(self):
+        manifest = _manifest([_fn("root", declared=["Net"])])
+        composed = _composed(["Net"])
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d) / "m.json"
+            c = Path(d) / "c.json"
+            m.write_text(canonical_json(canonical_manifest(manifest)))
+            c.write_text(canonical_json(canonical_manifest(composed)))
+            rc = _run_cli(["--capability-diff", str(m), str(c),
+                           "--fail-on-widening"])
+            # An ERROR (exit 2), not a misleading exit-0 / gated exit-1 diff.
+            self.assertEqual(rc.returncode, 2)
+            self.assertIn("shape mismatch", rc.stderr)
+
+
+class TestRobustKey(unittest.TestCase):
+    """Two same-source-name helpers from different modules must be diffed
+    independently; neither delta may be dropped by a last-wins overwrite."""
+
+    def test_same_name_different_module_diffed_independently(self):
+        # helper#1 gains Fs, helper#2 gains Net; same source_name, distinct
+        # source_module_index.
+        old = _manifest([
+            _fn("helper", declared=["Stdio"], module_index=1),
+            _fn("helper", declared=["Stdio"], module_index=2),
+        ])
+        new = _manifest([
+            _fn("helper", declared=["Stdio", "Fs"], module_index=1),
+            _fn("helper", declared=["Stdio", "Net"], module_index=2),
+        ])
+        diff = _diff(old, new)
+        by_idx = {
+            f["source_module_index"]: f for f in diff["functions"]
+        }
+        self.assertEqual(set(by_idx), {1, 2})
+        self.assertEqual(by_idx[1]["added"], ["Fs"])
+        self.assertEqual(by_idx[2]["added"], ["Net"])
+
+    def test_collision_on_full_key_is_error(self):
+        # Two exported records with an identical (container, name, index):
+        # a malformed manifest; fail loud rather than silently drop one.
+        old = _manifest([
+            _fn("dup", declared=["Stdio"], module_index=None),
+            _fn("dup", declared=["Net"], module_index=None),
+        ])
+        new = _manifest([_fn("dup", declared=["Stdio"], module_index=None)])
+        with self.assertRaises(DiffError):
+            _diff(old, new)
+
+
+class TestEventCount(unittest.TestCase):
+    """summary.widenings counts (function, capability) EVENTS: two
+    functions each gaining a capability counts two."""
+
+    def test_two_functions_each_gain_a_cap_counts_two(self):
+        old = _manifest([
+            _fn("a", declared=["Stdio"]),
+            _fn("b", declared=["Stdio"]),
+        ])
+        new = _manifest([
+            _fn("a", declared=["Stdio", "Net"]),
+            _fn("b", declared=["Stdio", "Net"]),
+        ])
+        diff = _diff(old, new)
+        # Both functions gained Net: 2 events. The product union also
+        # gained Net, but it is de-duplicated (already explained), so it
+        # does not add a third.
+        self.assertEqual(diff["summary"]["widenings"], 2)
+        self.assertEqual(diff["product"]["composed_added"], ["Net"])
+
+    def test_single_function_single_cap_still_one(self):
+        old = _manifest([_fn("send", declared=["Stdio"])])
+        new = _manifest([_fn("send", declared=["Stdio", "Fs"])])
+        self.assertEqual(_diff(old, new)["summary"]["widenings"], 1)
 
 
 class TestDeterminism(unittest.TestCase):
