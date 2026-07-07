@@ -31,6 +31,12 @@ reproducible-builds convention that the artefact is UTF-8 text. The
 scheme is versioned via :data:`CANONICALIZATION_SCHEME` so a future
 switch to strict RFC-8785 is a visible, verifiable change.
 
+The ``capa-jcs-sorted-v1`` scheme is UNICODE-NORMALIZATION-AGNOSTIC: it
+canonicalises strings as authored (their bytes), so two strings that
+differ only in NFC vs NFD normalisation yield different canonical bytes
+and different digests. This is a known, accepted limitation to weigh in
+any future RFC-8785 decision.
+
 The content digest is ``sha256`` over those canonical bytes, reusing
 :func:`._funrec._sha256_text`. It is SELF-REFERENCE-FREE: when a
 manifest already carries the :data:`CONTENT_INTEGRITY_KEY` envelope, the
@@ -79,6 +85,14 @@ def canonical_json(obj: Any) -> str:
     """
     return json.dumps(
         obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        # Fail closed on NaN / Infinity. The manifest is provably
+        # float-free today, so this is latent insurance: if a float
+        # NaN/Inf ever reaches the canonicalizer it would otherwise emit
+        # the non-standard, silently non-canonical ``NaN`` / ``Infinity``
+        # tokens. For a correctness-critical primitive that is the trust
+        # root for signing / diffing / composition, a loud ValueError
+        # beats invalid output.
+        allow_nan=False,
     )
 
 

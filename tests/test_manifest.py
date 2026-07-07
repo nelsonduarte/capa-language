@@ -2252,6 +2252,18 @@ class TestCanonicalForm(unittest.TestCase):
         d = manifest_digest(build_manifest(_analysed(self._SRC)))
         self.assertRegex(d, r"^[0-9a-f]{64}$")
 
+    def test_nan_and_inf_fail_closed(self):
+        # The manifest is provably float-free, but the canonicalizer is
+        # the trust root: a NaN / Infinity must fail loudly rather than
+        # emit the non-standard, silently non-canonical ``NaN`` /
+        # ``Infinity`` tokens (allow_nan=False). json raises ValueError.
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError):
+                    canonical_json({"x": bad})
+                with self.assertRaises(ValueError):
+                    canonical_bytes({"x": bad})
+
 
 class TestContentIntegrityEnvelope(unittest.TestCase):
     """The content_integrity envelope: digest + detached-signature slot,
