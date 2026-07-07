@@ -230,6 +230,94 @@ class TestNonCrossableTypes(unittest.TestCase):
             any("user-defined capability" in e for e in errs), errs
         )
 
+    def test_fun_in_struct_field_param_rejected(self):
+        errs = _errors(
+            "type Box { f: Fun() -> Unit }\n"
+            "extern component B from \"b.wasm\"\n"
+            "    fun go(b: Box) -> Int\n"
+        )
+        self.assertTrue(any("function / closure type" in e for e in errs), errs)
+
+    def test_fun_in_struct_field_return_rejected(self):
+        errs = _errors(
+            "type Box { f: Fun() -> Unit }\n"
+            "extern component B from \"b.wasm\"\n"
+            "    fun go(x: Int) -> Box\n"
+        )
+        self.assertTrue(any("function / closure type" in e for e in errs), errs)
+
+    def test_fun_in_list_inside_struct_field_rejected(self):
+        errs = _errors(
+            "type Box { xs: List<Fun() -> Unit> }\n"
+            "extern component B from \"b.wasm\"\n"
+            "    fun go(b: Box) -> Int\n"
+        )
+        self.assertTrue(any("function / closure type" in e for e in errs), errs)
+
+    def test_fun_in_sum_variant_payload_rejected(self):
+        errs = _errors(
+            "type Wrap =\n"
+            "    W(Fun() -> Unit)\n"
+            "extern component B from \"b.wasm\"\n"
+            "    fun go(w: Wrap) -> Int\n"
+        )
+        self.assertTrue(any("function / closure type" in e for e in errs), errs)
+
+    def test_fun_in_sum_variant_payload_return_rejected(self):
+        errs = _errors(
+            "type Wrap =\n"
+            "    W(Fun() -> Unit)\n"
+            "extern component B from \"b.wasm\"\n"
+            "    fun go(x: Int) -> Wrap\n"
+        )
+        self.assertTrue(any("function / closure type" in e for e in errs), errs)
+
+    def test_fun_in_struct_of_struct_param_rejected(self):
+        errs = _errors(
+            "type Inner { f: Fun() -> Unit }\n"
+            "type Outer { inner: Inner }\n"
+            "extern component B from \"b.wasm\"\n"
+            "    fun go(o: Outer) -> Int\n"
+        )
+        self.assertTrue(any("function / closure type" in e for e in errs), errs)
+
+    def test_fun_in_struct_of_struct_return_rejected(self):
+        errs = _errors(
+            "type Inner { f: Fun() -> Unit }\n"
+            "type Outer { inner: Inner }\n"
+            "extern component B from \"b.wasm\"\n"
+            "    fun go(x: Int) -> Outer\n"
+        )
+        self.assertTrue(any("function / closure type" in e for e in errs), errs)
+
+    def test_end_to_end_fun_field_smuggle_rejected(self):
+        # The confirmed escape from the adversarial review: a struct with
+        # a Fun-typed field, whose closure captures Stdio, handed across
+        # the boundary would smuggle Stdio with declared_capabilities=[].
+        errs = _errors(
+            "type Box { f: Fun() -> Unit }\n"
+            "extern component Bureau from \"b.wasm\"\n"
+            "    fun submit(b: Box) -> Unit\n"
+            "fun run(stdio: Stdio)\n"
+            "    let leak = fun () => stdio.println(\"crossed\")\n"
+            "    let b = Box { f: leak }\n"
+            "    Bureau.submit(b)\n"
+        )
+        self.assertTrue(any("function / closure type" in e for e in errs), errs)
+
+    def test_recursive_clean_crossing_type_accepted(self):
+        # A recursive named type with NO Fun / cap / Unsafe anywhere must
+        # still be accepted: the fixpoint is cycle-guarded, not
+        # over-rejecting.
+        _ok(
+            "type Tree { kids: List<Tree>, v: Int }\n"
+            "type Report { body: String, t: Tree }\n"
+            "extern component B from \"b.wasm\"\n"
+            "    fun go(net: Net, r: Report) -> Report\n"
+            "fun run(net: Net, r: Report) -> Report\n"
+            "    return B.go(net, r)\n"
+        )
+
     def test_cap_bearing_struct_param_rejected(self):
         # A struct that implements a user capability may hold a built-in
         # cap in a field (``SmtpMailer { net: Net }``). Handing it across
