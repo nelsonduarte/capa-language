@@ -146,16 +146,17 @@ class TestElementReadsTainted(unittest.TestCase):
         self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
 
 
-class TestFilterElementPreserved(unittest.TestCase):
-    """filter keeps the ELEMENT label of the input (the survivors are a
-    subset of the input's elements): a public-element read of a filtered
-    list stays clean even when the predicate is secret, while a
-    secret-element list stays secret through filter regardless of the
-    predicate."""
+class TestFilterElementReadObservesPresence(unittest.TestCase):
+    """An element read (index / iteration) of a filter-of-secret-predicate
+    result observes each element's PRESENCE, which discloses the predicate
+    -- iterating ``xs.filter(fun (n) => n == s)`` reveals which / how many
+    public elements equal ``s``. So an element read reads the WHOLE-VALUE
+    join (structure AND element) and is tainted whenever the structure is
+    secret, even when the surviving elements are individually public. Only
+    a structure query (length / is_empty) reads the lower structure label.
+    A secret-element list stays secret through filter regardless."""
 
-    def test_public_list_secret_predicate_element_read_clean(self):
-        # The ELEMENTS are genuinely public (a subset of the public input);
-        # only the cardinality is secret. An element read stays clean.
+    def test_public_list_secret_predicate_index_read_warns(self):
         r = _analyze(
             "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
             "    let ys = xs.filter(fun (n: Int) -> Bool => n == s)\n"
@@ -163,7 +164,43 @@ class TestFilterElementPreserved(unittest.TestCase):
             "    stdio.println(\"${v}\")\n"
         )
         self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(_sink_warnings(r), [], [w.message for w in r.warnings])
+        self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_public_list_secret_predicate_for_iteration_warns(self):
+        # The confirmed false negative: iterating the filtered result
+        # discloses which public elements equal the secret. WARN by default.
+        r = _analyze(
+            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let ys = xs.filter(fun (n: Int) -> Bool => n == s)\n"
+            "    for y in ys\n"
+            "        stdio.println(\"${y}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_sink_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+
+    def test_public_list_secret_predicate_for_iteration_strict_error(self):
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let ys = xs.filter(fun (n: Int) -> Bool => n == s)\n"
+            "    for y in ys\n"
+            "        stdio.println(\"${y}\")\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_sink_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_public_list_secret_predicate_get_read_warns(self):
+        r = _analyze(
+            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let ys = xs.filter(fun (n: Int) -> Bool => n == s)\n"
+            "    let v = ys.get(0).unwrap_or(0)\n"
+            "    stdio.println(\"${v}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_sink_warnings(r)), 1,
+                                [w.message for w in r.warnings])
 
     def test_secret_element_list_public_predicate_element_read_warns(self):
         # A public predicate over a secret-element list: the surviving
@@ -177,6 +214,18 @@ class TestFilterElementPreserved(unittest.TestCase):
         )
         self.assertTrue(r.ok, [e.message for e in r.errors])
         self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_public_list_public_predicate_for_iteration_clean(self):
+        # A public predicate over a public list: structure and elements are
+        # both public, so iterating stays clean (no false positive).
+        r = _analyze(
+            "fun main(xs: List<Int>, stdio: Stdio)\n"
+            "    let ys = xs.filter(fun (n: Int) -> Bool => n > 0)\n"
+            "    for y in ys\n"
+            "        stdio.println(\"${y}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_sink_warnings(r), [], [w.message for w in r.warnings])
 
 
 class TestFilterStructureLeak(unittest.TestCase):
