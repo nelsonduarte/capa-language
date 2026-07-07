@@ -788,16 +788,15 @@ class _IfcMixin:
             # ``x?`` unwraps; the payload keeps the taint of x.
             return self._label_of(e.expr)
         if isinstance(e, A.Index):
-            # An element drawn from a tainted container is tainted. For a
-            # combinator result with an element-granular split, indexing
-            # reads the ELEMENT label -- which can be LOWER than the whole
-            # value (a ``filter`` on a secret predicate has a secret
-            # STRUCTURE but public ELEMENTS). For a plain container the
-            # element label equals the whole-value label, so this is
-            # unchanged. A secret index still joins in (its own taint).
-            return L.join(
-                self._element_label_of(e.receiver), self._label_of(e.index),
-            )
+            # An element drawn from a tainted container is tainted. An
+            # element read observes BOTH the element VALUE and its
+            # PRESENCE / position, so it reads the WHOLE-VALUE join
+            # (structure AND element): over a ``filter`` on a secret
+            # predicate the structure is secret (which / how many elements
+            # are present discloses the predicate) even when the surviving
+            # elements are individually public. Only a STRUCTURE query
+            # (length / is_empty / ...) reads the lower structure label.
+            return L.join(self._label_of(e.receiver), self._label_of(e.index))
         if isinstance(e, A.FieldAccess):
             # A field whose TYPE is declared ``@secret`` produces a
             # @secret value when READ (``type Emp { iban: @secret String
