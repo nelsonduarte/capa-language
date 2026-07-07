@@ -122,6 +122,12 @@ class SymbolKind(Enum):
     MODULE = auto()
     CAPABILITY = auto()
     TYPE_PARAM = auto()
+    # Feature #4 (F1): a typed foreign-component declaration
+    # (``extern component Bureau from "..."``). Not a value and not a
+    # type: a namespace whose methods are called across a sandboxed
+    # Wasm Component Model boundary. Its method signatures live in
+    # ``methods`` and its artifact path in ``extern_artifact``.
+    EXTERN_COMPONENT = auto()
 
 
 @dataclass
@@ -223,6 +229,10 @@ class Symbol:
     # the typestate state the receiver must be in for the call to be
     # legal. ``None`` for an ordinary (state-agnostic) method.
     required_state: Optional[str] = None
+    # Feature #4 (F1): for an EXTERN_COMPONENT symbol, the string path to
+    # the external Wasm Component Model artifact (``"vendor/bureau.wasm"``).
+    # ``None`` for every other symbol kind.
+    extern_artifact: Optional[str] = None
 
 
 @dataclass

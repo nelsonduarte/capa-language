@@ -471,6 +471,22 @@ class _DispatchMixin:
         return ret_substituted
 
     def _check_method_call(self, e: A.MethodCall) -> Ty:
+        from . import SymbolKind
+
+        # Feature #4 (F1): a call to a typed foreign component,
+        # ``Bureau.submit(net, payload)``. The receiver is a bare Ident
+        # naming an EXTERN_COMPONENT symbol -- a callable namespace, not a
+        # value -- so it is intercepted BEFORE ``_check_expr(e.receiver)``
+        # (which would reject referencing a non-value name).
+        if isinstance(e.receiver, A.Ident):
+            recv_sym = self.scope.lookup(e.receiver.name)
+            if (
+                recv_sym is not None
+                and recv_sym.kind == SymbolKind.EXTERN_COMPONENT
+            ):
+                self.bindings[id(e.receiver)] = recv_sym
+                return self._check_foreign_call(e, recv_sym)
+
         # Receiver + args first so their types populate
         # ``self.types`` for the FieldAccess-aware aliasing check.
         recv_ty = self._check_expr(e.receiver)
@@ -595,6 +611,84 @@ class _DispatchMixin:
                 )
 
         return TyUnknown
+
+    def _check_foreign_call(self, e: A.MethodCall, comp_sym) -> Ty:
+        """Typecheck a call to a typed foreign-component method
+        (feature #4, F1): ``Bureau.submit(net, payload)``.
+
+        The QUARANTINE RULE falls out of three independent guarantees:
+
+        1. the method signature was checked at declaration time, so its
+           only capability parameters are built-in host caps (never
+           ``Unsafe``, never a user cap), and no capability hides inside a
+           crossing value type (see ``_check_foreign_method_sig``);
+        2. arguments are typechecked positionally against that fixed
+           signature, so a value cannot be passed where the declared
+           parameter type does not accept it -- an extra capability
+           argument fails the arity / type check, and a capability where a
+           non-capability crossing type is expected is a type error;
+        3. the ambient capability discipline already guarantees a
+           capability VALUE can only be a parameter of the enclosing
+           function (capabilities cannot be constructed, let-bound, or
+           returned), so the boundary can receive ONLY capabilities the
+           caller itself was granted -- there is no ambient authority to
+           smuggle. The no-aliasing check additionally forbids handing the
+           same capability to the boundary twice in one call.
+
+        The composed authority for the boundary stays TOP / unproven in
+        the SBOM: the runtime that would make the bound SOUND is F2.
+        """
+        method_sym = comp_sym.methods.get(e.method)
+
+        # Evaluate args first so their types populate ``self.types`` for
+        # the FieldAccess-aware aliasing check, then run the no-aliasing
+        # check over the argument slots (the receiver is a namespace, not
+        # a capability, so it is not a slot).
+        arg_tys = [self._check_expr(a) for a in e.args]
+        self._check_no_aliasing(
+            [(a, f"argument {i + 1}") for i, a in enumerate(e.args)]
+        )
+
+        label = f"{comp_sym.name}.{e.method}"
+        if method_sym is None or not isinstance(method_sym.ty, TyFun):
+            hint = self._hint_did_you_mean(
+                e.method, list(comp_sym.methods.keys()),
+            )
+            self._err(
+                f"foreign component {comp_sym.name!r} has no method "
+                f"{e.method!r}{hint}",
+                e.pos,
+            )
+            return TyUnknown
+
+        fun_ty = method_sym.ty
+        perm = self._resolve_named_args(
+            e, method_sym.param_names, repr(label), fun_ty=fun_ty,
+        )
+        if perm is None:
+            return fun_ty.ret
+        reordered_args = [e.args[j] for j in perm]
+        reordered_tys = [arg_tys[j] for j in perm]
+
+        if len(fun_ty.params) != len(reordered_tys):
+            self._err(
+                f"call to {label!r}: expected {len(fun_ty.params)} "
+                f"arguments, got {len(reordered_tys)} (signature: "
+                f"{ty_str(fun_ty)})",
+                e.pos,
+            )
+            return fun_ty.ret
+
+        for i, (param_ty, arg_ty) in enumerate(
+            zip(fun_ty.params, reordered_tys)
+        ):
+            if not self._assignable(param_ty, arg_ty, reordered_args[i]):
+                self._err(
+                    f"call to {label!r}: argument {i + 1} expects "
+                    f"{ty_str(param_ty)}, got {ty_str(arg_ty)}",
+                    reordered_args[i].pos,
+                )
+        return fun_ty.ret
 
     def _check_method_dispatch(
         self,

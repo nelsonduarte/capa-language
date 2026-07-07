@@ -428,6 +428,15 @@ def build_manifest(
         if isinstance(item, A.TypeStruct) and getattr(item, "is_linear", False)
     }
 
+    # Feature #4 (F1): typed foreign components. The names are used to
+    # flag functions that INVOKE a foreign component (which compose as
+    # authority-unknown TOP until the F2 runtime enforces the bound); the
+    # block records each boundary + its declared capability set as
+    # information for the SBOM and for F2 to later flip to bounded.
+    from ..foreign import extern_component_names
+    foreign_names: set[str] = extern_component_names(module)
+    foreign_components_block = _foreign_components_block(module)
+
     # Build per-function records. Walks both top-level funs and
     # methods inside impl blocks (which are nested FunDecl nodes).
     # For impl methods, when the impl is *of* a capability trait
@@ -446,6 +455,7 @@ def build_manifest(
                 reachable=reachable, unprovable=unprovable,
                 linear_types=linear_types,
                 expr_labels=expr_labels,
+                foreign_names=foreign_names,
             ))
         elif isinstance(item, A.ImplBlock):
             implicit = (
@@ -461,6 +471,7 @@ def build_manifest(
                     reachable=reachable, unprovable=unprovable,
                     linear_types=linear_types,
                     expr_labels=expr_labels,
+                    foreign_names=foreign_names,
                 ))
 
     summary = {
@@ -493,6 +504,12 @@ def build_manifest(
         if isinstance(item, A.TypestateDecl)
     ]
     summary["protocol_states"] = len(protocol_states)
+    # Feature #4 (F1): count of declared foreign-component boundaries and
+    # of functions that actually invoke one (the latter compose as TOP).
+    summary["foreign_components"] = len(foreign_components_block)
+    summary["functions_calling_foreign_components"] = sum(
+        1 for f in functions if f["calls_foreign_component"]
+    )
 
     return {
         "capa_version": capa_version,
@@ -504,6 +521,14 @@ def build_manifest(
         "filename": display_filename(filename),
         "user_defined_capabilities": user_caps,
         "typestates": protocol_states,
+        # Feature #4 (F1): typed foreign-component boundaries. Recorded as
+        # INFORMATION -- the declared capability set per boundary -- so a
+        # regulator sees which external Wasm components the program calls
+        # and what authority it hands each. The composed authority for a
+        # calling function stays TOP / unproven (see the per-function
+        # ``calls_foreign_component`` flag and the composed SBOM): the
+        # runtime that makes the bound SOUND is F2.
+        "foreign_components": foreign_components_block,
         "functions": functions,
         # WASI Fs layer b1: operator-declared authority (e.g. --preopen),
         # honestly labelled Level-2 / operator-declared, distinct from the
@@ -521,6 +546,64 @@ def build_manifest(
     }
 
 
+def _foreign_components_block(module: A.Module) -> list[dict[str, Any]]:
+    """The typed foreign-component boundaries the module declares
+    (feature #4, F1).
+
+    Each entry records the boundary name, the external artifact path, and
+    per-method the DECLARED capability set (the built-in host caps the
+    method may hand the component) plus its ordinary param / return types.
+    The ``authority`` field is honestly ``"unproven-top"``: F1 declares
+    the bound but does not enforce it, so the composed authority for a
+    program calling this boundary stays authority-unknown TOP. F2 (the
+    sandboxed sub-component runtime) is what flips it to a bounded node."""
+    from ..foreign import extern_components, declared_capabilities
+
+    block: list[dict[str, Any]] = []
+    for ec in extern_components(module):
+        methods: list[dict[str, Any]] = []
+        comp_caps: set[str] = set()
+        for m in ec.methods:
+            caps = declared_capabilities(m)
+            comp_caps.update(caps)
+            methods.append({
+                "name": m.name,
+                "declared_capabilities": sorted(set(caps)),
+                "params": [
+                    {
+                        "name": p.name,
+                        "type": _demangle_type_text(_ty_text(p.type_expr))
+                        if p.type_expr else "?",
+                    }
+                    for p in m.params if p.name != "self"
+                ],
+                "return_type": (
+                    _demangle_type_text(_ty_text(m.return_type))
+                    if m.return_type else "()"
+                ),
+            })
+        source_name, module_index = _demangle(ec.name)
+        block.append({
+            "name": source_name,
+            "source_module_index": module_index,
+            "artifact": ec.artifact,
+            "declared_capabilities": sorted(comp_caps),
+            "methods": methods,
+            # Honest trust label: the declared bound is NOT yet
+            # runtime-enforced (that is F2), so a caller composes as TOP.
+            "authority": "unproven-top",
+            "note": (
+                "Typed foreign-component boundary. The declared capability "
+                "set is what the program HANDS this external Wasm "
+                "component; it is NOT yet runtime-enforced (F1 is the "
+                "source-side declaration only), so a function calling this "
+                "boundary composes as authority-unknown TOP. The sandboxed "
+                "runtime that makes the bound sound is a later increment."
+            ),
+        })
+    return block
+
+
 def _fun_record(
     fn: A.FunDecl,
     cap_names: set[str],
@@ -532,6 +615,7 @@ def _fun_record(
     unprovable: Optional[set[str]] = None,
     linear_types: Optional[set[str]] = None,
     expr_labels: Optional[dict[int, str]] = None,
+    foreign_names: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     if reachable is None:
         reachable = {}
@@ -539,6 +623,8 @@ def _fun_record(
         unprovable = set()
     if linear_types is None:
         linear_types = set()
+    if foreign_names is None:
+        foreign_names = set()
     param_records: list[dict[str, Any]] = []
     for p in fn.params:
         if p.name == "self":
@@ -663,6 +749,17 @@ def _fun_record(
     calls: list[dict[str, Any]] = []
     _collect_calls(fn.body, calls, attenuation_map=attenuation_map)
 
+    # Feature #4 (F1): does this function INVOKE a typed foreign
+    # component? A calling function composes as authority-unknown TOP
+    # until the F2 runtime enforces the declared bound; the composed
+    # SBOM reads this flag (see ``_compose._attribute``).
+    from ..foreign import foreign_call_sites
+    foreign_sites = foreign_call_sites(fn.body, foreign_names)
+    calls_foreign = bool(foreign_sites)
+    foreign_calls = sorted({
+        f"{comp}.{method}" for comp, method, _pos in foreign_sites
+    })
+
     # Roadmap S2.5: the auditable @secret -> @public bridges in this
     # function. Each entry is a deliberate disclosure with a stated
     # reason -- the regulator-facing record of where the program lets
@@ -734,6 +831,11 @@ def _fun_record(
             "produces_linear": return_is_linear,
         },
         "has_unsafe": has_unsafe,
+        # Feature #4 (F1): the function invokes a typed foreign component,
+        # so its composed authority is TOP / unproven until F2 enforces
+        # the bound. ``foreign_component_calls`` names the boundaries.
+        "calls_foreign_component": calls_foreign,
+        "foreign_component_calls": foreign_calls,
         "constant_time": any(a.name == "constant_time" for a in fn.attributes),
         "attributes": attrs,
         "calls": calls,

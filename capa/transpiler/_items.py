@@ -48,6 +48,18 @@ class _ItemsMixin:
             self._emit_struct(A.TypeStruct(
                 pos=item.pos, name=item.name, fields=list(item.fields),
             ))
+        elif isinstance(item, A.ExternComponent):
+            # Feature #4 (F1): a typed foreign-component declaration emits
+            # NO code -- it is a signature-only boundary. A program that
+            # actually INVOKES a foreign component is rejected earlier (the
+            # CLI's F2 guard); reaching a Bureau.submit(...) call site in
+            # the emitter is therefore impossible on the supported path.
+            # The bare declaration is inert, so a program that only
+            # declares one transpiles and runs normally.
+            self.em.write(
+                f"# capa: extern component {item.name} (foreign boundary; "
+                f"no code emitted -- runtime is feature #4 F2)"
+            )
         else:
             raise TranspilerError(f"unsupported top-level item: {type(item).__name__}")
 

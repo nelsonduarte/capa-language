@@ -253,7 +253,7 @@ The following words are reserved by the language and cannot be used as identifie
 
 | Category | Words |
 |---|---|
-| Declarations | `fun`, `type`, `trait`, `impl`, `capability`, `const`, `pub`, `import`, `as` |
+| Declarations | `fun`, `type`, `trait`, `impl`, `capability`, `extern`, `const`, `pub`, `import`, `as` |
 | Control flow | `if`, `then`, `elif`, `else`, `match`, `while`, `for`, `in`, `break`, `continue`, `return` |
 | Variables | `let`, `var` |
 | Capability discipline | `consume` |
@@ -375,12 +375,44 @@ top_item = import_decl
          | trait_decl
          | impl_decl
          | capability_decl
+         | extern_component_decl
          | const_decl
 
 import_decl = "import" module_path [ "as" IDENT ] NEWLINE
 
 module_path = IDENT { "." IDENT }
+
+extern_component_decl = [ "pub" ] "extern" "component" IDENT "from" STRING
+    NEWLINE INDENT { function_signature NEWLINE } DEDENT
 ```
+
+> **Status of `extern component` (feature #4, F1).** An `extern component`
+> declares a typed FOREIGN Wasm Component Model boundary: a name, a
+> string path to an external `.wasm` artifact, and one or more method
+> signatures Capa may call across the boundary (`Bureau.submit(net,
+> payload)`). Each method declares its EXPLICIT capability parameters
+> (only built-in host caps, e.g. `net: Net`) plus ordinary param / return
+> types; those capability parameters are the ONLY authority the component
+> may receive. The crossing types must be canonical-ABI-expressible: no
+> `Unsafe` anywhere (it is the Python-only escape hatch and cannot cross a
+> component boundary), and no bare `Fun(...)` / closure in a crossing
+> type (the canonical ABI has no closure form). `extern` is a reserved
+> word; `component` and `from` are contextual keywords (usable as ordinary
+> identifiers elsewhere). The body uses an INDENT / DEDENT block of method
+> signatures, like `trait` / `capability`.
+>
+> F1 is the SOURCE-side increment: the declaration is parsed,
+> type-checked (a call is confined to the declared capability parameters
+> by the ordinary caps-only-through-parameters discipline), and recorded
+> in the SBOM (`--manifest`), where the boundary composes as
+> authority-unknown TOP because the declared capability bound is NOT yet
+> runtime-enforced. The sandboxed sub-component runtime that makes the
+> bound sound is a separate later increment (F2); until it lands, a
+> program that actually INVOKES a foreign component cannot be run or
+> compiled (`--run` / `--wasm` fail with a clear "runtime not yet
+> available" error), while `--check` and `--manifest` work fully. A
+> program that only DECLARES a foreign component (never invokes one) runs
+> normally.
 
 > **Status of `import` in 1.0.** The grammar production `import_decl` is fully supported by both the parser and the semantic analyzer. An `import foo.bar` (optionally with `as alias`) loads another Capa module: the loader resolves the path against the current project's source tree and against the package manager's `vendor/` directory (see [`docs/packages.md`](docs/packages.md)). Imported names are visible to the importing module under the imported module's namespace; capability flow across module boundaries follows the same discipline as in-module calls (a function in another module that takes `Fs` still has to be called from a function that holds `Fs`).
 >
@@ -1042,6 +1074,7 @@ The following words are reserved by the Capa 1.0 language and cannot be used as 
 | `trait` | Trait declaration | In use |
 | `impl` | Implementation | In use |
 | `capability` | Capability declaration | In use |
+| `extern` | Foreign-component declaration (`extern component`) | In use |
 | `const` | Constant | In use |
 | `pub` | Public visibility | In use |
 | `import` | Module import | In use |

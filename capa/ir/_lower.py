@@ -215,6 +215,15 @@ class Lowerer(
                         for f in item.fields
                     ],
                 ))
+            elif isinstance(item, A.ExternComponent):
+                # Feature #4 (F1): a typed foreign-component declaration is
+                # a signature-only boundary and lowers to NOTHING. A
+                # program that actually INVOKES a foreign component is
+                # rejected earlier (the CLI's F2 guard) because the
+                # sandboxed sub-component runtime is a later increment; the
+                # bare declaration is inert, so a program that only
+                # declares one compiles normally.
+                continue
             else:
                 raise UnsupportedInIR(
                     f"top-level item {type(item).__name__}"
