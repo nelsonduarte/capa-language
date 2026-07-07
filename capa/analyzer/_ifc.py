@@ -348,10 +348,19 @@ class _IfcMixin:
             self._container_split[id(e)] = (whole, whole)
             return
         if rule == "filter":
-            # The predicate's label is dropped: the surviving elements
-            # are exactly (a subset of) the input's, so the result keeps
-            # the input's structure and element labels.
-            self._container_split[id(e)] = (struct_in, elem_in)
+            # The surviving ELEMENTS are exactly (a subset of) the
+            # input's, so the element label is the input's unchanged. The
+            # CARDINALITY, however, is decided by the predicate: how many
+            # elements pass -- and hence the result's length / is_empty /
+            # is_some -- is a function of the predicate, so a
+            # secret-dependent predicate makes the STRUCTURE secret-
+            # derived (``xs.filter(fun (n) => n == s).length()`` discloses
+            # membership). Fold the predicate's ret_label into the
+            # structure component; a public predicate contributes PUBLIC
+            # and so keeps the shape query clean.
+            self._container_split[id(e)] = (
+                L.join(struct_in, ret_label), elem_in,
+            )
             return
         # "transform": the closure's returned value becomes the new
         # element / payload. Join the input element label in as well --
@@ -779,8 +788,16 @@ class _IfcMixin:
             # ``x?`` unwraps; the payload keeps the taint of x.
             return self._label_of(e.expr)
         if isinstance(e, A.Index):
-            # An element drawn from a tainted container is tainted.
-            return L.join(self._label_of(e.receiver), self._label_of(e.index))
+            # An element drawn from a tainted container is tainted. For a
+            # combinator result with an element-granular split, indexing
+            # reads the ELEMENT label -- which can be LOWER than the whole
+            # value (a ``filter`` on a secret predicate has a secret
+            # STRUCTURE but public ELEMENTS). For a plain container the
+            # element label equals the whole-value label, so this is
+            # unchanged. A secret index still joins in (its own taint).
+            return L.join(
+                self._element_label_of(e.receiver), self._label_of(e.index),
+            )
         if isinstance(e, A.FieldAccess):
             # A field whose TYPE is declared ``@secret`` produces a
             # @secret value when READ (``type Emp { iban: @secret String

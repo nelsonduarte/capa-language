@@ -146,12 +146,16 @@ class TestElementReadsTainted(unittest.TestCase):
         self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
 
 
-class TestFilterPreservesInputElement(unittest.TestCase):
-    """filter drops the predicate's label: a public list filtered by a
-    secret-capturing predicate stays public in BOTH its elements and its
-    shape, while a secret-element list stays secret through filter."""
+class TestFilterElementPreserved(unittest.TestCase):
+    """filter keeps the ELEMENT label of the input (the survivors are a
+    subset of the input's elements): a public-element read of a filtered
+    list stays clean even when the predicate is secret, while a
+    secret-element list stays secret through filter regardless of the
+    predicate."""
 
-    def test_public_list_secret_predicate_element_clean(self):
+    def test_public_list_secret_predicate_element_read_clean(self):
+        # The ELEMENTS are genuinely public (a subset of the public input);
+        # only the cardinality is secret. An element read stays clean.
         r = _analyze(
             "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
             "    let ys = xs.filter(fun (n: Int) -> Bool => n == s)\n"
@@ -161,16 +165,9 @@ class TestFilterPreservesInputElement(unittest.TestCase):
         self.assertTrue(r.ok, [e.message for e in r.errors])
         self.assertEqual(_sink_warnings(r), [], [w.message for w in r.warnings])
 
-    def test_public_list_secret_predicate_length_clean(self):
-        r = _analyze(
-            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
-            "    let ys = xs.filter(fun (n: Int) -> Bool => n == s)\n"
-            "    stdio.println(\"${ys.length()}\")\n"
-        )
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(_sink_warnings(r), [], [w.message for w in r.warnings])
-
-    def test_secret_element_list_stays_secret_through_filter(self):
+    def test_secret_element_list_public_predicate_element_read_warns(self):
+        # A public predicate over a secret-element list: the surviving
+        # elements are still secret, so an element read warns.
         r = _analyze(
             "fun main(stdio: Stdio, s: @secret Int)\n"
             "    let secret_list = [s, s]\n"
@@ -180,6 +177,96 @@ class TestFilterPreservesInputElement(unittest.TestCase):
         )
         self.assertTrue(r.ok, [e.message for e in r.errors])
         self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+
+class TestFilterStructureLeak(unittest.TestCase):
+    """A filter's CARDINALITY is decided by the predicate, so a
+    secret-dependent predicate makes the result's structure (length /
+    is_empty / is_some) a disclosure -- ``xs.filter(fun (n) => n == s)``
+    has length 1 iff ``s`` is in ``xs``. A structure op over such a result
+    must WARN by default and hard-error under @strict_ifc. A PUBLIC
+    predicate leaves the structure as public as the input's."""
+
+    def test_list_filter_secret_predicate_length_warns(self):
+        r = _analyze(
+            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let ys = xs.filter(fun (n: Int) -> Bool => n == s)\n"
+            "    stdio.println(\"${ys.length()}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_list_filter_secret_predicate_is_empty_warns(self):
+        r = _analyze(
+            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let ys = xs.filter(fun (n: Int) -> Bool => n == s)\n"
+            "    let empty = ys.is_empty()\n"
+            "    stdio.println(\"${empty}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_list_filter_secret_predicate_length_strict_error(self):
+        r = _analyze(
+            "@strict_ifc()\n"
+            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let ys = xs.filter(fun (n: Int) -> Bool => n == s)\n"
+            "    stdio.println(\"${ys.length()}\")\n"
+        )
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_sink_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_range_filter_secret_predicate_length_warns(self):
+        r = _analyze(
+            "fun main(s: @secret Int, stdio: Stdio)\n"
+            "    let rng = 0..10\n"
+            "    let ys = rng.filter(fun (n: Int) -> Bool => n == s)\n"
+            "    stdio.println(\"${ys.length()}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_option_filter_secret_predicate_is_some_warns(self):
+        r = _analyze(
+            "fun main(o: Option<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let m = o.filter(fun (x: Int) -> Bool => x == s)\n"
+            "    let some = m.is_some()\n"
+            "    stdio.println(\"${some}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_option_filter_secret_predicate_is_none_warns(self):
+        r = _analyze(
+            "fun main(o: Option<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let m = o.filter(fun (x: Int) -> Bool => x == s)\n"
+            "    let empty = m.is_none()\n"
+            "    stdio.println(\"${empty}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_public_predicate_length_clean(self):
+        # A public predicate contributes a public ret_label, so the
+        # structure query stays clean (the intended precision is kept).
+        r = _analyze(
+            "fun main(xs: List<Int>, stdio: Stdio)\n"
+            "    let ys = xs.filter(fun (n: Int) -> Bool => n > 0)\n"
+            "    stdio.println(\"${ys.length()}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_sink_warnings(r), [], [w.message for w in r.warnings])
+
+    def test_public_predicate_element_read_clean(self):
+        r = _analyze(
+            "fun main(xs: List<Int>, stdio: Stdio)\n"
+            "    let ys = xs.filter(fun (n: Int) -> Bool => n > 0)\n"
+            "    let v = ys[0]\n"
+            "    stdio.println(\"${v}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_sink_warnings(r), [], [w.message for w in r.warnings])
 
 
 class TestMapPublicClosureOverSecretList(unittest.TestCase):
