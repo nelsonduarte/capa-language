@@ -52,8 +52,8 @@ from ._canonical import (
     content_integrity_block, manifest_digest,
 )
 from ._compose import (
-    COMPOSED_SCHEMA_VERSION, ComposeError, build_composed_sbom,
-    build_package_dag, find_package_root,
+    COMPOSED_SCHEMA_VERSION, CeilingViolation, ComposeError,
+    build_composed_sbom, build_package_dag, find_package_root,
 )
 from ._cyclonedx import CYCLONEDX_SPEC_VERSION, build_cyclonedx
 from ._funrec import (
@@ -81,6 +81,7 @@ __all__ = [
     "content_integrity_block",
     "manifest_digest",
     "COMPOSED_SCHEMA_VERSION",
+    "CeilingViolation",
     "ComposeError",
     "build_composed_sbom",
     "build_package_dag",

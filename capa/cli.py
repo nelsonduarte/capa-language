@@ -939,6 +939,23 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--check-capabilities",
+        action="store_true",
+        help=(
+            "CI GATE: compose the product SBOM and verify every package "
+            "against its declared capa.toml [capabilities] ceiling "
+            "(max = [...] or pure = true). EXITS NON-ZERO on any violation "
+            "with an actionable message naming the offending capability and "
+            "the transitive dependency edge that introduces it. A package "
+            "whose composed authority is UNKNOWN (an unresolvable / native / "
+            "Unsafe-crossing dependency in its subtree) FAILS CLOSED - an "
+            "unanalyzable subtree cannot be proven within any ceiling - "
+            "unless it sets allow_unknown = true. A clean product (or one "
+            "with no declared ceiling) exits 0. Requires a capa.toml project "
+            "root."
+        ),
+    )
+    parser.add_argument(
         "--cyclonedx",
         action="store_true",
         help=(
@@ -1267,7 +1284,7 @@ def _main_dispatch() -> int:
 
     needs_analysis = (
         args.check or args.run or args.manifest or args.manifest_digest
-        or args.compose_sbom
+        or args.compose_sbom or args.check_capabilities
         or args.cyclonedx
         or args.spdx or args.vex or args.provenance or args.doc
         or args.wit or args.wasm
@@ -1352,7 +1369,7 @@ def _main_dispatch() -> int:
 
     result = None
     if (args.check or args.run or args.manifest or args.manifest_digest
-            or args.compose_sbom
+            or args.compose_sbom or args.check_capabilities
             or args.cyclonedx
             or args.spdx or args.vex or args.provenance or args.doc
             or args.wit or args.wasm):
@@ -1488,6 +1505,56 @@ def _main_dispatch() -> int:
             # hashable and byte-reproducible across runs / machines.
             emit_artifact(canonical_json(canonical_manifest(composed)))
             return 0
+        if args.check_capabilities:
+            from capa.manifest import (
+                build_composed_sbom, find_package_root, ComposeError,
+            )
+
+            def _err(text: str) -> None:
+                if use_color:
+                    print(f"{C.RED}{text}{C.RESET}", file=sys.stderr)
+                else:
+                    print(text, file=sys.stderr)
+
+            root_dir = find_package_root(Path(filename))
+            if root_dir is None:
+                _err(
+                    "capa: --check-capabilities requires a capa.toml project "
+                    f"root (none found at or above {filename})."
+                )
+                return 1
+            manifest = build_manifest(
+                module, filename=filename,
+                expr_labels=result.expr_labels,
+                operator_declared_grants=_operator_grants,
+            )
+            try:
+                composed = build_composed_sbom(module, manifest, root_dir)
+            except ComposeError as e:
+                _err(f"capa: --check-capabilities: {e}")
+                return 1
+            ceilings = composed["capability_ceilings"]
+            if not ceilings["checked"]:
+                print(
+                    "capa: --check-capabilities: no package declares a "
+                    "[capabilities] ceiling; nothing to verify.",
+                    file=sys.stderr,
+                )
+                return 0
+            if ceilings["pass"]:
+                print(
+                    "capa: --check-capabilities: OK - every declared "
+                    "capability ceiling holds.",
+                    file=sys.stderr,
+                )
+                return 0
+            _err(
+                "capa: --check-capabilities: FAILED - "
+                f"{len(ceilings['violations'])} ceiling violation(s):"
+            )
+            for v in ceilings["violations"]:
+                _err(f"  - {v['detail']}")
+            return 1
         if args.cyclonedx or args.spdx or args.vex or args.provenance:
             # Each invocation emits exactly one artefact (every branch
             # below returns), so the instant is derived deterministically

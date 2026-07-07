@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from ..typesys import CAPABILITY_NAMES
+
 if sys.version_info >= (3, 11):
     import tomllib as _toml
 else:  # pragma: no cover - Capa requires 3.10; this branch is dev-only
@@ -51,6 +53,18 @@ LOCK_FILENAME = "capa.lock"
 # Keys recognised in each table; anything else is an error.
 _PACKAGE_KEYS = frozenset({"name", "version", "capa"})
 _DEP_GIT_KEYS = frozenset({"git", "tag", "rev", "verify_key", "verify_provenance"})
+
+# Keys recognised in the ``[capabilities]`` ceiling table (composition S3).
+# Strict/closed exactly like ``[package]``: a typo is a hard error, never a
+# silently-ignored policy weakening.
+_CAPABILITIES_KEYS = frozenset({"max", "pure", "allow_unknown"})
+
+# The capability names a ceiling may name. ``Unsafe`` is deliberately
+# EXCLUDED: crossing ``Unsafe`` escapes the analysis entirely and composes
+# as authority-unknown (TOP), so it can never be a bounded capability a
+# ceiling permits. The single source of truth for the built-in capabilities
+# is ``typesys.CAPABILITY_NAMES``; the ceiling excludes only ``Unsafe``.
+_CEILING_CAP_NAMES = frozenset(CAPABILITY_NAMES) - {"Unsafe"}
 
 # The three accepted values for ``verify_provenance`` (per git dep).
 # See ``capa/pkg/_install.py`` for the fail-open / fail-closed semantics
@@ -139,6 +153,31 @@ class Dependency:
         return self.path is not None
 
 
+@dataclass(frozen=True)
+class CapabilityCeiling:
+    """A package's DECLARED capability ceiling (composition S3).
+
+    ``max`` is the set of capability names the package (and its ENTIRE
+    transitive dependency subtree) is allowed to reach. ``pure = true`` in
+    ``capa.toml`` is sugar for ``max = []`` (a leaf that must stay
+    authority-free). A package with no ``[capabilities]`` section has no
+    ceiling at all (``Manifest.capability_ceiling is None``): it is
+    unconstrained and never checked.
+
+    ``allow_unknown`` is an EXPLICIT, opt-in waiver for the fail-closed
+    rule: by default a package whose composed authority is TOP
+    (authority-unknown: an unresolvable / native / Unsafe-crossing
+    dependency in its subtree) FAILS its ceiling check, because an
+    unanalyzable subtree cannot be proven within any bound. Setting
+    ``allow_unknown = true`` waives ONLY that TOP failure; a known
+    capability that exceeds ``max`` still fails. It is never the default:
+    a ceiling claim is only as strong as the analyzability of the
+    subtree, and silently trusting an unknown subtree would defeat the
+    honesty the composed SBOM exists to provide."""
+    max: frozenset[str] = frozenset()
+    allow_unknown: bool = False
+
+
 @dataclass
 class Manifest:
     """A parsed ``capa.toml``.
@@ -154,6 +193,9 @@ class Manifest:
     # ``dependencies``; installed only when this manifest is the
     # invocation root (see capa.pkg._install).
     dev_dependencies: list[Dependency] = field(default_factory=list)
+    # The declared ``[capabilities]`` ceiling, or ``None`` when the
+    # manifest declares no ceiling (unconstrained; not checked).
+    capability_ceiling: Optional[CapabilityCeiling] = None
     manifest_dir: Path = field(default_factory=Path.cwd)
 
 
@@ -211,6 +253,7 @@ def read_manifest(path: Path) -> Manifest:
 
     deps = _parse_dep_table(path, data, "dependencies")
     dev_deps = _parse_dep_table(path, data, "dev-dependencies")
+    ceiling = _parse_capability_ceiling(path, data)
 
     # A name in both tables would race for the same ``vendor/<name>``
     # directory (and make the import surface ambiguous); refuse it
@@ -226,7 +269,7 @@ def read_manifest(path: Path) -> Manifest:
 
     # Remaining unknown top-level keys: a strict parser rejects them
     # so a typo in the manifest cannot turn into a silent ignore.
-    allowed_top = {"package", "dependencies", "dev-dependencies"}
+    allowed_top = {"package", "dependencies", "dev-dependencies", "capabilities"}
     extras = set(data.keys()) - allowed_top
     if extras:
         raise ManifestError(
@@ -239,8 +282,80 @@ def read_manifest(path: Path) -> Manifest:
         capa_requirement=capa_req,
         dependencies=deps,
         dev_dependencies=dev_deps,
+        capability_ceiling=ceiling,
         manifest_dir=path.parent.resolve(),
     )
+
+
+def _parse_capability_ceiling(
+    path: Path, data: dict,
+) -> Optional[CapabilityCeiling]:
+    """Parse the optional ``[capabilities]`` ceiling table (composition
+    S3). Returns ``None`` when the section is absent (unconstrained; the
+    package is never checked).
+
+    Strict/closed like every other Capa manifest table: an unknown key,
+    an unknown capability name in ``max``, a wrong type, or the
+    ``pure = true`` + non-empty ``max`` conflict is a hard
+    ``ManifestError``, never a silently-ignored policy weakening."""
+    if "capabilities" not in data:
+        return None
+    section = data["capabilities"]
+    if not isinstance(section, dict):
+        raise ManifestError(f"{path}: [capabilities] must be a table")
+    _check_keys(path, "[capabilities]", section, _CAPABILITIES_KEYS)
+
+    pure = section.get("pure")
+    if pure is not None and not isinstance(pure, bool):
+        raise ManifestError(
+            f"{path}: [capabilities].pure must be a boolean"
+        )
+
+    has_max = "max" in section
+    if has_max:
+        raw_max = section["max"]
+        if not isinstance(raw_max, list) or not all(
+            isinstance(c, str) for c in raw_max
+        ):
+            raise ManifestError(
+                f"{path}: [capabilities].max must be a list of capability "
+                f"name strings"
+            )
+        unknown = [c for c in raw_max if c not in _CEILING_CAP_NAMES]
+        if unknown:
+            raise ManifestError(
+                f"{path}: [capabilities].max names unknown capabilit"
+                f"y(ies): {sorted(set(unknown))}; allowed: "
+                f"{sorted(_CEILING_CAP_NAMES)}"
+            )
+        max_set = frozenset(raw_max)
+    else:
+        max_set = frozenset()
+
+    # ``pure = true`` is sugar for ``max = []``; it cannot coexist with a
+    # non-empty ``max`` (the two would contradict each other).
+    if pure is True and has_max and max_set:
+        raise ManifestError(
+            f"{path}: [capabilities] declares pure = true (an empty ceiling) "
+            f"together with a non-empty max = {sorted(max_set)}; these "
+            f"conflict - drop one"
+        )
+    # A section that constrains nothing (no ``max``, ``pure`` not true) is a
+    # no-op ceiling and almost certainly a mistake; reject it so the intent
+    # is always explicit.
+    if not has_max and pure is not True:
+        raise ManifestError(
+            f"{path}: [capabilities] must declare a ceiling: either "
+            f"max = [...] or pure = true"
+        )
+
+    allow_unknown = section.get("allow_unknown", False)
+    if not isinstance(allow_unknown, bool):
+        raise ManifestError(
+            f"{path}: [capabilities].allow_unknown must be a boolean"
+        )
+
+    return CapabilityCeiling(max=max_set, allow_unknown=allow_unknown)
 
 
 def _parse_dep_table(path: Path, data: dict, table: str) -> list[Dependency]:

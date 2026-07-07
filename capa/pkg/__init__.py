@@ -43,6 +43,7 @@ The CLI entry point ``capa install`` calls into this module.
 from __future__ import annotations
 
 from ._manifest import (
+    CapabilityCeiling,
     Dependency,
     Manifest,
     ManifestError,
@@ -62,6 +63,7 @@ from ._registry import (
 )
 
 __all__ = [
+    "CapabilityCeiling",
     "Dependency",
     "Manifest",
     "ManifestError",
