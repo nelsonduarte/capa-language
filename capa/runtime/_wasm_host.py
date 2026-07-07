@@ -128,6 +128,99 @@ class WasmHost:
         self._register_db()
         self._register_proc()
 
+    # ---- typed foreign components (feature #4, F2a) -------------
+
+    def register_foreign_methods(self, methods: list) -> None:
+        """Define the ``capa:foreign/<component>`` host imports for the
+        typed foreign-component methods this program invokes (feature #4,
+        F2a), BEFORE the module is instantiated.
+
+        Each import closure resolves the caller's capability handles on
+        this host's handle table into the caller's PRE-ATTENUATED cap
+        instances, then dispatches into a sandboxed child sub-component
+        (see ``capa.runtime._foreign.dispatch_foreign_call``): the child
+        is instantiated with a restricted linker that binds ONLY those
+        caps, so it physically cannot reach any capability the call did
+        not grant. Scalar arguments and the scalar result marshal through
+        this closure (Int / Bool / Float); the guest holds no
+        authority-bearing value it could forge or widen.
+
+        ``methods`` is the metadata list from
+        ``capa.foreign.foreign_runtime_methods`` with the ``artifact``
+        path already resolved to an absolute filesystem path by the
+        caller (the CLI, relative to the source file)."""
+        for meta in methods:
+            self._define_foreign_import(meta)
+
+    def _define_foreign_import(self, meta: dict) -> None:
+        from ._foreign import dispatch_foreign_call, ForeignDenied
+
+        _CAP_CLASSES = {
+            "Fs": Fs, "Net": Net, "Db": Db, "Proc": Proc,
+            "Env": Env, "Clock": Clock, "Stdio": Stdio,
+        }
+        _WASM_VALTYPE = {
+            "i32": wasmtime.ValType.i32,
+            "i64": wasmtime.ValType.i64,
+            "f64": wasmtime.ValType.f64,
+        }
+        component = meta["component"]
+        method = meta["method"]
+        params = meta["params"]
+        return_wasm = meta["return_wasm"]
+        label = f"{component}.{method}"
+
+        param_valtypes = [_WASM_VALTYPE[p["wasm"]]() for p in params]
+        result_valtypes = (
+            [_WASM_VALTYPE[return_wasm]()] if return_wasm else []
+        )
+        functype = wasmtime.FuncType(param_valtypes, result_valtypes)
+
+        def closure(*args, _meta=meta, _label=label):
+            granted: dict = {}
+            scalar_args: list = []
+            for value, p in zip(args, _meta["params"]):
+                if p["kind"] == "cap":
+                    cap_cls = _CAP_CLASSES.get(p["cap"])
+                    if cap_cls is None:
+                        raise ForeignDenied(
+                            f"foreign component {_label}: capability "
+                            f"{p['cap']!r} cannot be handed across the "
+                            f"boundary"
+                        )
+                    try:
+                        cap = self._cap_handles.lookup(int(value), cap_cls)
+                    except CapHandleError as e:
+                        raise ForeignDenied(
+                            f"foreign component {_label}: invalid "
+                            f"{p['cap']} capability handle ({e})"
+                        )
+                    granted[p["cap"]] = cap
+                else:
+                    # Scalar: convert the wasm i32 back to a Python bool
+                    # for a Bool crossing param so the child's component
+                    # func receives the WIT ``bool`` it expects; Int
+                    # (i64) and Float (f64) pass through unchanged.
+                    if p["root"] == "Bool":
+                        scalar_args.append(bool(value))
+                    else:
+                        scalar_args.append(value)
+            result = dispatch_foreign_call(
+                self.engine, _meta["artifact"], _meta["method"],
+                granted, scalar_args, _label,
+            )
+            if _meta["return_wasm"] is None:
+                return None
+            # Marshal the child's Python scalar back to the wasm result:
+            # a Bool return lowers to i32 (0/1); Int / Float pass through.
+            if _meta["return_root"] == "Bool":
+                return 1 if result else 0
+            return result
+
+        self.linker.define_func(
+            f"capa:foreign/{component}", method, functype, closure,
+        )
+
     def _host_alloc(self, caller, n: int) -> int:
         """Allocate ``n`` bytes in guest memory via the module's
         exported ``$alloc``, guarding against a failed allocation.

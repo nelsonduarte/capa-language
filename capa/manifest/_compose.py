@@ -162,11 +162,19 @@ class PackageNode:
     dep_edges: list[DepEdge] = field(default_factory=list)
     attributed_caps: frozenset[str] = frozenset()
     crosses_unsafe: bool = False
-    # Feature #4 (F1): a function in this package INVOKES a typed foreign
-    # component. The declared bound is NOT yet runtime-enforced (that is
-    # F2), so the boundary composes as authority-unknown TOP -- claiming
-    # a bound nothing enforces would be unsound.
+    # Feature #4 (F1/F2a): a function in this package INVOKES a typed
+    # foreign component. Under the DEFAULT (backend-agnostic / Python)
+    # posture the boundary composes as authority-unknown TOP -- claiming
+    # a bound nothing enforces would be unsound. Under the Wasm-sandbox
+    # ENFORCEMENT posture (F2a) the boundary composes as a BOUNDED node
+    # of ``foreign_declared_caps``: the runtime instantiates the child
+    # with a restricted linker binding ONLY those caps, so an un-granted
+    # capability import fails instantiation (host-enforced cap SET).
     calls_foreign_component: bool = False
+    # Feature #4 (F2a): the union of DECLARED capability sets of the
+    # foreign boundaries this package invokes -- the bounded cap set the
+    # Wasm sandbox host-enforces. Empty unless ``calls_foreign_component``.
+    foreign_declared_caps: frozenset[str] = frozenset()
     # The package's DECLARED capability ceiling (S3), or ``None`` when it
     # declares no ``[capabilities]`` section (unconstrained; not checked).
     ceiling: Optional["CapabilityCeiling"] = None
@@ -389,6 +397,17 @@ def _attribute(
     unsafe: dict[Path, bool] = {d: False for d in nodes}
     foreign: dict[Path, bool] = {d: False for d in nodes}
 
+    # Feature #4 (F2a): the union of DECLARED capability sets across every
+    # typed foreign-component boundary the module declares. This is the
+    # bounded cap set the Wasm sandbox host-enforces (an un-granted
+    # capability import fails child instantiation); attributed to any
+    # package whose functions invoke a foreign component. Using the union
+    # over-approximates a package that calls only one of several boundaries
+    # -- a SOUND upper bound of what its foreign calls can touch.
+    foreign_caps_union: set[str] = set()
+    for fc in manifest.get("foreign_components", []):
+        foreign_caps_union |= set(fc.get("declared_capabilities", []))
+
     for rec in manifest["functions"]:
         line, col = _pos_line_col(rec["pos"])
         key = (rec["name"], rec["container"], line, col)
@@ -399,9 +418,10 @@ def _attribute(
         caps[owner] |= set(rec["transitively_reachable_capabilities"])
         if rec["has_unsafe"]:
             unsafe[owner] = True
-        # Feature #4 (F1): invoking a foreign component composes as TOP
-        # until F2 enforces the declared bound. Defensive .get(): a
-        # manifest serialised before F1 has no such key.
+        # Feature #4 (F1/F2a): invoking a foreign component composes as
+        # TOP under the default posture, or as BOUNDED {declared caps}
+        # under the Wasm-sandbox posture (see ``_own_authority``).
+        # Defensive .get(): a manifest serialised before F1 has no key.
         if rec.get("calls_foreign_component"):
             foreign[owner] = True
 
@@ -409,6 +429,9 @@ def _attribute(
         node.attributed_caps = frozenset(caps[d])
         node.crosses_unsafe = unsafe[d]
         node.calls_foreign_component = foreign[d]
+        node.foreign_declared_caps = (
+            frozenset(foreign_caps_union) if foreign[d] else frozenset()
+        )
 
 
 def _pos_line_col(pos: str) -> tuple[int, int]:
@@ -428,6 +451,7 @@ def _pos_line_col(pos: str) -> tuple[int, int]:
 def _compose_node(
     node: PackageNode,
     nodes: dict[Path, PackageNode],
+    enforcement: str = "none",
 ) -> Authority:
     """``composed(node)``: the join of ``node``'s OWN authority over its
     ENTIRE transitively-reachable dependency set.
@@ -458,7 +482,7 @@ def _compose_node(
             continue
         seen.add(d)
         n = nodes[d]
-        result = result.join(_own_authority(n))
+        result = result.join(_own_authority(n, enforcement))
         for edge in n.dep_edges:
             if edge.resolved and edge.target_dir is not None:
                 target = edge.target_dir.resolve()
@@ -472,9 +496,22 @@ def _compose_node(
     return result
 
 
-def _own_authority(node: PackageNode) -> Authority:
+def _own_authority(node: PackageNode, enforcement: str = "none") -> Authority:
     """The package's OWN (non-transitive) authority: its attributed
     capabilities, plus a TOP mark when it crosses ``Unsafe``.
+
+    ``enforcement`` is the runtime POSTURE the composed SBOM is claimed
+    under (feature #4, F2a). Default ``"none"`` is the backend-agnostic /
+    Python posture: nothing enforces a foreign-component's declared bound,
+    so a foreign call composes as authority-unknown TOP (honest). Under
+    ``"wasm-sandbox"`` the Wasm runtime instantiates each foreign child
+    with a restricted linker binding ONLY the declared caps -- an
+    un-granted capability import fails instantiation -- so a foreign call
+    composes as a BOUNDED node of ``node.foreign_declared_caps`` instead
+    of TOP. The bounded claim is made ONLY under the enforcing posture; it
+    NEVER leaks into the default / Python path (which would be an unsound
+    over-claim). NOTE: this bounds the cap SET (host-enforced); composing
+    WITHIN-cap host-granular attenuation across the boundary is feature #6.
 
     The TOP trigger for an ANALYZED package is ``has_unsafe`` ONLY, even
     though the single-program manifest drops ``provably_excluded`` on
@@ -503,22 +540,41 @@ def _own_authority(node: PackageNode) -> Authority:
             "a function in this package crosses Unsafe; its capability "
             "set is not a sound upper bound (provably-excluded is dropped)"
         )),)
-    # Feature #4 (F1): calling a typed foreign component is authority
-    # UNKNOWN until F2 enforces the declared bound. Recording the boundary
-    # in the manifest is honest INFORMATION; claiming the composed
-    # authority is BOUNDED now -- with no runtime enforcement -- would be
-    # unsound, so the calling package composes as TOP with its own
-    # distinct reason (F2 is what flips this to a bounded node).
+    # Feature #4 (F1/F2a): calling a typed foreign component.
+    caps = set(node.attributed_caps)
+    foreign_is_top = False
     if node.calls_foreign_component:
-        reasons = reasons + ((node.name, node.name, (
-            "a function in this package invokes a typed foreign component; "
-            "the declared capability bound is not yet runtime-enforced "
-            "(feature #4 F1 is the source-side declaration only), so the "
-            "boundary composes as authority-unknown until F2 enforces it"
-        )),)
-    unknown = node.crosses_unsafe or node.calls_foreign_component
+        if enforcement == "wasm-sandbox":
+            # F2a: the Wasm sandbox host-enforces the declared cap SET
+            # (an un-granted capability import fails child instantiation),
+            # so the boundary composes as a BOUNDED node of the declared
+            # caps -- NOT authority-unknown. This is the credibility win:
+            # static-declared == runtime-enforced for the capability set.
+            caps |= set(node.foreign_declared_caps)
+            reasons = reasons + ((node.name, node.name, (
+                "a function in this package invokes a typed foreign "
+                "component; under the Wasm-sandbox enforcement posture the "
+                "child is instantiated with a restricted linker binding "
+                "ONLY its declared capabilities, so the boundary composes "
+                "as a BOUNDED node of {} (cap-set host-enforced), not "
+                "authority-unknown".format(
+                    sorted(node.foreign_declared_caps) or "no capabilities"
+                )
+            )),)
+        else:
+            # Default / Python posture: nothing enforces the declared
+            # bound, so claiming it would be unsound -- compose as TOP.
+            foreign_is_top = True
+            reasons = reasons + ((node.name, node.name, (
+                "a function in this package invokes a typed foreign "
+                "component; the declared capability bound is not "
+                "runtime-enforced on this backend (only the Wasm-sandbox "
+                "posture enforces it), so the boundary composes as "
+                "authority-unknown"
+            )),)
+    unknown = node.crosses_unsafe or foreign_is_top
     return Authority(
-        caps=node.attributed_caps,
+        caps=frozenset(caps),
         unknown=unknown,
         reasons=reasons,
     )
@@ -724,10 +780,21 @@ def build_composed_sbom(
     root_dir: Path,
     *,
     capa_version: Optional[str] = None,
+    enforcement: str = "none",
 ) -> dict[str, Any]:
     """Build the composed product SBOM dict from an analyzed whole-program
     ``module``, its ``--manifest`` ``manifest`` dict, and the product's
     ``root_dir`` (the directory holding the root ``capa.toml``).
+
+    ``enforcement`` is the runtime POSTURE the composed authority is
+    claimed under (feature #4, F2a). Default ``"none"`` is the
+    backend-agnostic / Python posture: a typed foreign-component call
+    composes as authority-unknown TOP (nothing enforces the declared
+    bound). Under ``"wasm-sandbox"`` a foreign call composes as a BOUNDED
+    node of its declared capability set, because the Wasm runtime
+    host-enforces exactly that set (an un-granted capability import fails
+    child instantiation). The bounded claim is made ONLY under the
+    enforcing posture and never leaks into the default path.
 
     The result is JSON-serialisable, timestamp-free, and canonicalisable
     with the S1 :func:`._canonical.canonical_manifest`. Every path is
@@ -740,7 +807,8 @@ def build_composed_sbom(
     _attribute(module, manifest, nodes, root.manifest_dir)
 
     composed_by_dir: dict[Path, Authority] = {
-        d: _compose_node(node, nodes) for d, node in nodes.items()
+        d: _compose_node(node, nodes, enforcement)
+        for d, node in nodes.items()
     }
 
     # Deterministic package ordering: by root-relative path, then name.
@@ -753,7 +821,7 @@ def build_composed_sbom(
     any_ceiling = False
     for node in ordered:
         composed = composed_by_dir[node.manifest_dir]
-        own = _own_authority(node)
+        own = _own_authority(node, enforcement)
         violations = _ceiling_violations(node, composed, nodes)
         all_violations.extend(violations)
         if node.ceiling is not None:
@@ -804,6 +872,13 @@ def build_composed_sbom(
         "capa_version": capa_version,
         "composed_schema_version": COMPOSED_SCHEMA_VERSION,
         "product": {"name": root.name, "version": root.version},
+        # Feature #4 (F2a): the runtime enforcement posture this composed
+        # authority is claimed under. ``"none"`` (default) = backend-
+        # agnostic / Python: a typed foreign-component call composes as
+        # authority-unknown TOP. ``"wasm-sandbox"`` = the Wasm runtime
+        # host-enforces each foreign child's declared capability SET, so a
+        # foreign call composes as a BOUNDED node instead of TOP.
+        "enforcement_posture": enforcement,
         "packages": packages,
         "edges": edges,
         "unresolved_dependencies": unresolved,

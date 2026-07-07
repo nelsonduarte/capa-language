@@ -23,7 +23,7 @@ from ._nodes import (
     If, While, Break, Continue, Return,
     MakeStruct, MakeList, MakeTuple, MakeMap, MakeSet,
     FieldAccess, Index, FormatStr, For,
-    TryUnwrap, MakeLambda,
+    TryUnwrap, MakeLambda, ForeignCall,
     Pattern, PatWildcard, PatIdent, PatLiteral, PatVariant, PatTuple,
     MatchArm, Match,
     StructDecl, StructField, SumDecl, SumVariant, ImplBlock,
@@ -97,6 +97,13 @@ class Lowerer(
         # module so ``_refine_pattern_binds`` can recover the payload
         # types for non-built-in sums.
         self._user_variants: dict[str, list[str]] = {}
+        # Feature #4 (F2a): typed foreign components declared in the
+        # module, name -> ExternComponent. Populated by ``lower_module``;
+        # consulted in ``_lower_method_call`` so ``Bureau.submit(net, x)``
+        # (a MethodCall whose receiver is a foreign-component name, not a
+        # value) lowers to a :class:`ForeignCall` instead of trying to
+        # lower ``Bureau`` as a value.
+        self._foreign_components: dict[str, A.ExternComponent] = {}
         # Lexical alpha-renaming. ``_locals`` is flat per function (a
         # Wasm function declares each local exactly once with one
         # type), but Capa source allows the same name to be bound in
@@ -131,6 +138,14 @@ class Lowerer(
             item.name
             for item in module.items
             if isinstance(item, (A.ConstDecl, A.FunDecl))
+        }
+        # Feature #4 (F2a): index the typed foreign-component
+        # declarations by name so a ``Bureau.submit(...)`` call site
+        # lowers to a ForeignCall (see ``_lower_method_call``).
+        self._foreign_components = {
+            item.name: item
+            for item in module.items
+            if isinstance(item, A.ExternComponent)
         }
         # Pre-scan: collect payload-less variant names from every
         # sum-type declaration. References to these as bare values

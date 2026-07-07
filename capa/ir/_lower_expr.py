@@ -22,7 +22,7 @@ from ._nodes import (
     AssignConst, BinOp, Call, FieldAccess, FormatStr, If, Index, MakeLambda,
     MakeList, MakeMap, MakeRange, MakeSet, MakeStruct, MakeTuple, Match,
     MatchArm, MethodCall, Param, Reassign, Return,
-    TryUnwrap, UnaryOp, Value, fresh_local,
+    TryUnwrap, UnaryOp, Value, fresh_local, ForeignCall,
 )
 
 
@@ -767,6 +767,18 @@ class _LowerExprMixin:
         return Value(kind="local", name=dst, ty="String")
 
     def _lower_method_call(self, e: A.MethodCall) -> Value:
+        # Feature #4 (F2a): a call to a typed foreign component,
+        # ``Bureau.submit(net, x)``. The receiver is a bare Ident naming
+        # an ``extern component`` declaration -- a callable namespace,
+        # not a value -- so it is intercepted BEFORE ``_lower_expr(
+        # e.receiver)`` (which would try to lower ``Bureau`` as a value
+        # and fail). Produces a ForeignCall the Wasm backend lowers to a
+        # sandboxed sub-component dispatch.
+        if (
+            isinstance(e.receiver, A.Ident)
+            and e.receiver.name in getattr(self, "_foreign_components", {})
+        ):
+            return self._lower_foreign_call(e)
         # Look up attenuations on the receiver's source-level binding
         # name BEFORE lowering. The intra-function flow analyser
         # (``capa.manifest._flow._build_attenuation_map``) keys by the
@@ -834,6 +846,71 @@ class _LowerExprMixin:
                 args=args, cap_used=cap_used, attenuations=atts,
             )
         )
+        return Value(kind="local", name=dst, ty=result_ty)
+
+    def _lower_foreign_call(self, e: A.MethodCall) -> Value:
+        """Lower ``Bureau.submit(net, x)`` to a :class:`ForeignCall`
+        (feature #4, F2a). The declared method signature (from the
+        ``extern component`` declaration) fixes the parameter order and
+        each parameter's kind (capability vs scalar); the arguments are
+        lowered and rearranged into that order so the emitter can pair
+        each operand with its declared kind."""
+        from ..foreign import (
+            method_param_kinds, method_return_root,
+        )
+        comp = self._foreign_components[e.receiver.name]
+        method_sig = next(
+            (m for m in comp.methods if m.name == e.method), None,
+        )
+        if method_sig is None:
+            # The analyzer already rejected an unknown foreign method;
+            # defensively lower to a discarded unit so a mis-shaped tree
+            # does not crash the lowerer.
+            return Value(kind="lit_unit", ty="Unit")
+        param_names = [p.name for p in method_sig.params if p.name != "self"]
+        # Reorder named arguments into declared-parameter order (the
+        # analyzer already validated well-formedness); a plain positional
+        # call is the identity permutation.
+        arg_names = getattr(e, "arg_names", [None] * len(e.args))
+        order = list(range(len(e.args)))
+        if any(n is not None for n in arg_names):
+            name_to_pos = {n: i for i, n in enumerate(param_names)}
+            slot: list = [None] * len(param_names)
+            cursor = 0
+            for i, n in enumerate(arg_names):
+                if n is None:
+                    slot[cursor] = i
+                    cursor += 1
+                else:
+                    idx = name_to_pos.get(n)
+                    if idx is not None:
+                        slot[idx] = i
+            order = [i for i in slot if i is not None]
+        args = [self._lower_expr(e.args[i]) for i in order]
+        param_kinds = method_param_kinds(method_sig)
+        return_root = method_return_root(method_sig)
+        result_ty = return_root
+        if self.types:
+            t = self.types.get(id(e))
+            if t is not None:
+                result_ty = _ty_to_str(t)
+        dst = None
+        if return_root != "Unit":
+            dst = fresh_local(self._counter)
+            self._locals[dst] = result_ty
+        self._instrs.append(
+            ForeignCall(
+                dst=dst,
+                component=e.receiver.name,
+                method=e.method,
+                artifact=comp.artifact,
+                args=args,
+                param_kinds=param_kinds,
+                return_type=return_root,
+            )
+        )
+        if dst is None:
+            return Value(kind="lit_unit", ty="Unit")
         return Value(kind="local", name=dst, ty=result_ty)
 
 
