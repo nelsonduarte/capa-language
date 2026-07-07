@@ -206,6 +206,156 @@ class TestPassthroughSecretElement(unittest.TestCase):
         self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
 
 
+class TestStructureCardinalityLeak(unittest.TestCase):
+    """A generic whose result CARDINALITY depends on a secret that never
+    becomes an element value leaks through the structure channel, so a
+    shape query must WARN / ERROR. The structure label stands on its own
+    (the folded structure-affecting contributions) and is NEVER lowered to
+    the element / whole-value floor -- that cap would drop this leak."""
+
+    # ``sneaky`` includes each mapped element only when ``s > 0``, so the
+    # result length is len(xs) or 0 -- it discloses the sign of ``s`` --
+    # yet no element VALUE carries ``s``.
+    _SNEAKY = (
+        "fun sneaky<T, U>(f: Fun(T) -> U, xs: List<T>, s: @secret Int)"
+        " -> List<U>\n"
+        "    var out: List<U> = []\n"
+        "    for x in xs\n"
+        "        if s > 0\n"
+        "            out.push(f(x))\n"
+        "    return out\n"
+    )
+
+    def test_sneaky_length_warns(self):
+        r = _analyze(self._SNEAKY + (
+            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let ys = sneaky(fun (n: Int) -> Int => n, xs, s)\n"
+            "    stdio.println(\"${ys.length()}\")\n"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_sneaky_is_empty_warns(self):
+        r = _analyze(self._SNEAKY + (
+            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let ys = sneaky(fun (n: Int) -> Int => n, xs, s)\n"
+            "    let e = ys.is_empty()\n"
+            "    stdio.println(\"${e}\")\n"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_sneaky_length_strict_error(self):
+        r = _analyze(self._SNEAKY + (
+            "@strict_ifc()\n"
+            "fun main(xs: List<Int>, s: @secret Int, stdio: Stdio)\n"
+            "    let ys = sneaky(fun (n: Int) -> Int => n, xs, s)\n"
+            "    stdio.println(\"${ys.length()}\")\n"
+        ))
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_sink_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+
+class TestElementBodyInternalSecret(unittest.TestCase):
+    """A transform closure that sources a secret INSIDE its body
+    (``env.get`` rather than a capture) taints the ELEMENT on the
+    user-generic path exactly as the built-in ``map`` does -- the floor
+    reads the closure's ``ret_label``, not just its capture label. The
+    STRUCTURE stays public (cardinality = len(xs), the secret is only in
+    the element values)."""
+
+    _CLOSURE = "fun (n: Int) -> String => env.get(\"SECRET\").unwrap_or(\"\")"
+
+    def test_env_secret_element_read_warns(self):
+        r = _analyze(_MYMAP + (
+            "fun main(xs: List<Int>, stdio: Stdio, env: Env)\n"
+            "    let ys = mymap(" + self._CLOSURE + ", xs)\n"
+            "    stdio.println(\"${ys[0]}\")\n"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_sink_warnings(r)), 1, [w.message for w in r.warnings])
+
+    def test_env_secret_for_iteration_warns(self):
+        r = _analyze(_MYMAP + (
+            "fun main(xs: List<Int>, stdio: Stdio, env: Env)\n"
+            "    let ys = mymap(" + self._CLOSURE + ", xs)\n"
+            "    for y in ys\n"
+            "        stdio.println(\"${y}\")\n"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_sink_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+
+    def test_env_secret_whole_sink_warns(self):
+        r = _analyze(_MYMAP + (
+            "fun leak(zs: List<String>, stdio: Stdio)\n"
+            "    for z in zs\n"
+            "        stdio.println(\"${z}\")\n"
+            "fun main(xs: List<Int>, stdio: Stdio, env: Env)\n"
+            "    let ys = mymap(" + self._CLOSURE + ", xs)\n"
+            "    leak(ys, stdio)\n"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_crossfn_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+
+    def test_env_secret_element_read_strict_error(self):
+        r = _analyze(_MYMAP + (
+            "@strict_ifc()\n"
+            "fun main(xs: List<Int>, stdio: Stdio, env: Env)\n"
+            "    let ys = mymap(" + self._CLOSURE + ", xs)\n"
+            "    stdio.println(\"${ys[0]}\")\n"
+        ))
+        self.assertFalse(r.ok, [w.message for w in r.warnings])
+        self.assertGreaterEqual(len(_sink_errors(r)), 1,
+                                [e.message for e in r.errors])
+
+    def test_env_secret_length_clean(self):
+        # The secret is only in the element values; cardinality is public.
+        r = _analyze(_MYMAP + (
+            "fun main(xs: List<Int>, stdio: Stdio, env: Env)\n"
+            "    let ys = mymap(" + self._CLOSURE + ", xs)\n"
+            "    stdio.println(\"${ys.length()}\")\n"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_sink_warnings(r), [], [w.message for w in r.warnings])
+
+    def test_public_body_closure_element_clean(self):
+        r = _analyze(_MYMAP + (
+            "fun main(xs: List<Int>, stdio: Stdio)\n"
+            "    let ys = mymap(fun (n: Int) -> String => \"const\", xs)\n"
+            "    stdio.println(\"${ys[0]}\")\n"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_sink_warnings(r), [], [w.message for w in r.warnings])
+
+
+class TestZipWithConservative(unittest.TestCase):
+    """A zipWith-style generic (result label depends on WHICH input, not
+    the join) is beyond signature-directed precision, so a secret
+    non-payload input is conservatively STRUCTURE-affecting: a shape query
+    over it WARNS. Sound (never under-reports); a disclosed residual FP."""
+
+    _ZIP = (
+        "fun zip_with<A, B, C>(f: Fun(A, B) -> C, xs: List<A>, ys: List<B>)"
+        " -> List<C>\n"
+        "    return xs.map(fun (x: A) -> C => f(x, ys[0]))\n"
+    )
+
+    def test_zipwith_secret_input_length_warns(self):
+        r = _analyze(self._ZIP + (
+            "fun main(xs: List<Int>, stdio: Stdio, s: @secret Int)\n"
+            "    let secret_ys = [s, s]\n"
+            "    let zs = zip_with("
+            "fun (a: Int, b: Int) -> Int => a + b, xs, secret_ys)\n"
+            "    stdio.println(\"${zs.length()}\")\n"
+        ))
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_sink_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+
+
 class TestTransitiveGeneric(unittest.TestCase):
     """A generic HO whose body calls ANOTHER generic HO derives the same
     split from its own signature -- no cross-function fixpoint needed."""
