@@ -32,6 +32,11 @@ The package is split internally:
   content digest over those bytes and a detached-signature slot
   (``canonical_manifest`` / ``manifest_digest``); the content-addressable
   substrate for composed SBOMs and signed capability diffs.
+- :mod:`._compose` - composed capability SBOM per PRODUCT
+  (``build_composed_sbom``): per-package attribution over the
+  flattened manifest, the dependency DAG, and a bottom-up
+  capability join with a distinguished authority-unknown TOP
+  element (composition S2).
 - :mod:`._cyclonedx` - CycloneDX 1.5 SBOM wrapper around the
   internal manifest (``build_cyclonedx``).
 - :mod:`._spdx` - SPDX 2.3 SBOM wrapper around the internal
@@ -45,6 +50,10 @@ from ._canonical import (
     CANONICALIZATION_SCHEME, CONTENT_INTEGRITY_KEY, DIGEST_ALGORITHM,
     canonical_bytes, canonical_json, canonical_manifest,
     content_integrity_block, manifest_digest,
+)
+from ._compose import (
+    COMPOSED_SCHEMA_VERSION, ComposeError, build_composed_sbom,
+    build_package_dag, find_package_root,
 )
 from ._cyclonedx import CYCLONEDX_SPEC_VERSION, build_cyclonedx
 from ._funrec import (
@@ -71,6 +80,11 @@ __all__ = [
     "canonical_manifest",
     "content_integrity_block",
     "manifest_digest",
+    "COMPOSED_SCHEMA_VERSION",
+    "ComposeError",
+    "build_composed_sbom",
+    "build_package_dag",
+    "find_package_root",
     "CYCLONEDX_SPEC_VERSION",
     "SPDX_SPEC_VERSION",
     "CAPA_BUILD_TYPE",
