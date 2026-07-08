@@ -1629,6 +1629,19 @@ class _CapDispatchMixin:
         host wrote into ``$_ret_area``. One branch per return shape;
         each one reads from a fixed canonical-ABI offset and
         allocates the heap record downstream IR expects."""
+        if ret_kind == "aggregate_ptr":
+            # Feature #4 F2c-1: a FLAT aggregate return. The host wrote the
+            # fully-formed Capa heap record into the parent's memory and
+            # stored its i32 pointer at ret_area offset 0; bind that
+            # pointer straight into dst. All the shape-specific layout
+            # (struct field offsets, list stride, tuple slots, option /
+            # result tag + payload) lives host-side in ``_write_capa_value``
+            # so the guest materialiser stays a single pointer load.
+            if dst is not None:
+                self._write("local.get $_ret_area")
+                self._write("i32.load offset=0")
+                self._write(f"local.set ${dst}")
+            return
         if ret_kind == "list_string":
             # ret_area layout: (data_ptr i32) @ 0, (len i32) @ 4.
             # Capa List<String> header: 16 bytes (len, cap, data, pad).

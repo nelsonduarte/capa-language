@@ -478,28 +478,36 @@ class TestCliRunGuard(unittest.TestCase):
         p.write_text(source, encoding="utf-8")
         return p
 
-    def test_run_invoking_aggregate_foreign_fails_f2b(self):
-        # ``_DECL_AND_CALL`` crosses aggregate types (Report / Receipt).
-        # F2a/F2b marshal scalar + String crossing types; an aggregate
-        # still needs a further sub-phase, so any execution path (here the
-        # Python backend) reports the clean aggregate error.
+    def test_run_invoking_foreign_requires_wasm_backend(self):
+        # ``_DECL_AND_CALL`` crosses FLAT scalar-leaf aggregates (Report /
+        # Receipt), which F2c-1 now marshals -- but only under the Wasm
+        # sandbox. The Python backend cannot physically confine a foreign
+        # component, so a foreign call on ``--run`` is rejected with the
+        # "requires the Wasm backend" error (the aggregate guard no longer
+        # fires for a flat struct).
         with tempfile.TemporaryDirectory() as td:
             p = self._write(td, _DECL_AND_CALL + "fun main() -> Int\n    return 0\n")
             rc, _out, err = _run_cli(["--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("aggregate crossing type", err)
-            self.assertIn("further sub-phase", err)
+            self.assertIn("require the Wasm backend", err)
 
-    def test_wasm_invoking_aggregate_foreign_fails_f2b(self):
-        # Same aggregate call on the Wasm backend: still the aggregate
-        # error (the parent-import leg needs a general host-side Capa-heap
-        # reader/writer that is a further sub-phase).
+    def test_wasm_invoking_nested_aggregate_fails_f2c2(self):
+        # A NESTED aggregate crossing type is still rejected up front on
+        # the Wasm backend with the clean feature #4 F2c-2 error: F2c-1
+        # marshals FLAT scalar-leaf aggregates, not nested ones.
+        nested = (
+            "type Report { body: List<Int> }\n"
+            "extern component Bureau from \"vendor/bureau.wasm\"\n"
+            "    fun submit(net: Net, payload: Report) -> Int\n"
+            "fun main(net: Net) -> Int\n"
+            "    return Bureau.submit(net, Report { body: [1, 2] })\n"
+        )
         with tempfile.TemporaryDirectory() as td:
-            p = self._write(td, _DECL_AND_CALL + "fun main() -> Int\n    return 0\n")
+            p = self._write(td, nested)
             rc, _out, err = _run_cli(["--wasm", "--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("aggregate crossing type", err)
-            self.assertIn("further sub-phase", err)
+            self.assertIn("F2c-2", err)
+            self.assertIn("aggregate nesting", err)
 
     def test_check_unaffected(self):
         with tempfile.TemporaryDirectory() as td:

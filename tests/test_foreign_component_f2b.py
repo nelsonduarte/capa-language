@@ -126,14 +126,16 @@ _STR_UNGRANTED_PROG = (
     '    let _r = B.submit("world")\n'
 )
 
-# An aggregate crossing type: still rejected up front (a further
-# sub-phase). The declaration + --check are unaffected.
+# A NESTED aggregate crossing type: still rejected up front (feature #4
+# F2c-2). F2c-1 lands FLAT scalar-leaf aggregates (List<Int> etc.), so
+# the rejection case now uses a genuinely nested aggregate (List of
+# Lists). The declaration + --check are unaffected.
 _AGG_PROG = (
     'extern component A from "str_echo_child.wasm"\n'
-    "    fun mk(xs: List<Int>) -> Int\n"
+    "    fun mk(xs: List<List<Int>>) -> Int\n"
     "\n"
     "fun main(stdio: Stdio)\n"
-    "    let r = A.mk([1, 2, 3])\n"
+    "    let r = A.mk([[1], [2, 3]])\n"
     '    stdio.println("r=${r}")\n'
 )
 
@@ -204,9 +206,10 @@ class TestForeignStringRuntime(unittest.TestCase):
             self.assertIn("capa:host/net", err)
 
     def test_aggregate_still_rejected(self):
-        # An aggregate crossing type is still rejected up front with a
-        # clean, specific error naming the aggregate kinds and the
-        # sub-phase, on the --wasm backend.
+        # A NESTED aggregate crossing type is still rejected up front with
+        # a clean, specific error naming the sub-phase (feature #4 F2c-2),
+        # on the --wasm backend. FLAT scalar-leaf aggregates now marshal
+        # (F2c-1); only nesting is deferred.
         with tempfile.TemporaryDirectory() as td:
             shutil.copy(
                 _FIXTURES / "str_echo_child.wasm",
@@ -215,7 +218,8 @@ class TestForeignStringRuntime(unittest.TestCase):
             p = _write(td, "prog.capa", _AGG_PROG)
             rc, _out, err = _run_cli(["--wasm", "--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("aggregate crossing type", err)
+            self.assertIn("F2c-2", err)
+            self.assertIn("aggregate nesting", err)
 
     def test_aggregate_declaration_still_checks(self):
         # NON-REGRESSION: the aggregate boundary is inert at the

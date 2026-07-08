@@ -1,0 +1,13 @@
+package capa:aggtest;
+world aggworld {
+  record point { x: s64, flag: bool, ratio: f64, label: string }
+  record gadget { code: s64, active: bool }
+  export bump-point: func(p: point) -> point;
+  export list-inc: func(xs: list<s64>) -> list<s64>;
+  export list-tag: func(xs: list<string>) -> list<string>;
+  export list-not: func(xs: list<bool>) -> list<bool>;
+  export tup-bump: func(t: tuple<s64, string>) -> tuple<s64, string>;
+  export opt-inc: func(o: option<s64>) -> option<s64>;
+  export res-inc: func(r: result<s64, string>) -> result<s64, string>;
+  export sum-hdr: func(g: gadget) -> s64;
+}

@@ -34,22 +34,40 @@ from ...foreign import SCALAR_CROSSING_WASM, is_string_crossing_type
 from ._layout import WasmEmissionError
 
 
+# Scalar / String roots the foreign-call return handling recognises. Any
+# other non-Unit return type is a FLAT scalar-leaf AGGREGATE (feature #4
+# F2c-1): a struct name, ``List<...>``, a tuple ``(...)``, ``Option<...>``
+# or ``Result<...>``. Those cross the return leg through an indirect
+# ret-area pointer (the host writes the Capa heap record and stores its
+# pointer into the area, like F2b's String return).
+_SCALAR_OR_STRING_ROOTS = frozenset({"Int", "Bool", "Float", "String"})
+
+
+def _is_aggregate_crossing(return_type: str) -> bool:
+    """True when a foreign-call ``return_type`` is a FLAT scalar-leaf
+    aggregate (F2c-1) rather than Unit / a scalar / String."""
+    return return_type not in ("Unit",) and return_type not in _SCALAR_OR_STRING_ROOTS
+
+
 def _foreign_param_wasm_types(kind: str, root: str) -> list[str]:
     """The core-wasm value type(s) for one foreign-call parameter: a
     capability crosses as an i32 handle; a scalar crosses as its single
     wasm type (i64 / i32 / f64); a String crosses as a (ptr, len) i32
-    pair (F2b)."""
+    pair (F2b); a FLAT aggregate crosses as a single i32 heap pointer
+    (F2c-1)."""
     if kind == "cap":
+        return ["i32"]
+    if kind == "aggregate":
         return ["i32"]
     if is_string_crossing_type(root):
         return ["i32", "i32"]
     wt = SCALAR_CROSSING_WASM.get(root)
     if wt is None:
-        # Defensive: the CLI's aggregate guard rejects an aggregate
+        # Defensive: the CLI's F2c-2 guard rejects a nested aggregate
         # crossing type before codegen, so this should be unreachable.
         raise WasmEmissionError(
             f"foreign call crosses a non-marshallable type {root!r}; "
-            f"aggregate crossing types are a further sub-phase (F2b)"
+            f"nested aggregate crossing types are a further sub-phase (F2c-2)"
         )
     return [wt]
 
@@ -76,8 +94,11 @@ class _ForeignCallEmissionMixin:
                 params.extend(_foreign_param_wasm_types(kind, root))
             result = None
             string_return = is_string_crossing_type(instr.return_type)
-            if string_return:
-                # Indirect return: trailing i32 ret-area pointer, void.
+            aggregate_return = _is_aggregate_crossing(instr.return_type)
+            if string_return or aggregate_return:
+                # Indirect return: trailing i32 ret-area pointer, void. For
+                # a String the area holds (ptr, len); for a FLAT aggregate
+                # it holds the Capa heap-record pointer the host wrote.
                 params.append("i32")
             elif instr.return_type != "Unit":
                 result = SCALAR_CROSSING_WASM.get(instr.return_type)
@@ -85,8 +106,8 @@ class _ForeignCallEmissionMixin:
                     raise WasmEmissionError(
                         f"foreign call {instr.component}.{instr.method} "
                         f"returns a non-marshallable type "
-                        f"{instr.return_type!r}; aggregate returns are a "
-                        f"further sub-phase (F2b)"
+                        f"{instr.return_type!r}; nested aggregate returns "
+                        f"are a further sub-phase (F2c-2)"
                     )
             self._foreign_imports[key] = {
                 "params": params,
@@ -128,11 +149,13 @@ class _ForeignCallEmissionMixin:
         the (void) import, then materialise a Capa String from the
         (ptr, len) the host wrote (the shared ``string`` materialiser)."""
         string_return = is_string_crossing_type(instr.return_type)
-        # Push arguments, expanding a String arg to (ptr, len). Zip with
-        # param_kinds (same declared order) so each operand pushes with
-        # the right shape.
+        aggregate_return = _is_aggregate_crossing(instr.return_type)
+        # Push arguments, expanding a String arg to (ptr, len). A cap arg
+        # and a FLAT aggregate arg each push a single i32 (the cap handle /
+        # the Capa heap-record pointer). Zip with param_kinds (same
+        # declared order) so each operand pushes with the right shape.
         for arg, (kind, root) in zip(instr.args, instr.param_kinds):
-            if kind != "cap" and is_string_crossing_type(root):
+            if kind not in ("cap", "aggregate") and is_string_crossing_type(root):
                 self._push_string_arg(arg)
             else:
                 self._push_value(arg)
@@ -145,6 +168,16 @@ class _ForeignCallEmissionMixin:
             self._write("local.tee $_ret_area")
             self._write(f"call $foreign_{instr.component}_{instr.method}")
             self._emit_cap_indirect_materialise("string", instr.dst)
+            return
+        if aggregate_return:
+            # Allocate a 4-byte indirect return area holding the Capa
+            # heap-record pointer the host writes, push it as the trailing
+            # import arg, call (void), then load the pointer into dst.
+            self._write("i32.const 4")
+            self._write("call $alloc")
+            self._write("local.tee $_ret_area")
+            self._write(f"call $foreign_{instr.component}_{instr.method}")
+            self._emit_cap_indirect_materialise("aggregate_ptr", instr.dst)
             return
         self._write(f"call $foreign_{instr.component}_{instr.method}")
         if instr.return_type == "Unit":

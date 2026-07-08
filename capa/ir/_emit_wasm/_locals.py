@@ -673,13 +673,15 @@ class _LocalsCollectionMixin:
                         has_list = True
                         has_list_index_bounds = True
                 if isinstance(instr, ForeignCall):
-                    # Feature #4 F2b: a String-returning foreign call uses
-                    # the canonical-ABI indirect return (8-byte area the
-                    # host writes (ptr, len) into), so it needs the
-                    # ``$_ret_area`` scratch local exactly like an
-                    # indirect cap method. Scalar-returning foreign calls
-                    # (F2a) need no scratch here.
-                    if instr.return_type == "String":
+                    # Feature #4 F2b/F2c: a String-returning foreign call
+                    # uses the canonical-ABI indirect return (8-byte area
+                    # the host writes (ptr, len) into) and a FLAT aggregate
+                    # return uses a 4-byte indirect area the host writes the
+                    # Capa heap-record pointer into, so both need the
+                    # ``$_ret_area`` scratch local exactly like an indirect
+                    # cap method. Scalar returns (Int / Bool / Float, F2a)
+                    # and Unit need no scratch here.
+                    if instr.return_type not in ("Unit", "Int", "Bool", "Float"):
                         has_indirect_cap_call = True
                 if isinstance(instr, Call):
                     if instr.callee_name == "parse_json":

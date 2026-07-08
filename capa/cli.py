@@ -1812,16 +1812,20 @@ def _main_dispatch() -> int:
                     if _ec is not None else None
                 )
                 if _msig is not None and not method_is_runtime_marshallable(
-                    _msig
+                    _msig, module
                 ):
                     _foreign_err(
                         f"capa: foreign call {_comp}.{_method} at line "
-                        f"{_fpos.line}:{_fpos.col} uses an aggregate crossing "
-                        "type (Struct / Sum / List / Map / tuple / Option / "
-                        "Result), which is not yet marshalled across the "
-                        "boundary at runtime (a further sub-phase of feature "
-                        "#4). F2a/F2b marshal scalar (Int / Bool / Float) and "
-                        "String crossing types; the typed boundary is still "
+                        f"{_fpos.line}:{_fpos.col} uses a crossing type whose "
+                        "aggregate nesting is not yet supported at runtime "
+                        "(feature #4 F2c-2): a nested aggregate (List of "
+                        "structs, a struct with a List / nested-aggregate "
+                        "field, a multi-payload sum, Map). F2a/F2b/F2c-1 "
+                        "marshal scalar (Int / Bool / Float) and String "
+                        "crossing types plus FLAT one-level scalar-leaf "
+                        "aggregates (a struct of scalars, List<scalar>, a "
+                        "tuple of scalars, Option<scalar>, "
+                        "Result<scalar, scalar>). The typed boundary is still "
                         "fully checked (--check) and recorded in the SBOM "
                         "(--manifest)."
                     )

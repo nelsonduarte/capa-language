@@ -38,6 +38,7 @@ Trust-boundary notes (audit items M1 / H1, 2026-05):
 
 from __future__ import annotations
 
+import struct as _struct
 import sys
 from typing import Optional
 
@@ -62,6 +63,52 @@ class WasmHostError(RuntimeError):
     than writing the buffer at address 0 and scribbling the data
     segment) keeps the OOM diagnostic intact. Audit 2026-05-25 L1.
     """
+
+
+class _ForeignRecord:
+    """A bare attribute holder for a crossing struct value (feature #4
+    F2c-1). ``wasmtime.component``'s ``RecordType.convert_to_c`` reads a
+    record field with ``getattr(val, wit_field_name)``, so a plain object
+    the host ``setattr``s the (kebab-case) WIT field names onto lowers
+    into the child's record argument. Kept minimal: it carries no
+    authority, only scalar leaf data."""
+
+
+# Capa scalar-leaf -> the Python class its value lifts to across the
+# child's canonical ABI. Used to decide whether a Result's two arms are
+# distinguishable by type (untagged) or need an explicit tag (tagged).
+_PY_LEAF_CLASS = {"Int": int, "Bool": bool, "Float": float, "String": str}
+
+
+def _result_is_tagged(schema: dict) -> bool:
+    """True when a ``Result<ok, err>``'s two arms lift to the SAME Python
+    class, so ``wasmtime.component`` cannot tell them apart by value type
+    and needs an explicit ``wc.Variant`` tag. Int and Bool are treated as
+    overlapping (``bool`` is a subclass of ``int``). Distinct arms
+    (e.g. ``Result<Int, String>``) are untagged and pass the bare
+    payload."""
+    a = _PY_LEAF_CLASS.get(schema["ok"])
+    b = _PY_LEAF_CLASS.get(schema["err"])
+    if a is b:
+        return True
+    return {a, b} <= {int, bool}
+
+
+def _unwrap_result_value(value, schema: dict):
+    """Normalise the child's returned ``result`` value to ``(is_ok,
+    payload)``. ``wasmtime.component`` lifts a tagged result to a
+    ``wc.Variant`` (``.tag`` / ``.payload``) and an untagged one to the
+    bare payload, whose Python type then discriminates the arm."""
+    import wasmtime.component as wc
+    if isinstance(value, wc.Variant):
+        return value.tag == "ok", value.payload
+    ok_cls = _PY_LEAF_CLASS.get(schema["ok"])
+    err_cls = _PY_LEAF_CLASS.get(schema["err"])
+    if err_cls is not ok_cls and isinstance(value, err_cls) and not isinstance(
+        value, ok_cls
+    ):
+        return False, value
+    return True, value
 
 
 class WasmHost:
@@ -171,21 +218,22 @@ class WasmHost:
         return_wasm = meta["return_wasm"]
         label = f"{component}.{method}"
 
-        # A String param (crosses as ptr, len) or a String return
-        # (crosses through an 8-byte indirect return area the host
-        # writes into the parent's memory) needs the host to touch the
-        # caller's linear memory + ``$alloc``. When neither is present
-        # the method is F2a scalar-only and takes the exact same fast
-        # path it always did (no caller access, direct scalar closure).
-        needs_memory = return_kind == "string" or any(
-            p["kind"] == "string" for p in params
+        # A String / aggregate param or a String / aggregate return needs
+        # the host to touch the caller's linear memory + ``$alloc`` (a
+        # String crosses as ptr/len, an aggregate as a single i32 heap
+        # pointer read out of / written back into parent memory). When
+        # none is present the method is F2a scalar-only and takes the
+        # exact same fast path it always did (no caller access, direct
+        # scalar closure).
+        needs_memory = return_kind in ("string", "aggregate") or any(
+            p["kind"] in ("string", "aggregate") for p in params
         )
         # Flatten each param to its core-wasm value type(s); a String
-        # param contributes two i32s (ptr, len).
+        # param contributes two i32s (ptr, len); an aggregate one i32.
         param_valtypes = [
             _WASM_VALTYPE[w]() for p in params for w in p["wasm"]
         ]
-        if return_kind == "string":
+        if return_kind in ("string", "aggregate"):
             # Indirect return: trailing i32 ret-area pointer, no result.
             param_valtypes.append(wasmtime.ValType.i32())
             result_valtypes: list = []
@@ -284,6 +332,17 @@ class WasmHost:
                     scalar_args.append(
                         self._read_wtf8(caller, s_ptr, s_len)
                     )
+                elif kind == "aggregate":
+                    # Feature #4 F2c-1: the arg is a single i32 pointer to
+                    # a Capa heap record in the parent's memory. Read it
+                    # into a plain Python value the child component's
+                    # canonical ABI lowers (record / list / tuple /
+                    # option / result of scalars).
+                    agg_ptr = args[idx]
+                    idx += 1
+                    scalar_args.append(
+                        self._read_capa_value(caller, agg_ptr, p["schema"])
+                    )
                 else:
                     value = args[idx]
                     idx += 1
@@ -292,12 +351,27 @@ class WasmHost:
                     else:
                         scalar_args.append(value)
             ret_area = (
-                args[idx] if _meta["return_kind"] == "string" else None
+                args[idx]
+                if _meta["return_kind"] in ("string", "aggregate")
+                else None
             )
             result = dispatch_foreign_call(
                 self.engine, _meta["artifact"], _meta["method"],
                 granted, scalar_args, _label,
+                aggregate_result=_meta["return_kind"] == "aggregate",
             )
+            if _meta["return_kind"] == "aggregate":
+                # Write the child's returned value back into the parent's
+                # memory as a Capa heap record and store its pointer in
+                # the 4-byte ret area (bounded by $alloc / the memory cap,
+                # exactly like the F2b String write-back).
+                rec_ptr = self._write_capa_value(
+                    caller, result, _meta["return_schema"],
+                )
+                self._memory.write(
+                    caller, rec_ptr.to_bytes(4, "little"), ret_area,
+                )
+                return None
             if _meta["return_kind"] == "string":
                 # Write the child's returned str into the parent's
                 # memory and record (ptr, len) in the 8-byte ret area.
@@ -375,6 +449,186 @@ class WasmHost:
                 "(out of memory); refusing to write at address 0"
             )
         return ptr
+
+    # ---- typed foreign components: FLAT aggregate marshalling (F2c-1) --
+    #
+    # A crossing aggregate is F1-quarantine-clean PLAIN DATA (no Fun / cap
+    # / Unsafe nested), so it carries no authority: these codecs only move
+    # bytes, they never resolve a handle or bind a cap. The byte offsets
+    # come from the serialised layout schema built by
+    # ``capa.foreign_schema`` off the ``_layout.py`` authority, so the
+    # host reproduces exactly what the core emitter writes rather than
+    # re-deriving offsets. Every String leaf reuses ``_read_wtf8`` /
+    # ``_write_wtf8``; every write-back is bounded by ``$alloc`` / the
+    # memory cap, so a malformed child return is memory-safe (bounded like
+    # the F2b String return).
+
+    def _read_i32(self, caller, addr: int) -> int:
+        return int.from_bytes(
+            bytes(self._memory.read(caller, addr, addr + 4)), "little",
+        )
+
+    def _read_leaf(self, caller, addr: int, leaf: str):
+        """Read one scalar leaf out of the parent's memory at ``addr``.
+        The low bytes hold the value in every container context (a struct
+        field, a List element, or an 8-byte tuple / Option / Result slot),
+        so a single reader serves all of them: Bool's i32 low word is the
+        same whether the leaf is a 4-byte field or an i64-extended slot."""
+        if leaf == "Int":
+            return int.from_bytes(
+                bytes(self._memory.read(caller, addr, addr + 8)),
+                "little", signed=True,
+            )
+        if leaf == "Bool":
+            return self._read_i32(caller, addr) != 0
+        if leaf == "Float":
+            return _struct.unpack(
+                "<d", bytes(self._memory.read(caller, addr, addr + 8)),
+            )[0]
+        if leaf == "String":
+            s_ptr = self._read_i32(caller, addr)
+            s_len = self._read_i32(caller, addr + 4)
+            return self._read_wtf8(caller, s_ptr, s_len)
+        raise WasmHostError(f"foreign aggregate: unknown scalar leaf {leaf!r}")
+
+    def _read_capa_value(self, caller, ptr: int, schema: dict):
+        """Read a FLAT Capa aggregate at ``ptr`` into a plain Python value
+        the child component's canonical ABI lowers (feature #4 F2c-1)."""
+        kind = schema["kind"]
+        if kind == "struct":
+            rec = _ForeignRecord()
+            for f in schema["fields"]:
+                setattr(
+                    rec, f["wit"],
+                    self._read_leaf(caller, ptr + f["offset"], f["leaf"]),
+                )
+            return rec
+        if kind == "list":
+            # List<T> header: len @ 0, cap @ 4, data_ptr @ 8. Elements at
+            # data + i * stride (stride = _size_of(elem): 8 for Int / Float
+            # / String, 4 for Bool).
+            n = self._read_i32(caller, ptr)
+            data = self._read_i32(caller, ptr + 8)
+            stride = schema["stride"]
+            leaf = schema["elem"]
+            return [
+                self._read_leaf(caller, data + i * stride, leaf)
+                for i in range(n)
+            ]
+        if kind == "tuple":
+            # Uniform 8-byte slot per element at i * 8.
+            return tuple(
+                self._read_leaf(caller, ptr + i * 8, e)
+                for i, e in enumerate(schema["elems"])
+            )
+        if kind == "option":
+            # 16-byte sum record: tag @ 0 (Some = 0, None = 1), payload
+            # 8-byte slot @ 8.
+            if self._read_i32(caller, ptr) == 0:
+                return self._read_leaf(caller, ptr + 8, schema["payload"])
+            return None
+        if kind == "result":
+            # 16-byte sum record: tag @ 0 (Ok = 0, Err = 1), payload @ 8.
+            is_ok = self._read_i32(caller, ptr) == 0
+            leaf = schema["ok"] if is_ok else schema["err"]
+            val = self._read_leaf(caller, ptr + 8, leaf)
+            if _result_is_tagged(schema):
+                import wasmtime.component as wc
+                return wc.Variant("ok" if is_ok else "err", val)
+            # Distinct payload Python types: the child's canonical result
+            # picks the arm by the value's type, so pass the bare payload.
+            return val
+        raise WasmHostError(
+            f"foreign aggregate: unknown schema kind {kind!r}"
+        )
+
+    def _write_leaf(self, caller, addr: int, leaf: str, val, width: int) -> None:
+        """Write one scalar leaf into the parent's memory at ``addr``.
+        ``width`` is the leaf's byte footprint in this container (4 for a
+        Bool struct field / List element, 8 in an i64-extended slot)."""
+        if leaf == "Int":
+            self._memory.write(
+                caller, int(val).to_bytes(8, "little", signed=True), addr,
+            )
+            return
+        if leaf == "Bool":
+            self._memory.write(
+                caller, (1 if val else 0).to_bytes(width, "little"), addr,
+            )
+            return
+        if leaf == "Float":
+            self._memory.write(caller, _struct.pack("<d", float(val)), addr)
+            return
+        if leaf == "String":
+            s_ptr, s_len = self._write_wtf8(caller, val if val is not None else "")
+            self._memory.write(caller, s_ptr.to_bytes(4, "little"), addr)
+            self._memory.write(caller, s_len.to_bytes(4, "little"), addr + 4)
+            return
+        raise WasmHostError(f"foreign aggregate: unknown scalar leaf {leaf!r}")
+
+    def _write_capa_value(self, caller, value, schema: dict) -> int:
+        """Write ``value`` (the child's returned Python value) back into
+        the parent's memory as a FLAT Capa heap record, returning its i32
+        pointer (feature #4 F2c-1)."""
+        kind = schema["kind"]
+        if kind == "struct":
+            ptr = self._host_alloc(caller, schema["size"])
+            if schema.get("has_header"):
+                # Multi-impl-trait dispatch type-id at offset 4 (the header
+                # word), so downstream dynamic dispatch on the returned
+                # value routes to the right concrete impl.
+                self._memory.write(
+                    caller,
+                    int(schema.get("type_id", 0)).to_bytes(4, "little"),
+                    ptr + 4,
+                )
+            for f in schema["fields"]:
+                self._write_leaf(
+                    caller, ptr + f["offset"], f["leaf"],
+                    getattr(value, f["wit"]), f["size"],
+                )
+            return ptr
+        if kind == "list":
+            items = list(value)
+            n = len(items)
+            stride = schema["stride"]
+            leaf = schema["elem"]
+            data = self._host_alloc(caller, n * stride) if n else 0
+            for i, v in enumerate(items):
+                self._write_leaf(caller, data + i * stride, leaf, v, stride)
+            hdr = self._host_alloc(caller, 16)
+            self._memory.write(caller, n.to_bytes(4, "little"), hdr)
+            self._memory.write(caller, n.to_bytes(4, "little"), hdr + 4)
+            self._memory.write(caller, data.to_bytes(4, "little"), hdr + 8)
+            self._memory.write(caller, (0).to_bytes(4, "little"), hdr + 12)
+            return hdr
+        if kind == "tuple":
+            elems = schema["elems"]
+            ptr = self._host_alloc(caller, 8 * len(elems))
+            for i, (e, v) in enumerate(zip(elems, tuple(value))):
+                self._write_leaf(caller, ptr + i * 8, e, v, 8)
+            return ptr
+        if kind == "option":
+            ptr = self._host_alloc(caller, 16)
+            if value is None:
+                self._memory.write(caller, (1).to_bytes(4, "little"), ptr)
+                self._memory.write(caller, (0).to_bytes(8, "little"), ptr + 8)
+            else:
+                self._memory.write(caller, (0).to_bytes(4, "little"), ptr)
+                self._write_leaf(caller, ptr + 8, schema["payload"], value, 8)
+            return ptr
+        if kind == "result":
+            ptr = self._host_alloc(caller, 16)
+            is_ok, payload = _unwrap_result_value(value, schema)
+            self._memory.write(
+                caller, (0 if is_ok else 1).to_bytes(4, "little"), ptr,
+            )
+            leaf = schema["ok"] if is_ok else schema["err"]
+            self._write_leaf(caller, ptr + 8, leaf, payload, 8)
+            return ptr
+        raise WasmHostError(
+            f"foreign aggregate: unknown schema kind {kind!r}"
+        )
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each

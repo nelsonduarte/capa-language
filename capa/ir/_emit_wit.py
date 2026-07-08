@@ -415,6 +415,80 @@ class MainReturnTypeUnsupported(Exception):
         self.return_type = return_type
 
 
+# Capa scalar-leaf type -> its WIT primitive. ``Int`` is signed
+# (``s64``); ``String`` is the WIT ``string``.
+_LEAF_WIT: dict[str, str] = {
+    "Int": "s64",
+    "Bool": "bool",
+    "Float": "f64",
+    "String": "string",
+}
+
+
+def capa_type_to_wit(ty: str) -> str:
+    """Map a crossing Capa type STRING to its WIT type text so a typed
+    foreign component's parent import and the external child export agree
+    on the canonical ABI (feature #4 F2c): a struct -> ``record`` (named,
+    kebab-cased), ``List<T>`` -> ``list<t>``, a tuple -> ``tuple<...>``,
+    ``Option<T>`` -> ``option<t>``, ``Result<T, E>`` -> ``result<t, e>``.
+
+    The core ``--wasm`` foreign path does not itself consume this (the
+    parent import is a raw host closure whose flattened signature the host
+    and guest agree on directly); it is the canonical-ABI contract a child
+    fixture's WIT must match and the seam a future ``--component`` foreign
+    path would generate the parent import from. Only the F2c-1 flat
+    scalar-leaf shapes are needed today; a nested aggregate maps
+    structurally too (the recursion is total) so the mapping does not
+    itself gate F2c-2."""
+    ty = ty.strip()
+    if ty in _LEAF_WIT:
+        return _LEAF_WIT[ty]
+    # Tuple: ``(A, B, ...)`` -- a parenthesised, comma-separated list.
+    if ty.startswith("(") and ty.endswith(")"):
+        inner = ty[1:-1].strip()
+        if not inner:
+            return "tuple<>"
+        parts = _split_top_level_commas(inner)
+        return "tuple<" + ", ".join(capa_type_to_wit(p) for p in parts) + ">"
+    head = ty.split("<", 1)[0]
+    if "<" in ty and ty.endswith(">"):
+        inner = ty[len(head) + 1:-1].strip()
+        parts = _split_top_level_commas(inner)
+        if head == "List":
+            return f"list<{capa_type_to_wit(parts[0])}>"
+        if head == "Option":
+            return f"option<{capa_type_to_wit(parts[0])}>"
+        if head == "Result":
+            return (
+                f"result<{capa_type_to_wit(parts[0])}, "
+                f"{capa_type_to_wit(parts[1])}>"
+            )
+    # A bare user type name is a WIT record; WIT identifiers are lowercase
+    # kebab-case, so lowercase the name and turn underscores into dashes.
+    return head.replace("_", "-").lower()
+
+
+def _split_top_level_commas(s: str) -> list[str]:
+    """Split ``s`` on top-level commas (not nested inside ``<...>`` or
+    ``(...)``)."""
+    parts: list[str] = []
+    depth = 0
+    cur = []
+    for ch in s:
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        parts.append("".join(cur).strip())
+    return parts
+
+
 def _is_unit_return(rty: str) -> bool:
     """True when ``rty`` (``main``'s lowered ``return_type`` string) is
     a Unit return, which the component backend maps to NO result

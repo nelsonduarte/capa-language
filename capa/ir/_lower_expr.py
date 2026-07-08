@@ -858,6 +858,8 @@ class _LowerExprMixin:
         from ..foreign import (
             method_param_kinds, method_return_root,
         )
+        from ..foreign_schema import crossing_kind
+        from ..manifest._strings import _ty_text
         comp = self._foreign_components[e.receiver.name]
         method_sig = next(
             (m for m in comp.methods if m.name == e.method), None,
@@ -889,13 +891,25 @@ class _LowerExprMixin:
         args = [self._lower_expr(e.args[i]) for i in order]
         param_kinds = method_param_kinds(method_sig)
         return_root = method_return_root(method_sig)
+        # The ForeignCall's ``return_type`` is the scalar / String root for
+        # a scalar-ish return (Int / Bool / Float / String / Unit), but the
+        # FULL type text for an AGGREGATE return (feature #4 F2c) so the
+        # emitter can tell an aggregate return from a scalar one -- a tuple
+        # return has no root name at all (``_root_type_name`` -> None).
+        ret_expr = method_sig.return_type
+        if ret_expr is None:
+            return_type = "Unit"
+        elif crossing_kind(ret_expr) == "aggregate":
+            return_type = _ty_text(ret_expr)
+        else:
+            return_type = return_root
         result_ty = return_root
         if self.types:
             t = self.types.get(id(e))
             if t is not None:
                 result_ty = _ty_to_str(t)
         dst = None
-        if return_root != "Unit":
+        if return_type != "Unit":
             dst = fresh_local(self._counter)
             self._locals[dst] = result_ty
         self._instrs.append(
@@ -906,7 +920,7 @@ class _LowerExprMixin:
                 artifact=comp.artifact,
                 args=args,
                 param_kinds=param_kinds,
-                return_type=return_root,
+                return_type=return_type,
             )
         )
         if dst is None:
