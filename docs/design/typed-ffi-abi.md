@@ -88,15 +88,70 @@ Scalar arguments and the scalar result marshal through this Python closure
 (Int -> i64/s64, Bool -> i32/bool, Float -> f64), so no cross-store value
 lifting is needed.
 
+## String crossing types (F2b)
+
+F2b adds the **String** crossing type, reusing the SAME canonical-ABI
+machinery the WASI cap methods already use for strings. A method
+`submit(net: Net, s: String) -> String` maps to:
+
+1. **Child export** -- only the ordinary params appear; a String is a
+   canonical `string`:
+
+   ```wit
+   export submit: func(s: string) -> string;
+   ```
+
+   The child must provide `cabi_realloc` (the canonical ABI allocates the
+   argument's lowered bytes and the returned string in the child's
+   memory). wasmtime-py lifts/lowers between the component `string` and a
+   Python `str` automatically -- the host closure just hands the child a
+   `str` and gets a `str` back.
+
+2. **Parent import** -- the String does NOT lower to a single core value.
+   A String ARGUMENT crosses as a `(ptr, len)` i32 pair pushed straight
+   from the value's bytes in the parent's linear memory
+   (`_push_string_arg`). A String RESULT uses the canonical-ABI indirect
+   return: the parent allocates an 8-byte return area, passes its pointer
+   as the trailing import arg, and the host writes `(ptr, len)` into it
+   after copying the returned bytes into the parent's memory via `$alloc`.
+   The parent then materialises a Capa `String` from the area (the shared
+   `string` materialiser).
+
+   ```
+   (import "capa:foreign/Bureau" "submit"
+       (func $foreign_Bureau_submit
+           (param i32)   ;; net cap handle
+           (param i32)   ;; s_ptr
+           (param i32)   ;; s_len
+           (param i32))) ;; ret_area (8 bytes: out_ptr @0, out_len @4)
+   ```
+
+The host closure reads the String argument out of the caller's memory
+into a Python `str`, dispatches the child export, and writes the returned
+`str` back. This is the ONLY change F2b makes: **which VALUE types cross
+the boundary**. The sandbox enforcement is byte-for-byte identical to F2a
+(same restricted host-bound linker, same bare store, same handle
+resolution, same structural cap-set deny). A String is plain data
+(F1-quarantine-clean) and carries no authority.
+
 ## Scope and limits
 
-- **F2a (this increment): SCALAR crossing types only** -- Int / Bool /
-  Float (and Unit return). A String or aggregate crossing type (Struct /
-  Sum / List / Map / tuple / Option / Result) needs the linear-memory
-  canonical ABI (indirect return + `$alloc`) on the parent-import leg;
-  that is **F2b**. A foreign call using one is rejected up front with a
-  clear "feature #4 F2b" error; the boundary is still fully type-checked
-  (`--check`) and recorded in the SBOM (`--manifest`).
+- **F2a: SCALAR crossing types** -- Int / Bool / Float (and Unit return).
+- **F2b (this increment): the STRING crossing type**, marshalled through
+  the canonical-ABI `(ptr, len)` + `$alloc` machinery above.
+- **Aggregate crossing types are a further sub-phase.** A record
+  (Struct), Sum, `List<T>`, `Map`, tuple, `Option<T>` or `Result<T, E>`
+  crossing type needs a general, recursive, type-driven Capa-heap
+  reader/writer on the HOST side of the parent boundary: the host must
+  read a Capa aggregate out of the parent's linear memory (understanding
+  its heap layout for every element/field type) into a Python value, and
+  write the reverse. The existing canonical-ABI path only hand-codes a
+  FIXED set of shapes (`option<string>`, `list<string>`,
+  `result<string, io-error>`) for the WASI caps; there is no general
+  marshaller. A foreign call using an aggregate crossing type is rejected
+  up front with a clear error naming the aggregate kinds and the
+  sub-phase; the boundary is still fully type-checked (`--check`) and
+  recorded in the SBOM (`--manifest`).
 - **Core `--wasm` path only.** The `--component` wrapping path does not
   yet carry `capa:foreign` imports.
 - **Python backend: unsupported.** The Python backend cannot sandbox a

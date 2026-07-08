@@ -479,25 +479,27 @@ class TestCliRunGuard(unittest.TestCase):
         return p
 
     def test_run_invoking_aggregate_foreign_fails_f2b(self):
-        # ``_DECL_AND_CALL`` crosses aggregate types (Report / Receipt),
-        # which F2a does not marshal at runtime yet: any execution path
-        # (here the Python backend) reports the clean F2b error.
+        # ``_DECL_AND_CALL`` crosses aggregate types (Report / Receipt).
+        # F2a/F2b marshal scalar + String crossing types; an aggregate
+        # still needs a further sub-phase, so any execution path (here the
+        # Python backend) reports the clean aggregate error.
         with tempfile.TemporaryDirectory() as td:
             p = self._write(td, _DECL_AND_CALL + "fun main() -> Int\n    return 0\n")
             rc, _out, err = _run_cli(["--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("String or aggregate crossing type", err)
-            self.assertIn("F2b", err)
+            self.assertIn("aggregate crossing type", err)
+            self.assertIn("further sub-phase", err)
 
     def test_wasm_invoking_aggregate_foreign_fails_f2b(self):
-        # Same aggregate call on the Wasm backend: still the F2b error
-        # (the parent-import leg needs the linear-memory canonical ABI).
+        # Same aggregate call on the Wasm backend: still the aggregate
+        # error (the parent-import leg needs a general host-side Capa-heap
+        # reader/writer that is a further sub-phase).
         with tempfile.TemporaryDirectory() as td:
             p = self._write(td, _DECL_AND_CALL + "fun main() -> Int\n    return 0\n")
             rc, _out, err = _run_cli(["--wasm", "--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("String or aggregate crossing type", err)
-            self.assertIn("F2b", err)
+            self.assertIn("aggregate crossing type", err)
+            self.assertIn("further sub-phase", err)
 
     def test_check_unaffected(self):
         with tempfile.TemporaryDirectory() as td:

@@ -1,0 +1,4 @@
+package capa:strecho;
+world strecho {
+  export echo: func(s: string) -> string;
+}

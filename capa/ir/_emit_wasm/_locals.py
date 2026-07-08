@@ -23,6 +23,7 @@ from __future__ import annotations
 from .._nodes import (
     Function, Instr, Value,
     BinOp, Call, MethodCall, TryUnwrap, For, FormatStr,
+    ForeignCall,
     If, While, Match, Index,
     MakeLambda, MakeList, MakeMap, MakeRange, MakeSet, MakeStruct, MakeTuple,
     PatIdent, PatVariant, PatTuple,
@@ -671,6 +672,15 @@ class _LocalsCollectionMixin:
                         has_optres_method = True
                         has_list = True
                         has_list_index_bounds = True
+                if isinstance(instr, ForeignCall):
+                    # Feature #4 F2b: a String-returning foreign call uses
+                    # the canonical-ABI indirect return (8-byte area the
+                    # host writes (ptr, len) into), so it needs the
+                    # ``$_ret_area`` scratch local exactly like an
+                    # indirect cap method. Scalar-returning foreign calls
+                    # (F2a) need no scratch here.
+                    if instr.return_type == "String":
+                        has_indirect_cap_call = True
                 if isinstance(instr, Call):
                     if instr.callee_name == "parse_json":
                         # parse_json / to_json land as Capa-source

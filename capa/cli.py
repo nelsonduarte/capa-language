@@ -1782,7 +1782,7 @@ def _main_dispatch() -> int:
             or getattr(args, "output", None)):
         from capa.foreign import (
             extern_component_names, extern_components, foreign_call_sites,
-            method_is_scalar,
+            method_is_runtime_marshallable,
         )
 
         def _foreign_err(_msg: str) -> None:
@@ -1796,25 +1796,34 @@ def _main_dispatch() -> int:
         )
         if _foreign_sites:
             _ec_by_name = {ec.name: ec for ec in extern_components(module)}
-            # F2b: an invoked method using a String / aggregate crossing
-            # type cannot be marshalled across the boundary at runtime
-            # yet (the parent-import leg needs the linear-memory canonical
-            # ABI). Reject it on every backend with a clear pointer.
+            # F2b lands scalar (Int / Bool / Float) AND String crossing
+            # types at runtime. An invoked method using an AGGREGATE
+            # crossing type (Struct / Sum / List / Map / tuple / Option /
+            # Result) still cannot be marshalled across the boundary: it
+            # needs a general, recursive, type-driven Capa-heap
+            # reader/writer on the HOST side of the parent boundary (a
+            # further sub-phase). Reject it on every backend with a clear
+            # pointer; the typed boundary stays fully checked (--check)
+            # and recorded in the SBOM (--manifest).
             for _comp, _method, _fpos in _foreign_sites:
                 _ec = _ec_by_name.get(_comp)
                 _msig = (
                     next((m for m in _ec.methods if m.name == _method), None)
                     if _ec is not None else None
                 )
-                if _msig is not None and not method_is_scalar(_msig):
+                if _msig is not None and not method_is_runtime_marshallable(
+                    _msig
+                ):
                     _foreign_err(
                         f"capa: foreign call {_comp}.{_method} at line "
-                        f"{_fpos.line}:{_fpos.col} uses a String or aggregate "
-                        "crossing type, which is not yet supported at runtime "
-                        "(feature #4 F2b). F2a marshals scalar crossing types "
-                        "(Int / Bool / Float) only; the typed boundary is "
-                        "still fully checked (--check) and recorded in the "
-                        "SBOM (--manifest)."
+                        f"{_fpos.line}:{_fpos.col} uses an aggregate crossing "
+                        "type (Struct / Sum / List / Map / tuple / Option / "
+                        "Result), which is not yet marshalled across the "
+                        "boundary at runtime (a further sub-phase of feature "
+                        "#4). F2a/F2b marshal scalar (Int / Bool / Float) and "
+                        "String crossing types; the typed boundary is still "
+                        "fully checked (--check) and recorded in the SBOM "
+                        "(--manifest)."
                     )
                     return 1
             # The Wasm sandbox is what makes the declared bound SOUND; the

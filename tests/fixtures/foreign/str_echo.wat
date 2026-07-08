@@ -1,0 +1,16 @@
+(module
+  (memory (export "memory") 1)
+  (global $bump (mut i32) (i32.const 1024))
+  (func $realloc (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+    (local $p i32)
+    global.get $bump i32.const 7 i32.add i32.const -8 i32.and local.set $p
+    local.get $p local.get 3 i32.add global.set $bump local.get $p)
+  (func $echo (export "echo") (param $sptr i32) (param $slen i32) (result i32)
+    (local $out i32) (local $ret i32)
+    (local.set $out (call $realloc (i32.const 0)(i32.const 0)(i32.const 1)(i32.add (local.get $slen)(i32.const 1))))
+    (i32.store8 (local.get $out) (i32.const 0x5B))
+    (memory.copy (i32.add (local.get $out)(i32.const 1)) (local.get $sptr) (local.get $slen))
+    (local.set $ret (call $realloc (i32.const 0)(i32.const 0)(i32.const 4)(i32.const 8)))
+    (i32.store (local.get $ret) (local.get $out))
+    (i32.store offset=4 (local.get $ret) (i32.add (local.get $slen)(i32.const 1)))
+    (local.get $ret)))

@@ -469,14 +469,17 @@ class ForeignCall(Instr):
     ``args`` are the lowered operands in declared-parameter order.
     ``param_kinds`` is a parallel list of ``("cap", CapName)`` or
     ``("scalar", SourceTy)`` tags describing each argument, so the emitter
-    knows which operand is a handle (i32) and which is a scalar (and its
-    wasm type), and the host knows which caps to bind. ``return_type`` is
-    the source-level scalar return type (``Int`` / ``Bool`` / ``Float``)
-    or ``Unit``. ``artifact`` is the declared path to the child ``.wasm``.
+    knows which operand is a handle (i32), which is a scalar, and which is
+    a String (``("scalar", "String")`` -> a (ptr, len) pair), and the host
+    knows which caps to bind. ``return_type`` is the source-level return
+    type (``Int`` / ``Bool`` / ``Float`` / ``String`` / ``Unit``).
+    ``artifact`` is the declared path to the child ``.wasm``.
 
-    F2a is SCALAR-only (Int / Bool / Float); a String or aggregate
-    crossing type is rejected earlier (the CLI's F2b guard), so this node
-    only ever carries scalar params + return."""
+    F2a marshals scalar crossing types (Int / Bool / Float); F2b adds the
+    String crossing type (a (ptr, len) arg + an 8-byte indirect return
+    area). An aggregate crossing type is rejected earlier (the CLI's
+    aggregate guard, a further sub-phase), so this node only ever carries
+    scalar / String params + return."""
     dst: Optional[str]
     component: str
     method: str
