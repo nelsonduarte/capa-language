@@ -498,6 +498,64 @@ class TestForeignCeilingUnit(unittest.TestCase):
             )
         )
 
+    def test_resource_trap_classified_by_underlying_cause(self):
+        # The classification MUST key off the underlying cause (fuel state
+        # / error text), NOT off which wasmtime call raised, so a fuel trap
+        # that lands DURING INSTANTIATION is still labelled a fuel breach
+        # (not a cap-set deny). A drained-fuel store models exactly that
+        # instantiation-origin trap deterministically, without depending on
+        # whether the local wasmtime happens to burn fuel while
+        # instantiating.
+        import wasmtime
+        from capa.runtime._foreign import (
+            ForeignResourceExceeded,
+            _raise_if_resource_trap,
+            new_foreign_engine,
+        )
+        eng = new_foreign_engine()
+
+        # Fuel exhausted (get_fuel() == 0): a resource trap, wherever it
+        # originated -> "CPU/fuel budget", never the cap-set deny.
+        drained = wasmtime.Store(eng)
+        drained.set_fuel(0)
+        fuel_err = wasmtime.WasmtimeError(
+            "wasm trap: all fuel consumed by WebAssembly"
+        )
+        with self.assertRaises(ForeignResourceExceeded) as ctx:
+            _raise_if_resource_trap(
+                fuel_err, drained, fuel_enabled=True, fuel=1,
+                memory_cap_bytes=None, boundary_label="X.y",
+            )
+        self.assertIn("CPU/fuel budget", str(ctx.exception))
+
+        # A genuine missing-import LINK error WITH fuel remaining is NOT a
+        # resource trap: the classifier returns without raising, so the
+        # caller goes on to produce the cap-set deny.
+        live = wasmtime.Store(eng)
+        live.set_fuel(1_000_000_000)
+        link_err = wasmtime.WasmtimeError(
+            "component imports instance `capa:host/fs`, but a matching "
+            "implementation was not found"
+        )
+        self.assertIsNone(
+            _raise_if_resource_trap(
+                link_err, live, fuel_enabled=True, fuel=1_000_000_000,
+                memory_cap_bytes=None, boundary_label="X.y",
+            )
+        )
+
+        # A store-limit error WITH fuel remaining is a resource trap ->
+        # the memory / resource-limit message.
+        store_err = wasmtime.WasmtimeError(
+            "memory minimum size of 5000 pages exceeds memory limits"
+        )
+        with self.assertRaises(ForeignResourceExceeded) as ctx2:
+            _raise_if_resource_trap(
+                store_err, live, fuel_enabled=True, fuel=1_000_000_000,
+                memory_cap_bytes=256 * 1024 * 1024, boundary_label="X.y",
+            )
+        self.assertIn("resource limit", str(ctx2.exception))
+
     def test_store_limit_error_message_shape(self):
         # Pin the CURRENT wasmtime phrasing the classifier couples to, so a
         # future wasmtime message change breaks THIS test (a loud, local
