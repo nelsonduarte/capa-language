@@ -427,8 +427,15 @@ class TestForeignCeilingFlagValidation(unittest.TestCase):
         self.assertIn("--foreign-memory-cap must be >= 0", err)
 
 
+@unittest.skipUnless(
+    _wasm_tooling_available(), "wasm-tools / wasmtime missing",
+)
 class TestForeignCeilingUnit(unittest.TestCase):
-    """Unit-level checks that do not need the Wasm toolchain."""
+    """Unit-level checks of the ceiling helpers. These reference
+    ``capa.runtime._foreign`` (which imports ``wasmtime`` at module load)
+    and ``wasmtime`` directly, so they carry the SAME wasm-tooling skip
+    guard as the run-based classes above: on a host without wasmtime they
+    SKIP cleanly rather than erroring on the import."""
 
     def test_defaults_are_generous_but_bounded(self):
         from capa.runtime._foreign import (
