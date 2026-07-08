@@ -134,6 +134,50 @@ the boundary**. The sandbox enforcement is byte-for-byte identical to F2a
 resolution, same structural cap-set deny). A String is plain data
 (F1-quarantine-clean) and carries no authority.
 
+## Resource ceiling (sandbox availability bound)
+
+Confinement (which capabilities the child can reach) is only half of a
+sandbox; the other half is a RESOURCE BOUND so a malicious or buggy
+foreign component cannot deny service to the host. The child store is
+therefore metered on two axes IN ADDITION to the restricted linker
+(`capa.runtime._foreign.dispatch_foreign_call`):
+
+- **CPU (fuel).** The child runs on a `consume_fuel` engine with a
+  bounded per-call fuel budget (`Store.set_fuel`). wasmtime charges ~1
+  fuel per executed wasm instruction, so an infinite loop / CPU spin
+  drains the budget and TRAPS ("all fuel consumed") instead of hanging
+  the host forever. The host reports it as a clean
+  `foreign component <label>: exceeded its CPU/fuel budget` diagnostic
+  (exit 1), detected robustly by `Store.get_fuel() == 0` after the trap.
+- **Memory.** The child store carries a linear-memory ceiling
+  (`Store.set_limits(memory_size=...)`). A child whose minimum memory
+  exceeds the ceiling is refused at instantiation; a runaway `memory.grow`
+  is capped (grow returns `-1`) so the host never OOMs. Over-cap
+  instantiation surfaces as
+  `foreign component <label>: exceeded its memory limit` (exit 1).
+
+This is separate from the parent `--wasm-memory-cap` (which bounds the
+PARENT's `$alloc` write-back of a returned aggregate); the ceiling here
+bounds the untrusted CHILD's OWN allocation and CPU. The confinement
+(restricted linker, granted-cap set, host-bound closures, handle
+resolution, marshalling) is UNCHANGED -- this only adds the store
+ceiling. The child is still confined to its granted capabilities; now it
+is also CPU/memory-bounded.
+
+**Defaults and flags.**
+
+| Axis | Default | Flag | Notes |
+|------|---------|------|-------|
+| CPU | 1,000,000,000 fuel (~1e9 instr) | `--foreign-fuel <N>` | `0` opts out (child runs on the unmetered engine). |
+| Memory | 256 MiB | `--foreign-memory-cap <MiB>` | `0` opts out (no store memory limit). |
+
+Both flags take effect on the `--wasm --run` path only (the backend that
+sandboxes the child). Absent, the generous defaults apply: they let every
+legitimate crossing fixture (which uses a single 64 KiB page and trivial
+CPU) run unaffected, while bounding the pathological case. The defaults
+live in `capa.runtime._foreign` as `DEFAULT_FOREIGN_FUEL` /
+`DEFAULT_FOREIGN_MEMORY_CAP_BYTES`.
+
 ## Scope and limits
 
 - **F2a: SCALAR crossing types** -- Int / Bool / Float (and Unit return).

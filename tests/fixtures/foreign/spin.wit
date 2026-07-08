@@ -1,0 +1,4 @@
+package capa:spin;
+world spin {
+  export run: func(x: s64) -> s64;
+}

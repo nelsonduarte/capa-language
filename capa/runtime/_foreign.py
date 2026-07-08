@@ -56,6 +56,55 @@ class ForeignDenied(RuntimeError):
     boundary."""
 
 
+class ForeignResourceExceeded(ForeignDenied):
+    """Raised when a foreign sub-component runs INSIDE its granted
+    capability set but breaches its RESOURCE CEILING: it exhausted the
+    bounded CPU/fuel budget (an infinite loop / CPU spin) or tried to
+    grow / claim linear memory past the bounded memory limit. This is an
+    availability bound, not a confinement bypass -- the child is still
+    confined to its granted caps; it is now also CPU/memory-bounded so a
+    malicious or buggy component cannot hang or memory-exhaust the host.
+
+    Subclasses :class:`ForeignDenied` so the CLI surfaces it as the same
+    clean, actionable, exit-1 diagnostic (no host hang, no OOM, no raw
+    traceback)."""
+
+
+# Resource ceiling applied to EVERY untrusted foreign-component child
+# store (feature #4 hardening). Generous enough that the legitimate
+# fixtures (scalar / String / aggregate crossing) run unaffected, but
+# bounded so a pathological child TRAPS instead of DoS-ing the host.
+#
+# - Fuel bounds CPU: wasmtime charges ~1 fuel per executed wasm
+#   instruction, so ~1e9 lets a legitimate foreign call do a great deal
+#   of honest work while an infinite loop traps in well under a second.
+# - Memory bounds linear-memory growth: 256 MiB dwarfs what any honest
+#   crossing needs (the fixtures use a single 64 KiB page) yet is far
+#   below the ~4 GiB a malicious self-allocation would reach.
+DEFAULT_FOREIGN_FUEL = 1_000_000_000
+DEFAULT_FOREIGN_MEMORY_CAP_BYTES = 256 * 1024 * 1024
+
+
+def new_foreign_engine() -> wasmtime.Engine:
+    """Build a wasmtime engine for untrusted foreign-component children
+    with fuel consumption ENABLED, so a per-store fuel budget can bound
+    the child's CPU. Kept separate from the parent module's engine: the
+    parent runs unmetered, only the untrusted child is fuel-metered."""
+    config = wasmtime.Config()
+    config.consume_fuel = True
+    return wasmtime.Engine(config)
+
+
+def _is_memory_limit_error(exc: Exception) -> bool:
+    """True when a wasmtime error is the child breaching its store memory
+    limit (a linear memory whose minimum / grown size exceeds the ceiling
+    the child store was configured with), as opposed to the structural
+    capability-import deny that also surfaces as a ``WasmtimeError`` at
+    instantiation."""
+    text = str(exc).lower()
+    return "memory" in text and ("limit" in text or "exceed" in text)
+
+
 # Kebab-case a Capa method name for the child component's WIT export
 # lookup (WIT identifiers are strict kebab-case; ``do_thing`` ->
 # ``do-thing``). A plain lowercase name (``submit``) is unchanged.
@@ -72,6 +121,8 @@ def dispatch_foreign_call(
     boundary_label: str,
     *,
     aggregate_result: bool = False,
+    fuel: int | None = DEFAULT_FOREIGN_FUEL,
+    memory_cap_bytes: int | None = DEFAULT_FOREIGN_MEMORY_CAP_BYTES,
 ):
     """Instantiate the child component at ``artifact_path`` with a
     restricted linker binding ONLY the ``granted`` caps, call its
@@ -81,7 +132,18 @@ def dispatch_foreign_call(
     ``granted`` maps a capability class name (``"Net"`` / ``"Fs"`` /
     ...) to the caller's already-attenuated cap instance. A child that
     imports a cap NOT in ``granted`` fails at ``instantiate`` -- surfaced
-    as :class:`ForeignDenied` with the boundary named."""
+    as :class:`ForeignDenied` with the boundary named.
+
+    The child store is bounded by a RESOURCE CEILING (feature #4
+    hardening): ``fuel`` fuel units cap its CPU (an infinite loop TRAPS
+    on fuel exhaustion instead of hanging the host) and
+    ``memory_cap_bytes`` caps its linear-memory growth (a runaway
+    self-allocation is refused instead of OOM-ing the host). Either
+    breach surfaces as :class:`ForeignResourceExceeded`. Pass ``None``
+    (or a non-positive value) for either to skip that bound. ``engine``
+    MUST come from :func:`new_foreign_engine` for the fuel bound to
+    apply; the confinement (restricted linker, granted caps, host-bound
+    closures) is UNCHANGED -- this only adds the store ceiling."""
     if not os.path.isfile(artifact_path):
         raise ForeignDenied(
             f"foreign component {boundary_label}: artifact not found at "
@@ -95,6 +157,15 @@ def dispatch_foreign_call(
             f"artifact {artifact_path!r}: {e}"
         )
     store = wasmtime.Store(engine)
+    # Resource ceiling on the untrusted child store (feature #4
+    # hardening): fuel bounds CPU, the memory limit bounds linear-memory
+    # growth. Applied BEFORE instantiation so a child declaring an
+    # over-cap minimum memory is refused up front, not after an OOM.
+    fuel_enabled = fuel is not None and fuel > 0
+    if fuel_enabled:
+        store.set_fuel(fuel)
+    if memory_cap_bytes is not None and memory_cap_bytes > 0:
+        store.set_limits(memory_size=memory_cap_bytes)
     linker = wc.Linker(engine)
     root = linker.root()
     _register_granted_caps(root, granted)
@@ -102,6 +173,15 @@ def dispatch_foreign_call(
     try:
         instance = linker.instantiate(store, component)
     except wasmtime.WasmtimeError as e:
+        # A child whose linear memory minimum already exceeds the store
+        # ceiling is refused here (availability bound), distinct from the
+        # capability-import deny below.
+        if _is_memory_limit_error(e):
+            raise ForeignResourceExceeded(
+                f"foreign component {boundary_label}: exceeded its memory "
+                f"limit ({memory_cap_bytes} bytes) -- the child's linear "
+                f"memory does not fit the sandbox ceiling. Underlying: {e}"
+            )
         # An un-granted capa:host/<cap> import fails here: the linker has
         # no matching interface. This is the STRUCTURAL host-enforced
         # cap-set deny -- the sandbox physically refuses to give the
@@ -119,7 +199,30 @@ def dispatch_foreign_call(
             f"foreign component {boundary_label}: the component exports no "
             f"method {export!r}"
         )
-    result = fn(store, *scalar_args)
+    try:
+        result = fn(store, *scalar_args)
+    except wasmtime.WasmtimeError as e:
+        # The child trapped. If it drained its fuel budget (an infinite
+        # loop / CPU spin), surface the bounded CPU diagnostic instead of
+        # letting the host hang; ``get_fuel() == 0`` is the robust signal
+        # (the component path reports fuel exhaustion as a plain
+        # WasmtimeError, so the message alone is not reliable). Any other
+        # trap (a genuine guest ``unreachable`` / out-of-bounds, including
+        # a child that grew to its memory ceiling and then trapped on its
+        # own -1-handling) propagates unchanged.
+        if fuel_enabled:
+            try:
+                remaining = store.get_fuel()
+            except wasmtime.WasmtimeError:
+                remaining = None
+            if remaining == 0:
+                raise ForeignResourceExceeded(
+                    f"foreign component {boundary_label}: exceeded its "
+                    f"CPU/fuel budget ({fuel} fuel units) -- the child ran "
+                    f"too long (possible infinite loop) and was stopped "
+                    f"before it could hang the host"
+                ) from e
+        raise
     # wasmtime-py returns a single value for a one-result func, a tuple
     # for multi-result, and None for no result. F2a scalars are always
     # single-value or none, so a bare ``list`` / ``tuple`` there is a

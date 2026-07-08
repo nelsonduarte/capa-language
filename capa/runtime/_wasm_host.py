@@ -127,6 +127,24 @@ class WasmHost:
         self.engine = wasmtime.Engine()
         self.store = wasmtime.Store(self.engine)
         self.linker = wasmtime.Linker(self.engine)
+        # Feature #4 hardening: untrusted foreign-component children run
+        # in their OWN store on a SEPARATE fuel-metered engine, bounded
+        # by a CPU (fuel) + memory ceiling so a malicious / buggy child
+        # cannot hang or memory-exhaust the host. The parent module above
+        # stays unmetered. Budgets default to the generous module
+        # constants and can be tuned via :meth:`configure_foreign_limits`
+        # (wired to the ``--foreign-fuel`` / ``--foreign-memory-cap``
+        # flags). See ``capa.runtime._foreign``.
+        from ._foreign import (
+            DEFAULT_FOREIGN_FUEL,
+            DEFAULT_FOREIGN_MEMORY_CAP_BYTES,
+            new_foreign_engine,
+        )
+        self._foreign_engine = new_foreign_engine()
+        self._foreign_fuel: Optional[int] = DEFAULT_FOREIGN_FUEL
+        self._foreign_memory_cap_bytes: Optional[int] = (
+            DEFAULT_FOREIGN_MEMORY_CAP_BYTES
+        )
         # Holds the instance's exported memory after instantiation;
         # host callbacks read string arguments out of this memory.
         self._memory: Optional[wasmtime.Memory] = None
@@ -184,6 +202,35 @@ class WasmHost:
         self._register_proc()
 
     # ---- typed foreign components (feature #4, F2a) -------------
+
+    def _foreign_call_engine(self) -> wasmtime.Engine:
+        """The engine an untrusted child runs on. When a CPU (fuel) bound
+        is active, the fuel-metered engine; when the bound is opted out
+        (``--foreign-fuel 0``), the plain unmetered engine -- a
+        consume_fuel store starts at 0 fuel, so opting out MUST drop the
+        metering entirely rather than leave the child instantly starved.
+        The memory bound is a store limit and applies on either engine."""
+        if self._foreign_fuel is not None:
+            return self._foreign_engine
+        return self.engine
+
+    def configure_foreign_limits(
+        self,
+        fuel: Optional[int] = None,
+        memory_cap_bytes: Optional[int] = None,
+    ) -> None:
+        """Override the untrusted-child resource ceiling (feature #4
+        hardening). ``fuel`` bounds child CPU (``None`` keeps the default;
+        a non-positive value skips the CPU bound); ``memory_cap_bytes``
+        bounds child linear-memory growth likewise. Call BEFORE
+        :meth:`register_foreign_methods` runs the program. Wired to the
+        CLI's ``--foreign-fuel`` / ``--foreign-memory-cap`` flags."""
+        if fuel is not None:
+            self._foreign_fuel = fuel if fuel > 0 else None
+        if memory_cap_bytes is not None:
+            self._foreign_memory_cap_bytes = (
+                memory_cap_bytes if memory_cap_bytes > 0 else None
+            )
 
     def register_foreign_methods(self, methods: list) -> None:
         """Define the ``capa:foreign/<component>`` host imports for the
@@ -285,8 +332,10 @@ class WasmHost:
                         else:
                             scalar_args.append(value)
                 result = dispatch_foreign_call(
-                    self.engine, _meta["artifact"], _meta["method"],
-                    granted, scalar_args, _label,
+                    self._foreign_call_engine(), _meta["artifact"],
+                    _meta["method"], granted, scalar_args, _label,
+                    fuel=self._foreign_fuel,
+                    memory_cap_bytes=self._foreign_memory_cap_bytes,
                 )
                 if _meta["return_wasm"] is None:
                     return None
@@ -364,9 +413,11 @@ class WasmHost:
                 else None
             )
             result = dispatch_foreign_call(
-                self.engine, _meta["artifact"], _meta["method"],
-                granted, scalar_args, _label,
+                self._foreign_call_engine(), _meta["artifact"],
+                _meta["method"], granted, scalar_args, _label,
                 aggregate_result=_meta["return_kind"] == "aggregate",
+                fuel=self._foreign_fuel,
+                memory_cap_bytes=self._foreign_memory_cap_bytes,
             )
             if _meta["return_kind"] == "aggregate":
                 # Write the child's returned value back into the parent's
