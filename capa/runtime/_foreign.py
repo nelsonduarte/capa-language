@@ -70,6 +70,8 @@ def dispatch_foreign_call(
     granted: dict[str, Any],
     scalar_args: list,
     boundary_label: str,
+    *,
+    aggregate_result: bool = False,
 ):
     """Instantiate the child component at ``artifact_path`` with a
     restricted linker binding ONLY the ``granted`` caps, call its
@@ -120,7 +122,11 @@ def dispatch_foreign_call(
     result = fn(store, *scalar_args)
     # wasmtime-py returns a single value for a one-result func, a tuple
     # for multi-result, and None for no result. F2a scalars are always
-    # single-value or none.
+    # single-value or none, so a bare ``list`` / ``tuple`` there is a
+    # multi-result flatten to unwrap. A FLAT aggregate return (F2c-1),
+    # however, IS a single ``list`` / ``tuple`` VALUE -- return it whole.
+    if aggregate_result:
+        return result
     if isinstance(result, (list, tuple)):
         return result[0] if result else None
     return result
