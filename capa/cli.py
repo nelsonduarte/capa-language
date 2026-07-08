@@ -1030,6 +1030,40 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--conformance-report",
+        action="store_true",
+        help=(
+            "emit the signed CONFORMANCE REPORT for the product-level "
+            "capa-policy.toml: compose the product SBOM, evaluate every "
+            "declared organization compliance policy (exclusion, "
+            "product-subset, purity, forbid-capability, forbid-dependency, "
+            "no-unresolved-dependencies) over the composed capability graph, "
+            "and emit the per-policy pass/fail results wrapped in the same "
+            "content_integrity envelope as --compose-sbom (canonical, "
+            "byte-reproducible, signABLE; the compiler holds no keys). A "
+            "policy that quantifies over an authority-UNKNOWN subtree FAILS "
+            "CLOSED unless it sets allow_unknown = true. Requires a capa.toml "
+            "project root; emits an empty report when no capa-policy.toml is "
+            "present."
+        ),
+    )
+    parser.add_argument(
+        "--check-policies",
+        action="store_true",
+        help=(
+            "CI GATE: compose the product SBOM and verify it against the "
+            "product-level capa-policy.toml organization compliance policies. "
+            "EXITS NON-ZERO on any policy failure with an actionable "
+            "per-violation message. A policy that quantifies over an "
+            "authority-UNKNOWN subtree (an unresolvable / native / "
+            "Unsafe-crossing dependency) FAILS CLOSED - an unanalyzable "
+            "subtree cannot be proven to satisfy a capability predicate - "
+            "unless it sets allow_unknown = true. A clean product exits 0; a "
+            "product with no capa-policy.toml (or no policies) exits 0 with "
+            "'nothing to verify'. Requires a capa.toml project root."
+        ),
+    )
+    parser.add_argument(
         "--capability-diff",
         nargs=2,
         metavar=("<old.json>", "<new.json>"),
@@ -1448,6 +1482,7 @@ def _main_dispatch() -> int:
     needs_analysis = (
         args.check or args.run or args.manifest or args.manifest_digest
         or args.compose_sbom or args.check_capabilities
+        or args.conformance_report or args.check_policies
         or args.cyclonedx
         or args.spdx or args.vex or args.provenance or args.doc
         or args.wit or args.wasm
@@ -1533,6 +1568,7 @@ def _main_dispatch() -> int:
     result = None
     if (args.check or args.run or args.manifest or args.manifest_digest
             or args.compose_sbom or args.check_capabilities
+            or args.conformance_report or args.check_policies
             or args.cyclonedx
             or args.spdx or args.vex or args.provenance or args.doc
             or args.wit or args.wasm):
@@ -1726,6 +1762,89 @@ def _main_dispatch() -> int:
             )
             for v in ceilings["violations"]:
                 _err(f"  - {v['detail']}")
+            return 1
+        if args.conformance_report or args.check_policies:
+            from capa.manifest import (
+                build_composed_sbom, canonical_json, canonical_manifest,
+                evaluate_policies, find_package_root, find_policy_file,
+                read_policy_file, ComposeError, PolicyError,
+            )
+
+            flag = (
+                "--conformance-report" if args.conformance_report
+                else "--check-policies"
+            )
+
+            def _perr(text: str) -> None:
+                if use_color:
+                    print(f"{C.RED}{text}{C.RESET}", file=sys.stderr)
+                else:
+                    print(text, file=sys.stderr)
+
+            root_dir = find_package_root(Path(filename))
+            if root_dir is None:
+                _perr(
+                    f"capa: {flag} requires a capa.toml project root "
+                    f"(none found at or above {filename})."
+                )
+                return 1
+            policy_path = find_policy_file(root_dir)
+            manifest = build_manifest(
+                module, filename=filename,
+                expr_labels=result.expr_labels,
+                operator_declared_grants=_operator_grants,
+            )
+            _enforcement = "wasm-sandbox" if args.wasm else "none"
+            try:
+                composed = build_composed_sbom(
+                    module, manifest, root_dir, enforcement=_enforcement,
+                )
+            except ComposeError as e:
+                _perr(f"capa: {flag}: {e}")
+                return 1
+            try:
+                policies = (
+                    read_policy_file(policy_path)
+                    if policy_path is not None else []
+                )
+            except PolicyError as e:
+                _perr(f"capa: {flag}: {e}")
+                return 1
+            report = evaluate_policies(composed, policies)
+
+            if args.conformance_report:
+                # Canonical, content-addressable evidence: the report is
+                # wrapped with the same S1 content_integrity envelope as
+                # --compose-sbom, so the conformance evidence is itself
+                # hashable, signABLE, and byte-reproducible.
+                emit_artifact(canonical_json(canonical_manifest(report)))
+                return 0
+
+            # --check-policies: the CI gate.
+            if not policies:
+                print(
+                    "capa: --check-policies: no capa-policy.toml policies "
+                    "found; nothing to verify.",
+                    file=sys.stderr,
+                )
+                return 0
+            if report["pass"]:
+                print(
+                    "capa: --check-policies: OK - every declared compliance "
+                    "policy holds.",
+                    file=sys.stderr,
+                )
+                return 0
+            failed = [r for r in report["results"] if not r["pass"]]
+            n_viol = sum(len(r["violations"]) for r in failed)
+            _perr(
+                f"capa: --check-policies: FAILED - {len(failed)} policy(ies), "
+                f"{n_viol} violation(s):"
+            )
+            for r in failed:
+                _perr(f"  policy {r['policy']!r} (kind {r['kind']}):")
+                for v in r["violations"]:
+                    _perr(f"    - [{v['verdict']}] {v['detail']}")
             return 1
         if args.cyclonedx or args.spdx or args.vex or args.provenance:
             # Each invocation emits exactly one artefact (every branch
