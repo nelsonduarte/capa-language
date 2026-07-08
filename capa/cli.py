@@ -1293,6 +1293,33 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--foreign-fuel",
+        type=int,
+        default=None,
+        metavar="<N>",
+        help=(
+            "with --wasm --run, bound the CPU an untrusted foreign "
+            "component (feature #4) may burn per call to N fuel units "
+            "(~1 per wasm instruction). An infinite loop / CPU spin then "
+            "TRAPS cleanly on fuel exhaustion instead of hanging the "
+            "host. Default: 1000000000 (1e9). Use 0 to skip the CPU "
+            "bound (host decides)."
+        ),
+    )
+    parser.add_argument(
+        "--foreign-memory-cap",
+        type=int,
+        default=None,
+        metavar="<MiB>",
+        help=(
+            "with --wasm --run, cap the linear memory an untrusted "
+            "foreign component (feature #4) may grow to, in MiB. A "
+            "runaway self-allocation is refused instead of OOM-ing the "
+            "host. Default: 256 MiB. Use 0 to skip the memory bound "
+            "(host decides)."
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI colors in the output",
@@ -2253,6 +2280,20 @@ def _main_dispatch() -> int:
                                 os.path.join(_base, _art)
                             )
                         _m["artifact"] = _art
+                    # Feature #4 hardening: tune the untrusted-child
+                    # resource ceiling from the CLI. A given flag is
+                    # None when absent (keep the generous default); 0
+                    # opts out of that bound; a positive value sets it.
+                    # --foreign-memory-cap is MiB, converted to bytes.
+                    _mem_cap_bytes = (
+                        None
+                        if args.foreign_memory_cap is None
+                        else args.foreign_memory_cap * 1024 * 1024
+                    )
+                    host.configure_foreign_limits(
+                        fuel=args.foreign_fuel,
+                        memory_cap_bytes=_mem_cap_bytes,
+                    )
                     host.register_foreign_methods(_foreign_methods)
                 host.run_main(blob)
             return 0

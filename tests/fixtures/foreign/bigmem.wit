@@ -1,0 +1,4 @@
+package capa:bigmem;
+world bigmem {
+  export run: func(x: s64) -> s64;
+}
