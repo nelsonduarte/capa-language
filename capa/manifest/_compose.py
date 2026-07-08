@@ -396,17 +396,36 @@ def _attribute(
     caps: dict[Path, set[str]] = {d: set() for d in nodes}
     unsafe: dict[Path, bool] = {d: False for d in nodes}
     foreign: dict[Path, bool] = {d: False for d in nodes}
+    foreign_caps: dict[Path, set[str]] = {d: set() for d in nodes}
 
-    # Feature #4 (F2a): the union of DECLARED capability sets across every
-    # typed foreign-component boundary the module declares. This is the
-    # bounded cap set the Wasm sandbox host-enforces (an un-granted
-    # capability import fails child instantiation); attributed to any
-    # package whose functions invoke a foreign component. Using the union
-    # over-approximates a package that calls only one of several boundaries
-    # -- a SOUND upper bound of what its foreign calls can touch.
+    # Feature #4 (F2a): the DECLARED capability set of each typed
+    # foreign-component boundary the module declares, keyed by the
+    # component name AS IT APPEARS in a function record's
+    # ``foreign_component_calls`` (the invocation's receiver identifier,
+    # i.e. the extern component's own name). The Wasm sandbox
+    # host-enforces exactly this set per boundary (an un-granted
+    # capability import fails child instantiation). Keying off the module
+    # rather than the manifest's ``foreign_components`` block matters: that
+    # block DEMANGLES the boundary names, whereas ``foreign_component_calls``
+    # carries the loader-mangled receiver name, so only the module-level
+    # ``ec.name`` matches both.
+    from ..foreign import extern_components, declared_capabilities
+    comp_caps: dict[str, set[str]] = {}
+    for ec in extern_components(module):
+        ecaps: set[str] = set()
+        for m in ec.methods:
+            ecaps.update(declared_capabilities(m))
+        comp_caps[ec.name] = ecaps
+
+    # The union across every declared boundary is the SOUND fallback: when
+    # a package invokes a foreign component we cannot resolve to a specific
+    # declared boundary (an indirect/dynamic call, or a manifest serialised
+    # before ``foreign_component_calls`` existed) we credit it the union
+    # rather than under-attribute -- never drop a foreign capability a
+    # package could actually invoke.
     foreign_caps_union: set[str] = set()
-    for fc in manifest.get("foreign_components", []):
-        foreign_caps_union |= set(fc.get("declared_capabilities", []))
+    for ecaps in comp_caps.values():
+        foreign_caps_union |= ecaps
 
     for rec in manifest["functions"]:
         line, col = _pos_line_col(rec["pos"])
@@ -424,13 +443,32 @@ def _attribute(
         # Defensive .get(): a manifest serialised before F1 has no key.
         if rec.get("calls_foreign_component"):
             foreign[owner] = True
+            # Attribute to THIS package ONLY the declared caps of the
+            # foreign components ITS OWN functions invoke (precise
+            # per-package attribution). ``foreign_component_calls`` names
+            # the boundaries as ``<component>.<method>``.
+            calls_list = rec.get("foreign_component_calls")
+            if not calls_list:
+                # A foreign call the record cannot name (pre-F1 manifest):
+                # sound fallback to the module-wide union.
+                foreign_caps[owner] |= foreign_caps_union
+            else:
+                for entry in calls_list:
+                    comp = entry.rsplit(".", 1)[0]
+                    if comp in comp_caps:
+                        foreign_caps[owner] |= comp_caps[comp]
+                    else:
+                        # An unresolvable specific boundary (indirect /
+                        # dynamic / missing declaration): sound fallback to
+                        # the module-wide union rather than under-attribute.
+                        foreign_caps[owner] |= foreign_caps_union
 
     for d, node in nodes.items():
         node.attributed_caps = frozenset(caps[d])
         node.crosses_unsafe = unsafe[d]
         node.calls_foreign_component = foreign[d]
         node.foreign_declared_caps = (
-            frozenset(foreign_caps_union) if foreign[d] else frozenset()
+            frozenset(foreign_caps[d]) if foreign[d] else frozenset()
         )
 
 

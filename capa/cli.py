@@ -1736,8 +1736,17 @@ def _main_dispatch() -> int:
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
             )
+            # Thread the same enforcement posture the composed SBOM /
+            # policy gates use: under --wasm the sandbox host-enforces each
+            # foreign boundary's declared cap SET, so a foreign-calling
+            # package's ceiling is checked against a BOUNDED authority
+            # rather than failing closed at authority-unknown TOP. Without
+            # --wasm it stays TOP (honest: nothing enforces the bound).
+            _enforcement = "wasm-sandbox" if args.wasm else "none"
             try:
-                composed = build_composed_sbom(module, manifest, root_dir)
+                composed = build_composed_sbom(
+                    module, manifest, root_dir, enforcement=_enforcement,
+                )
             except ComposeError as e:
                 _err(f"capa: --check-capabilities: {e}")
                 return 1
