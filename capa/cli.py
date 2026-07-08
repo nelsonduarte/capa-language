@@ -1782,7 +1782,7 @@ def _main_dispatch() -> int:
             or getattr(args, "output", None)):
         from capa.foreign import (
             extern_component_names, extern_components, foreign_call_sites,
-            method_is_runtime_marshallable,
+            foreign_method_rejection,
         )
 
         def _foreign_err(_msg: str) -> None:
@@ -1796,38 +1796,30 @@ def _main_dispatch() -> int:
         )
         if _foreign_sites:
             _ec_by_name = {ec.name: ec for ec in extern_components(module)}
-            # F2b lands scalar (Int / Bool / Float) AND String crossing
-            # types at runtime. An invoked method using an AGGREGATE
-            # crossing type (Struct / Sum / List / Map / tuple / Option /
-            # Result) still cannot be marshalled across the boundary: it
-            # needs a general, recursive, type-driven Capa-heap
-            # reader/writer on the HOST side of the parent boundary (a
-            # further sub-phase). Reject it on every backend with a clear
-            # pointer; the typed boundary stays fully checked (--check)
-            # and recorded in the SBOM (--manifest).
+            # F2a/F2b/F2c marshal scalar (Int / Bool / Float) and String
+            # crossing types plus NESTED, non-self-referential aggregates
+            # of struct / List / tuple / Option / Result / sum. Two shapes
+            # still cannot cross and reject with a SPECIFIC message: a
+            # ``Map`` (different, String-keyed structure) and a
+            # self-referential (recursive) type (would need
+            # named-recursive WIT machinery). The typed boundary stays
+            # fully checked (--check) and recorded in the SBOM
+            # (--manifest) for a rejected call.
             for _comp, _method, _fpos in _foreign_sites:
                 _ec = _ec_by_name.get(_comp)
                 _msig = (
                     next((m for m in _ec.methods if m.name == _method), None)
                     if _ec is not None else None
                 )
-                if _msig is not None and not method_is_runtime_marshallable(
-                    _msig, module
-                ):
+                if _msig is None:
+                    continue
+                _reason = foreign_method_rejection(_msig, module)
+                if _reason is not None:
                     _foreign_err(
                         f"capa: foreign call {_comp}.{_method} at line "
-                        f"{_fpos.line}:{_fpos.col} uses a crossing type whose "
-                        "aggregate nesting is not yet supported at runtime "
-                        "(feature #4 F2c-2): a nested aggregate (List of "
-                        "structs, a struct with a List / nested-aggregate "
-                        "field, a multi-payload sum, Map). F2a/F2b/F2c-1 "
-                        "marshal scalar (Int / Bool / Float) and String "
-                        "crossing types plus FLAT one-level scalar-leaf "
-                        "aggregates (a struct of scalars, List<scalar>, a "
-                        "tuple of scalars, Option<scalar>, "
-                        "Result<scalar, scalar>). The typed boundary is still "
-                        "fully checked (--check) and recorded in the SBOM "
-                        "(--manifest)."
+                        f"{_fpos.line}:{_fpos.col} {_reason} The typed "
+                        "boundary is still fully checked (--check) and "
+                        "recorded in the SBOM (--manifest)."
                     )
                     return 1
             # The Wasm sandbox is what makes the declared bound SOUND; the
@@ -2284,12 +2276,21 @@ def _main_dispatch() -> int:
             # surfaces here wrapped in the wasmtime trap that unwound the
             # foreign import; walk the cause chain and print it cleanly
             # (like a capa diagnostic) instead of a host traceback.
+            # A WasmHostError is likewise an EXPECTED, actionable host
+            # outcome -- e.g. the parent's ``$alloc`` returned 0 (out of
+            # memory) while writing a foreign call's returned aggregate
+            # back into the caller's linear memory (feature #4 F2c). It is
+            # memory-safe and bounded (the host refuses to write at address
+            # 0); surface it as a clean capa diagnostic rather than a host
+            # traceback, so a malformed / oversized child return reads as a
+            # bounded failure, not a crash.
             from capa.runtime._foreign import ForeignDenied
+            from capa.runtime._wasm_host import WasmHostError
             _cur = e
             _seen: set[int] = set()
             while _cur is not None and id(_cur) not in _seen:
                 _seen.add(id(_cur))
-                if isinstance(_cur, ForeignDenied):
+                if isinstance(_cur, (ForeignDenied, WasmHostError)):
                     _fmsg = f"capa: {_cur}"
                     if use_color:
                         print(f"{C.RED}{_fmsg}{C.RESET}", file=sys.stderr)

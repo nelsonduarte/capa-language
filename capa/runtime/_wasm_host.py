@@ -43,6 +43,7 @@ import sys
 from typing import Optional
 
 import wasmtime
+import wasmtime.component as wc
 
 from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Stdio, _write_safe
 from ._fs_guard import PostOpenDenied
@@ -65,50 +66,57 @@ class WasmHostError(RuntimeError):
     """
 
 
-class _ForeignRecord:
-    """A bare attribute holder for a crossing struct value (feature #4
-    F2c-1). ``wasmtime.component``'s ``RecordType.convert_to_c`` reads a
-    record field with ``getattr(val, wit_field_name)``, so a plain object
-    the host ``setattr``s the (kebab-case) WIT field names onto lowers
-    into the child's record argument. Kept minimal: it carries no
-    authority, only scalar leaf data."""
+class _ForeignRecord(wc.Record):
+    """A crossing struct value (feature #4 F2c). Subclasses
+    ``wasmtime.component``'s ``Record`` so it passes the ``isinstance(val,
+    Record)`` test wasmtime uses to discriminate an UNTAGGED variant arm
+    whose case is a record (e.g. the ``some`` arm of ``Option<struct>`` or
+    the ``ok`` arm of ``Result<struct, String>``); ``RecordType`` reads
+    each field with ``getattr(val, wit_field_name)``. Carries no
+    authority, only plain leaf / nested-aggregate data."""
 
 
-# Capa scalar-leaf -> the Python class its value lifts to across the
-# child's canonical ABI. Used to decide whether a Result's two arms are
-# distinguishable by type (untagged) or need an explicit tag (tagged).
-_PY_LEAF_CLASS = {"Int": int, "Bool": bool, "Float": float, "String": str}
+# Maximum aggregate nesting depth the host will marshal in either
+# direction. A crossing schema is built at compile time from a finite,
+# non-self-referential declared type, so its depth is already bounded; the
+# WIT canonical ABI likewise bounds the depth of any value the untrusted
+# child can return. This constant is a defensive backstop so an unexpected
+# schema / value cycle surfaces as a clean WasmHostError rather than a
+# Python ``RecursionError`` (like the F2b/F2c memory-cap bound on size).
+_MAX_MARSHAL_DEPTH = 64
+
+# Schema class-set sentinel (from ``capa.foreign_schema._node_classes``)
+# -> the real Python class, used to discriminate an untagged variant arm
+# exactly as ``wasmtime.component`` does.
+_SENTINEL_CLASS = {
+    "int": int, "bool": bool, "float": float, "str": str,
+    "Record": wc.Record, "list": list, "tuple": tuple,
+    "Variant": wc.Variant, "object": object,
+}
 
 
-def _result_is_tagged(schema: dict) -> bool:
-    """True when a ``Result<ok, err>``'s two arms lift to the SAME Python
-    class, so ``wasmtime.component`` cannot tell them apart by value type
-    and needs an explicit ``wc.Variant`` tag. Int and Bool are treated as
-    overlapping (``bool`` is a subclass of ``int``). Distinct arms
-    (e.g. ``Result<Int, String>``) are untagged and pass the bare
-    payload."""
-    a = _PY_LEAF_CLASS.get(schema["ok"])
-    b = _PY_LEAF_CLASS.get(schema["err"])
-    if a is b:
-        return True
-    return {a, b} <= {int, bool}
+def _node_real_classes(node: dict) -> tuple:
+    """The real Python classes an untagged variant arm ``node`` accepts,
+    for an ``isinstance`` discrimination that mirrors wasmtime's."""
+    from capa.foreign_schema import _node_classes
+    return tuple(_SENTINEL_CLASS[c] for c in _node_classes(node))
 
 
-def _unwrap_result_value(value, schema: dict):
-    """Normalise the child's returned ``result`` value to ``(is_ok,
-    payload)``. ``wasmtime.component`` lifts a tagged result to a
-    ``wc.Variant`` (``.tag`` / ``.payload``) and an untagged one to the
-    bare payload, whose Python type then discriminates the arm."""
-    import wasmtime.component as wc
-    if isinstance(value, wc.Variant):
-        return value.tag == "ok", value.payload
-    ok_cls = _PY_LEAF_CLASS.get(schema["ok"])
-    err_cls = _PY_LEAF_CLASS.get(schema["err"])
-    if err_cls is not ok_cls and isinstance(value, err_cls) and not isinstance(
-        value, ok_cls
-    ):
-        return False, value
-    return True, value
+def _discriminate(value, case_nodes: list) -> int:
+    """Return the index of the first case ``value`` matches, mirroring
+    ``wasmtime.component.VariantLikeType._lower``: a ``None`` case matches
+    ``value is None``; a payload case matches ``isinstance(value,
+    classes)``. Case order MUST match the WIT declaration order (none
+    before some; ok before err; sum variants in declaration order)."""
+    for i, node in enumerate(case_nodes):
+        if node is None:
+            if value is None:
+                return i
+        elif isinstance(value, _node_real_classes(node)):
+            return i
+    raise WasmHostError(
+        "foreign aggregate: returned value matches no variant case"
+    )
 
 
 class WasmHost:
@@ -433,16 +441,34 @@ class WasmHost:
         """Allocate ``n`` bytes in guest memory via the module's
         exported ``$alloc``, guarding against a failed allocation.
 
-        The bump allocator returns 0 when it cannot satisfy the
-        request (OOM). Address 0 is the start of the guest's data
-        segment, so writing the buffer there would silently corrupt
-        the module's static data. Instead, raise ``WasmHostError`` so
-        the OOM surfaces as a clean diagnostic. A zero-length request
-        legitimately returns 0 (no write follows). Audit 2026-05-25 L1.
+        Two OOM shapes surface here as a clean ``WasmHostError`` (rather
+        than a scribble at address 0 or a raw host traceback):
+
+        - the bump allocator returns 0. Address 0 is the start of the
+          guest's data segment, so writing the buffer there would
+          silently corrupt the module's static data. Audit 2026-05-25 L1.
+        - the bump allocator TRAPS: the emitted ``$alloc`` executes
+          ``unreachable`` when ``memory.grow`` is refused at the
+          source-declared ceiling (``--wasm-memory-cap``). That is
+          exactly what a HOST-driven allocation hits when a foreign call's
+          returned aggregate (feature #4 F2c) is too large for the
+          caller's memory cap; catch the trap and re-raise it as the same
+          bounded diagnostic so a malformed / oversized child return is
+          memory-safe, not a crash.
+
+        A zero-length request legitimately returns 0 (no write follows).
         """
         if n == 0:
             return 0
-        ptr = self._alloc_export(caller, n)
+        try:
+            ptr = self._alloc_export(caller, n)
+        except (wasmtime.Trap, wasmtime.WasmtimeError) as e:
+            raise WasmHostError(
+                f"guest $alloc trapped on a {n}-byte allocation (out of "
+                "memory: exceeded the caller's --wasm-memory-cap); the "
+                "foreign call's returned value does not fit the parent's "
+                "linear-memory cap"
+            ) from e
         if not ptr:
             raise WasmHostError(
                 f"guest $alloc returned 0 for a {n}-byte allocation "
@@ -491,53 +517,90 @@ class WasmHost:
             return self._read_wtf8(caller, s_ptr, s_len)
         raise WasmHostError(f"foreign aggregate: unknown scalar leaf {leaf!r}")
 
-    def _read_capa_value(self, caller, ptr: int, schema: dict):
-        """Read a FLAT Capa aggregate at ``ptr`` into a plain Python value
-        the child component's canonical ABI lowers (feature #4 F2c-1)."""
+    def _read_slot(self, caller, addr: int, node: dict, depth: int):
+        """Read one aggregate SLOT (a struct field / List element / tuple
+        element / variant payload) at ``addr``. A scalar leaf is read
+        inline; any nested aggregate is a 4-byte POINTER at ``addr`` to a
+        separately-allocated sub-record, read recursively (the low 4 bytes
+        hold the pointer in every slot context -- a 4-byte field / list
+        element, or an i64-extended 8-byte tuple / Option / Result / sum
+        slot)."""
+        if node["kind"] == "scalar":
+            return self._read_leaf(caller, addr, node["leaf"])
+        child = self._read_i32(caller, addr)
+        return self._read_capa_value(caller, child, node, depth + 1)
+
+    def _read_capa_value(self, caller, ptr: int, schema: dict, depth: int = 0):
+        """Read a Capa aggregate at ``ptr`` (of any finite nesting depth)
+        into a plain Python value the child component's canonical ABI
+        lowers (feature #4 F2c-2). Recurses through nested struct fields,
+        List elements and variant payloads; each nested aggregate is a
+        pointer to its own record."""
+        if depth > _MAX_MARSHAL_DEPTH:
+            raise WasmHostError(
+                "foreign aggregate: nesting exceeded the marshalling depth "
+                f"bound ({_MAX_MARSHAL_DEPTH})"
+            )
         kind = schema["kind"]
         if kind == "struct":
             rec = _ForeignRecord()
             for f in schema["fields"]:
                 setattr(
                     rec, f["wit"],
-                    self._read_leaf(caller, ptr + f["offset"], f["leaf"]),
+                    self._read_slot(caller, ptr + f["offset"], f["node"], depth),
                 )
             return rec
         if kind == "list":
             # List<T> header: len @ 0, cap @ 4, data_ptr @ 8. Elements at
             # data + i * stride (stride = _size_of(elem): 8 for Int / Float
-            # / String, 4 for Bool).
+            # / String, 4 for Bool AND any pointer-shape nested element).
             n = self._read_i32(caller, ptr)
             data = self._read_i32(caller, ptr + 8)
             stride = schema["stride"]
-            leaf = schema["elem"]
+            elem = schema["elem"]
             return [
-                self._read_leaf(caller, data + i * stride, leaf)
+                self._read_slot(caller, data + i * stride, elem, depth)
                 for i in range(n)
             ]
         if kind == "tuple":
             # Uniform 8-byte slot per element at i * 8.
             return tuple(
-                self._read_leaf(caller, ptr + i * 8, e)
-                for i, e in enumerate(schema["elems"])
+                self._read_slot(caller, ptr + i * 8, node, depth)
+                for i, node in enumerate(schema["elems"])
             )
         if kind == "option":
-            # 16-byte sum record: tag @ 0 (Some = 0, None = 1), payload
-            # 8-byte slot @ 8.
-            if self._read_i32(caller, ptr) == 0:
-                return self._read_leaf(caller, ptr + 8, schema["payload"])
-            return None
+            # 16-byte sum record: tag @ 0 (Capa Some = 0, None = 1),
+            # payload 8-byte slot @ 8. WIT inverts (none = 0, some = 1);
+            # the wc.Variant carries the WIT case name.
+            if self._read_i32(caller, ptr) == 0:  # Some
+                payload = self._read_slot(
+                    caller, ptr + 8, schema["payload"], depth,
+                )
+                return wc.Variant("some", payload) if schema["tagged"] else payload
+            return wc.Variant("none") if schema["tagged"] else None
         if kind == "result":
-            # 16-byte sum record: tag @ 0 (Ok = 0, Err = 1), payload @ 8.
+            # 16-byte sum record: tag @ 0 (Capa Ok = 0, Err = 1), payload @ 8.
             is_ok = self._read_i32(caller, ptr) == 0
-            leaf = schema["ok"] if is_ok else schema["err"]
-            val = self._read_leaf(caller, ptr + 8, leaf)
-            if _result_is_tagged(schema):
-                import wasmtime.component as wc
+            node = schema["ok"] if is_ok else schema["err"]
+            val = self._read_slot(caller, ptr + 8, node, depth)
+            if schema["tagged"]:
                 return wc.Variant("ok" if is_ok else "err", val)
-            # Distinct payload Python types: the child's canonical result
-            # picks the arm by the value's type, so pass the bare payload.
             return val
+        if kind == "sum":
+            # User sum: tag @ 0, per-payload slots from compute_sum_layout.
+            tag = self._read_i32(caller, ptr)
+            var = next(v for v in schema["variants"] if v["tag"] == tag)
+            vals = [
+                self._read_slot(caller, ptr + pl["offset"], pl["node"], depth)
+                for pl in var["payloads"]
+            ]
+            if not vals:
+                payload = None
+            elif len(vals) == 1:
+                payload = vals[0]
+            else:
+                payload = tuple(vals)  # multi-payload case -> WIT tuple
+            return wc.Variant(var["wit"], payload) if schema["tagged"] else payload
         raise WasmHostError(
             f"foreign aggregate: unknown schema kind {kind!r}"
         )
@@ -566,10 +629,36 @@ class WasmHost:
             return
         raise WasmHostError(f"foreign aggregate: unknown scalar leaf {leaf!r}")
 
-    def _write_capa_value(self, caller, value, schema: dict) -> int:
+    def _write_slot(
+        self, caller, addr: int, node: dict, val, width: int, depth: int,
+    ) -> None:
+        """Write one aggregate SLOT at ``addr``. A scalar leaf is written
+        inline; any nested aggregate allocates its CHILD record FIRST
+        (recursively) and THEN stores the child pointer into this slot
+        (allocation ordering). ``width`` is the pointer's footprint here:
+        4 for a struct field / List element / sum payload, 8 for an
+        i64-extended tuple / Option / Result slot (the extra bytes stay
+        zero)."""
+        if node["kind"] == "scalar":
+            self._write_leaf(caller, addr, node["leaf"], val, width)
+            return
+        child = self._write_capa_value(caller, val, node, depth + 1)
+        self._memory.write(caller, child.to_bytes(width, "little"), addr)
+
+    def _write_capa_value(
+        self, caller, value, schema: dict, depth: int = 0,
+    ) -> int:
         """Write ``value`` (the child's returned Python value) back into
-        the parent's memory as a FLAT Capa heap record, returning its i32
-        pointer (feature #4 F2c-1)."""
+        the parent's memory as a Capa heap record of any finite nesting
+        depth, returning its i32 pointer (feature #4 F2c-2). Every
+        allocation is bounded by the guest ``$alloc`` / the memory cap, so
+        a malformed or huge child return is memory-safe (surfaces as a
+        clean WasmHostError, not a scribble)."""
+        if depth > _MAX_MARSHAL_DEPTH:
+            raise WasmHostError(
+                "foreign aggregate: nesting exceeded the marshalling depth "
+                f"bound ({_MAX_MARSHAL_DEPTH})"
+            )
         kind = schema["kind"]
         if kind == "struct":
             ptr = self._host_alloc(caller, schema["size"])
@@ -583,19 +672,19 @@ class WasmHost:
                     ptr + 4,
                 )
             for f in schema["fields"]:
-                self._write_leaf(
-                    caller, ptr + f["offset"], f["leaf"],
-                    getattr(value, f["wit"]), f["size"],
+                self._write_slot(
+                    caller, ptr + f["offset"], f["node"],
+                    getattr(value, f["wit"]), f["size"], depth,
                 )
             return ptr
         if kind == "list":
             items = list(value)
             n = len(items)
             stride = schema["stride"]
-            leaf = schema["elem"]
+            elem = schema["elem"]
             data = self._host_alloc(caller, n * stride) if n else 0
             for i, v in enumerate(items):
-                self._write_leaf(caller, data + i * stride, leaf, v, stride)
+                self._write_slot(caller, data + i * stride, elem, v, stride, depth)
             hdr = self._host_alloc(caller, 16)
             self._memory.write(caller, n.to_bytes(4, "little"), hdr)
             self._memory.write(caller, n.to_bytes(4, "little"), hdr + 4)
@@ -605,30 +694,91 @@ class WasmHost:
         if kind == "tuple":
             elems = schema["elems"]
             ptr = self._host_alloc(caller, 8 * len(elems))
-            for i, (e, v) in enumerate(zip(elems, tuple(value))):
-                self._write_leaf(caller, ptr + i * 8, e, v, 8)
+            for i, (node, v) in enumerate(zip(elems, tuple(value))):
+                self._write_slot(caller, ptr + i * 8, node, v, 8, depth)
             return ptr
         if kind == "option":
             ptr = self._host_alloc(caller, 16)
-            if value is None:
+            some, payload = self._unwrap_option(value, schema)
+            if some:
+                self._memory.write(caller, (0).to_bytes(4, "little"), ptr)
+                self._write_slot(caller, ptr + 8, schema["payload"], payload, 8, depth)
+            else:
                 self._memory.write(caller, (1).to_bytes(4, "little"), ptr)
                 self._memory.write(caller, (0).to_bytes(8, "little"), ptr + 8)
-            else:
-                self._memory.write(caller, (0).to_bytes(4, "little"), ptr)
-                self._write_leaf(caller, ptr + 8, schema["payload"], value, 8)
             return ptr
         if kind == "result":
             ptr = self._host_alloc(caller, 16)
-            is_ok, payload = _unwrap_result_value(value, schema)
+            is_ok, payload = self._unwrap_result(value, schema)
             self._memory.write(
                 caller, (0 if is_ok else 1).to_bytes(4, "little"), ptr,
             )
-            leaf = schema["ok"] if is_ok else schema["err"]
-            self._write_leaf(caller, ptr + 8, leaf, payload, 8)
+            node = schema["ok"] if is_ok else schema["err"]
+            self._write_slot(caller, ptr + 8, node, payload, 8, depth)
+            return ptr
+        if kind == "sum":
+            ptr = self._host_alloc(caller, schema["size"])
+            if schema.get("has_header"):
+                self._memory.write(
+                    caller,
+                    int(schema.get("type_id", 0)).to_bytes(4, "little"),
+                    ptr + 4,
+                )
+            var, values = self._resolve_sum_case(value, schema)
+            self._memory.write(caller, int(var["tag"]).to_bytes(4, "little"), ptr)
+            for pl, pv in zip(var["payloads"], values):
+                self._write_slot(
+                    caller, ptr + pl["offset"], pl["node"], pv, pl["size"], depth,
+                )
             return ptr
         raise WasmHostError(
             f"foreign aggregate: unknown schema kind {kind!r}"
         )
+
+    def _unwrap_option(self, value, schema: dict):
+        """Normalise the child's returned ``option`` to ``(is_some,
+        payload)``. A tagged option lifts to a ``wc.Variant``; an untagged
+        one to the bare payload (or ``None``)."""
+        if schema["tagged"]:
+            return value.tag == "some", value.payload
+        return value is not None, value
+
+    def _unwrap_result(self, value, schema: dict):
+        """Normalise the child's returned ``result`` to ``(is_ok,
+        payload)``. A tagged result lifts to a ``wc.Variant``; an untagged
+        one to the bare payload, discriminated by Python type in WIT case
+        order (ok before err) exactly as wasmtime lowers it."""
+        if schema["tagged"]:
+            return value.tag == "ok", value.payload
+        idx = _discriminate(value, [schema["ok"], schema["err"]])
+        return idx == 0, value
+
+    def _resolve_sum_case(self, value, schema: dict):
+        """Map the child's returned sum value to ``(variant_meta,
+        [payload_value, ...])``. A tagged sum lifts to a ``wc.Variant``
+        whose ``.tag`` is the WIT case name; an untagged one to a bare
+        payload (or ``None`` for a no-payload case), discriminated by
+        Python type in declaration order. A multi-payload case carries a
+        tuple, split back into its per-payload slots."""
+        from capa.foreign_schema import _sum_case_payload_node
+        variants = schema["variants"]
+        if schema["tagged"]:
+            var = next(v for v in variants if v["wit"] == value.tag)
+            payload = value.payload
+        else:
+            idx = _discriminate(
+                value, [_sum_case_payload_node(v) for v in variants],
+            )
+            var = variants[idx]
+            payload = value
+        n = len(var["payloads"])
+        if n == 0:
+            values: list = []
+        elif n == 1:
+            values = [payload]
+        else:
+            values = list(payload)
+        return var, values
 
     def _register_stdio(self) -> None:
         """Register the ``capa:stdio`` interface methods. Each

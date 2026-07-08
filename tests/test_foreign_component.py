@@ -491,23 +491,24 @@ class TestCliRunGuard(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("require the Wasm backend", err)
 
-    def test_wasm_invoking_nested_aggregate_fails_f2c2(self):
-        # A NESTED aggregate crossing type is still rejected up front on
-        # the Wasm backend with the clean feature #4 F2c-2 error: F2c-1
-        # marshals FLAT scalar-leaf aggregates, not nested ones.
-        nested = (
-            "type Report { body: List<Int> }\n"
+    def test_wasm_invoking_map_crossing_fails_f2c2(self):
+        # A NESTED aggregate crossing type (a struct with a List field)
+        # NOW marshals (feature #4 F2c-2). A ``Map`` crossing type stays a
+        # STOP-report boundary and is rejected up front on the Wasm
+        # backend with a clean, specific error (before artifact
+        # resolution).
+        mapped = (
             "extern component Bureau from \"vendor/bureau.wasm\"\n"
-            "    fun submit(net: Net, payload: Report) -> Int\n"
+            "    fun submit(net: Net, payload: Map<String, Int>) -> Int\n"
             "fun main(net: Net) -> Int\n"
-            "    return Bureau.submit(net, Report { body: [1, 2] })\n"
+            "    let m = new_map()\n"
+            "    return Bureau.submit(net, m)\n"
         )
         with tempfile.TemporaryDirectory() as td:
-            p = self._write(td, nested)
+            p = self._write(td, mapped)
             rc, _out, err = _run_cli(["--wasm", "--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("F2c-2", err)
-            self.assertIn("aggregate nesting", err)
+            self.assertIn("Map crossing type", err)
 
     def test_check_unaffected(self):
         with tempfile.TemporaryDirectory() as td:

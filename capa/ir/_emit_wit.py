@@ -436,10 +436,18 @@ def capa_type_to_wit(ty: str) -> str:
     parent import is a raw host closure whose flattened signature the host
     and guest agree on directly); it is the canonical-ABI contract a child
     fixture's WIT must match and the seam a future ``--component`` foreign
-    path would generate the parent import from. Only the F2c-1 flat
-    scalar-leaf shapes are needed today; a nested aggregate maps
-    structurally too (the recursion is total) so the mapping does not
-    itself gate F2c-2."""
+    path would generate the parent import from. A NESTED aggregate maps
+    structurally too (feature #4 F2c-2): the recursion descends into
+    List / Option / Result / tuple type ARGUMENTS (``List<Point>`` ->
+    ``list<point>``, ``List<List<Int>>`` -> ``list<list<s64>>``,
+    ``Option<List<Point>>`` -> ``option<list<point>>``). A bare user-type
+    name emits a NAME reference (a WIT ``record`` / ``variant`` name), NOT
+    its resolved fields, so the mapping is total AND cannot loop on a
+    self-referential type (``type Tree { kids: List<Tree> }`` maps
+    ``Tree`` -> ``tree`` without descending). The recursive-type
+    STOP-report lives in the schema build
+    (``capa.foreign_schema.build_aggregate_schema``), which DOES resolve
+    fields and so must guard the cycle."""
     ty = ty.strip()
     if ty in _LEAF_WIT:
         return _LEAF_WIT[ty]

@@ -137,18 +137,22 @@ def method_is_runtime_marshallable(
 ) -> bool:
     """True when every non-capability crossing parameter AND the return
     type of ``method`` is a crossing type the F2 runtime can marshal at
-    runtime: a scalar (Int / Bool / Float, F2a), String (F2b), or a FLAT
-    one-level scalar-leaf AGGREGATE (a struct of scalars, ``List<scalar>``,
-    a tuple of scalars, ``Option<scalar>``, ``Result<scalar, scalar>`` --
-    feature #4 F2c-1), or Unit for the return.
+    runtime: a scalar (Int / Bool / Float, F2a), String (F2b), or a
+    NESTED, non-self-referential scalar-leaf AGGREGATE of any finite depth
+    (a struct / List / tuple / Option / Result / multi-payload sum whose
+    leaves bottom out in scalars / String -- feature #4 F2c-2), or Unit
+    for the return.
 
-    A NESTED aggregate (``List<struct>``, a struct with a List / nested
-    aggregate field, a multi-payload sum, Map) is NOT yet marshallable and
-    must be rejected with the F2c-2 guard before it is dispatched. The
-    flat-aggregate check needs ``module`` to resolve struct field types
-    and the multi-impl-trait header decision; when ``module`` is ``None``
-    an aggregate is treated conservatively as un-marshallable."""
-    from .foreign_schema import build_aggregate_schema
+    ``Map`` and a self-referential (recursive) crossing type are NOT
+    marshallable and must be rejected before dispatch (see
+    :func:`capa.foreign_schema.crossing_type_rejection` for the specific
+    diagnostic). The aggregate check needs ``module`` to resolve struct /
+    sum bodies and the multi-impl-trait header decision; when ``module``
+    is ``None`` an aggregate is treated conservatively as
+    un-marshallable."""
+    from .foreign_schema import (
+        build_aggregate_schema, ForeignCrossingUnsupported,
+    )
 
     def _ok(type_expr, root: "str | None") -> bool:
         if root in CAPABILITY_NAMES:
@@ -157,7 +161,12 @@ def method_is_runtime_marshallable(
             return True
         if module is None:
             return False
-        return build_aggregate_schema(type_expr, module) is not None
+        try:
+            return build_aggregate_schema(type_expr, module) is not None
+        except ForeignCrossingUnsupported:
+            # Map / self-referential: not marshallable (the CLI surfaces a
+            # specific message via ``crossing_type_rejection``).
+            return False
 
     for p in method.params:
         if p.name == "self":
@@ -172,6 +181,30 @@ def method_is_runtime_marshallable(
         if not _ok(method.return_type, ret_root):
             return False
     return True
+
+
+def foreign_method_rejection(
+    method: A.MethodSig, module: "A.Module | None" = None,
+) -> "str | None":
+    """``None`` when ``method`` is fully runtime-marshallable, else a
+    specific, actionable phrase for the FIRST offending crossing type
+    (params then return), suitable for the CLI to prefix with the call
+    site. Distinguishes ``Map`` and a self-referential type from a generic
+    unsupported crossing type so the user gets the right guidance."""
+    from .foreign_schema import crossing_type_rejection
+    if module is None:
+        return None
+    for p in method.params:
+        if p.name == "self" or p.type_expr is None:
+            continue
+        reason = crossing_type_rejection(p.type_expr, module)
+        if reason is not None:
+            return reason
+    if method.return_type is not None:
+        reason = crossing_type_rejection(method.return_type, module)
+        if reason is not None:
+            return reason
+    return None
 
 
 def declared_capabilities(method: A.MethodSig) -> list[str]:

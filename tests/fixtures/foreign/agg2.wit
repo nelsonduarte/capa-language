@@ -1,0 +1,17 @@
+package capa:agg2test;
+world agg2world {
+  record point { x: s64, flag: bool, ratio: f64, label: string }
+  record bag { items: list<s64>, name: string, tag: option<s64> }
+  record gadget { code: s64, active: bool }
+  variant shape { dot, circle(s64), label(string), rect(tuple<s64, s64>) }
+  export list-point: func(xs: list<point>) -> list<point>;
+  export bag-echo: func(b: bag) -> bag;
+  export list-pair: func(xs: list<tuple<s64, string>>) -> list<tuple<s64, string>>;
+  export opt-point: func(o: option<point>) -> option<point>;
+  export res-point: func(r: result<point, string>) -> result<point, string>;
+  export list-list: func(xs: list<list<s64>>) -> list<list<s64>>;
+  export shape-echo: func(s: shape) -> shape;
+  export deep: func(d: list<option<list<point>>>) -> list<option<list<point>>>;
+  export gen: func(n: s64) -> list<s64>;
+  export mk-gadget: func(code: s64, active: bool) -> gadget;
+}
