@@ -28,8 +28,8 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock as mock
 from pathlib import Path
-from unittest import mock
 
 from capa.cli import _wasm_tooling_available, main
 
@@ -163,6 +163,7 @@ class TestForeignResourceCeiling(unittest.TestCase):
             self._copy(td, "spin_child.wasm")
             p = _write(td, "prog.capa", _SPIN_PROG)
             start = time.monotonic()
+            proc = None
             try:
                 proc = subprocess.run(
                     [sys.executable, "-m", "capa", "--wasm", "--run", str(p)],
@@ -304,6 +305,7 @@ class TestForeignResourceCeiling(unittest.TestCase):
             self._copy(td, "nap_child.wasm")
             p = _write(td, "prog.capa", _NAP_PROG)
             start = time.monotonic()
+            proc = None
             try:
                 proc = subprocess.run(
                     [sys.executable, "-m", "capa", "--wasm", "--run", str(p)],
