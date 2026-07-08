@@ -153,6 +153,58 @@ def _wit_export_name(method: str) -> str:
     return method.replace("_", "-")
 
 
+def _raise_if_resource_trap(
+    exc: wasmtime.WasmtimeError,
+    store: wasmtime.Store,
+    *,
+    fuel_enabled: bool,
+    fuel: int | None,
+    memory_cap_bytes: int | None,
+    boundary_label: str,
+) -> None:
+    """Classify a wasmtime error by its UNDERLYING CAUSE and, if it is a
+    RESOURCE trap, raise :class:`ForeignResourceExceeded`. Returns without
+    raising when ``exc`` is NOT a resource trap, so the caller handles it
+    (a genuine missing-import LINK deny at instantiation, or a genuine
+    guest trap at execution).
+
+    Uniform across instantiation AND the call: fuel can be drained either
+    while instantiating the child (its start / init runs) or during the
+    exported call, so classification MUST key off the cause, never off
+    which wasmtime call raised. Order matters -- a resource trap is
+    checked FIRST so it can never be mislabelled as a confinement (cap-set
+    deny) event:
+
+    - Fuel exhaustion is detected by ``store.get_fuel() == 0`` (the robust
+      signal; the component path reports fuel exhaustion as a plain
+      ``WasmtimeError`` whose text is not reliable). A genuine missing
+      import fails at LINK time before any wasm runs, so it consumes NO
+      fuel and leaves ``get_fuel()`` at the full budget -- cleanly
+      distinct from a fuel trap.
+    - A store-limit breach (linear memory / table / object-count) is
+      detected by :func:`_is_store_limit_error`.
+    """
+    if fuel_enabled:
+        try:
+            remaining = store.get_fuel()
+        except wasmtime.WasmtimeError:
+            remaining = None
+        if remaining == 0:
+            raise ForeignResourceExceeded(
+                f"foreign component {boundary_label}: exceeded its "
+                f"CPU/fuel budget ({fuel} fuel units) -- the child ran "
+                f"too long (possible infinite loop) and was stopped "
+                f"before it could hang the host"
+            ) from exc
+    if _is_store_limit_error(exc):
+        raise ForeignResourceExceeded(
+            f"foreign component {boundary_label}: exceeded its memory / "
+            f"resource limit (memory cap {memory_cap_bytes} bytes) -- the "
+            f"child's declared store resources do not fit the sandbox "
+            f"ceiling. Underlying: {exc}"
+        ) from exc
+
+
 def dispatch_foreign_call(
     engine: wasmtime.Engine,
     artifact_path: str,
@@ -223,20 +275,20 @@ def dispatch_foreign_call(
     try:
         instance = linker.instantiate(store, component)
     except wasmtime.WasmtimeError as e:
-        # A child whose linear memory / table minimum already exceeds a
-        # store limit is refused here (availability bound), distinct from
-        # the capability-import deny below.
-        if _is_store_limit_error(e):
-            raise ForeignResourceExceeded(
-                f"foreign component {boundary_label}: exceeded its memory / "
-                f"resource limit (memory cap {memory_cap_bytes} bytes) -- the "
-                f"child's declared store resources do not fit the sandbox "
-                f"ceiling. Underlying: {e}"
-            )
-        # An un-granted capa:host/<cap> import fails here: the linker has
-        # no matching interface. This is the STRUCTURAL host-enforced
-        # cap-set deny -- the sandbox physically refuses to give the
-        # child an interface the call did not declare.
+        # Classify by UNDERLYING CAUSE first: instantiating the child runs
+        # its start / init, which can DRAIN the fuel budget (or hit a store
+        # limit), so a resource trap can land HERE, not only in the call.
+        # This must surface as the resource diagnostic, never mislabelled
+        # as the cap-set deny below.
+        _raise_if_resource_trap(
+            e, store, fuel_enabled=fuel_enabled, fuel=fuel,
+            memory_cap_bytes=memory_cap_bytes, boundary_label=boundary_label,
+        )
+        # Not a resource trap: a genuine missing-import LINK failure (the
+        # linker has no matching interface; it fails before any wasm runs
+        # and consumes no fuel). This is the STRUCTURAL host-enforced
+        # cap-set deny -- the sandbox physically refuses to give the child
+        # an interface the call did not declare.
         raise ForeignDenied(
             f"foreign component {boundary_label}: instantiation denied -- "
             f"the component imports a capability interface the call did "
@@ -253,26 +305,16 @@ def dispatch_foreign_call(
     try:
         result = fn(store, *scalar_args)
     except wasmtime.WasmtimeError as e:
-        # The child trapped. If it drained its fuel budget (an infinite
-        # loop / CPU spin), surface the bounded CPU diagnostic instead of
-        # letting the host hang; ``get_fuel() == 0`` is the robust signal
-        # (the component path reports fuel exhaustion as a plain
-        # WasmtimeError, so the message alone is not reliable). Any other
-        # trap (a genuine guest ``unreachable`` / out-of-bounds, including
-        # a child that grew to its memory ceiling and then trapped on its
-        # own -1-handling) propagates unchanged.
-        if fuel_enabled:
-            try:
-                remaining = store.get_fuel()
-            except wasmtime.WasmtimeError:
-                remaining = None
-            if remaining == 0:
-                raise ForeignResourceExceeded(
-                    f"foreign component {boundary_label}: exceeded its "
-                    f"CPU/fuel budget ({fuel} fuel units) -- the child ran "
-                    f"too long (possible infinite loop) and was stopped "
-                    f"before it could hang the host"
-                ) from e
+        # The child trapped during execution. Classify by cause with the
+        # SAME logic as instantiation: a drained fuel budget (an infinite
+        # loop / CPU spin) or a store-limit breach surfaces as the resource
+        # diagnostic. Any other trap (a genuine guest ``unreachable`` /
+        # out-of-bounds, including a child that grew to its memory ceiling
+        # and then trapped on its own -1-handling) propagates unchanged.
+        _raise_if_resource_trap(
+            e, store, fuel_enabled=fuel_enabled, fuel=fuel,
+            memory_cap_bytes=memory_cap_bytes, boundary_label=boundary_label,
+        )
         raise
     # wasmtime-py returns a single value for a one-result func, a tuple
     # for multi-result, and None for no result. F2a scalars are always
