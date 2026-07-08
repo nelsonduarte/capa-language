@@ -175,8 +175,12 @@ bounds the untrusted CHILD's OWN allocation, CPU, and blocking time. The
 confinement (restricted linker, granted-cap set, host-bound closures,
 handle resolution, marshalling) is UNCHANGED -- this only adds the store
 ceiling and the blocking-closure bounds. The child is still confined to
-its granted capabilities; now it also cannot hang or exhaust the host by
-CPU spin, unbounded blocking, or runaway allocation.
+its granted capabilities; now it also cannot DoS the host by a CPU spin,
+an unbounded sleep / runaway query, or a runaway wasm allocation. It can
+still do work PROPORTIONAL to a granted capability (read a granted file,
+fetch an allowlisted URL) exactly as the direct caller could -- that is
+the capability model, bounded by each cap's own semantics (net/proc
+timeouts, a finite file), not a sandbox gap.
 
 **Defaults and flags.**
 

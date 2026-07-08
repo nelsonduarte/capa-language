@@ -63,10 +63,16 @@ class ForeignResourceExceeded(ForeignDenied):
     grow / claim a store resource (linear memory, a funcref table, ...)
     past its bound. This is an availability bound, not a confinement
     bypass -- the child is still confined to its granted caps; it is now
-    also resource-bounded so a malicious or buggy component cannot hang or
-    exhaust the host. Three axes are bounded together: CPU (fuel), host
-    wall-time in any blocking granted closure (a per-call cap), and store
-    growth (linear memory + table + object counts).
+    also resource-bounded on three axes: CPU (fuel), host wall-time in the
+    guest-controllable blocking closures (``clock.sleep`` clamp,
+    ``db.exec`` / ``db.query`` deadline; ``net`` / ``proc`` carry their own
+    timeouts), and store growth (linear memory + table + object counts).
+    So a malicious or buggy child cannot DoS the host by a CPU spin, an
+    unbounded sleep / runaway query, or a runaway wasm allocation. It can
+    still do work PROPORTIONAL to a granted capability (read a granted
+    file, fetch an allowlisted URL) exactly as the direct caller could --
+    that is the capability model, bounded by each cap's own semantics, not
+    a sandbox gap.
 
     Subclasses :class:`ForeignDenied` so the CLI surfaces it as the same
     clean, actionable, exit-1 diagnostic (no host hang, no OOM, no raw
