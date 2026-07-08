@@ -194,6 +194,26 @@ class TestPolicySchema(_TmpTree):
         with self.assertRaises(PolicyError):
             self._read('policy = [1, 2]\n')
 
+    def test_duplicate_ids_rejected(self):
+        # S1: policy ids identify results in the signed conformance report;
+        # a duplicate would let tooling de-dupe and silently drop a result.
+        with self.assertRaises(PolicyError) as cm:
+            self._read(
+                '[[policy]]\nid = "dup"\nkind = "purity"\n\n'
+                '[[policy]]\nid = "dup"\nkind = "no-unresolved-dependencies"\n'
+            )
+        self.assertIn("dup", str(cm.exception))
+        self.assertIn("duplicate", str(cm.exception).lower())
+
+    def test_explicit_id_colliding_with_default_rejected(self):
+        # An explicit id that collides with the "<kind>#<index>" default of
+        # another entry is also caught.
+        with self.assertRaises(PolicyError):
+            self._read(
+                '[[policy]]\nkind = "purity"\n\n'
+                '[[policy]]\nid = "purity#0"\nkind = "purity"\npackage = "x"\n'
+            )
+
 
 # ---------------------------------------------------------------------------
 # EXCLUSION
@@ -415,12 +435,46 @@ class TestForbidDependency(_TmpTree):
         self.assertEqual(v["path"], ["app", "mid"])
 
     def test_non_dependency_passes(self):
+        # mid is a real package in the graph but genuinely does NOT depend
+        # on app (the edge runs the other way): a true negative that still
+        # names a present target, so it is not a typo (W2).
         root = self._tree(
-            '[[policy]]\nid = "no-other"\nkind = "forbid-dependency"\n'
-            'package = "app"\nforbidden = "other"\n'
+            '[[policy]]\nid = "mid-not-app"\nkind = "forbid-dependency"\n'
+            'package = "mid"\nforbidden = "app"\n'
         )
         report, _ = _eval(root, "main.capa")
-        self.assertTrue(_result(report, "no-other")["pass"])
+        self.assertTrue(_result(report, "mid-not-app")["pass"])
+
+    def test_typo_forbidden_target_is_unsatisfiable(self):
+        # A misspelled `forbidden` matches no package / edge name -> loud
+        # unsatisfiable, never a silent pass (W2).
+        root = self._tree(
+            '[[policy]]\nid = "typo"\nkind = "forbid-dependency"\n'
+            'package = "app"\nforbidden = "nosuchpkg"\n'
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "typo")
+        self.assertFalse(r["pass"])
+        self.assertEqual(r["violations"][0]["verdict"], "unsatisfiable")
+
+    def test_forbidden_unresolved_edge_name_is_allowed_target(self):
+        # `forbidden` naming an unresolved / native dependency edge (a real
+        # declared edge name, not a typo) is a valid target: app2 declares
+        # `netdep` which is unresolved, and app2 does depend on it -> fires.
+        root = self.tmp / "app2"
+        _write(root, "capa.toml", (
+            '[package]\nname = "app2"\nversion = "0.1.0"\n\n'
+            '[dependencies.netdep]\n'
+            'git = "https://github.com/example/netdep"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa", "pub fun f() -> Unit\n    return\n")
+        _write(root, "capa-policy.toml",
+               '[[policy]]\nid = "no-netdep"\nkind = "forbid-dependency"\n'
+               'package = "app2"\nforbidden = "netdep"\n')
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "no-netdep")
+        self.assertFalse(r["pass"])
+        self.assertEqual(r["violations"][0]["verdict"], "violation")
 
     def test_missing_source_package_unsatisfiable(self):
         root = self._tree(
@@ -563,25 +617,39 @@ class TestFailClosed(_TmpTree):
                             for v in r["violations"]))
 
     def test_forbid_dependency_over_unresolved_closure_fails_closed(self):
-        # app -> mid (resolved) -> ghost (unresolved). Cannot prove app does
-        # not transitively depend on "target" hidden behind ghost.
+        # app -> mid (resolved) -> ghost (UNRESOLVED); app -> other
+        # (resolved) -> secret (UNRESOLVED). "secret" is a real declared
+        # edge name in the graph (so it is a valid target, not a typo, W2)
+        # but is NOT reachable from mid over resolved edges. Because mid's
+        # closure contains an unresolved edge (ghost), a hidden path from
+        # mid to secret cannot be ruled out -> fail closed.
         root = self.tmp / "app"
         _write(root, "capa.toml", (
             '[package]\nname = "app"\nversion = "0.1.0"\n\n'
             '[dependencies.mid]\n'
-            'git = "https://github.com/example/mid"\ntag = "v1"\n'
+            'git = "https://github.com/example/mid"\ntag = "v1"\n\n'
+            '[dependencies.other]\n'
+            'git = "https://github.com/example/other"\ntag = "v1"\n'
         ))
         _write(root, "main.capa",
-               "import mid.api\n\npub fun run() -> Unit\n    go()\n    return\n")
+               "import mid.api\nimport other.lib\n\n"
+               "pub fun run() -> Unit\n    go()\n    doit()\n    return\n")
         _write(root, "vendor/mid/capa.toml", (
             '[package]\nname = "mid"\nversion = "0.1.0"\n\n'
             '[dependencies.ghost]\n'
             'git = "https://github.com/example/ghost"\ntag = "v1"\n'
         ))
         _write(root, "vendor/mid/api.capa", "pub fun go() -> Unit\n    return\n")
+        _write(root, "vendor/other/capa.toml", (
+            '[package]\nname = "other"\nversion = "0.1.0"\n\n'
+            '[dependencies.secret]\n'
+            'git = "https://github.com/example/secret"\ntag = "v1"\n'
+        ))
+        _write(root, "vendor/other/lib.capa",
+               "pub fun doit() -> Unit\n    return\n")
         _write(root, "capa-policy.toml",
                '[[policy]]\nid = "x"\nkind = "forbid-dependency"\n'
-               'package = "app"\nforbidden = "target"\nallow_unknown = false\n')
+               'package = "mid"\nforbidden = "secret"\nallow_unknown = false\n')
         report, _ = _eval(root, "main.capa")
         r = _result(report, "x")
         self.assertFalse(r["pass"])
@@ -606,6 +674,67 @@ class TestFailClosed(_TmpTree):
         verdicts = {v["verdict"] for v in r["violations"]}
         self.assertIn("violation", verdicts)
         self.assertNotIn("authority_unknown", verdicts)
+
+
+# ---------------------------------------------------------------------------
+# HARDENING: fail-closed must not depend on a downstream field (W1)
+# ---------------------------------------------------------------------------
+
+
+class TestFailClosedRobustness(unittest.TestCase):
+    """evaluate_policies is a public API accepting ANY composed dict (incl.
+    from an older / foreign producer). A product marked authority_unknown
+    must FAIL CLOSED even when the reasons list is empty - never PASS."""
+
+    def _policy(self, text: str):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "capa-policy.toml"
+            p.write_text(text, encoding="utf-8")
+            return read_policy_file(p)
+
+    def test_product_subset_fails_closed_with_empty_reasons(self):
+        composed = {
+            "product": {"name": "prod", "version": "0.1.0"},
+            "packages": [],
+            "edges": [],
+            "unresolved_dependencies": [],
+            "composed": {
+                "capabilities": [],
+                # TOP is set, but the reasons list is EMPTY (a malformed /
+                # foreign producer): the fail-closed must still fire.
+                "authority_unknown": True,
+                "authority_unknown_reasons": [],
+            },
+        }
+        pols = self._policy(
+            '[[policy]]\nid = "sub"\nkind = "product-subset"\nmax = ["Net"]\n'
+        )
+        report = evaluate_policies(composed, pols)
+        r = report["results"][0]
+        self.assertFalse(r["pass"])
+        self.assertFalse(report["pass"])
+        self.assertEqual(r["violations"][0]["verdict"], "authority_unknown")
+
+    def test_product_subset_empty_reasons_waived_by_allow_unknown(self):
+        composed = {
+            "product": {"name": "prod", "version": "0.1.0"},
+            "packages": [],
+            "edges": [],
+            "unresolved_dependencies": [],
+            "composed": {
+                "capabilities": [],
+                "authority_unknown": True,
+                "authority_unknown_reasons": [],
+            },
+        }
+        pols = self._policy(
+            '[[policy]]\nid = "sub"\nkind = "product-subset"\nmax = ["Net"]\n'
+            'allow_unknown = true\n'
+        )
+        report = evaluate_policies(composed, pols)
+        self.assertTrue(report["pass"])
 
 
 # ---------------------------------------------------------------------------

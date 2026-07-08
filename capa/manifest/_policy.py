@@ -232,7 +232,23 @@ def read_policy_file(path: Path) -> list[Policy]:
         raise PolicyError(
             f"{path}: [[policy]] must be an array of tables"
         )
-    return [_parse_policy(path, i, entry) for i, entry in enumerate(raw)]
+    policies = [_parse_policy(path, i, entry) for i, entry in enumerate(raw)]
+    # S1: policy ids identify results in the SIGNED conformance artifact.
+    # A duplicate id would let auditor tooling de-dupe by id and silently
+    # drop a result, so reject duplicates loudly at parse time. This covers
+    # both explicit ids and the "<kind>#<index>" defaults (which are unique
+    # by construction, but an explicit id colliding with a default is
+    # caught here too).
+    seen: dict[str, int] = {}
+    for i, pol in enumerate(policies):
+        if pol.id in seen:
+            raise PolicyError(
+                f"{path}: duplicate policy id {pol.id!r} (policies #{seen[pol.id]} "
+                f"and #{i}); each policy id must be unique so the signed "
+                f"conformance report has one result per id"
+            )
+        seen[pol.id] = i
+    return policies
 
 
 def _parse_policy(path: Path, index: int, entry: dict) -> Policy:
@@ -562,8 +578,16 @@ def _eval_product_subset(pol, composed, paths):
             package=who, capability=cap, path=path, detail=detail,
         ))
 
+    # Fail closed UNCONDITIONALLY when the product's composed authority is
+    # TOP (W1): a false PASS over a TOP product would be a soundness hole.
+    # evaluate_policies is a public API that accepts ANY composed dict
+    # (possibly from an older / foreign producer), so the fail-closed must
+    # NOT depend on the reasons list being populated. When reasons are
+    # present we attribute each; when the list is empty we still emit one
+    # reason-less authority_unknown violation.
     if product.get("authority_unknown") and not pol.allow_unknown:
-        for reason in product.get("authority_unknown_reasons", []):
+        reasons = product.get("authority_unknown_reasons", []) or []
+        for reason in reasons:
             declared_in = reason.get("declared_in", root)
             dependency = reason.get("dependency", "")
             why = reason.get("reason", "")
@@ -577,6 +601,17 @@ def _eval_product_subset(pol, composed, paths):
                     f"{' -> '.join(path)}); a product-subset policy cannot be "
                     f"proven over an unanalyzable subtree. Set allow_unknown "
                     f"= true to waive."
+                ),
+            ))
+        if not reasons:
+            out.append(PolicyViolation(
+                policy_id=pol.id, kind=pol.kind, verdict="authority_unknown",
+                package=None, capability=None, path=(root,) if root else (),
+                detail=(
+                    "the product's composed authority is UNKNOWN (a TOP "
+                    "element in its subtree); a product-subset policy cannot "
+                    "be proven over an unanalyzable subtree. Set allow_unknown "
+                    "= true to waive."
                 ),
             ))
     return out
@@ -638,11 +673,33 @@ def _eval_forbid_capability(pol, composed, paths):
 
 
 def _eval_forbid_dependency(pol, composed, paths):
+    """A named package may not depend (directly or transitively) on another.
+
+    Both ends are validated against the graph so a typo cannot make the
+    rule silently inert (a false all-clear): the source ``package`` must be
+    a package NAME, and ``forbidden`` must match at least one package name
+    OR one declared edge dependency name (the latter keeps the legitimate
+    case where ``forbidden`` is an unresolved / native dependency that is
+    still a declared edge). Either miss reports ``unsatisfiable`` (loud).
+
+    S2 (conservative fail-closed): the ``authority_unknown`` verdict fires
+    when ANY unresolved edge sits in the source package's reachable
+    closure - even one unrelated to ``forbidden`` - because a hidden path
+    to ``forbidden`` behind an unanalyzable node cannot be ruled out. This
+    is deliberately conservative; it is waivable via ``allow_unknown``."""
     src = pol.params["package"]
     forbidden = pol.params["forbidden"]
     names = {p["name"] for p in _packages(composed)}
     if src not in names:
         return [_unsatisfiable(pol, src)]
+    # W2: reject a ``forbidden`` that matches nothing (a pure typo), else a
+    # misspelled target would match no package / edge and silently pass.
+    edge_dep_names = {
+        e.get("dependency") for e in composed.get("edges", [])
+        if e.get("dependency")
+    }
+    if forbidden not in names and forbidden not in edge_dep_names:
+        return [_unsatisfiable(pol, forbidden)]
 
     verdict, dep_path, unknown = _dependency_reaches(composed, src, forbidden)
     if verdict:
