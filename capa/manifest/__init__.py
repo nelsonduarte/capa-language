@@ -44,6 +44,13 @@ The package is split internally:
   manifest / composed-SBOM artifacts, matched by the stable
   ``(container, name)`` identity and wrapped in the S1 content-integrity
   envelope (feature #2).
+- :mod:`._policy` - ORGANIZATION capability-compliance policies
+  (feature #6, P1): a product-level ``capa-policy.toml`` declares a
+  FIXED set of predicate kinds (exclusion, product-subset, purity,
+  forbid-capability, forbid-dependency, no-unresolved-dependencies)
+  over the composed capability graph; ``evaluate_policies`` produces a
+  conformance report (fail-closed on authority-unknown) wrapped in the
+  S1 content-integrity envelope, driving the ``--check-policies`` gate.
 - :mod:`._cyclonedx` - CycloneDX 1.5 SBOM wrapper around the
   internal manifest (``build_cyclonedx``).
 - :mod:`._spdx` - SPDX 2.3 SBOM wrapper around the internal
@@ -64,6 +71,10 @@ from ._compose import (
 )
 from ._cyclonedx import CYCLONEDX_SPEC_VERSION, build_cyclonedx
 from ._diff import DIFF_SCHEMA_VERSION, DiffError, build_capability_diff
+from ._policy import (
+    POLICY_FILENAME, POLICY_SCHEMA_VERSION, Policy, PolicyError,
+    PolicyViolation, evaluate_policies, find_policy_file, read_policy_file,
+)
 from ._funrec import (
     SCHEMA_VERSION, build_manifest, build_operator_declared_grants,
     build_path_arg_surface, display_filename,
@@ -94,6 +105,14 @@ __all__ = [
     "DIFF_SCHEMA_VERSION",
     "DiffError",
     "build_capability_diff",
+    "POLICY_FILENAME",
+    "POLICY_SCHEMA_VERSION",
+    "Policy",
+    "PolicyError",
+    "PolicyViolation",
+    "evaluate_policies",
+    "find_policy_file",
+    "read_policy_file",
     "build_composed_sbom",
     "build_package_dag",
     "find_package_root",
