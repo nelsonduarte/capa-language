@@ -589,7 +589,14 @@ class WasmHost:
         if kind == "sum":
             # User sum: tag @ 0, per-payload slots from compute_sum_layout.
             tag = self._read_i32(caller, ptr)
-            var = next(v for v in schema["variants"] if v["tag"] == tag)
+            var = next(
+                (v for v in schema["variants"] if v["tag"] == tag), None,
+            )
+            if var is None:
+                raise WasmHostError(
+                    f"foreign aggregate: sum tag {tag} out of range "
+                    "(no matching variant); refusing to marshal"
+                )
             vals = [
                 self._read_slot(caller, ptr + pl["offset"], pl["node"], depth)
                 for pl in var["payloads"]
