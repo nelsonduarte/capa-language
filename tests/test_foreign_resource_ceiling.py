@@ -108,6 +108,28 @@ _FS_DENY_PROG = (
     "    let r = Bad.submit(net, 41)\n"
 )
 
+# Grants no caps: grow(n) returns the result of a huge table.grow (old
+# size, or -1 if the table ceiling refused it).
+_TABLEGROW_PROG = (
+    'extern component TG from "tablegrow_child.wasm"\n'
+    "    fun grow(n: Int) -> Int\n"
+    "\n"
+    "fun main(stdio: Stdio)\n"
+    "    let r = TG.grow(10000000)\n"
+    '    stdio.println("grow=${r}")\n'
+)
+
+# Grants Clock: nap(secs) asks the host to sleep for a huge duration; the
+# blocking-closure bound must clamp it so the host does not hang.
+_NAP_PROG = (
+    'extern component Nap from "nap_child.wasm"\n'
+    "    fun nap(clock: Clock, secs: Float) -> Int\n"
+    "\n"
+    "fun main(clock: Clock, stdio: Stdio)\n"
+    "    let r = Nap.nap(clock, 100000000.0)\n"
+    '    stdio.println("napped=${r}")\n'
+)
+
 
 @unittest.skipUnless(
     _wasm_tooling_available(), "wasm-tools / wasmtime missing",
@@ -189,14 +211,15 @@ class TestForeignResourceCeiling(unittest.TestCase):
 
     def test_oversized_memory_traps_on_limit(self):
         # A child whose minimum linear memory (320 MiB) exceeds the
-        # default 256 MiB ceiling is refused, with the clean memory-limit
+        # default 256 MiB ceiling is refused, with the clean resource-limit
         # message and exit 1 -- no host OOM, no traceback.
         with tempfile.TemporaryDirectory() as td:
             self._copy(td, "bigmem_child.wasm")
             p = _write(td, "prog.capa", _BIGMEM_PROG)
             rc, out, err = _run_cli(["--wasm", "--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("memory limit", err)
+            self.assertIn("exceeded its memory", err)
+            self.assertIn("resource limit", err)
             self.assertNotIn("r=", out)
             self.assertNotIn("Traceback (most recent call last)", err)
 
@@ -213,6 +236,145 @@ class TestForeignResourceCeiling(unittest.TestCase):
             )
             self.assertEqual(rc, 0, err)
             self.assertIn("r=41", out)
+
+    # ---- table / other growable resources (review C2) --------------
+
+    def test_table_grow_capped_under_default(self):
+        # A runaway table.grow (10M funcref elements, ~80 MB) is capped:
+        # grow returns -1 under the default table_elements ceiling, so the
+        # host never OOMs and the child observes the refusal.
+        with tempfile.TemporaryDirectory() as td:
+            self._copy(td, "tablegrow_child.wasm")
+            p = _write(td, "prog.capa", _TABLEGROW_PROG)
+            rc, out, err = _run_cli(["--wasm", "--run", str(p)], cwd=td)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("grow=-1", out)
+
+    def test_table_grow_capped_under_configured_cap(self):
+        # The table ceiling holds under an explicitly configured memory
+        # cap too (the growable-resource bounds travel with the memory
+        # bound, not only the default).
+        with tempfile.TemporaryDirectory() as td:
+            self._copy(td, "tablegrow_child.wasm")
+            p = _write(td, "prog.capa", _TABLEGROW_PROG)
+            rc, out, err = _run_cli(
+                ["--wasm", "--run", "--foreign-memory-cap", "512", str(p)],
+                cwd=td,
+            )
+            self.assertEqual(rc, 0, err)
+            self.assertIn("grow=-1", out)
+
+    def test_table_grow_unbounded_when_opted_out(self):
+        # Opting out of the store limits (--foreign-memory-cap 0) lets the
+        # same grow SUCCEED (returns the old size, not -1), proving the
+        # ceiling -- not something else -- is what caps the table.
+        with tempfile.TemporaryDirectory() as td:
+            self._copy(td, "tablegrow_child.wasm")
+            p = _write(td, "prog.capa", _TABLEGROW_PROG)
+            rc, out, err = _run_cli(
+                ["--wasm", "--run", "--foreign-memory-cap", "0", str(p)],
+                cwd=td,
+            )
+            self.assertEqual(rc, 0, err)
+            self.assertNotIn("grow=-1", out)
+            self.assertIn("grow=", out)
+
+    def test_memory_cap_zero_opts_out(self):
+        # --foreign-memory-cap 0 skips the store limits: the oversized
+        # child now instantiates and runs (opt-out honoured; it really
+        # allocates its 320 MiB, so no store ceiling).
+        with tempfile.TemporaryDirectory() as td:
+            self._copy(td, "bigmem_child.wasm")
+            p = _write(td, "prog.capa", _BIGMEM_PROG)
+            rc, out, err = _run_cli(
+                ["--wasm", "--run", "--foreign-memory-cap", "0", str(p)],
+                cwd=td,
+            )
+            self.assertEqual(rc, 0, err)
+            self.assertIn("r=41", out)
+
+    # ---- blocking host closures (review C1) ------------------------
+
+    def test_blocking_sleep_does_not_hang_host(self):
+        # A granted clock.sleep with a huge guest-controlled duration must
+        # NOT hang the host (fuel does not meter host wall-time). Run in a
+        # SUBPROCESS with a hard timeout: the sleep is clamped to a bounded
+        # maximum, so the process exits promptly instead of sleeping ~1e8s.
+        with tempfile.TemporaryDirectory() as td:
+            self._copy(td, "nap_child.wasm")
+            p = _write(td, "prog.capa", _NAP_PROG)
+            start = time.monotonic()
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-m", "capa", "--wasm", "--run", str(p)],
+                    cwd=td,
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                    env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
+                )
+            except subprocess.TimeoutExpired:
+                self.fail(
+                    "a granted blocking clock.sleep HUNG the host: the "
+                    "process did not exit within the timeout (the closure "
+                    "wall-time bound is not enforced)"
+                )
+            elapsed = time.monotonic() - start
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("napped=0", proc.stdout)
+            # Clamped well under the huge requested duration and the timeout.
+            self.assertLess(elapsed, 60)
+
+    def test_net_closures_have_a_socket_timeout(self):
+        # The net closures reach an external server; assert a socket
+        # timeout is configured so a slow/hanging allowlisted host cannot
+        # block the host thread indefinitely.
+        import inspect
+        from capa.runtime import _capabilities
+        self.assertIn("timeout=", inspect.getsource(_capabilities.Net.get))
+        self.assertIn("timeout=", inspect.getsource(_capabilities.Net.post))
+
+    def test_db_query_deadline_aborts_runaway_sql(self):
+        # A granted db.query running a non-terminating recursive CTE must
+        # be aborted at a bounded wall-clock deadline (fuel cannot meter
+        # time spent inside sqlite). Patch the bound small so the test is
+        # fast, drive the real _bind_db closure, and assert it returns a
+        # clean IoError instead of hanging.
+        from capa.runtime import _foreign
+        from capa.runtime._capabilities import Db
+        from capa.runtime._wasm_component_host import IoErrorRecord
+
+        captured: dict = {}
+
+        class _Ifc:
+            def add_func(self, name, fn):
+                captured[name] = fn
+
+            def close(self):
+                pass
+
+        class _Root:
+            def add_instance(self, _name):
+                return _Ifc()
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "d.sqlite")
+            with mock.patch.object(
+                _foreign, "MAX_FOREIGN_BLOCKING_SECS", 0.5,
+            ):
+                _foreign._bind_db(_Root(), Db())
+                query = captured["query"]
+                runaway = (
+                    "WITH RECURSIVE r(n) AS ("
+                    "SELECT 1 UNION ALL SELECT n+1 FROM r) "
+                    "SELECT n FROM r"
+                )
+                start = time.monotonic()
+                result = query(None, 0, db_path, runaway)
+                elapsed = time.monotonic() - start
+            self.assertIsInstance(result, IoErrorRecord)
+            # Aborted near the 0.5s deadline, nowhere near an infinite run.
+            self.assertLess(elapsed, 20)
 
     # ---- confinement + legitimate-path regressions -----------------
 
@@ -240,7 +402,29 @@ class TestForeignResourceCeiling(unittest.TestCase):
             self.assertIn("instantiation denied", err)
             self.assertIn("capa:host/fs", err)
             self.assertNotIn("CPU/fuel budget", err)
-            self.assertNotIn("memory limit", err)
+            self.assertNotIn("resource limit", err)
+
+
+class TestForeignCeilingFlagValidation(unittest.TestCase):
+    """The --foreign-* flags reject a NEGATIVE budget (a typo must not
+    silently disable a bound); 0 remains the explicit opt-out. These do
+    not need the Wasm toolchain (rejected before any run)."""
+
+    def _rc(self, argv):
+        with tempfile.TemporaryDirectory() as td:
+            p = _write(td, "prog.capa", "fun main()\n    return\n")
+            rc, _out, err = _run_cli(argv + [str(p)], cwd=td)
+            return rc, err
+
+    def test_negative_fuel_rejected(self):
+        rc, err = self._rc(["--wasm", "--run", "--foreign-fuel", "-5"])
+        self.assertEqual(rc, 2)
+        self.assertIn("--foreign-fuel must be >= 0", err)
+
+    def test_negative_memory_cap_rejected(self):
+        rc, err = self._rc(["--wasm", "--run", "--foreign-memory-cap", "-1"])
+        self.assertEqual(rc, 2)
+        self.assertIn("--foreign-memory-cap must be >= 0", err)
 
 
 class TestForeignCeilingUnit(unittest.TestCase):
@@ -250,9 +434,15 @@ class TestForeignCeilingUnit(unittest.TestCase):
         from capa.runtime._foreign import (
             DEFAULT_FOREIGN_FUEL,
             DEFAULT_FOREIGN_MEMORY_CAP_BYTES,
+            DEFAULT_FOREIGN_TABLE_ELEMENTS,
+            MAX_FOREIGN_BLOCKING_SECS,
         )
         self.assertEqual(DEFAULT_FOREIGN_FUEL, 1_000_000_000)
         self.assertEqual(DEFAULT_FOREIGN_MEMORY_CAP_BYTES, 256 * 1024 * 1024)
+        self.assertEqual(DEFAULT_FOREIGN_TABLE_ELEMENTS, 1_000_000)
+        # A bounded, non-trivial blocking budget (seconds).
+        self.assertGreater(MAX_FOREIGN_BLOCKING_SECS, 0)
+        self.assertLessEqual(MAX_FOREIGN_BLOCKING_SECS, 30)
 
     def test_resource_exceeded_is_a_foreign_denied(self):
         # Subclassing keeps the CLI's clean exit-1 surfacing unchanged.
@@ -281,20 +471,45 @@ class TestForeignCeilingUnit(unittest.TestCase):
         self.assertEqual(host._foreign_fuel, 5000)
         self.assertIsNone(host._foreign_memory_cap_bytes)
 
-    def test_memory_limit_error_classifier(self):
-        from capa.runtime._foreign import _is_memory_limit_error
+    def test_store_limit_error_classifier(self):
+        from capa.runtime._foreign import _is_store_limit_error
+        # A store-limit breach (memory / table / ...) is recognised ...
         self.assertTrue(
-            _is_memory_limit_error(
+            _is_store_limit_error(
                 Exception("memory minimum size of 5000 pages exceeds "
                           "memory limits")
             )
         )
+        # ... while the structural capability-import deny is NOT (so it is
+        # not mislabelled as a resource breach).
         self.assertFalse(
-            _is_memory_limit_error(
+            _is_store_limit_error(
                 Exception("component imports instance `capa:host/fs`, but a "
                           "matching implementation was not found")
             )
         )
+
+    def test_store_limit_error_message_shape(self):
+        # Pin the CURRENT wasmtime phrasing the classifier couples to, so a
+        # future wasmtime message change breaks THIS test (a loud, local
+        # signal) rather than silently misclassifying a real error. Builds
+        # a real over-limit store and captures the actual message.
+        import wasmtime
+        from capa.runtime._foreign import _is_store_limit_error
+        eng = wasmtime.Engine()
+        mod = wasmtime.Module(
+            eng,
+            '(module (memory (export "m") 5000) '
+            '(func (export "f")))',
+        )
+        store = wasmtime.Store(eng)
+        store.set_limits(memory_size=4 * 1024 * 1024)
+        with self.assertRaises(wasmtime.WasmtimeError) as ctx:
+            wasmtime.Instance(store, mod, [])
+        msg = str(ctx.exception).lower()
+        self.assertIn("exceed", msg)
+        self.assertIn("limit", msg)
+        self.assertTrue(_is_store_limit_error(ctx.exception))
 
 
 if __name__ == "__main__":

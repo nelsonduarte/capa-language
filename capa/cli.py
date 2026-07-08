@@ -1331,6 +1331,25 @@ def _main_dispatch() -> int:
     )
     args = parser.parse_args(cli_argv)
 
+    # Reject a NEGATIVE foreign resource budget up front. A negative value
+    # would otherwise silently DISABLE the bound (opt-out is the explicit
+    # ``0``), so a typo like ``--foreign-fuel -5`` would remove the DoS
+    # protection without warning. ``0`` remains the documented opt-out.
+    if args.foreign_fuel is not None and args.foreign_fuel < 0:
+        print(
+            "capa: --foreign-fuel must be >= 0 (use 0 to opt out of the "
+            f"CPU bound); got {args.foreign_fuel}",
+            file=sys.stderr,
+        )
+        return 2
+    if args.foreign_memory_cap is not None and args.foreign_memory_cap < 0:
+        print(
+            "capa: --foreign-memory-cap must be >= 0 MiB (use 0 to opt out "
+            f"of the memory bound); got {args.foreign_memory_cap}",
+            file=sys.stderr,
+        )
+        return 2
+
     # --capability-diff operates on two JSON artifacts, not a .capa
     # source, so it is handled here before the file/lex/analyze flow.
     if getattr(args, "capability_diff", None) is not None:

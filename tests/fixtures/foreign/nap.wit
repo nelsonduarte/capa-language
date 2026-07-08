@@ -1,0 +1,8 @@
+package capa:host;
+interface clock {
+  sleep: func(handle: u32, secs: f64);
+}
+world nap {
+  import clock;
+  export nap: func(secs: f64) -> s64;
+}
