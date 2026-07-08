@@ -231,13 +231,15 @@ _NET_UNGRANTED_PROG = (
     "    let _r = B.submit([1, 2, 3])\n"
 )
 
-# A NESTED aggregate: still F2c-2, rejected up front.
-_NESTED_PROG = (
+# A Map crossing type: still a STOP-report boundary, rejected up front
+# (nested aggregates now marshal -- F2c-2; Map does not).
+_MAP_PROG = (
     'extern component A from "agg_child.wasm"\n'
-    "    fun nest(xs: List<List<Int>>) -> Int\n"
+    "    fun nest(m: Map<String, Int>) -> Int\n"
     "\n"
     "fun main(stdio: Stdio)\n"
-    "    let r = A.nest([[1], [2, 3]])\n"
+    "    let m = new_map()\n"
+    "    let r = A.nest(m)\n"
     '    stdio.println("r=${r}")\n'
 )
 
@@ -322,19 +324,19 @@ class TestForeignAggregateRuntime(unittest.TestCase):
         self.assertIn("instantiation denied", err)
         self.assertIn("capa:host/net", err)
 
-    def test_nested_aggregate_rejected_f2c2(self):
-        # A nested aggregate is rejected up front with the clean F2c-2
-        # error; the boundary just moved one level out.
-        rc, _out, err = self._run(_NESTED_PROG)
+    def test_map_rejected_f2c2(self):
+        # A Map crossing type is rejected up front with the clean,
+        # specific STOP-report error (nested aggregates now marshal; Map
+        # does not).
+        rc, _out, err = self._run(_MAP_PROG)
         self.assertEqual(rc, 1)
-        self.assertIn("F2c-2", err)
-        self.assertIn("aggregate nesting", err)
+        self.assertIn("Map crossing type", err)
 
-    def test_nested_aggregate_declaration_still_checks(self):
-        # NON-REGRESSION: a nested-aggregate boundary is inert at the
+    def test_map_declaration_still_checks(self):
+        # NON-REGRESSION: a Map-crossing boundary is inert at the
         # declaration level -- --check works fully (F1 unchanged).
         with tempfile.TemporaryDirectory() as td:
-            p = _write(td, "prog.capa", _NESTED_PROG)
+            p = _write(td, "prog.capa", _MAP_PROG)
             rc, out, _err = _run_cli(["--check", str(p)], cwd=td)
             self.assertEqual(rc, 0)
             self.assertIn("ok", out)

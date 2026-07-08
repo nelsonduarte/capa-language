@@ -130,12 +130,18 @@ _STR_UNGRANTED_PROG = (
 # F2c-2). F2c-1 lands FLAT scalar-leaf aggregates (List<Int> etc.), so
 # the rejection case now uses a genuinely nested aggregate (List of
 # Lists). The declaration + --check are unaffected.
+# A Map crossing type is still rejected up front (F2c-2 STOP-report
+# boundary): Map's String-keyed structure is out of the aggregate
+# marshaller's scope. NESTED aggregates (List<List<Int>>, structs of
+# lists, ...) DO marshal now (F2c-2); only Map and self-referential types
+# stay rejected.
 _AGG_PROG = (
     'extern component A from "str_echo_child.wasm"\n'
-    "    fun mk(xs: List<List<Int>>) -> Int\n"
+    "    fun mk(m: Map<String, Int>) -> Int\n"
     "\n"
     "fun main(stdio: Stdio)\n"
-    "    let r = A.mk([[1], [2, 3]])\n"
+    "    let m = new_map()\n"
+    "    let r = A.mk(m)\n"
     '    stdio.println("r=${r}")\n'
 )
 
@@ -206,10 +212,10 @@ class TestForeignStringRuntime(unittest.TestCase):
             self.assertIn("capa:host/net", err)
 
     def test_aggregate_still_rejected(self):
-        # A NESTED aggregate crossing type is still rejected up front with
-        # a clean, specific error naming the sub-phase (feature #4 F2c-2),
-        # on the --wasm backend. FLAT scalar-leaf aggregates now marshal
-        # (F2c-1); only nesting is deferred.
+        # A Map crossing type is still rejected up front with a clean,
+        # specific error (feature #4 F2c-2 STOP-report boundary), on the
+        # --wasm backend. Scalar-leaf aggregates -- FLAT and NESTED -- now
+        # marshal; only Map and self-referential types stay rejected.
         with tempfile.TemporaryDirectory() as td:
             shutil.copy(
                 _FIXTURES / "str_echo_child.wasm",
@@ -218,8 +224,7 @@ class TestForeignStringRuntime(unittest.TestCase):
             p = _write(td, "prog.capa", _AGG_PROG)
             rc, _out, err = _run_cli(["--wasm", "--run", str(p)], cwd=td)
             self.assertEqual(rc, 1)
-            self.assertIn("F2c-2", err)
-            self.assertIn("aggregate nesting", err)
+            self.assertIn("Map crossing type", err)
 
     def test_aggregate_declaration_still_checks(self):
         # NON-REGRESSION: the aggregate boundary is inert at the

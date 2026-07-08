@@ -1,0 +1,8 @@
+package capa:host;
+interface net {
+  allows: func(handle: u32, host: string) -> bool;
+}
+world agg2net {
+  import net;
+  export submit: func(xs: list<list<s64>>) -> s64;
+}
