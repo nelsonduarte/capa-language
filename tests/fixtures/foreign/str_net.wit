@@ -1,0 +1,8 @@
+package capa:host;
+interface net {
+  allows: func(handle: u32, host: string) -> bool;
+}
+world strnet {
+  import net;
+  export submit: func(s: string) -> string;
+}

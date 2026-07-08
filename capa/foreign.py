@@ -48,10 +48,37 @@ SCALAR_CROSSING_WASM: dict[str, str] = {
 }
 
 
+# String crossing type (feature #4 F2b). Unlike a scalar it does NOT
+# lower to a single core-wasm value: on the parent import it crosses as
+# a (ptr, len) i32 pair for an argument and through an 8-byte indirect
+# return area for a result, reusing the SAME canonical-ABI machinery the
+# WASI cap methods already use for strings (``$alloc`` + the ``string``
+# materialiser). An AGGREGATE crossing type (Struct / Sum / List / Map /
+# tuple / Option / Result) needs a general, recursive, type-driven
+# Capa-heap reader/writer on the HOST side of the parent boundary that
+# does not yet exist (the WASI paths only hand-code a fixed set of
+# shapes); that is a further sub-phase, so an aggregate crossing type is
+# still rejected up front by the CLI guard.
+STRING_CROSSING = "String"
+
+
 def is_scalar_crossing_type(root: str) -> bool:
     """True when ``root`` (a source-level type root name) is a scalar
     crossing type F2a marshals at runtime (Int / Bool / Float)."""
     return root in SCALAR_CROSSING_WASM
+
+
+def is_string_crossing_type(root: str) -> bool:
+    """True when ``root`` is the String crossing type F2b marshals at
+    runtime via the canonical-ABI (ptr, len) + ``$alloc`` machinery."""
+    return root == STRING_CROSSING
+
+
+def is_marshallable_crossing_type(root: str) -> bool:
+    """True when ``root`` is a crossing type the F2 runtime can marshal:
+    a scalar (Int / Bool / Float, F2a) or String (F2b). An aggregate
+    crossing type returns False and is rejected before dispatch."""
+    return is_scalar_crossing_type(root) or is_string_crossing_type(root)
 
 
 def method_param_kinds(method: A.MethodSig) -> list[tuple[str, str]]:
@@ -85,13 +112,29 @@ def method_is_scalar(method: A.MethodSig) -> bool:
     """True when every non-capability crossing parameter AND the return
     type of ``method`` is a scalar F2a can marshal at runtime (Int /
     Bool / Float), or Unit for the return. A method using String or any
-    aggregate crossing type is NOT scalar and must be rejected with the
-    F2b guard before it is dispatched at runtime."""
+    aggregate crossing type is NOT scalar."""
     for kind, root in method_param_kinds(method):
         if kind == "scalar" and not is_scalar_crossing_type(root):
             return False
     ret = method_return_root(method)
     if ret != "Unit" and not is_scalar_crossing_type(ret):
+        return False
+    return True
+
+
+def method_is_runtime_marshallable(method: A.MethodSig) -> bool:
+    """True when every non-capability crossing parameter AND the return
+    type of ``method`` is a crossing type the F2 runtime can marshal at
+    runtime -- a scalar (Int / Bool / Float, F2a) or String (F2b), or
+    Unit for the return. A method using an AGGREGATE crossing type
+    (Struct / Sum / List / Map / tuple / Option / Result) is NOT yet
+    marshallable and must be rejected with the aggregate guard before it
+    is dispatched at runtime (a further sub-phase)."""
+    for kind, root in method_param_kinds(method):
+        if kind == "scalar" and not is_marshallable_crossing_type(root):
+            return False
+    ret = method_return_root(method)
+    if ret != "Unit" and not is_marshallable_crossing_type(ret):
         return False
     return True
 
@@ -112,43 +155,67 @@ def declared_capabilities(method: A.MethodSig) -> list[str]:
 
 
 def foreign_runtime_methods(module: A.Module) -> list[dict]:
-    """Runtime dispatch metadata for every SCALAR foreign-component
-    method the module declares (feature #4, F2a). The Wasm host
+    """Runtime dispatch metadata for every marshallable foreign-component
+    method the module declares (feature #4, F2a scalars + F2b String).
+    The Wasm host
     (:meth:`capa.runtime._wasm_host.WasmHost.register_foreign_methods`)
     consumes this to define one ``capa:foreign/<component>`` import per
-    method: each param is either a capability (crossing as an i32 handle)
-    or a scalar (Int/Bool/Float), and the return is a scalar or Unit.
+    method. Each param is one of:
 
-    Non-scalar methods (String / aggregate crossing types) are OMITTED --
-    they cannot be marshalled at runtime in F2a and any INVOCATION of one
-    is rejected earlier by the CLI's F2b guard, so the host never needs an
+    - ``cap``   -- a capability, crossing as an i32 handle (``wasm``
+      = ``["i32"]``); the host resolves it to the caller's attenuated cap.
+    - ``scalar`` -- Int / Bool / Float (``wasm`` = a single core type).
+    - ``string`` -- a String, crossing as a (ptr, len) i32 pair (``wasm``
+      = ``["i32", "i32"]``); the host reads the bytes out of the parent's
+      linear memory.
+
+    The return is described by ``return_kind`` -- ``"unit"``,
+    ``"scalar"`` (with ``return_root`` / ``return_wasm``), or ``"string"``
+    (marshalled back through an 8-byte indirect return area the host
+    writes into the parent's memory via ``$alloc``).
+
+    Methods using an AGGREGATE crossing type are OMITTED -- they cannot
+    be marshalled at runtime yet and any INVOCATION of one is rejected
+    earlier by the CLI's aggregate guard, so the host never needs an
     import for them. ``artifact`` is the raw declared path; the caller
     resolves it relative to the source file."""
     methods: list[dict] = []
     for ec in extern_components(module):
         for m in ec.methods:
-            if not method_is_scalar(m):
+            if not method_is_runtime_marshallable(m):
                 continue
             params: list[dict] = []
             for kind, root in method_param_kinds(m):
                 if kind == "cap":
-                    params.append({"kind": "cap", "cap": root, "wasm": "i32"})
+                    params.append(
+                        {"kind": "cap", "cap": root, "wasm": ["i32"]}
+                    )
+                elif is_string_crossing_type(root):
+                    params.append(
+                        {"kind": "string", "root": root,
+                         "wasm": ["i32", "i32"]}
+                    )
                 else:
                     params.append({
                         "kind": "scalar", "root": root,
-                        "wasm": SCALAR_CROSSING_WASM[root],
+                        "wasm": [SCALAR_CROSSING_WASM[root]],
                     })
             ret_root = method_return_root(m)
-            ret_wasm = (
-                None if ret_root == "Unit" else SCALAR_CROSSING_WASM[ret_root]
-            )
+            if ret_root == "Unit":
+                ret_meta = {"return_kind": "unit", "return_root": "Unit",
+                            "return_wasm": None}
+            elif is_string_crossing_type(ret_root):
+                ret_meta = {"return_kind": "string", "return_root": ret_root,
+                            "return_wasm": None}
+            else:
+                ret_meta = {"return_kind": "scalar", "return_root": ret_root,
+                            "return_wasm": SCALAR_CROSSING_WASM[ret_root]}
             methods.append({
                 "component": ec.name,
                 "method": m.name,
                 "artifact": ec.artifact,
                 "params": params,
-                "return_root": ret_root,
-                "return_wasm": ret_wasm,
+                **ret_meta,
             })
     return methods
 

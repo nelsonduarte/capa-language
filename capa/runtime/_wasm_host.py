@@ -167,20 +167,102 @@ class WasmHost:
         component = meta["component"]
         method = meta["method"]
         params = meta["params"]
+        return_kind = meta.get("return_kind", "unit")
         return_wasm = meta["return_wasm"]
         label = f"{component}.{method}"
 
-        param_valtypes = [_WASM_VALTYPE[p["wasm"]]() for p in params]
-        result_valtypes = (
-            [_WASM_VALTYPE[return_wasm]()] if return_wasm else []
+        # A String param (crosses as ptr, len) or a String return
+        # (crosses through an 8-byte indirect return area the host
+        # writes into the parent's memory) needs the host to touch the
+        # caller's linear memory + ``$alloc``. When neither is present
+        # the method is F2a scalar-only and takes the exact same fast
+        # path it always did (no caller access, direct scalar closure).
+        needs_memory = return_kind == "string" or any(
+            p["kind"] == "string" for p in params
         )
+        # Flatten each param to its core-wasm value type(s); a String
+        # param contributes two i32s (ptr, len).
+        param_valtypes = [
+            _WASM_VALTYPE[w]() for p in params for w in p["wasm"]
+        ]
+        if return_kind == "string":
+            # Indirect return: trailing i32 ret-area pointer, no result.
+            param_valtypes.append(wasmtime.ValType.i32())
+            result_valtypes: list = []
+        elif return_wasm:
+            result_valtypes = [_WASM_VALTYPE[return_wasm]()]
+        else:
+            result_valtypes = []
         functype = wasmtime.FuncType(param_valtypes, result_valtypes)
 
-        def closure(*args, _meta=meta, _label=label):
+        if not needs_memory:
+            # ---- F2a scalar-only path (unchanged) ------------------
+            def closure(*args, _meta=meta, _label=label):
+                granted: dict = {}
+                scalar_args: list = []
+                for value, p in zip(args, _meta["params"]):
+                    if p["kind"] == "cap":
+                        cap_cls = _CAP_CLASSES.get(p["cap"])
+                        if cap_cls is None:
+                            raise ForeignDenied(
+                                f"foreign component {_label}: capability "
+                                f"{p['cap']!r} cannot be handed across the "
+                                f"boundary"
+                            )
+                        try:
+                            cap = self._cap_handles.lookup(
+                                int(value), cap_cls,
+                            )
+                        except CapHandleError as e:
+                            raise ForeignDenied(
+                                f"foreign component {_label}: invalid "
+                                f"{p['cap']} capability handle ({e})"
+                            )
+                        granted[p["cap"]] = cap
+                    else:
+                        # Scalar: convert the wasm i32 back to a Python
+                        # bool for a Bool crossing param so the child's
+                        # component func receives the WIT ``bool`` it
+                        # expects; Int (i64) and Float (f64) pass through.
+                        if p["root"] == "Bool":
+                            scalar_args.append(bool(value))
+                        else:
+                            scalar_args.append(value)
+                result = dispatch_foreign_call(
+                    self.engine, _meta["artifact"], _meta["method"],
+                    granted, scalar_args, _label,
+                )
+                if _meta["return_wasm"] is None:
+                    return None
+                # A Bool return lowers to i32 (0/1); Int / Float pass
+                # through.
+                if _meta["return_root"] == "Bool":
+                    return 1 if result else 0
+                return result
+
+            self.linker.define_func(
+                f"capa:foreign/{component}", method, functype, closure,
+            )
+            return
+
+        # ---- F2b String-marshalling path -------------------------
+        # The closure resolves caps + scalars exactly as the scalar
+        # path does, but a String argument is read out of the caller's
+        # linear memory (its (ptr, len) pair) into a Python str, and a
+        # String result is written back into the caller's memory via
+        # ``$alloc`` with the (ptr, len) recorded in the trailing return
+        # area. The security enforcement is byte-for-byte identical to
+        # F2a: only the VALUE marshalling differs; a String is plain
+        # data (F1-quarantine-clean) and carries no authority.
+        def closure_mem(caller, *args, _meta=meta, _label=label):
             granted: dict = {}
             scalar_args: list = []
-            for value, p in zip(args, _meta["params"]):
-                if p["kind"] == "cap":
+            idx = 0
+            for p in _meta["params"]:
+                kind = p["kind"]
+                if kind == "cap":
+                    value = args[idx]
+                    idx += 1
                     cap_cls = _CAP_CLASSES.get(p["cap"])
                     if cap_cls is None:
                         raise ForeignDenied(
@@ -196,30 +278,82 @@ class WasmHost:
                             f"{p['cap']} capability handle ({e})"
                         )
                     granted[p["cap"]] = cap
+                elif kind == "string":
+                    s_ptr, s_len = args[idx], args[idx + 1]
+                    idx += 2
+                    scalar_args.append(
+                        self._read_wtf8(caller, s_ptr, s_len)
+                    )
                 else:
-                    # Scalar: convert the wasm i32 back to a Python bool
-                    # for a Bool crossing param so the child's component
-                    # func receives the WIT ``bool`` it expects; Int
-                    # (i64) and Float (f64) pass through unchanged.
+                    value = args[idx]
+                    idx += 1
                     if p["root"] == "Bool":
                         scalar_args.append(bool(value))
                     else:
                         scalar_args.append(value)
+            ret_area = (
+                args[idx] if _meta["return_kind"] == "string" else None
+            )
             result = dispatch_foreign_call(
                 self.engine, _meta["artifact"], _meta["method"],
                 granted, scalar_args, _label,
             )
+            if _meta["return_kind"] == "string":
+                # Write the child's returned str into the parent's
+                # memory and record (ptr, len) in the 8-byte ret area.
+                s_ptr, s_len = self._write_wtf8(caller, result or "")
+                self._memory.write(
+                    caller, s_ptr.to_bytes(4, "little"), ret_area,
+                )
+                self._memory.write(
+                    caller, s_len.to_bytes(4, "little"), ret_area + 4,
+                )
+                return None
             if _meta["return_wasm"] is None:
                 return None
-            # Marshal the child's Python scalar back to the wasm result:
-            # a Bool return lowers to i32 (0/1); Int / Float pass through.
             if _meta["return_root"] == "Bool":
                 return 1 if result else 0
             return result
 
         self.linker.define_func(
-            f"capa:foreign/{component}", method, functype, closure,
+            f"capa:foreign/{component}", method, functype, closure_mem,
+            access_caller=True,
         )
+
+    def _read_wtf8(self, caller, ptr: int, length: int) -> str:
+        """Read a Capa String's ``length`` UTF-8/WTF-8 bytes at ``ptr``
+        out of the caller's linear memory into a Python str (feature #4
+        F2b String marshalling). Uses ``surrogatepass`` so a lone
+        surrogate carried in a Capa string survives the round trip
+        (same convention as the stdio host bridge); genuinely invalid
+        bytes degrade to the replacement char rather than crashing the
+        store."""
+        if self._memory is None:
+            raise RuntimeError(
+                "foreign String arg read before instance memory was set"
+            )
+        raw = bytes(self._memory.read(caller, ptr, ptr + length))
+        try:
+            return raw.decode("utf-8", errors="surrogatepass")
+        except UnicodeDecodeError:
+            return raw.decode("utf-8", errors="replace")
+
+    def _write_wtf8(self, caller, text: str) -> tuple[int, int]:
+        """Encode ``text`` and copy it into the caller's linear memory
+        via the module's ``$alloc``, returning (ptr, len). An empty
+        string allocates nothing and returns (0, 0). Uses
+        ``surrogatepass`` to preserve lone surrogates symmetrically with
+        :meth:`_read_wtf8`."""
+        if self._memory is None or self._alloc_export is None:
+            raise RuntimeError(
+                "foreign String return written before memory + $alloc set"
+            )
+        encoded = text.encode("utf-8", errors="surrogatepass")
+        if not encoded:
+            return 0, 0
+        ptr = self._host_alloc(caller, len(encoded))
+        self._memory.write(caller, encoded, ptr)
+        return ptr, len(encoded)
 
     def _host_alloc(self, caller, n: int) -> int:
         """Allocate ``n`` bytes in guest memory via the module's
