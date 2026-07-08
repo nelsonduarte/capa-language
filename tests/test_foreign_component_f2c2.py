@@ -438,6 +438,157 @@ class TestForeignNestedAggregateRuntime(unittest.TestCase):
             self.assertIn("ok", out)
 
 
+# A crossing variant with an Int arm AND a Bool arm is REJECTED (Python
+# bool subclasses int, so the canonical ABI's untagged by-type
+# discrimination would silently collapse the Bool arm onto the Int arm).
+_RESULT_IB_PROG = (
+    'extern component A from "agg2_child.wasm"\n'
+    "    fun f(r: Result<Int, Bool>) -> Int\n"
+    "\n"
+    "fun main(stdio: Stdio)\n"
+    "    let r = A.f(Ok(1))\n"
+    '    stdio.println("r=${r}")\n'
+)
+
+_RESULT_BI_PROG = (
+    'extern component A from "agg2_child.wasm"\n'
+    "    fun f(r: Result<Bool, Int>) -> Int\n"
+    "\n"
+    "fun main(stdio: Stdio)\n"
+    "    let r = A.f(Err(1))\n"
+    '    stdio.println("r=${r}")\n'
+)
+
+_SUM_IB_PROG = (
+    "type Two =\n"
+    "    A(Int)\n"
+    "    B(Bool)\n"
+    "\n"
+    'extern component C from "agg2_child.wasm"\n'
+    "    fun f(t: Two) -> Int\n"
+    "\n"
+    "fun main(stdio: Stdio)\n"
+    "    let r = C.f(A(1))\n"
+    '    stdio.println("r=${r}")\n'
+)
+
+# int/bool collision NESTED inside a struct field: rejected too.
+_NESTED_IB_PROG = (
+    "type Two =\n"
+    "    A(Int)\n"
+    "    B(Bool)\n"
+    "\n"
+    "type Wrap { r: Two }\n"
+    "\n"
+    'extern component C from "agg2_child.wasm"\n'
+    "    fun f(w: Wrap) -> Int\n"
+    "\n"
+    "fun main(stdio: Stdio)\n"
+    "    let w = Wrap { r: A(1) }\n"
+    "    let r = C.f(w)\n"
+    '    stdio.println("r=${r}")\n'
+)
+
+
+class TestVariantArmCollisionRejected(unittest.TestCase):
+    """A crossing variant (Result / Option / user sum) with both an
+    Int-class arm and a Bool-class arm is rejected up front (fail closed):
+    Python ``bool`` subclasses ``int``, so the canonical ABI's untagged
+    by-type discrimination would silently route a Bool value to the Int
+    arm. Rejection is ORDER-INDEPENDENT and covers nested positions."""
+
+    def test_schema_reject_accept_matrix(self):
+        # Pure schema-level oracle (no wasm tooling needed): the
+        # marshallability decision rejects the int/bool-colliding shapes
+        # and still accepts every non-colliding variant.
+        from capa import Lexer, Parser
+        import capa.capa_ast as A
+        from capa.foreign_schema import (
+            build_aggregate_schema, VariantArmCollisionUnsupported,
+        )
+
+        def _schema(src_type, extra=""):
+            src = extra + f"fun f(x: {src_type}) -> Int\n    return 0\n"
+            mod = Parser(
+                Lexer(src).lex(), source=src, filename="t",
+            ).parse_module()
+            fn = next(it for it in mod.items if isinstance(it, A.FunDecl))
+            return build_aggregate_schema(fn.params[0].type_expr, mod)
+
+        _sum_ib = "type Two =\n    A(Int)\n    B(Bool)\n\n"
+        _sum_is = "type Two =\n    A(Int)\n    B(String)\n\n"
+        _wrap_ib = _sum_ib + "type Wrap { r: Two }\n\n"
+        _pt = "type Point { x: Int }\n\n"
+        for src_type, extra in [
+            ("Result<Int, Bool>", ""),
+            ("Result<Bool, Int>", ""),          # order-independent
+            ("Two", _sum_ib),
+            ("Wrap", _wrap_ib),                 # nested in a struct
+            ("List<Result<Int, Bool>>", ""),    # nested in a list
+        ]:
+            with self.assertRaises(
+                VariantArmCollisionUnsupported, msg=src_type,
+            ):
+                _schema(src_type, extra)
+        # Still accepted (no int/bool collision):
+        for src_type, extra in [
+            ("Result<Int, String>", ""),
+            ("Result<Bool, String>", ""),
+            ("Result<Int, Float>", ""),
+            ("Two", _sum_is),
+            ("Option<Int>", ""),
+            ("Option<Bool>", ""),
+            ("Result<Point, Int>", _pt),
+        ]:
+            self.assertIsNotNone(_schema(src_type, extra), src_type)
+
+
+@unittest.skipUnless(
+    _wasm_tooling_available(), "wasm-tools / wasmtime missing",
+)
+class TestVariantArmCollisionCli(unittest.TestCase):
+    """The int/bool variant collision is rejected at --wasm dispatch with
+    a clean, specific message (no silent marshalling), and the boundary
+    stays inert at --check (declaration only)."""
+
+    def _run_wasm(self, src: str):
+        with tempfile.TemporaryDirectory() as td:
+            shutil.copy(
+                _FIXTURES / "agg2_child.wasm", Path(td) / "agg2_child.wasm",
+            )
+            p = _write(td, "prog.capa", src)
+            return _run_cli(["--wasm", "--run", str(p)], cwd=td)
+
+    def test_result_int_bool_rejected(self):
+        rc, _out, err = self._run_wasm(_RESULT_IB_PROG)
+        self.assertEqual(rc, 1)
+        self.assertIn("Int-class and a Bool-class arm", err)
+
+    def test_result_bool_int_rejected_order_independent(self):
+        rc, _out, err = self._run_wasm(_RESULT_BI_PROG)
+        self.assertEqual(rc, 1)
+        self.assertIn("Int-class and a Bool-class arm", err)
+
+    def test_user_sum_int_bool_rejected(self):
+        rc, _out, err = self._run_wasm(_SUM_IB_PROG)
+        self.assertEqual(rc, 1)
+        self.assertIn("Int-class and a Bool-class arm", err)
+
+    def test_nested_int_bool_rejected(self):
+        rc, _out, err = self._run_wasm(_NESTED_IB_PROG)
+        self.assertEqual(rc, 1)
+        self.assertIn("Int-class and a Bool-class arm", err)
+
+    def test_declaration_still_checks(self):
+        # NON-REGRESSION: the colliding-variant boundary is inert at the
+        # declaration level -- --check works fully (F1 unchanged).
+        with tempfile.TemporaryDirectory() as td:
+            p = _write(td, "prog.capa", _RESULT_IB_PROG)
+            rc, out, _err = _run_cli(["--check", str(p)], cwd=td)
+            self.assertEqual(rc, 0)
+            self.assertIn("ok", out)
+
+
 class TestNestedCapaTypeToWit(unittest.TestCase):
     """The Capa-type -> WIT-type generator maps NESTED aggregates
     structurally (record / list / option / result / tuple) so the

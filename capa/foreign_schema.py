@@ -90,6 +90,25 @@ class RecursiveCrossingUnsupported(ForeignCrossingUnsupported):
         self.type_name = type_name
 
 
+class VariantArmCollisionUnsupported(ForeignCrossingUnsupported):
+    """A crossing variant (a ``Result`` / ``Option`` or a user sum) has
+    two arms whose Python classes are not disjoint UNDER SUBCLASSING, so
+    the canonical ABI's untagged by-type discrimination cannot tell them
+    apart. The concrete case today is an Int arm together with a Bool arm
+    (Python ``bool`` is a subclass of ``int``): wasmtime treats
+    ``{int}``/``{bool}`` as set-disjoint and so leaves the variant
+    UNTAGGED, then discriminates by ``isinstance`` in case order --
+    ``isinstance(True, int)`` is True, so a Bool value silently routes to
+    the Int arm (``Err(true)`` written back as ``Ok(1)``; a sum
+    ``A(Int) | B(Bool)`` collapsing ``B(true)`` to ``A``). A WIT
+    ``result`` cannot be forced tagged, so the only sound choice is to
+    reject the shape up front (fail closed) rather than mis-marshal it."""
+
+    def __init__(self, type_text: str) -> None:
+        super().__init__(type_text)
+        self.type_text = type_text
+
+
 def _leaf_name(type_expr: Optional[A.TypeExpr]) -> Optional[str]:
     """Return the scalar-leaf name of ``type_expr`` (``Int`` / ``Bool`` /
     ``Float`` / ``String``), or ``None`` when it is not a scalar leaf (a
@@ -272,6 +291,56 @@ def _variant_tagged(case_nodes: list[Optional[dict]]) -> bool:
     return False
 
 
+# Distinct marker classes for the aggregate sentinels, so the subclass
+# collision test below sees ``Record`` / ``Variant`` as leaves unrelated
+# to the scalar classes (mapping them to ``object`` would wrongly flag a
+# ``Result<struct, Int>`` as ambiguous). ``object`` maps to real ``object``
+# because it genuinely superclasses every payload -- a payload arm that
+# accepts ``object`` (an untagged nested variant with a none case) really
+# does swallow a sibling arm under ``isinstance``.
+class _RecordMarker:
+    pass
+
+
+class _VariantMarker:
+    pass
+
+
+_SENTINEL_REAL = {
+    "int": int, "bool": bool, "float": float, "str": str,
+    "list": list, "tuple": tuple, "object": object,
+    "Record": _RecordMarker, "Variant": _VariantMarker,
+}
+
+
+def _variant_arm_collision(case_nodes: list[Optional[dict]]) -> bool:
+    """True when an UNTAGGED variant's PAYLOAD arms are ambiguous under
+    the canonical ABI's ``isinstance`` discrimination because two arms'
+    Python classes are subclass-related (order-independent). The only
+    concrete collision today is Int vs Bool (``bool`` subclasses ``int``),
+    but the test is general so a future class pair with a subclass
+    relationship is caught too.
+
+    A no-payload case (``None``) is excluded: wasmtime discriminates it by
+    ``val is None``, not ``isinstance``, so it never collides. A tagged
+    variant is safe (discriminated by name via ``wc.Variant``)."""
+    if _variant_tagged(case_nodes):
+        return False
+    class_lists = [
+        [_SENTINEL_REAL[c] for c in _node_classes(n)]
+        for n in case_nodes if n is not None
+    ]
+    for i in range(len(class_lists)):
+        for j in range(i + 1, len(class_lists)):
+            for a in class_lists[i]:
+                for b in class_lists[j]:
+                    if a is not b and (
+                        issubclass(a, b) or issubclass(b, a)
+                    ):
+                        return True
+    return False
+
+
 # ---- recursive schema build -------------------------------------------
 
 
@@ -337,6 +406,10 @@ def _build_node(
         payload = _build_node(args[0], module, stack)
         if payload is None:
             return None
+        # An Option has a single payload arm, so it can never collide;
+        # the check is a no-op here but kept for uniformity.
+        if _variant_arm_collision([None, payload]):
+            raise VariantArmCollisionUnsupported(_ty_text(type_expr))
         return {
             "kind": "option", "payload": payload,
             "tagged": _variant_tagged([None, payload]),
@@ -350,6 +423,8 @@ def _build_node(
         err = _build_node(args[1], module, stack)
         if ok is None or err is None:
             return None
+        if _variant_arm_collision([ok, err]):
+            raise VariantArmCollisionUnsupported(_ty_text(type_expr))
         return {
             "kind": "result", "ok": ok, "err": err,
             "tagged": _variant_tagged([ok, err]),
@@ -464,9 +539,10 @@ def _build_sum_node(
         "type_id": _sum_type_id,
         "variants": variants_meta,
     }
-    node["tagged"] = _variant_tagged(
-        [_sum_case_payload_node(v) for v in variants_meta]
-    )
+    case_nodes = [_sum_case_payload_node(v) for v in variants_meta]
+    if _variant_arm_collision(case_nodes):
+        raise VariantArmCollisionUnsupported(root)
+    node["tagged"] = _variant_tagged(case_nodes)
     return node
 
 
@@ -528,6 +604,14 @@ def crossing_type_rejection(
             f"uses the self-referential crossing type {e.type_name!r}, "
             "which the foreign boundary does not support (a recursive type "
             "would need named-recursive WIT machinery; feature #4)."
+        )
+    except VariantArmCollisionUnsupported as e:
+        return (
+            f"uses a foreign crossing variant {e.type_text!r} with both an "
+            "Int-class and a Bool-class arm, which cannot be marshalled: "
+            "Python bool is a subclass of int, so the canonical ABI's "
+            "untagged by-type discrimination collapses the two tags "
+            "(feature #4)."
         )
     if schema is None:
         return (
