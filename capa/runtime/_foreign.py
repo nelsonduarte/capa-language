@@ -60,10 +60,13 @@ class ForeignResourceExceeded(ForeignDenied):
     """Raised when a foreign sub-component runs INSIDE its granted
     capability set but breaches its RESOURCE CEILING: it exhausted the
     bounded CPU/fuel budget (an infinite loop / CPU spin) or tried to
-    grow / claim linear memory past the bounded memory limit. This is an
-    availability bound, not a confinement bypass -- the child is still
-    confined to its granted caps; it is now also CPU/memory-bounded so a
-    malicious or buggy component cannot hang or memory-exhaust the host.
+    grow / claim a store resource (linear memory, a funcref table, ...)
+    past its bound. This is an availability bound, not a confinement
+    bypass -- the child is still confined to its granted caps; it is now
+    also resource-bounded so a malicious or buggy component cannot hang or
+    exhaust the host. Three axes are bounded together: CPU (fuel), host
+    wall-time in any blocking granted closure (a per-call cap), and store
+    growth (linear memory + table + object counts).
 
     Subclasses :class:`ForeignDenied` so the CLI surfaces it as the same
     clean, actionable, exit-1 diagnostic (no host hang, no OOM, no raw
@@ -84,6 +87,29 @@ class ForeignResourceExceeded(ForeignDenied):
 DEFAULT_FOREIGN_FUEL = 1_000_000_000
 DEFAULT_FOREIGN_MEMORY_CAP_BYTES = 256 * 1024 * 1024
 
+# Store growable-resource caps (feature #4 hardening, review C2). Fuel and
+# the linear-memory ceiling do NOT bound table growth or object counts, so
+# a child could ``table.grow`` a huge funcref table (~8 bytes/element) or
+# declare many memories / core instances and allocate far past the
+# linear-memory cap. These bound every OTHER growable store resource so no
+# runaway allocation escapes the ceiling. Applied together with the
+# linear-memory cap (governed by the same on/off switch).
+DEFAULT_FOREIGN_TABLE_ELEMENTS = 1_000_000  # ~8 MiB of funcref table
+_FOREIGN_MAX_MEMORIES = 1     # a core module has a single linear memory
+_FOREIGN_MAX_TABLES = 64      # generous vs the 1-2 a real component uses
+_FOREIGN_MAX_INSTANCES = 64   # bounds nested core-instance explosion
+
+# Wall-clock bound (seconds) on any single blocking granted host closure
+# the untrusted child can reach (feature #4 hardening, review C1). Fuel
+# meters wasm INSTRUCTIONS, not time spent inside a host Python call, so a
+# blocking closure (``clock.sleep``, a long-running SQL query) would hang
+# the host indefinitely despite the fuel ceiling unless bounded here.
+# Generous for legitimate use, bounded so no guest- or external-controlled
+# UNBOUNDED blocking is possible. ``net.get`` / ``net.post`` (urllib
+# ``timeout=10``) and ``proc.exec`` (``timeout=30``) are already bounded in
+# ``capa.runtime._capabilities``.
+MAX_FOREIGN_BLOCKING_SECS = 5.0
+
 
 def new_foreign_engine() -> wasmtime.Engine:
     """Build a wasmtime engine for untrusted foreign-component children
@@ -95,14 +121,23 @@ def new_foreign_engine() -> wasmtime.Engine:
     return wasmtime.Engine(config)
 
 
-def _is_memory_limit_error(exc: Exception) -> bool:
-    """True when a wasmtime error is the child breaching its store memory
-    limit (a linear memory whose minimum / grown size exceeds the ceiling
-    the child store was configured with), as opposed to the structural
+def _is_store_limit_error(exc: Exception) -> bool:
+    """True when a wasmtime error is the child breaching a STORE RESOURCE
+    LIMIT (linear memory, table growth, or an object-count cap the child
+    store was configured with), as opposed to the structural
     capability-import deny that also surfaces as a ``WasmtimeError`` at
-    instantiation."""
+    instantiation.
+
+    NOTE (wasmtime 44 coupling): wasmtime-py exposes no typed limit error
+    and a component instance hides its inner memory, so this matches the
+    error TEXT. The capability-import deny reads "component imports
+    instance ..., but a matching implementation was not found" -- neither
+    "exceed" nor "limit" -- so the two are cleanly separable.
+    ``test_store_limit_error_message_shape`` pins the current wasmtime
+    phrasing so a future message change is caught rather than silently
+    misclassifying a real error as a resource breach."""
     text = str(exc).lower()
-    return "memory" in text and ("limit" in text or "exceed" in text)
+    return "exceed" in text and "limit" in text
 
 
 # Kebab-case a Capa method name for the child component's WIT export
@@ -158,14 +193,23 @@ def dispatch_foreign_call(
         )
     store = wasmtime.Store(engine)
     # Resource ceiling on the untrusted child store (feature #4
-    # hardening): fuel bounds CPU, the memory limit bounds linear-memory
-    # growth. Applied BEFORE instantiation so a child declaring an
-    # over-cap minimum memory is refused up front, not after an OOM.
+    # hardening): fuel bounds CPU; the store limits bound EVERY growable
+    # resource -- linear memory, funcref table growth, and the memory /
+    # table / instance object counts -- so neither a runaway
+    # ``memory.grow`` nor a runaway ``table.grow`` (review C2) can escape
+    # the ceiling. Applied BEFORE instantiation so a child declaring an
+    # over-cap minimum is refused up front, not after an OOM.
     fuel_enabled = fuel is not None and fuel > 0
     if fuel_enabled:
         store.set_fuel(fuel)
     if memory_cap_bytes is not None and memory_cap_bytes > 0:
-        store.set_limits(memory_size=memory_cap_bytes)
+        store.set_limits(
+            memory_size=memory_cap_bytes,
+            table_elements=DEFAULT_FOREIGN_TABLE_ELEMENTS,
+            memories=_FOREIGN_MAX_MEMORIES,
+            tables=_FOREIGN_MAX_TABLES,
+            instances=_FOREIGN_MAX_INSTANCES,
+        )
     linker = wc.Linker(engine)
     root = linker.root()
     _register_granted_caps(root, granted)
@@ -173,14 +217,15 @@ def dispatch_foreign_call(
     try:
         instance = linker.instantiate(store, component)
     except wasmtime.WasmtimeError as e:
-        # A child whose linear memory minimum already exceeds the store
-        # ceiling is refused here (availability bound), distinct from the
-        # capability-import deny below.
-        if _is_memory_limit_error(e):
+        # A child whose linear memory / table minimum already exceeds a
+        # store limit is refused here (availability bound), distinct from
+        # the capability-import deny below.
+        if _is_store_limit_error(e):
             raise ForeignResourceExceeded(
-                f"foreign component {boundary_label}: exceeded its memory "
-                f"limit ({memory_cap_bytes} bytes) -- the child's linear "
-                f"memory does not fit the sandbox ceiling. Underlying: {e}"
+                f"foreign component {boundary_label}: exceeded its memory / "
+                f"resource limit (memory cap {memory_cap_bytes} bytes) -- the "
+                f"child's declared store resources do not fit the sandbox "
+                f"ceiling. Underlying: {e}"
             )
         # An un-granted capa:host/<cap> import fails here: the linker has
         # no matching interface. This is the STRUCTURAL host-enforced
@@ -379,7 +424,12 @@ def _bind_clock(root: wc.LinkerInstance, clock: Clock) -> None:
     def clock_sleep(_s, _h, secs: float):
         if not clock.allows() or secs < 0:
             return None
-        time.sleep(secs)
+        # Review C1: fuel meters wasm instructions, not host wall time, so
+        # an unbounded ``time.sleep(secs)`` with a guest-controlled ``secs``
+        # would hang the host indefinitely despite the fuel ceiling. Clamp
+        # to a bounded maximum so a foreign child can never block the host
+        # for longer than one bounded interval per call.
+        time.sleep(min(secs, MAX_FOREIGN_BLOCKING_SECS))
         return None
 
     ifc.add_func("now-secs", lambda _s, _h: time.time())
@@ -392,8 +442,25 @@ def _bind_clock(root: wc.LinkerInstance, clock: Clock) -> None:
 
 def _bind_db(root: wc.LinkerInstance, db: Db) -> None:
     import sqlite3
+    import time
 
     ifc = root.add_instance("capa:host/db")
+
+    def _install_deadline(conn) -> None:
+        # Review C1: guest-supplied SQL can loop unboundedly (e.g. a
+        # ``WITH RECURSIVE`` with no terminating condition), blocking the
+        # host thread past any fuel bound. Install a progress handler that
+        # aborts the statement once a bounded wall-clock deadline passes;
+        # sqlite then raises ``OperationalError`` (a ``sqlite3.Error``),
+        # caught below and surfaced as a clean IoError to the child.
+        deadline = time.monotonic() + MAX_FOREIGN_BLOCKING_SECS
+
+        def _guard():
+            return 1 if time.monotonic() > deadline else 0
+
+        # Fire the guard every ~100k VM instructions (cheap; frequent
+        # enough that a tight query loop is stopped promptly).
+        conn.set_progress_handler(_guard, 100_000)
 
     def db_exec(_s, _h, path: str, sql: str):
         if not db.allows(path):
@@ -403,6 +470,7 @@ def _bind_db(root: wc.LinkerInstance, db: Db) -> None:
         try:
             conn = db._connect_verified(path)
             try:
+                _install_deadline(conn)
                 conn.executescript(sql)
                 conn.commit()
             finally:
@@ -423,6 +491,7 @@ def _bind_db(root: wc.LinkerInstance, db: Db) -> None:
         try:
             conn = db._connect_verified(path)
             try:
+                _install_deadline(conn)
                 cur = conn.execute(sql)
                 rows = cur.fetchall()
             finally:

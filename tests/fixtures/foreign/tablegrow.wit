@@ -1,0 +1,4 @@
+package capa:tablegrow;
+world tablegrow {
+  export grow: func(n: s64) -> s64;
+}

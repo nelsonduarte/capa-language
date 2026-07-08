@@ -139,7 +139,7 @@ resolution, same structural cap-set deny). A String is plain data
 Confinement (which capabilities the child can reach) is only half of a
 sandbox; the other half is a RESOURCE BOUND so a malicious or buggy
 foreign component cannot deny service to the host. The child store is
-therefore metered on two axes IN ADDITION to the restricted linker
+therefore metered on THREE axes IN ADDITION to the restricted linker
 (`capa.runtime._foreign.dispatch_foreign_call`):
 
 - **CPU (fuel).** The child runs on a `consume_fuel` engine with a
@@ -149,34 +149,52 @@ therefore metered on two axes IN ADDITION to the restricted linker
   the host forever. The host reports it as a clean
   `foreign component <label>: exceeded its CPU/fuel budget` diagnostic
   (exit 1), detected robustly by `Store.get_fuel() == 0` after the trap.
-- **Memory.** The child store carries a linear-memory ceiling
-  (`Store.set_limits(memory_size=...)`). A child whose minimum memory
-  exceeds the ceiling is refused at instantiation; a runaway `memory.grow`
-  is capped (grow returns `-1`) so the host never OOMs. Over-cap
+- **Store growth.** `Store.set_limits` bounds EVERY growable store
+  resource, not just linear memory: `memory_size` (the linear-memory
+  ceiling), `table_elements` (funcref/table growth -- fuel does NOT
+  bound `table.grow`, so an ~8-byte-per-element table could otherwise
+  allocate ~1 GB under the memory cap), and the `memories` / `tables` /
+  `instances` object counts. A child whose declared minimum exceeds a
+  limit is refused at instantiation; a runaway `memory.grow` /
+  `table.grow` returns `-1` so the host never OOMs. Over-limit
   instantiation surfaces as
-  `foreign component <label>: exceeded its memory limit` (exit 1).
+  `foreign component <label>: exceeded its memory / resource limit`
+  (exit 1).
+- **Host wall-time in blocking closures.** Fuel meters wasm
+  instructions, NOT time spent inside a granted host closure, so a
+  blocking closure the child can reach is bounded separately or it would
+  hang the host despite the fuel ceiling. `clock.sleep` is clamped to a
+  bounded maximum per call; a `db.exec` / `db.query` SQL statement is
+  aborted past a bounded wall-clock deadline (a sqlite progress handler);
+  `net.get` / `net.post` (urllib `timeout=10`) and `proc.exec`
+  (`timeout=30`) are already bounded in `capa.runtime._capabilities`.
 
 This is separate from the parent `--wasm-memory-cap` (which bounds the
 PARENT's `$alloc` write-back of a returned aggregate); the ceiling here
-bounds the untrusted CHILD's OWN allocation and CPU. The confinement
-(restricted linker, granted-cap set, host-bound closures, handle
-resolution, marshalling) is UNCHANGED -- this only adds the store
-ceiling. The child is still confined to its granted capabilities; now it
-is also CPU/memory-bounded.
+bounds the untrusted CHILD's OWN allocation, CPU, and blocking time. The
+confinement (restricted linker, granted-cap set, host-bound closures,
+handle resolution, marshalling) is UNCHANGED -- this only adds the store
+ceiling and the blocking-closure bounds. The child is still confined to
+its granted capabilities; now it also cannot hang or exhaust the host by
+CPU spin, unbounded blocking, or runaway allocation.
 
 **Defaults and flags.**
 
 | Axis | Default | Flag | Notes |
 |------|---------|------|-------|
-| CPU | 1,000,000,000 fuel (~1e9 instr) | `--foreign-fuel <N>` | `0` opts out (child runs on the unmetered engine). |
-| Memory | 256 MiB | `--foreign-memory-cap <MiB>` | `0` opts out (no store memory limit). |
+| CPU | 1,000,000,000 fuel (~1e9 instr) | `--foreign-fuel <N>` | `0` opts out (child runs on the unmetered engine); negative is rejected. |
+| Store growth | 256 MiB memory + 1,000,000 table elements + bounded memory/table/instance counts | `--foreign-memory-cap <MiB>` | `0` opts out (no store limits); negative is rejected. |
+| Blocking closures | 5 s per `clock.sleep` / SQL statement; existing net/proc timeouts | (fixed) | Bounds host wall-time a granted blocking closure can consume. |
 
-Both flags take effect on the `--wasm --run` path only (the backend that
-sandboxes the child). Absent, the generous defaults apply: they let every
-legitimate crossing fixture (which uses a single 64 KiB page and trivial
-CPU) run unaffected, while bounding the pathological case. The defaults
-live in `capa.runtime._foreign` as `DEFAULT_FOREIGN_FUEL` /
-`DEFAULT_FOREIGN_MEMORY_CAP_BYTES`.
+The `--foreign-*` flags take effect on the `--wasm --run` path only (the
+backend that sandboxes the child) and reject negative values (a typo
+cannot silently disable a bound; `0` is the explicit opt-out). Absent,
+the generous defaults apply: they let every legitimate crossing fixture
+(which uses a single 64 KiB page and trivial CPU) run unaffected, while
+bounding the pathological case. The defaults live in
+`capa.runtime._foreign` as `DEFAULT_FOREIGN_FUEL` /
+`DEFAULT_FOREIGN_MEMORY_CAP_BYTES` / `DEFAULT_FOREIGN_TABLE_ELEMENTS` /
+`MAX_FOREIGN_BLOCKING_SECS`.
 
 ## Scope and limits
 
