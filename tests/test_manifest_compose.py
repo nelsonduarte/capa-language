@@ -390,8 +390,10 @@ class TestNonRegression(_TmpTree):
 
     def test_schema_version_constant(self):
         # Bumped to 2 in S3 (per-package declared_ceiling /
-        # ceiling_violations + the product-level capability_ceilings block).
-        self.assertEqual(COMPOSED_SCHEMA_VERSION, 2)
+        # ceiling_violations + the product-level capability_ceilings block);
+        # to 3 in feature #6 P2 (per-package + product declassification
+        # rollup).
+        self.assertEqual(COMPOSED_SCHEMA_VERSION, 3)
 
     def test_find_package_root(self):
         root = self.tmp / "prod"
@@ -431,6 +433,93 @@ class TestPackageDag(_TmpTree):
         names = sorted(n.name for n in nodes.values())
         self.assertEqual(names, ["mid", "prod"])
         self.assertEqual(node_root.name, "prod")
+
+
+class TestDeclassificationRollup(_TmpTree):
+    """Feature #6 (P2): the composed SBOM rolls each audited
+    @secret -> @public declassification site up to its owning package and
+    to the product, mirroring the capability attribution. A package whose
+    composed authority is TOP reports its count as a FLOOR (never a
+    confident zero) so a policy can fail closed over it."""
+
+    def _find(self, composed, name):
+        for p in composed["packages"]:
+            if p["name"] == name:
+                return p
+        raise AssertionError(f"no package {name!r}")
+
+    def test_declassification_attributed_to_owning_dependency(self):
+        # The declassify site lives in a VENDORED dependency, so it must be
+        # attributed to that dependency, not the root; the root's composed
+        # (transitive) count still sees it, and so does the product total.
+        root = self.tmp / "app"
+        _write(root, "capa.toml", (
+            '[package]\nname = "app"\nversion = "0.1.0"\n\n'
+            '[dependencies.lib]\n'
+            'git = "https://github.com/example/lib"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa",
+               "import lib.mod\n\npub fun run() -> Unit\n    go()\n    return\n")
+        _write(root, "vendor/lib/capa.toml",
+               '[package]\nname = "lib"\nversion = "0.1.0"\n')
+        _write(root, "vendor/lib/mod.capa", (
+            "pub fun go() -> Unit\n    return\n"
+            "pub fun disclose(token: @secret String, stdio: Stdio) -> Unit\n"
+            "    stdio.println(declassify(token, reason: \"audit\"))\n"
+            "    return\n"
+        ))
+        composed, _ = _compose(root, "main.capa")
+        self.assertEqual(composed["composed_schema_version"], 3)
+
+        lib = self._find(composed, "lib")
+        self.assertEqual(lib["attributed_declassification_sites"], 1)
+        self.assertEqual(lib["composed_declassification_sites"], 1)
+        self.assertTrue(lib["composed_has_declassification"])
+        self.assertEqual(len(lib["attributed_declassifications"]), 1)
+        site = lib["attributed_declassifications"][0]
+        self.assertEqual(site["reason"], "audit")
+        self.assertIn("vendor/lib/mod.capa", site["pos"])
+
+        app = self._find(composed, "app")
+        # The root did not declassify itself, but its transitive closure did.
+        self.assertEqual(app["attributed_declassification_sites"], 0)
+        self.assertEqual(app["composed_declassification_sites"], 1)
+        self.assertTrue(app["composed_has_declassification"])
+
+        self.assertEqual(composed["composed"]["declassification_sites"], 1)
+        self.assertTrue(composed["composed"]["has_declassification"])
+
+    def test_clean_product_has_zero_declassification(self):
+        root = self.tmp / "app"
+        _write(root, "capa.toml", '[package]\nname = "app"\nversion = "0.1.0"\n')
+        _write(root, "main.capa",
+               "pub fun add(a: Int, b: Int) -> Int\n    return a + b\n")
+        composed, _ = _compose(root, "main.capa")
+        app = self._find(composed, "app")
+        self.assertEqual(app["composed_declassification_sites"], 0)
+        self.assertFalse(app["composed_has_declassification"])
+        self.assertFalse(app["attributed_declassifications"])
+        self.assertEqual(composed["composed"]["declassification_sites"], 0)
+        self.assertFalse(composed["composed"]["has_declassification"])
+
+    def test_top_package_count_is_a_floor(self):
+        # A package with an unresolvable dependency is TOP; its declassify
+        # count is a FLOOR (the unanalyzable subtree may declassify unseen),
+        # and composed_authority_unknown lets a policy fail closed.
+        root = self.tmp / "prod"
+        _write(root, "capa.toml", (
+            '[package]\nname = "prod"\nversion = "0.1.0"\n\n'
+            '[dependencies.ghost]\n'
+            'git = "https://github.com/example/ghost"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa",
+               "pub fun add(a: Int, b: Int) -> Int\n    return a + b\n")
+        composed, _ = _compose(root, "main.capa")
+        prod = self._find(composed, "prod")
+        self.assertTrue(prod["composed_authority_unknown"])
+        # The known count is zero, but it is a FLOOR, not a confident zero.
+        self.assertEqual(prod["composed_declassification_sites"], 0)
+        self.assertFalse(prod["composed_has_declassification"])
 
 
 def _node(name, caps=(), unsafe=False):

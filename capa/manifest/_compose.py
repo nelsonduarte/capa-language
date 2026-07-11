@@ -79,7 +79,12 @@ if TYPE_CHECKING:
 #   1 - initial composed SBOM (S2).
 #   2 - per-package ``declared_ceiling`` / ``ceiling_violations`` and the
 #       product-level ``capability_ceilings`` pass/fail block (S3).
-COMPOSED_SCHEMA_VERSION = 2
+#   3 - per-package declassification rollup (``attributed_declassifications``
+#       / ``attributed_declassification_sites`` /
+#       ``composed_declassification_sites`` / ``composed_has_declassification``)
+#       and the product-level ``declassification_sites`` /
+#       ``has_declassification`` (feature #6, P2).
+COMPOSED_SCHEMA_VERSION = 3
 
 
 class ComposeError(Exception):
@@ -178,6 +183,12 @@ class PackageNode:
     # The package's DECLARED capability ceiling (S3), or ``None`` when it
     # declares no ``[capabilities]`` section (unconstrained; not checked).
     ceiling: Optional["CapabilityCeiling"] = None
+    # Feature #6 (P2): the audited @secret -> @public declassification sites
+    # ATTRIBUTED to this package's own functions (each a ``{reason, pos}``
+    # dict, sorted canonically). Empty when the package declassifies
+    # nothing. The transitive (composed) count is rolled up separately so a
+    # policy can gate on where sensitive data is deliberately released.
+    declassifications: list[dict[str, str]] = field(default_factory=list)
 
 
 def _rel_display(path: Path, root_dir: Path) -> str:
@@ -397,6 +408,9 @@ def _attribute(
     unsafe: dict[Path, bool] = {d: False for d in nodes}
     foreign: dict[Path, bool] = {d: False for d in nodes}
     foreign_caps: dict[Path, set[str]] = {d: set() for d in nodes}
+    # Feature #6 (P2): the audited declassification sites attributed to each
+    # package, keyed by the same owner as the capability attribution.
+    declass: dict[Path, list[dict[str, str]]] = {d: [] for d in nodes}
 
     # Feature #4 (F2a): the DECLARED capability set of each typed
     # foreign-component boundary the module declares, keyed by the
@@ -437,6 +451,20 @@ def _attribute(
         caps[owner] |= set(rec["transitively_reachable_capabilities"])
         if rec["has_unsafe"]:
             unsafe[owner] = True
+        # Feature #6 (P2): attribute each audited @secret -> @public
+        # declassification site to the SAME owner. The manifest records the
+        # site position as ``<line>:<col>`` (function-local); prepend the
+        # function's own display file (the leading path of ``rec["pos"]``,
+        # split from the right so a Windows drive-letter colon never
+        # confuses it) so each site carries a full, root-relative,
+        # deterministic position. Defensive .get(): a manifest serialised
+        # before the declassifications field has no key.
+        site_file = rec["pos"].rsplit(":", 2)[0]
+        for site in rec.get("declassifications", []):
+            declass[owner].append({
+                "reason": site.get("reason", ""),
+                "pos": f"{site_file}:{site.get('pos', '')}",
+            })
         # Feature #4 (F1/F2a): invoking a foreign component composes as
         # TOP under the default posture, or as BOUNDED {declared caps}
         # under the Wasm-sandbox posture (see ``_own_authority``).
@@ -469,6 +497,10 @@ def _attribute(
         node.calls_foreign_component = foreign[d]
         node.foreign_declared_caps = (
             frozenset(foreign_caps[d]) if foreign[d] else frozenset()
+        )
+        # Canonical, deterministic order: by full position, then reason.
+        node.declassifications = sorted(
+            declass[d], key=lambda s: (s["pos"], s["reason"]),
         )
 
 
@@ -532,6 +564,39 @@ def _compose_node(
                     reasons=((n.name, edge.name, edge.reason or "unresolved"),),
                 ))
     return result
+
+
+def _compose_declassifications(
+    node: PackageNode, nodes: dict[Path, PackageNode],
+) -> int:
+    """The TRANSITIVE count of audited declassification sites over
+    ``node``'s entire resolved-edge closure (its own attributed sites plus
+    every reachable dependency's).
+
+    Walks the SAME resolved-edge closure as :func:`_compose_node` (``seen``
+    makes it cycle-safe) so the declassification rollup lines up exactly
+    with the capability rollup: a package's ``composed_declassification_sites``
+    counts every deliberate secret->public release reachable from it. An
+    UNRESOLVED edge contributes nothing here (it cannot be analyzed); the
+    count is therefore a FLOOR when the node's ``composed_authority_unknown``
+    is true, which is precisely why a policy over such a node must fail
+    closed rather than trust a confident zero."""
+    total = 0
+    seen: set[Path] = set()
+    stack: list[Path] = [node.manifest_dir]
+    while stack:
+        d = stack.pop()
+        if d in seen:
+            continue
+        seen.add(d)
+        n = nodes[d]
+        total += len(n.declassifications)
+        for edge in n.dep_edges:
+            if edge.resolved and edge.target_dir is not None:
+                target = edge.target_dir.resolve()
+                if target not in seen:
+                    stack.append(target)
+    return total
 
 
 def _own_authority(node: PackageNode, enforcement: str = "none") -> Authority:
@@ -848,6 +913,13 @@ def build_composed_sbom(
         d: _compose_node(node, nodes, enforcement)
         for d, node in nodes.items()
     }
+    # Feature #6 (P2): the transitive declassification-site count per node
+    # (its own attributed sites plus every reachable dependency's), over the
+    # SAME resolved-edge closure as the capability rollup.
+    declass_total_by_dir: dict[Path, int] = {
+        d: _compose_declassifications(node, nodes)
+        for d, node in nodes.items()
+    }
 
     # Deterministic package ordering: by root-relative path, then name.
     ordered = sorted(nodes.values(), key=lambda n: (n.rel_path, n.name))
@@ -882,6 +954,18 @@ def build_composed_sbom(
             "declared_ceiling": declared_ceiling,
             "ceiling_allow_unknown": allow_unknown,
             "ceiling_violations": [v.to_dict() for v in violations],
+            # Feature #6 (P2): the declassification rollup. The attributed
+            # sites are THIS package's own audited secret->public bridges;
+            # the composed count is transitive over its resolved-edge
+            # closure. When ``composed_authority_unknown`` is true the count
+            # is a FLOOR (an unanalyzable subtree may declassify unseen), so
+            # a no-declassification / no-secret-egress policy fails closed.
+            "attributed_declassifications": node.declassifications,
+            "attributed_declassification_sites": len(node.declassifications),
+            "composed_declassification_sites":
+                declass_total_by_dir[node.manifest_dir],
+            "composed_has_declassification":
+                declass_total_by_dir[node.manifest_dir] > 0,
         })
         for e in node.dep_edges:
             to_pkg = None
@@ -941,6 +1025,14 @@ def build_composed_sbom(
             "capabilities": sorted(product.caps),
             "authority_unknown": product.unknown,
             "authority_unknown_reasons": _reason_dicts(product.reasons),
+            # Feature #6 (P2): the product-wide declassification total (the
+            # transitive count over the whole package DAG from the root) and
+            # a boolean. When ``authority_unknown`` is true this total is a
+            # FLOOR, so a product-scoped no-declassification policy fails
+            # closed rather than trust it.
+            "declassification_sites": declass_total_by_dir[root.manifest_dir],
+            "has_declassification":
+                declass_total_by_dir[root.manifest_dir] > 0,
             "note": (
                 "composed = union over the product's package DAG of each "
                 "package's attributed capabilities. authority_unknown is "

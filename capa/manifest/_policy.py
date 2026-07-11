@@ -25,6 +25,15 @@ FIXED, enumerated set of predicate kinds:
                            - the product must have no unresolved
                              dependency (an unanalyzable / unvendored /
                              native edge).
+  * ``no-declassification`` - a named package (or the whole product) must
+                             contain ZERO audited @secret -> @public
+                             declassification sites (feature #6, P2).
+  * ``no-secret-egress``   - no package may BOTH declassify secret data
+                             AND hold a policy-declared egress capability
+                             (the exfiltration-path prohibition: the
+                             authority to unmask secret data and the
+                             authority to send it out must not co-reside in
+                             one package) (feature #6, P2).
 
 The evaluator is PURE over what :func:`._compose.build_composed_sbom`
 already emits (``packages`` / ``edges`` / ``unresolved_dependencies`` /
@@ -83,6 +92,8 @@ _POLICY_KINDS = frozenset({
     "forbid-capability",
     "forbid-dependency",
     "no-unresolved-dependencies",
+    "no-declassification",
+    "no-secret-egress",
 })
 
 # Keys every policy entry may carry, plus the kind-specific keys. Anything
@@ -96,6 +107,8 @@ _KIND_KEYS: dict[str, frozenset[str]] = {
     "forbid-capability": frozenset({"capability", "package"}),
     "forbid-dependency": frozenset({"package", "forbidden"}),
     "no-unresolved-dependencies": frozenset(),
+    "no-declassification": frozenset({"package"}),
+    "no-secret-egress": frozenset({"capabilities", "package"}),
 }
 
 # The two capability views a cap-set predicate may test over.
@@ -333,6 +346,18 @@ def _parse_params(
             "package": _require_pkg_name(path, where, entry, "package"),
             "forbidden": _require_pkg_name(path, where, entry, "forbidden"),
         }
+    if kind == "no-declassification":
+        return {"package": _optional_pkg_name(path, where, entry, "package")}
+    if kind == "no-secret-egress":
+        # The author declares the egress set EXPLICITLY (enumerated-and-
+        # closed philosophy): no hardcoded default. Each name is validated
+        # against the same capability vocabulary as the cap-valued
+        # predicates, so a typo is a hard error, not a silently-inert rule.
+        caps = _require_cap_list(path, where, entry, "capabilities")
+        return {
+            "capabilities": caps,
+            "package": _optional_pkg_name(path, where, entry, "package"),
+        }
     # no-unresolved-dependencies
     return {}
 
@@ -458,6 +483,8 @@ def _evaluate_one(
         "forbid-capability": _eval_forbid_capability,
         "forbid-dependency": _eval_forbid_dependency,
         "no-unresolved-dependencies": _eval_no_unresolved,
+        "no-declassification": _eval_no_declassification,
+        "no-secret-egress": _eval_no_secret_egress,
     }
     return dispatch[pol.kind](pol, composed, paths)
 
@@ -740,6 +767,120 @@ def _eval_no_unresolved(pol, composed, paths):
                 f"{dependency!r} ({reason}), which policy {pol.id!r} forbids"
             ),
         ))
+    return out
+
+
+def _eval_no_declassification(pol, composed, paths):
+    """A named package (or the whole product) must contain ZERO audited
+    @secret -> @public declassification sites (feature #6, P2).
+
+    The count is the COMPOSED (transitive) one, mirroring the capability
+    predicates: a package "contains" a declassification when it or any
+    dependency in its resolved-edge closure declassifies. A positive count
+    is a ``violation``. A TOP package / product (composed authority
+    unknown) FAILS CLOSED with ``authority_unknown`` unless
+    ``allow_unknown`` is set: an unanalyzable subtree may declassify unseen,
+    so a confident "zero" cannot be proven. A named package absent from the
+    graph is ``unsatisfiable``."""
+    target = pol.params["package"]
+    if target is None:
+        # Product-wide: read the roll-up in ``composed``.
+        product = composed.get("composed", {})
+        root = composed.get("product", {}).get("name", "")
+        count = product.get("declassification_sites", 0)
+        out: list[PolicyViolation] = []
+        if count > 0:
+            out.append(PolicyViolation(
+                policy_id=pol.id, kind=pol.kind, verdict="violation",
+                package=None, capability=None, path=(root,) if root else (),
+                detail=(
+                    f"the product contains {count} audited declassification "
+                    f"site(s) (@secret -> @public bridges), but policy "
+                    f"{pol.id!r} requires zero"
+                ),
+            ))
+        elif product.get("authority_unknown") and not pol.allow_unknown:
+            out.append(PolicyViolation(
+                policy_id=pol.id, kind=pol.kind, verdict="authority_unknown",
+                package=None, capability=None, path=(root,) if root else (),
+                detail=(
+                    f"policy {pol.id!r} (no-declassification) cannot be "
+                    f"verified over the product: its composed authority is "
+                    f"UNKNOWN (a TOP element from an unresolvable / native / "
+                    f"Unsafe-crossing subtree), so an unanalyzable subtree "
+                    f"cannot be proven free of declassification. Set "
+                    f"allow_unknown = true to waive."
+                ),
+            ))
+        return out
+
+    pkgs, found = _scope_packages(composed, target)
+    if not found:
+        return [_unsatisfiable(pol, target)]
+    out = []
+    for pkg in pkgs:
+        name = pkg["name"]
+        count = pkg.get("composed_declassification_sites", 0)
+        if count > 0:
+            out.append(PolicyViolation(
+                policy_id=pol.id, kind=pol.kind, verdict="violation",
+                package=name, capability=None, path=paths.get(name, (name,)),
+                detail=(
+                    f"package {name!r} contains {count} audited "
+                    f"declassification site(s) (@secret -> @public bridges), "
+                    f"but policy {pol.id!r} requires zero"
+                ),
+            ))
+        elif pkg.get("composed_authority_unknown") and not pol.allow_unknown:
+            out.append(_unknown_over_package(
+                pol, pkg, paths, "no-declassification",
+            ))
+    return out
+
+
+def _eval_no_secret_egress(pol, composed, paths):
+    """No in-scope package may BOTH declassify secret data AND hold a
+    policy-declared egress capability (feature #6, P2).
+
+    This is the exfiltration-path prohibition: the authority to UNMASK
+    secret data (a declassification site) and the authority to SEND IT OUT
+    (an egress capability such as Net) must not co-reside in one package, so
+    a review boundary sits between them. A package that does both is a
+    ``violation``; a TOP in-scope package (its declassification status
+    and/or capability set unknown) FAILS CLOSED with ``authority_unknown``
+    unless ``allow_unknown`` is set; a named absent package is
+    ``unsatisfiable``. Both facts are the COMPOSED (transitive) ones."""
+    egress = set(pol.params["capabilities"])
+    display = sorted(egress)
+    target = pol.params["package"]
+    pkgs, found = _scope_packages(composed, target)
+    if target is not None and not found:
+        return [_unsatisfiable(pol, target)]
+
+    out: list[PolicyViolation] = []
+    for pkg in pkgs:
+        name = pkg["name"]
+        count = pkg.get("composed_declassification_sites", 0)
+        held = sorted(egress & set(pkg.get("composed_capabilities", [])))
+        if count > 0 and held:
+            out.append(PolicyViolation(
+                policy_id=pol.id, kind=pol.kind, verdict="violation",
+                package=name, capability=None, path=paths.get(name, (name,)),
+                detail=(
+                    f"package {name!r} BOTH declassifies secret data "
+                    f"({count} site(s)) AND holds egress capability(ies) "
+                    f"{held} (of the declared egress set {display}): the "
+                    f"authority to unmask secret data and the authority to "
+                    f"send it out must not co-reside in one package (an "
+                    f"exfiltration path), which policy {pol.id!r} forbids"
+                ),
+            ))
+        elif pkg.get("composed_authority_unknown") and not pol.allow_unknown:
+            # A TOP package could declassify AND/OR hold an egress capability
+            # unseen, so the co-residence cannot be ruled out: fail closed.
+            out.append(_unknown_over_package(
+                pol, pkg, paths, f"no-secret-egress of {display}",
+            ))
     return out
 
 

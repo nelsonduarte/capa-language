@@ -45,10 +45,12 @@ The package is split internally:
   ``(container, name)`` identity and wrapped in the S1 content-integrity
   envelope (feature #2).
 - :mod:`._policy` - ORGANIZATION capability-compliance policies
-  (feature #6, P1): a product-level ``capa-policy.toml`` declares a
+  (feature #6, P1/P2): a product-level ``capa-policy.toml`` declares a
   FIXED set of predicate kinds (exclusion, product-subset, purity,
-  forbid-capability, forbid-dependency, no-unresolved-dependencies)
-  over the composed capability graph; ``evaluate_policies`` produces a
+  forbid-capability, forbid-dependency, no-unresolved-dependencies, and
+  the declassification-aware no-declassification / no-secret-egress)
+  over the composed capability + declassification graph;
+  ``evaluate_policies`` produces a
   conformance report (fail-closed on authority-unknown) wrapped in the
   S1 content-integrity envelope, driving the ``--check-policies`` gate.
 - :mod:`._cyclonedx` - CycloneDX 1.5 SBOM wrapper around the

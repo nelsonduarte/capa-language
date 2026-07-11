@@ -214,6 +214,56 @@ class TestPolicySchema(_TmpTree):
                 '[[policy]]\nid = "purity#0"\nkind = "purity"\npackage = "x"\n'
             )
 
+    # Feature #6 (P2): declassification-aware kinds parse strictly too.
+
+    def test_no_declassification_parses(self):
+        pols = self._read(
+            '[[policy]]\nkind = "no-declassification"\npackage = "a"\n'
+        )
+        self.assertEqual(pols[0].kind, "no-declassification")
+        self.assertEqual(pols[0].params["package"], "a")
+
+    def test_no_declassification_package_optional(self):
+        pols = self._read('[[policy]]\nkind = "no-declassification"\n')
+        self.assertIsNone(pols[0].params["package"])
+
+    def test_no_declassification_unknown_key_rejected(self):
+        with self.assertRaises(PolicyError) as cm:
+            self._read(
+                '[[policy]]\nkind = "no-declassification"\nbogus = 1\n'
+            )
+        self.assertIn("bogus", str(cm.exception))
+
+    def test_no_secret_egress_parses(self):
+        pols = self._read(
+            '[[policy]]\nkind = "no-secret-egress"\ncapabilities = ["Net"]\n'
+        )
+        self.assertEqual(pols[0].kind, "no-secret-egress")
+        self.assertEqual(pols[0].params["capabilities"], ["Net"])
+        self.assertIsNone(pols[0].params["package"])
+
+    def test_no_secret_egress_unknown_key_rejected(self):
+        with self.assertRaises(PolicyError) as cm:
+            self._read(
+                '[[policy]]\nkind = "no-secret-egress"\n'
+                'capabilities = ["Net"]\nsink = "x"\n'
+            )
+        self.assertIn("sink", str(cm.exception))
+
+    def test_no_secret_egress_bad_capability_rejected(self):
+        with self.assertRaises(PolicyError) as cm:
+            self._read(
+                '[[policy]]\nkind = "no-secret-egress"\n'
+                'capabilities = ["Nett"]\n'
+            )
+        self.assertIn("Nett", str(cm.exception))
+
+    def test_no_secret_egress_requires_capabilities(self):
+        with self.assertRaises(PolicyError):
+            self._read(
+                '[[policy]]\nkind = "no-secret-egress"\npackage = "a"\n'
+            )
+
 
 # ---------------------------------------------------------------------------
 # EXCLUSION
@@ -884,6 +934,244 @@ class TestCheckPoliciesCli(_TmpTree):
         _rc1, out1, _ = self._run(root, "main.capa", "--conformance-report")
         _rc2, out2, _ = self._run(root, "main.capa", "--conformance-report")
         self.assertEqual(out1, out2)
+
+
+# ---------------------------------------------------------------------------
+# NO-DECLASSIFICATION (feature #6, P2)
+# ---------------------------------------------------------------------------
+
+
+# A function that audibly declassifies a @secret value to a public sink.
+_DISCLOSE = (
+    "pub fun handler(token: @secret String, stdio: Stdio) -> Unit\n"
+    "    stdio.println(declassify(token, reason: \"audit\"))\n"
+    "    return\n"
+)
+_CLEAN = "pub fun add(a: Int, b: Int) -> Int\n    return a + b\n"
+
+
+class TestNoDeclassification(_TmpTree):
+    def _tree(self, main_src: str, policy: str) -> Path:
+        root = self.tmp / "app"
+        _write(root, "capa.toml", '[package]\nname = "app"\nversion = "0.1.0"\n')
+        _write(root, "main.capa", main_src)
+        _write(root, "capa-policy.toml", policy)
+        return root
+
+    def _ghost_tree(self, policy: str) -> Path:
+        # prod is analyzable but declares an unresolvable dependency, so its
+        # composed authority is TOP (composed_authority_unknown).
+        root = self.tmp / "prod"
+        _write(root, "capa.toml", (
+            '[package]\nname = "prod"\nversion = "0.1.0"\n\n'
+            '[dependencies.ghost]\n'
+            'git = "https://github.com/example/ghost"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa", _CLEAN)
+        _write(root, "capa-policy.toml", policy)
+        return root
+
+    def test_clean_package_passes(self):
+        root = self._tree(
+            _CLEAN,
+            '[[policy]]\nid = "nd"\nkind = "no-declassification"\n'
+            'package = "app"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        self.assertTrue(_result(report, "nd")["pass"])
+
+    def test_declassifying_package_violation(self):
+        root = self._tree(
+            _DISCLOSE,
+            '[[policy]]\nid = "nd"\nkind = "no-declassification"\n'
+            'package = "app"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nd")
+        self.assertFalse(r["pass"])
+        v = r["violations"][0]
+        self.assertEqual(v["verdict"], "violation")
+        self.assertEqual(v["package"], "app")
+        self.assertIn("declassification", v["detail"])
+
+    def test_product_wide_violation_when_product_declassifies(self):
+        root = self._tree(
+            _DISCLOSE,
+            '[[policy]]\nid = "nd"\nkind = "no-declassification"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nd")
+        self.assertFalse(r["pass"])
+        v = r["violations"][0]
+        self.assertEqual(v["verdict"], "violation")
+        self.assertIsNone(v["package"])
+
+    def test_product_wide_clean_passes(self):
+        root = self._tree(
+            _CLEAN,
+            '[[policy]]\nid = "nd"\nkind = "no-declassification"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        self.assertTrue(_result(report, "nd")["pass"])
+
+    def test_missing_named_package_unsatisfiable(self):
+        root = self._tree(
+            _CLEAN,
+            '[[policy]]\nid = "nd"\nkind = "no-declassification"\n'
+            'package = "ghost"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nd")
+        self.assertFalse(r["pass"])
+        self.assertEqual(r["violations"][0]["verdict"], "unsatisfiable")
+
+    def test_top_package_fails_closed(self):
+        root = self._ghost_tree(
+            '[[policy]]\nid = "nd"\nkind = "no-declassification"\n'
+            'package = "prod"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nd")
+        self.assertFalse(r["pass"])
+        self.assertEqual(r["violations"][0]["verdict"], "authority_unknown")
+
+    def test_top_package_waived_by_allow_unknown(self):
+        root = self._ghost_tree(
+            '[[policy]]\nid = "nd"\nkind = "no-declassification"\n'
+            'package = "prod"\nallow_unknown = true\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        self.assertTrue(_result(report, "nd")["pass"])
+
+    def test_top_product_wide_fails_closed(self):
+        root = self._ghost_tree(
+            '[[policy]]\nid = "nd"\nkind = "no-declassification"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nd")
+        self.assertFalse(r["pass"])
+        self.assertEqual(r["violations"][0]["verdict"], "authority_unknown")
+
+
+# ---------------------------------------------------------------------------
+# NO-SECRET-EGRESS (feature #6, P2)
+# ---------------------------------------------------------------------------
+
+
+class TestNoSecretEgress(_TmpTree):
+    # BOTH declassifies AND holds an egress capability (Net) in one package.
+    _BOTH = (
+        "pub fun leak(token: @secret String, _net: Net, stdio: Stdio) -> Unit\n"
+        "    stdio.println(declassify(token, reason: \"send\"))\n"
+        "    return\n"
+    )
+    # Declassifies but holds no egress capability (Stdio only).
+    _DISC_ONLY = _DISCLOSE
+    # Holds Net but declassifies nothing.
+    _NET_ONLY = "pub fun send(_net: Net) -> Unit\n    return\n"
+
+    def _tree(self, main_src: str, policy: str) -> Path:
+        root = self.tmp / "app"
+        _write(root, "capa.toml", '[package]\nname = "app"\nversion = "0.1.0"\n')
+        _write(root, "main.capa", main_src)
+        _write(root, "capa-policy.toml", policy)
+        return root
+
+    def _ghost_tree(self, policy: str) -> Path:
+        root = self.tmp / "prod"
+        _write(root, "capa.toml", (
+            '[package]\nname = "prod"\nversion = "0.1.0"\n\n'
+            '[dependencies.ghost]\n'
+            'git = "https://github.com/example/ghost"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa", _CLEAN)
+        _write(root, "capa-policy.toml", policy)
+        return root
+
+    def test_declassify_and_egress_violation(self):
+        root = self._tree(
+            self._BOTH,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        v = r["violations"][0]
+        self.assertEqual(v["verdict"], "violation")
+        self.assertEqual(v["package"], "app")
+        self.assertIn("Net", v["detail"])
+        self.assertIn("exfiltration", v["detail"])
+
+    def test_declassify_without_egress_passes(self):
+        root = self._tree(
+            self._DISC_ONLY,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        self.assertTrue(_result(report, "nse")["pass"])
+
+    def test_egress_without_declassify_passes(self):
+        root = self._tree(
+            self._NET_ONLY,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        self.assertTrue(_result(report, "nse")["pass"])
+
+    def test_egress_set_is_explicit_no_hardcoded_default(self):
+        # The package declassifies AND holds Net, but the DECLARED egress set
+        # is [Fs]: no co-residence with the declared set -> passes. Confirms
+        # the egress vocabulary is author-declared, not a hardcoded default.
+        root = self._tree(
+            self._BOTH,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Fs"]\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        self.assertTrue(_result(report, "nse")["pass"])
+
+    def test_scoped_to_named_package(self):
+        root = self._tree(
+            self._BOTH,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\npackage = "app"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        self.assertEqual(r["violations"][0]["verdict"], "violation")
+
+    def test_missing_named_package_unsatisfiable(self):
+        root = self._tree(
+            self._BOTH,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\npackage = "ghost"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        self.assertEqual(r["violations"][0]["verdict"], "unsatisfiable")
+
+    def test_top_package_fails_closed(self):
+        root = self._ghost_tree(
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\npackage = "prod"\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        self.assertEqual(r["violations"][0]["verdict"], "authority_unknown")
+
+    def test_top_package_waived_by_allow_unknown(self):
+        root = self._ghost_tree(
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\npackage = "prod"\nallow_unknown = true\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        self.assertTrue(_result(report, "nse")["pass"])
 
 
 if __name__ == "__main__":
