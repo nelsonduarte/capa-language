@@ -1934,6 +1934,9 @@ class _IfcMixin:
                 self._err(msg, arg.pos)
             else:
                 self._warn(msg, arg.pos)
+                # Feature #6 (B1): materialize the un-audited leak. The
+                # sink capability is the receiver capability reached.
+                self._record_unaudited_secret_sink(cap_name, arg.pos)
 
         # Implicit control flow (roadmap S2.implicit): the sink fires
         # under a secret pc -- it is inside a branch whose condition is
@@ -1987,6 +1990,12 @@ class _IfcMixin:
                 self._err(msg, e.args[0].pos)
             else:
                 self._warn(msg, e.args[0].pos)
+                # Feature #6 (B1): panic writes its message to stderr -- the
+                # analyzer frames it as a public sink "exactly like
+                # Stdio.eprintln" -- so the un-audited egress is via Stdio.
+                # (panic itself needs no capability, but the secret still
+                # leaves the program through the stderr stream Stdio owns.)
+                self._record_unaudited_secret_sink("Stdio", e.args[0].pos)
         if (
             getattr(self, "_strict_ifc", False)
             and L.normalize(getattr(self, "_pc_label", L.PUBLIC)) == L.SECRET
@@ -2168,6 +2177,13 @@ class _IfcMixin:
         sink_params = self._ifc_summaries.get(key)
         if not sink_params:
             return
+        # Feature #6 (B1): the egress capabilities the routed secret
+        # reaches inside the callee, PER PARAMETER (precise: a
+        # free-function name resolves to exactly one callable). Tagging the
+        # leak with only the sink-reaching parameter's own caps -- not the
+        # whole-callable union -- keeps a secret routed to a Net-only param
+        # from being fabricated as reaching a sibling param's Fs.
+        callee_sink_caps = self._ifc_sink_caps.get(key, {})
         param_tys = getattr(getattr(sym, "ty", None), "params", ())
         for param_idx, arg_idx in enumerate(perm):
             if param_idx not in sink_params:
@@ -2184,7 +2200,10 @@ class _IfcMixin:
                 if param_idx < len(sym.param_names)
                 else f"argument {arg_idx + 1}"
             )
-            self._emit_ifc_call_leak(repr(sym.name), pname, arg.pos)
+            self._emit_ifc_call_leak(
+                repr(sym.name), pname, arg.pos,
+                callee_sink_caps.get(param_idx, frozenset()),
+            )
 
     def _check_ifc_method_call_summary(
         self, e: A.MethodCall, type_sym, method_sym,
@@ -2231,14 +2250,26 @@ class _IfcMixin:
         # when it is empty (the method does not sink the param), which
         # is the precision case: another unrelated type's same-named
         # method sinking must NOT taint this concrete call.
+        # Feature #6 (B1): alongside the sink-reaching parameter set, take
+        # the callee's egress sink capabilities under the SAME derivation
+        # (precise exact key, else the by-name union), so a cross-function
+        # un-audited leak is tagged with the capability actually reached.
         if not recv_is_dynamic and exact_key in self._ifc_summaries:
             sink_params = self._ifc_summaries[exact_key]
+            sink_caps = self._ifc_sink_caps.get(exact_key, {})
         else:
             from ._ifc_summary import methods_by_name
             grouping = methods_by_name(self._ifc_summaries)
             sink_params = set()
+            # PER-PARAMETER caps map (full param idx -> caps), unioned over
+            # the candidate impls under the SAME by-name over-approximation
+            # ``sink_params`` uses -- so the leak is tagged with only the
+            # routed parameter's caps, never a sibling parameter's.
+            sink_caps: dict = {}
             for key in grouping.get(e.method, ()):
                 sink_params |= self._ifc_summaries.get(key, frozenset())
+                for pidx, caps in self._ifc_sink_caps.get(key, {}).items():
+                    sink_caps.setdefault(pidx, set()).update(caps)
         if not sink_params:
             return
 
@@ -2248,6 +2279,7 @@ class _IfcMixin:
             if L.normalize(self._label_of(e.receiver)) == L.SECRET:
                 self._emit_ifc_call_leak(
                     repr(callee_name), "self (the receiver)", e.receiver.pos,
+                    sink_caps.get(0, frozenset()),
                 )
         param_tys = getattr(getattr(method_sym, "ty", None), "params", ())
         for local_idx, arg_idx in enumerate(perm):
@@ -2266,13 +2298,27 @@ class _IfcMixin:
                 if local_idx < len(method_sym.param_names)
                 else f"argument {arg_idx + 1}"
             )
-            self._emit_ifc_call_leak(repr(callee_name), pname, arg.pos)
+            self._emit_ifc_call_leak(
+                repr(callee_name), pname, arg.pos,
+                sink_caps.get(full_idx, frozenset()),
+            )
 
-    def _emit_ifc_call_leak(self, callee: str, param: str, pos) -> None:
+    def _emit_ifc_call_leak(
+        self, callee: str, param: str, pos, sink_caps=(),
+    ) -> None:
         """Emit the cross-function sink-parameter diagnostic: a @secret
         value passed to a parameter that reaches a public sink inside
         the callee. Warn by default, hard error under ``@strict_ifc``,
-        matching the intra-procedural tier."""
+        matching the intra-procedural tier.
+
+        ``sink_caps`` is the set of built-in sink CAPABILITIES that the
+        SPECIFIC sink-reaching parameter the secret was routed to reaches
+        inside the callee (feature #6, B1) -- the callee's per-parameter
+        IFC summary looked up at that parameter, NOT the whole-callable
+        union, so a secret that reaches only Net is never tagged with a
+        sibling parameter's Fs. On the warn tier the un-audited leak is
+        recorded against the CALLER (the function at this warn site) with
+        each of those capabilities as the egress reached."""
         msg = (
             f"information-flow: a @secret value is passed to {callee} as "
             f"{param}, which reaches a public sink inside {callee} (it "
@@ -2284,6 +2330,28 @@ class _IfcMixin:
             self._err(msg, pos)
         else:
             self._warn(msg, pos)
+            # Feature #6 (B1): attribute the un-audited leak to the caller
+            # (the enclosing function at this warn site), tagged with each
+            # egress capability the secret reaches inside the callee.
+            for cap in sink_caps:
+                self._record_unaudited_secret_sink(cap, pos)
+
+    def _record_unaudited_secret_sink(self, cap_name, pos) -> None:
+        """Record (feature #6, B1) a WARN-tier un-audited secret->public
+        -sink flow for the function currently being checked: the sink
+        CAPABILITY reached and the source position, keyed by the enclosing
+        ``FunDecl``'s identity. Purely observational -- it never changes a
+        warn-or-error decision. Only called on the warn tier, so a recorded
+        flow is by construction un-audited (a strict-IFC flow is an error,
+        and a declassified value is public and never reaches here)."""
+        if not cap_name:
+            return
+        fid = getattr(self, "_cur_fun_id", 0)
+        if not fid:
+            return
+        self._unaudited_secret_sinks.setdefault(fid, []).append(
+            (cap_name, pos),
+        )
 
     # ---- higher-order closure return-label flow (roadmap S2) -----
 

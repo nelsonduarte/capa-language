@@ -84,7 +84,13 @@ if TYPE_CHECKING:
 #       ``composed_declassification_sites`` / ``composed_has_declassification``)
 #       and the product-level ``declassification_sites`` /
 #       ``has_declassification`` (feature #6, P2).
-COMPOSED_SCHEMA_VERSION = 3
+#   4 - per-package UN-AUDITED secret->egress-sink rollup
+#       (``attributed_unaudited_secret_sinks`` /
+#       ``unaudited_secret_sink_capabilities``): the WARN-tier raw
+#       secret-to-sink flows the IFC analysis surfaced, attributed to the
+#       package that owns the leaking code, so ``no-secret-egress`` catches
+#       an un-audited leak to a declared egress capability (feature #6, B1).
+COMPOSED_SCHEMA_VERSION = 4
 
 
 class ComposeError(Exception):
@@ -189,6 +195,14 @@ class PackageNode:
     # nothing. The transitive (composed) count is rolled up separately so a
     # policy can gate on where sensitive data is deliberately released.
     declassifications: list[dict[str, str]] = field(default_factory=list)
+    # Feature #6 (B1): the UN-AUDITED @secret -> egress-sink flows attributed
+    # to this package's OWN functions (each a ``{capability, pos}`` dict,
+    # sorted canonically). These are the WARN-tier raw secret-to-sink flows
+    # the IFC analysis surfaced -- a secret reaching an egress sink with NO
+    # declassify. A leak lives in a SPECIFIC package's own code, so there is
+    # no transitive rollup: ``no-secret-egress`` intersects THIS set with the
+    # declared egress set. Empty when the package leaks nothing un-audited.
+    unaudited_secret_sinks: list[dict[str, str]] = field(default_factory=list)
 
 
 def _rel_display(path: Path, root_dir: Path) -> str:
@@ -411,6 +425,10 @@ def _attribute(
     # Feature #6 (P2): the audited declassification sites attributed to each
     # package, keyed by the same owner as the capability attribution.
     declass: dict[Path, list[dict[str, str]]] = {d: [] for d in nodes}
+    # Feature #6 (B1): the UN-AUDITED secret->egress-sink flows attributed to
+    # each package, keyed by the SAME owner. Each entry is a
+    # ``{capability, pos}`` dict (full, root-relative position).
+    unaudited: dict[Path, list[dict[str, str]]] = {d: [] for d in nodes}
 
     # Feature #4 (F2a): the DECLARED capability set of each typed
     # foreign-component boundary the module declares, keyed by the
@@ -465,6 +483,15 @@ def _attribute(
                 "reason": site.get("reason", ""),
                 "pos": f"{site_file}:{site.get('pos', '')}",
             })
+        # Feature #6 (B1): attribute each un-audited secret->egress-sink flow
+        # to the SAME owner, prepending the function's own display file so the
+        # position is full + root-relative + deterministic (as above).
+        # Defensive .get(): a manifest serialised before B1 has no key.
+        for sink in rec.get("unaudited_secret_sinks", []):
+            unaudited[owner].append({
+                "capability": sink.get("capability", ""),
+                "pos": f"{site_file}:{sink.get('pos', '')}",
+            })
         # Feature #4 (F1/F2a): invoking a foreign component composes as
         # TOP under the default posture, or as BOUNDED {declared caps}
         # under the Wasm-sandbox posture (see ``_own_authority``).
@@ -502,6 +529,19 @@ def _attribute(
         node.declassifications = sorted(
             declass[d], key=lambda s: (s["pos"], s["reason"]),
         )
+        # Feature #6 (B1): canonical order by (capability, position); the
+        # evidence is de-duplicated so a repeated (cap, pos) never inflates
+        # the byte-reproducible artifact.
+        seen_unaudited: set[tuple[str, str]] = set()
+        node.unaudited_secret_sinks = []
+        for s in sorted(
+            unaudited[d], key=lambda s: (s["capability"], s["pos"]),
+        ):
+            keyed = (s["capability"], s["pos"])
+            if keyed in seen_unaudited:
+                continue
+            seen_unaudited.add(keyed)
+            node.unaudited_secret_sinks.append(s)
 
 
 def _pos_line_col(pos: str) -> tuple[int, int]:
@@ -966,6 +1006,17 @@ def build_composed_sbom(
                 declass_total_by_dir[node.manifest_dir],
             "composed_has_declassification":
                 declass_total_by_dir[node.manifest_dir] > 0,
+            # Feature #6 (B1): the un-audited secret->egress-sink flows in
+            # THIS package's own code (evidence + the distinct capability
+            # set). No transitive rollup: a leak is in a specific package's
+            # own body, so ``no-secret-egress`` intersects this OWN set with
+            # the declared egress set. Under ``composed_authority_unknown``
+            # the set is a FLOOR (an unanalyzable subtree may leak unseen),
+            # so the policy still fails closed on a TOP package.
+            "attributed_unaudited_secret_sinks": node.unaudited_secret_sinks,
+            "unaudited_secret_sink_capabilities": sorted({
+                s["capability"] for s in node.unaudited_secret_sinks
+            }),
         })
         for e in node.dep_edges:
             to_pkg = None

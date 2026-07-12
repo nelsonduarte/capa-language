@@ -92,8 +92,9 @@ _SECRET_SOURCE_METHODS: frozenset = frozenset(m for _c, m in _SECRET_SOURCES)
 
 def compute_ifc_summaries(
     module: A.Module, global_scope,
-) -> tuple[dict, dict, dict]:
-    """Return ``(sink_summaries, field_effects, return_effects)``:
+) -> tuple[dict, dict, dict, dict]:
+    """Return ``(sink_summaries, field_effects, return_effects,
+    sink_caps)``:
 
     * ``sink_summaries``: ``{callable_key: frozenset(sink_reaching
       param indices)}`` -- a value parameter whose value reaches a
@@ -107,6 +108,18 @@ def compute_ifc_summaries(
       named source(s); the call result is @secret when one fires (a real
       param whose argument is @secret, or the unconditional internal
       secret, which includes a declared-@secret field read).
+    * ``sink_caps``: ``{callable_key: {param_idx: frozenset(sink
+      capability name)}}`` -- PER PARAMETER, the built-in sink
+      CAPABILITIES (Stdio / Net / Fs / Db) that THAT parameter's value
+      reaches inside the body, directly or transitively. Parallel to
+      ``sink_summaries`` (only a parameter present in the sink-reaching
+      set has an entry) and computed on the SAME fixpoint. Purely
+      observational (feature #6, B1): it lets a cross-function
+      un-audited-leak recording tag the leak with the concrete egress
+      capability the SPECIFIC sink-reaching parameter the secret was
+      routed to reaches -- not the whole-callable union -- so a secret
+      that reaches only Net is never tagged with a sibling parameter's
+      Fs. It never affects a sink-reaching / warn-or-error decision.
 
     ``global_scope`` is the analyzer's populated global scope, used to
     tell user functions / variants / capabilities apart at call sites.
@@ -142,6 +155,21 @@ class _SummaryBuilder:
         self.global_scope = global_scope
         # callable_key -> set of sink-reaching param indices.
         self.summaries: dict = {}
+        # callable_key -> {param idx -> set of built-in sink CAPABILITY
+        # names (Stdio / Net / Fs / Db) that THAT PARAMETER's value reaches
+        # inside the body, directly or transitively}. PER PARAMETER, parallel
+        # to ``summaries`` (only a sink-reaching parameter gets an entry) and
+        # computed on the SAME fixpoint, but PURELY OBSERVATIONAL: it never
+        # feeds a sink-reaching / warn-or-error decision. Consulted only by
+        # the cross-function un-audited-leak RECORDING (feature #6, B1) so
+        # the caller warn site can tag the leak with the concrete egress
+        # capability the SPECIFIC sink-reaching parameter the routed secret
+        # was bound to reaches inside the callee -- never a sibling
+        # parameter's capability. A method name in ``_PUBLIC_SINKS`` maps to
+        # exactly one capability, so the by-method-name over-approximation
+        # the summary already uses yields a determinate (sound, may
+        # over-approx) capability here.
+        self.sink_caps: dict = {}
         # callable_key -> {target param idx -> set of source param idx /
         # INTERNAL_SECRET}: the field-write effect (see module docstring).
         self.field_effects: dict = {}
@@ -238,6 +266,7 @@ class _SummaryBuilder:
                 names = [p.name for p in item.params]
                 self.callables[key] = (names, item, False)
                 self.summaries[key] = set()
+                self.sink_caps[key] = {}
                 self.field_effects[key] = {}
                 self.return_effects[key] = set()
                 self.secret_source_params[key] = self._secret_source_params(
@@ -259,6 +288,7 @@ class _SummaryBuilder:
                     names = [p.name for p in method.params]
                     self.callables[key] = (names, method, True)
                     self.summaries[key] = set()
+                    self.sink_caps[key] = {}
                     self.field_effects[key] = {}
                     self.return_effects[key] = set()
                     self.secret_source_params[key] = (
@@ -334,11 +364,16 @@ class _SummaryBuilder:
             changed = False
             for key in self.callables:
                 names, decl, _is_method = self.callables[key]
-                reaching, effects, returns = self._analyze_body(
+                reaching, effects, returns, scaps = self._analyze_body(
                     names, decl, key,
                 )
                 if not reaching <= self.summaries[key]:
                     self.summaries[key] |= reaching
+                    changed = True
+                # ``scaps`` is a per-parameter map (param idx -> set of
+                # sink caps), merged monotonically exactly like the
+                # field-write effect map so the same fixpoint carries it.
+                if self._merge_effects(self.sink_caps[key], scaps):
                     changed = True
                 if self._merge_effects(self.field_effects[key], effects):
                     changed = True
@@ -351,7 +386,11 @@ class _SummaryBuilder:
             for k, v in self.field_effects.items()
         }
         reffects = {k: frozenset(v) for k, v in self.return_effects.items()}
-        return sinks, feffects, reffects
+        sink_caps = {
+            k: {p: frozenset(c) for p, c in v.items()}
+            for k, v in self.sink_caps.items()
+        }
+        return sinks, feffects, reffects, sink_caps
 
     @staticmethod
     def _merge_effects(acc: dict, new: dict) -> bool:
@@ -373,7 +412,7 @@ class _SummaryBuilder:
 
     def _analyze_body(
         self, param_names: list[str], decl: A.FunDecl, key,
-    ) -> tuple[set, dict, set]:
+    ) -> tuple[set, dict, set, dict]:
         """Compute (a) which parameter indices of ``decl`` reach a sink,
         (b) the field-write effects, and (c) the return-secret sources,
         using the summaries computed so far for transitive calls.
@@ -398,6 +437,13 @@ class _SummaryBuilder:
         reaching: set = set()
         effects: dict = {}
         returns: set = set()
+        # Observational (feature #6, B1): PER PARAMETER, the sink
+        # capabilities that parameter's value reaches in this body,
+        # accumulated by the walk in parallel with ``reaching`` (a source
+        # param that flows into a sink gets the reached cap attributed to
+        # IT, not to the whole callable).
+        sink_caps_local: dict = {}
+        self._cur_sink_caps = sink_caps_local
         # Per-callable analysis state consulted inside the walk (which
         # threads only ``env`` / ``reaching`` through its signatures):
         # the names of secret-source-capability params, the accumulating
@@ -429,7 +475,7 @@ class _SummaryBuilder:
         # return source too -- mirroring the analyzer's block-as-value
         # rule and the match-arm tail handling below.
         returns |= self._block_tail_taint(decl.body, env, reaching)
-        return reaching, effects, returns
+        return reaching, effects, returns, sink_caps_local
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
         for stmt in block.stmts:
@@ -807,6 +853,21 @@ class _SummaryBuilder:
             return self._taint_of(block.stmts[-1].expr, env, reaching)
         return set()
 
+    def _attribute_sink_caps(self, sources: set, caps) -> None:
+        """Observational (feature #6, B1): attribute each sink capability
+        in ``caps`` to EVERY source param (or ``INTERNAL_SECRET``) in
+        ``sources`` -- the params whose value just reached that sink. Runs
+        at every point ``reaching |= sources`` records a sink hit, so the
+        per-parameter map grows in lockstep with the sink-reaching set:
+        a param that reaches only Net never inherits a sibling's Fs. A
+        source key that is not a real parameter (``INTERNAL_SECRET``) is
+        recorded harmlessly -- the call site only ever looks the map up by
+        a real parameter index."""
+        if not caps:
+            return
+        for s in sources:
+            self._cur_sink_caps.setdefault(s, set()).update(caps)
+
     # ---- calls ------------------------------------------------------
 
     def _taint_of_call(self, e: A.Call, env: dict, reaching: set) -> set:
@@ -833,6 +894,14 @@ class _SummaryBuilder:
             and arg_srcs
         ):
             reaching |= arg_srcs[0]
+            # Observational (feature #6, B1): ``panic`` writes its message
+            # to stderr, treated as Stdio egress (matching the
+            # intra-procedural panic sink). Attribute Stdio to each param
+            # flowing into the message, so a cross-function or transitive
+            # @secret-through-panic leak records ``Stdio`` -- keeping the
+            # completeness invariant that every reaching-growth site pairs
+            # with a capability attribution.
+            self._attribute_sink_caps(arg_srcs[0], ("Stdio",))
 
         if not isinstance(e.callee, A.Ident):
             # Non-Ident callee (lambda result, etc.): conservatively
@@ -863,9 +932,20 @@ class _SummaryBuilder:
             names, _decl, _is_method = self.callables[key]
             perm = self._bind_args(e, names)
             sink_params = self.summaries.get(key, set())
+            callee_caps = self.sink_caps.get(key, {})
             for pidx, arg_idx in perm.items():
-                if pidx in sink_params and arg_idx < len(arg_srcs):
+                if (
+                    pidx in sink_params
+                    and arg_idx < len(arg_srcs)
+                    and arg_srcs[arg_idx]
+                ):
                     reaching |= arg_srcs[arg_idx]
+                    # Observational (B1): the params flowing into this
+                    # argument reach exactly the sinks the callee's param
+                    # ``pidx`` reaches -- inherit ITS caps, not the union.
+                    self._attribute_sink_caps(
+                        arg_srcs[arg_idx], callee_caps.get(pidx, ()),
+                    )
             # Transitive field-write effect: ``g`` writes a field of its
             # param ``j`` from sources ``S``; if the argument bound to
             # ``j`` here is rooted at one of MY params, that object's
@@ -942,8 +1022,14 @@ class _SummaryBuilder:
             if meth != e.method:
                 continue
             for pos in positions:
-                if pos < len(arg_srcs):
+                if pos < len(arg_srcs) and arg_srcs[pos]:
                     reaching |= arg_srcs[pos]
+                    # Observational (feature #6, B1): the params flowing into
+                    # this argument reach this built-in sink, so record its
+                    # capability against EACH of them. A sink method name is
+                    # unique to one capability in ``_PUBLIC_SINKS``, so
+                    # ``_cap`` is determinate.
+                    self._attribute_sink_caps(arg_srcs[pos], (_cap,))
 
         # A mutating container method (push / add / set) routes the
         # argument taint into the receiver, so a later read of the
@@ -971,9 +1057,14 @@ class _SummaryBuilder:
             sink_params = self.summaries.get(key, set())
             if not sink_params:
                 continue
+            callee_caps = self.sink_caps.get(key, {})
             # Index 0 is ``self`` -> the receiver.
-            if 0 in sink_params:
+            if 0 in sink_params and recv_src:
                 reaching |= recv_src
+                # Observational (B1): the params flowing into the receiver
+                # reach exactly the sinks the callee's ``self`` (param 0)
+                # reaches -- inherit param 0's caps, not the union.
+                self._attribute_sink_caps(recv_src, callee_caps.get(0, ()))
             # Explicit parameters are names[1:]; bind the call's
             # positional / named args to them.
             explicit = names[1:] if names and names[0] == "self" else names
@@ -985,8 +1076,18 @@ class _SummaryBuilder:
                     local_pidx + 1
                     if names and names[0] == "self" else local_pidx
                 )
-                if full_pidx in sink_params and arg_idx < len(arg_srcs):
+                if (
+                    full_pidx in sink_params
+                    and arg_idx < len(arg_srcs)
+                    and arg_srcs[arg_idx]
+                ):
                     reaching |= arg_srcs[arg_idx]
+                    # Observational (B1): inherit only the caps the callee's
+                    # param ``full_pidx`` reaches, attributed to the params
+                    # flowing into this argument.
+                    self._attribute_sink_caps(
+                        arg_srcs[arg_idx], callee_caps.get(full_pidx, ()),
+                    )
 
         # Transitive field-write effect across the (possibly
         # over-approximated) candidate methods. The full-order argument

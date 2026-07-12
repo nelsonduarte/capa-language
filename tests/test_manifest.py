@@ -329,6 +329,8 @@ class TestTopLevelShape(unittest.TestCase):
             "constant_time",
             # Roadmap S2.5: the auditable @secret -> @public bridges.
             "declassifications",
+            # Feature #6 (B1): the un-audited @secret -> egress-sink flows.
+            "unaudited_secret_sinks",
             # Source-level identifiers + import-module disclosure for
             # SBOM emission. ``name`` and ``container`` stay as the
             # loader-time (possibly mangled) identifiers so internal

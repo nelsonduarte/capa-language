@@ -1649,6 +1649,7 @@ def _main_dispatch() -> int:
                 module, filename=filename,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
+                unaudited_secret_sinks=result.unaudited_secret_sinks,
             )
             emit_artifact(json.dumps(manifest, indent=2))
             return 0
@@ -1658,6 +1659,7 @@ def _main_dispatch() -> int:
                 module, filename=filename,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
+                unaudited_secret_sinks=result.unaudited_secret_sinks,
             )
             # Emit the canonical bytes verbatim (key-sorted, fixed
             # separators): what is printed is exactly what the digest in
@@ -1686,6 +1688,7 @@ def _main_dispatch() -> int:
                 module, filename=filename,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
+                unaudited_secret_sinks=result.unaudited_secret_sinks,
             )
             # Feature #4 (F2a): claim the Wasm-sandbox enforcement posture
             # only when the product targets the Wasm backend (--wasm),
@@ -1735,6 +1738,7 @@ def _main_dispatch() -> int:
                 module, filename=filename,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
+                unaudited_secret_sinks=result.unaudited_secret_sinks,
             )
             # Thread the same enforcement posture the composed SBOM /
             # policy gates use: under --wasm the sandbox host-enforces each
@@ -1802,6 +1806,7 @@ def _main_dispatch() -> int:
                 module, filename=filename,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
+                unaudited_secret_sinks=result.unaudited_secret_sinks,
             )
             _enforcement = "wasm-sandbox" if args.wasm else "none"
             try:

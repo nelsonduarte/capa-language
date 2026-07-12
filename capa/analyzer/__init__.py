@@ -311,6 +311,19 @@ class AnalysisResult:
     # must not include it). Keyed by node identity, valid only against
     # the exact AST the analysis ran on.
     expr_labels: dict[int, str] = field(default_factory=dict)
+    # Feature #6 (B1): the UN-AUDITED secret->public-sink flows the IFC
+    # analysis surfaced as WARN-tier diagnostics, materialized as a
+    # first-class fact. ``id(FunDecl)`` -> a list of ``(sink capability,
+    # source Pos)`` pairs: for the enclosing function, each warn-tier
+    # secret-to-egress-sink flow with the capability reached and the
+    # position of the leaking value. Only warn-tier flows are recorded --
+    # a strict-IFC flow is a hard ERROR (no manifest is produced), so a
+    # recorded flow is by construction an un-audited raw leak in a
+    # compiled program. Keyed by AST node identity (like ``expr_labels``),
+    # so the manifest builder can attach each fact to its function record.
+    # PURELY OBSERVATIONAL: recording it does not change any warn-or-error
+    # decision or the IFC checking logic.
+    unaudited_secret_sinks: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -415,6 +428,18 @@ class Analyzer(
         # from its children's labels. Read by sink-enforcement /
         # SBOM-emission in later S2 slices.
         self._expr_labels: dict[int, str] = {}
+        # Feature #6 (B1). ``id(FunDecl)`` -> list of ``(sink capability,
+        # source Pos)`` for each WARN-tier un-audited secret->sink flow in
+        # that function's body. Populated at the three warn sites in
+        # ``_ifc`` (intra sink, panic sink, cross-function boundary) and
+        # carried out on ``AnalysisResult.unaudited_secret_sinks``. See the
+        # field's docstring; observational only.
+        self._unaudited_secret_sinks: dict = {}
+        # ``id(FunDecl)`` of the function whose body is being checked, so a
+        # warn-tier sink site can attribute the leak to its enclosing
+        # function. Saved/restored around ``_check_fun`` (nested lambdas
+        # attribute to the enclosing named function).
+        self._cur_fun_id: int = 0
         # Roadmap S2 (IFC, closure capture). ``id(LambdaExpr)`` -> the
         # join of the labels of the free (captured) variables its body
         # references. A lambda that closes over a @secret binding carries
@@ -657,6 +682,7 @@ class Analyzer(
             self._ifc_summaries,
             self._ifc_field_effects,
             self._ifc_return_effects,
+            self._ifc_sink_caps,
         ) = compute_ifc_summaries(module, self.global_scope)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
@@ -682,6 +708,9 @@ class Analyzer(
             bindings=self.bindings,
             global_symbols=dict(self.global_scope.symbols),
             expr_labels=dict(self._expr_labels),
+            unaudited_secret_sinks={
+                k: list(v) for k, v in self._unaudited_secret_sinks.items()
+            },
         )
 
     # ===========================================================

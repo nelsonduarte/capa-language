@@ -342,6 +342,7 @@ def build_manifest(
     capa_version: Optional[str] = None,
     expr_labels: Optional[dict[int, str]] = None,
     operator_declared_grants: Optional[dict[str, Any]] = None,
+    unaudited_secret_sinks: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Build a manifest dict from an analysed module.
 
@@ -361,6 +362,14 @@ def build_manifest(
     operator-DECLARED authority (e.g. ``--preopen``), clearly distinct
     from the derived surface. When None, an EMPTY grants block is
     recorded so the field shape is stable for consumers.
+
+    ``unaudited_secret_sinks`` (feature #6, B1) is the analyzer's
+    ``AnalysisResult.unaudited_secret_sinks`` (``id(FunDecl)`` -> list of
+    ``(sink capability, source Pos)``): the WARN-tier un-audited
+    secret->public-sink flows. When supplied, each function record carries
+    the ``unaudited_secret_sinks`` evidence for its body; when omitted (a
+    manifest built without the accompanying analysis) the field is an
+    empty list, the historical shape.
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -456,6 +465,7 @@ def build_manifest(
                 linear_types=linear_types,
                 expr_labels=expr_labels,
                 foreign_names=foreign_names,
+                unaudited_secret_sinks=unaudited_secret_sinks,
             ))
         elif isinstance(item, A.ImplBlock):
             implicit = (
@@ -472,6 +482,7 @@ def build_manifest(
                     linear_types=linear_types,
                     expr_labels=expr_labels,
                     foreign_names=foreign_names,
+                    unaudited_secret_sinks=unaudited_secret_sinks,
                 ))
 
     summary = {
@@ -616,6 +627,7 @@ def _fun_record(
     linear_types: Optional[set[str]] = None,
     expr_labels: Optional[dict[int, str]] = None,
     foreign_names: Optional[set[str]] = None,
+    unaudited_secret_sinks: Optional[dict] = None,
 ) -> dict[str, Any]:
     if reachable is None:
         reachable = {}
@@ -769,6 +781,30 @@ def _fun_record(
         fn.body, declassifications, expr_labels=expr_labels,
     )
 
+    # Feature #6 (B1): the UN-AUDITED @secret -> public-sink flows the IFC
+    # analysis surfaced as WARN-tier diagnostics for this function, keyed by
+    # the FunDecl's identity in ``unaudited_secret_sinks`` (the analyzer's
+    # ``AnalysisResult.unaudited_secret_sinks``). Each entry records the
+    # egress ``capability`` reached and the function-local source ``pos``
+    # (``<line>:<col>``, no path -- the owning file is prepended in the
+    # composed roll-up, exactly as for ``declassifications``). Deterministic:
+    # de-duplicated and sorted by (capability, pos). A raw secret reaching an
+    # egress capability with NO declassify is an un-audited leak the
+    # ``no-secret-egress`` policy treats as a concrete violation; an empty
+    # list means the analysis found no such flow in this function's body.
+    unaudited_sinks_out: list[dict[str, str]] = []
+    if unaudited_secret_sinks:
+        seen_sinks: set[tuple[str, str]] = set()
+        for cap, pos in unaudited_secret_sinks.get(id(fn), ()):
+            entry = (cap, f"{pos.line}:{pos.col}")
+            if entry in seen_sinks:
+                continue
+            seen_sinks.add(entry)
+            unaudited_sinks_out.append(
+                {"capability": entry[0], "pos": entry[1]},
+            )
+        unaudited_sinks_out.sort(key=lambda s: (s["capability"], s["pos"]))
+
     # Surface the source-level identifier (the loader's
     # ``_capa_m{N}__<source>`` mangle is for collision-avoidance
     # at analysis / transpile time, not for regulator-facing
@@ -840,4 +876,5 @@ def _fun_record(
         "attributes": attrs,
         "calls": calls,
         "declassifications": declassifications,
+        "unaudited_secret_sinks": unaudited_sinks_out,
     }

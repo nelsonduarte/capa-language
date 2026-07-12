@@ -153,6 +153,12 @@ class _ItemsMixin:
             a.name == "strict_ifc" for a in fn.attributes
         )
 
+        # Feature #6 (B1): the function a warn-tier un-audited secret->sink
+        # flow attributes to. Saved/restored so a nested function does not
+        # inherit it, exactly like ``_strict_ifc``.
+        prev_cur_fun_id = getattr(self, "_cur_fun_id", 0)
+        self._cur_fun_id = id(fn)
+
         # Roadmap S4: ``@constant_time`` rejects secret-dependent
         # control flow / indexing in this function's body.
         prev_constant_time = getattr(self, "_constant_time", False)
@@ -295,6 +301,7 @@ class _ItemsMixin:
             )
 
         self._strict_ifc = prev_strict_ifc
+        self._cur_fun_id = prev_cur_fun_id
         self._constant_time = prev_constant_time
         self._pc_label = prev_pc_label
         self._pop_scope()

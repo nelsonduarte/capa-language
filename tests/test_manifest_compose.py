@@ -75,6 +75,7 @@ def _compose(root_dir: Path, root_file: str):
         raise AssertionError(f"analyzer errors: {result.errors}")
     manifest = build_manifest(
         linked.module, filename=filename, expr_labels=result.expr_labels,
+        unaudited_secret_sinks=result.unaudited_secret_sinks,
     )
     composed = build_composed_sbom(linked.module, manifest, root_dir)
     return composed, manifest
@@ -392,8 +393,9 @@ class TestNonRegression(_TmpTree):
         # Bumped to 2 in S3 (per-package declared_ceiling /
         # ceiling_violations + the product-level capability_ceilings block);
         # to 3 in feature #6 P2 (per-package + product declassification
-        # rollup).
-        self.assertEqual(COMPOSED_SCHEMA_VERSION, 3)
+        # rollup); to 4 in feature #6 B1 (per-package un-audited
+        # secret->egress-sink rollup).
+        self.assertEqual(COMPOSED_SCHEMA_VERSION, 4)
 
     def test_find_package_root(self):
         root = self.tmp / "prod"
@@ -469,7 +471,7 @@ class TestDeclassificationRollup(_TmpTree):
             "    return\n"
         ))
         composed, _ = _compose(root, "main.capa")
-        self.assertEqual(composed["composed_schema_version"], 3)
+        self.assertEqual(composed["composed_schema_version"], 4)
 
         lib = self._find(composed, "lib")
         self.assertEqual(lib["attributed_declassification_sites"], 1)

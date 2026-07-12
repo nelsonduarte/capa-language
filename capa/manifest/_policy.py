@@ -28,12 +28,13 @@ FIXED, enumerated set of predicate kinds:
   * ``no-declassification`` - a named package (or the whole product) must
                              contain ZERO audited @secret -> @public
                              declassification sites (feature #6, P2).
-  * ``no-secret-egress``   - no package may BOTH declassify secret data
-                             AND hold a policy-declared egress capability
-                             (the exfiltration-path prohibition: the
-                             authority to unmask secret data and the
-                             authority to send it out must not co-reside in
-                             one package) (feature #6, P2).
+  * ``no-secret-egress``   - no secret value may reach a policy-declared
+                             egress capability from one package, whether via
+                             an AUDITED declassify+egress co-residence or an
+                             UN-AUDITED raw secret->egress-sink flow the
+                             information-flow analysis proved (the
+                             exfiltration-path prohibition) (feature #6,
+                             P2 + B1).
 
 The evaluator is PURE over what :func:`._compose.build_composed_sbom`
 already emits (``packages`` / ``edges`` / ``unresolved_dependencies`` /
@@ -849,51 +850,49 @@ def _eval_no_declassification(pol, composed, paths):
 
 
 def _eval_no_secret_egress(pol, composed, paths):
-    """No in-scope package may BOTH declassify secret data AND hold a
-    policy-declared egress capability (feature #6, P2).
+    """No secret value may reach a policy-declared egress capability from a
+    single in-scope package -- whether via an AUDITED declassify or an
+    UN-AUDITED raw flow (feature #6, P2 + B1).
 
-    This is the exfiltration-path prohibition: the authority to UNMASK
-    secret data (a declassification site) and the authority to SEND IT OUT
-    (an egress capability such as Net) must not co-reside in one package, so
-    a review boundary sits between them. A package that does both is a
-    ``violation``; a TOP in-scope package (its declassification status
-    and/or capability set unknown) FAILS CLOSED with ``authority_unknown``
-    unless ``allow_unknown`` is set; a named absent package is
-    ``unsatisfiable``.
+    This is the exfiltration-path prohibition. It fires in TWO concrete
+    modes, either of which is a ``violation``:
 
-    The concrete-violation test reads the package's OWN (attributed)
-    declassification count, NOT the composed/transitive one, but keeps the
-    COMPOSED capability set for the egress side. A package only forms an
-    exfiltration path when IT ITSELF unmasks secret data AND can reach an
-    egress capability; a package that merely WIRES a separate declassifier
-    dependency and a separate networker dependency (the separation-of-duties
-    shape this policy is meant to REWARD) composes a transitive
-    declassification and an egress cap from two DIFFERENT children without
-    ever unmasking-and-sending in its own code, and must not be flagged.
+    * AUDITED co-residence (P2): a package whose OWN code both declassifies
+      secret data (an attributed ``declassify`` site) AND can reach a
+      declared egress capability (its COMPOSED capability set intersects the
+      egress set). The authority to UNMASK secret data and the authority to
+      SEND IT OUT must not co-reside in one package, so a review boundary
+      sits between them. The test reads the package's OWN (attributed)
+      declassification count, NOT the transitive one: a package that merely
+      WIRES a separate declassifier dependency and a separate networker
+      dependency (the separation-of-duties shape this policy REWARDS)
+      composes a transitive declassification and an egress cap from two
+      DIFFERENT children without ever unmasking-and-sending in its own code,
+      and must not be flagged.
 
-    What this proves, precisely: no single in-scope package holds BOTH the
-    AUDITED-declassification authority (a ``declassify`` site in its own
-    code) AND the egress authority (a policy-declared egress capability such
-    as Net). It SEPARATES those two authorities across packages, so an
-    audited unmask and an outbound send cannot co-reside without a review
-    boundary between them. Restricting the concrete-violation test to
-    OWN-declassification is what removes the false positive on wiring
-    packages (a package that merely composes a transitive declassification
-    and an egress cap from two DIFFERENT children never unmasks-and-sends in
-    its own code); the composed capability set is still used for the egress
-    side, and the fail-closed-on-TOP behavior is unchanged.
+    * UN-AUDITED raw leak (B1): a package whose OWN un-audited
+      secret->egress-sink set intersects the declared egress set -- a raw
+      @secret value the IFC analysis proved reaches an egress sink (e.g.
+      ``net.post(url, token)``) with NO ``declassify``. Capa's
+      secret-to-public-sink check is warn-only by default (a hard error only
+      under ``@strict_ifc``); this materializes that warn-tier fact as a
+      first-class per-package leak set. Because a strict-IFC flow is a
+      compile error (no manifest is produced), every recorded flow in a
+      COMPILED program is by construction un-audited and non-strict, so the
+      recorded set is EXACTLY the un-audited leaks in the shipped code.
 
-    It does NOT by itself prove the absence of un-audited RAW secret-to-sink
-    flows. Capa's secret-to-public-sink information-flow check is WARN-ONLY
-    by default (it does not fail the build) and a HARD ERROR only under the
-    opt-in ``@strict_ifc()`` attribute. So the stronger reading - "no secret
-    value can be exfiltrated by an egress-reaching package" - holds only
-    when those egress-reaching packages are compiled under ``@strict_ifc``,
-    which makes ``declassify`` the SOLE path by which secret data can reach
-    a sink (a raw leak is then a hard error, not a warning). This policy
-    COMPOSES WITH ``@strict_ifc``; it does not replace it. (A machine-checked
-    strict-IFC precondition - verifying that egress-reaching packages are
-    built under ``@strict_ifc`` - is planned as a follow-up.)"""
+    A TOP in-scope package (its declassification status, capability set,
+    and/or leak set unknown) FAILS CLOSED with ``authority_unknown`` unless
+    ``allow_unknown`` is set; a named absent package is ``unsatisfiable``.
+
+    What this proves, precisely: no secret value reaches a declared egress
+    capability from one package, audited or not. The two authorities (unmask
+    + send) are separated across packages AND no un-audited raw secret->sink
+    flow to a declared egress capability exists in any in-scope package. The
+    honest residual is now the IFC analysis's own detection completeness (a
+    secret the flow analysis fails to track cannot be recorded), NOT the
+    warn-vs-strict distinction: a raw leak no longer needs ``@strict_ifc`` to
+    be caught by this predicate."""
     egress = set(pol.params["capabilities"])
     display = sorted(egress)
     target = pol.params["package"]
@@ -906,7 +905,14 @@ def _eval_no_secret_egress(pol, composed, paths):
         name = pkg["name"]
         count = pkg.get("attributed_declassification_sites", 0)
         held = sorted(egress & set(pkg.get("composed_capabilities", [])))
+        # B1: the package's OWN un-audited raw secret->egress-sink flows that
+        # land on a declared egress capability.
+        leaked = sorted(egress & set(
+            pkg.get("unaudited_secret_sink_capabilities", []),
+        ))
+        fired = False
         if count > 0 and held:
+            fired = True
             out.append(PolicyViolation(
                 policy_id=pol.id, kind=pol.kind, verdict="violation",
                 package=name, capability=None, path=paths.get(name, (name,)),
@@ -919,9 +925,27 @@ def _eval_no_secret_egress(pol, composed, paths):
                     f"exfiltration path), which policy {pol.id!r} forbids"
                 ),
             ))
-        elif pkg.get("composed_authority_unknown") and not pol.allow_unknown:
-            # A TOP package could declassify AND/OR hold an egress capability
-            # unseen, so the co-residence cannot be ruled out: fail closed.
+        if leaked:
+            fired = True
+            out.append(PolicyViolation(
+                policy_id=pol.id, kind=pol.kind, verdict="violation",
+                package=name, capability=None, path=paths.get(name, (name,)),
+                detail=(
+                    f"package {name!r} routes a @secret value to egress "
+                    f"capability(ies) {leaked} (of the declared egress set "
+                    f"{display}) with NO declassify: an UN-AUDITED raw "
+                    f"secret->egress flow the information-flow analysis "
+                    f"proved reaches the sink, which policy {pol.id!r} forbids"
+                ),
+            ))
+        if (
+            not fired
+            and pkg.get("composed_authority_unknown")
+            and not pol.allow_unknown
+        ):
+            # A TOP package could declassify, hold an egress capability, or
+            # leak a raw secret unseen, so the exfiltration path cannot be
+            # ruled out: fail closed.
             out.append(_unknown_over_package(
                 pol, pkg, paths, f"no-secret-egress of {display}",
             ))
