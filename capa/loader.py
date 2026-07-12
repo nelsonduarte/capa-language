@@ -37,11 +37,26 @@ name is no longer in the merged scope.
 
 Resolution order for ``import foo.bar``:
 
-1. ``<importer-dir>/foo/bar.capa`` (proximity wins, same as the
-   first MVP).
-2. ``<root>/foo/bar.capa`` for each ``root`` in the configured
+1. ``<declared-path-dir>/bar.capa`` when ``foo`` is a declared PATH
+   dependency (``[dependencies.foo] path = "..."``). The dependency
+   NAME maps to its declared directory, so the import resolves from
+   that directory no matter what the directory's basename is. This
+   is the HIGHEST priority: a declared dependency is authoritative and
+   is tried before the importer-relative and search-path forms below,
+   so it takes precedence over a colliding same-named importer-relative
+   local directory or an ambient ``CAPA_PATH`` module. When the
+   directory's basename equals the dependency name it resolves to the
+   same file the search-path form below would find, so matching-basename
+   projects reach the same file EXCEPT that the declared path-dep now
+   also wins over a colliding same-named local directory (where the
+   local directory used to). Populated by the CLI via
+   ``dependency_roots``.
+2. ``<importer-dir>/foo/bar.capa`` (importer-relative sibling;
+   proximity wins over the search paths, same as the first MVP).
+3. ``<root>/foo/bar.capa`` for each ``root`` in the configured
    ``search_paths`` (typically passed by the CLI after reading the
-   ``CAPA_PATH`` environment variable).
+   ``CAPA_PATH`` environment variable; e.g. ``CAPA_PATH``,
+   ``./vendor``, the project parent).
 
 The first existing candidate is returned. If none match, the
 LoaderError lists every path that was tried.
@@ -121,6 +136,7 @@ class ModuleLoader:
     def __init__(
         self,
         search_paths: Optional[list[Path]] = None,
+        dependency_roots: Optional[dict[str, Path]] = None,
     ) -> None:
         self._cache: dict[Path, A.Module] = {}
         self._sources: dict[Path, str] = {}
@@ -135,6 +151,15 @@ class ModuleLoader:
         # CLI populates this from the ``CAPA_PATH`` env var so
         # stdlib-style modules can live outside the project tree.
         self._search_paths: list[Path] = list(search_paths or [])
+        # Dependency NAME -> its declared on-disk directory, for
+        # ``[dependencies.X] path = "..."`` deps. The CLI resolves the
+        # declared ``path`` against the manifest dir and passes the
+        # map here. When the first part of an import names a key, the
+        # loader resolves the REMAINING parts under that directory as
+        # the highest-priority candidate, so a declared path is
+        # authoritative and never silently ignored even when the
+        # directory's basename differs from the dependency name.
+        self._dependency_roots: dict[str, Path] = dict(dependency_roots or {})
         # Monotonic counter that produces a unique mangle prefix
         # for each non-root imported module. Used by
         # ``_mangle_private_items`` to keep private items from
@@ -226,12 +251,41 @@ class ModuleLoader:
         self, path_parts: list[str], from_dir: Path,
     ) -> list[Path]:
         """Every path the loader will try to resolve ``import
-        foo.bar`` to, in priority order. Importer-relative comes
-        first so a project-local module always shadows one of the
-        same name on the search path.
+        foo.bar`` to, in priority order.
+
+        A declared PATH dependency comes first: when the first path
+        part names a key in ``dependency_roots``, the remaining parts
+        resolve to a module file directly under that dependency's
+        declared directory (``<dep-dir>/bar.capa`` for ``import
+        foo.bar``), regardless of the directory's basename. This makes
+        the declared ``path`` authoritative: because it is tried before
+        the importer-relative form, it takes precedence over a colliding
+        same-named importer-relative local directory (and over an
+        ambient ``CAPA_PATH`` module). When the basename equals the
+        dependency name this points at the same file the search-path
+        form below finds, so matching-basename projects reach the same
+        file EXCEPT that the declared path-dep now wins over a colliding
+        same-named local directory (where that local directory used to).
+
+        Importer-relative comes next so a project-local module shadows
+        one of the same name on the search path.
         """
         rel = Path(*path_parts).with_suffix(".capa")
-        return [from_dir / rel] + [root / rel for root in self._search_paths]
+        candidates: list[Path] = []
+        # Module form ``import X.mod[.sub...]`` of a declared path dep:
+        # the dep NAME (first part) maps to its directory; the rest
+        # name the module file inside it. The bare ``import X`` form
+        # (a single part) names the package directory itself and is
+        # handled by ``_package_modules`` / the package-directory
+        # diagnostic, so it does not add a file candidate here.
+        if len(path_parts) >= 2:
+            dep_dir = self._dependency_roots.get(path_parts[0])
+            if dep_dir is not None:
+                rest = Path(*path_parts[1:]).with_suffix(".capa")
+                candidates.append(dep_dir / rest)
+        candidates.append(from_dir / rel)
+        candidates.extend(root / rel for root in self._search_paths)
+        return candidates
 
     def _resolve(self, path_parts: list[str], from_dir: Path) -> Optional[Path]:
         """Return the first existing candidate path, or ``None``."""
@@ -250,8 +304,15 @@ class ModuleLoader:
         """
         stems: set[str] = set()
         found_dir = False
-        for root in [from_dir, *self._search_paths]:
-            pkg_dir = root / pkg_name
+        # A declared PATH dependency's directory IS the package
+        # directory for the whole-package ``import X`` form, so it is
+        # consulted first (its basename need not equal ``pkg_name``).
+        pkg_dirs: list[Path] = []
+        dep_dir = self._dependency_roots.get(pkg_name)
+        if dep_dir is not None:
+            pkg_dirs.append(dep_dir)
+        pkg_dirs.extend(root / pkg_name for root in [from_dir, *self._search_paths])
+        for pkg_dir in pkg_dirs:
             if not pkg_dir.is_dir():
                 continue
             found_dir = True

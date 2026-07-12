@@ -1414,6 +1414,119 @@ class TestSearchPathResolution(_TempDirMixin, unittest.TestCase):
         self.assertEqual(result.stdout, "1\n")
 
 
+class TestDependencyRootResolution(_TempDirMixin, unittest.TestCase):
+    """``ModuleLoader(dependency_roots={name: dir})`` resolves a
+    declared PATH dependency from its declared directory, so
+    ``[dependencies.X] path = "vendor/other"`` (directory basename
+    ``other`` != dep name ``X``) is honoured. F-2 regression guard.
+    """
+
+    def test_mismatched_basename_module_form_resolves(self):
+        # Dep NAME is ``mylib`` but its directory is ``vendor/otherdir``.
+        dep_dir = self._tmp / "vendor" / "otherdir"
+        dep_dir.mkdir(parents=True, exist_ok=True)
+        (dep_dir / "api.capa").write_text(
+            "pub fun answer() -> Int\n    return 42\n",
+            encoding="utf-8",
+        )
+        root = self._write(
+            "proj/root.capa",
+            "import mylib.api\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${answer()}")\n'
+        )
+        loader = ModuleLoader(dependency_roots={"mylib": dep_dir})
+        linked = loader.load_root(root.read_text(), str(root))
+        names = {
+            item.name for item in linked.module.items
+            if isinstance(item, A.FunDecl)
+        }
+        self.assertIn("answer", names)
+        self.assertIn("main", names)
+
+    def test_mismatched_basename_whole_package_lists_modules(self):
+        # ``import mylib`` (whole-package form) over a mismatched-basename
+        # path-dep: the declared dir IS the package dir, so the hint
+        # lists its modules by the dep name, not the dir basename.
+        dep_dir = self._tmp / "vendor" / "otherdir"
+        dep_dir.mkdir(parents=True, exist_ok=True)
+        (dep_dir / "api.capa").write_text(
+            "pub fun a() -> Int\n    return 1\n", encoding="utf-8",
+        )
+        (dep_dir / "util.capa").write_text(
+            "pub fun u() -> Int\n    return 2\n", encoding="utf-8",
+        )
+        root = self._write(
+            "proj/root.capa",
+            "import mylib\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("hi")\n'
+        )
+        loader = ModuleLoader(dependency_roots={"mylib": dep_dir})
+        with self.assertRaises(LoaderError) as ctx:
+            loader.load_root(root.read_text(), str(root))
+        msg = ctx.exception.message
+        self.assertIn("is a package directory", msg)
+        # Modules are listed under the dep NAME, from the declared dir.
+        self.assertIn("mylib.api", msg)
+        self.assertIn("mylib.util", msg)
+
+    def test_missing_module_error_lists_declared_path(self):
+        # The declared-path candidate must appear in the "tried ..."
+        # list so the declared path is never silently omitted.
+        dep_dir = self._tmp / "vendor" / "otherdir"
+        dep_dir.mkdir(parents=True, exist_ok=True)
+        (dep_dir / "api.capa").write_text(
+            "pub fun a() -> Int\n    return 1\n", encoding="utf-8",
+        )
+        root = self._write(
+            "proj/root.capa",
+            "import mylib.ghost\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("hi")\n'
+        )
+        loader = ModuleLoader(dependency_roots={"mylib": dep_dir})
+        with self.assertRaises(LoaderError) as ctx:
+            loader.load_root(root.read_text(), str(root))
+        msg = ctx.exception.message
+        self.assertIn("cannot resolve", msg)
+        # The declared directory (basename ``otherdir``) and the
+        # missing module file both appear in the diagnostic.
+        self.assertIn("otherdir", msg)
+        self.assertIn("ghost.capa", msg)
+
+    def test_matching_basename_unchanged(self):
+        # No regression: when the directory basename equals the dep
+        # name, resolution is identical whether or not dependency_roots
+        # is supplied (same file resolves either way).
+        dep_dir = self._tmp / "vendor" / "mylib"
+        dep_dir.mkdir(parents=True, exist_ok=True)
+        (dep_dir / "api.capa").write_text(
+            "pub fun answer() -> Int\n    return 7\n",
+            encoding="utf-8",
+        )
+        root = self._write(
+            "proj/root.capa",
+            "import mylib.api\n"
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${answer()}")\n'
+        )
+        # With dependency_roots pointing at the matching-basename dir.
+        loader_dep = ModuleLoader(dependency_roots={"mylib": dep_dir})
+        linked_dep = loader_dep.load_root(root.read_text(), str(root))
+        target_dep = next(
+            p for p in linked_dep.sources.keys() if p.endswith("api.capa")
+        )
+        # With the pre-fix search-path form (parent of the dep dir).
+        loader_sp = ModuleLoader(search_paths=[dep_dir.parent])
+        linked_sp = loader_sp.load_root(root.read_text(), str(root))
+        target_sp = next(
+            p for p in linked_sp.sources.keys() if p.endswith("api.capa")
+        )
+        # Both resolve to the exact same file on disk.
+        self.assertEqual(Path(target_dep).resolve(), Path(target_sp).resolve())
+
+
 class TestBarePackageImportHint(_TempDirMixin, unittest.TestCase):
     """A bare ``import pkg`` where ``pkg`` is a directory of modules
     (the ``capa add`` vendor layout) gets a self-correcting hint

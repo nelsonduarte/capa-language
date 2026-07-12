@@ -204,6 +204,45 @@ def _capa_search_paths() -> list[Path]:
     return out
 
 
+def _capa_dependency_roots() -> dict[str, Path]:
+    """Map each declared PATH dependency's NAME to its resolved
+    on-disk directory.
+
+    ``[dependencies.X] path = "vendor/other"`` maps ``X`` to the
+    resolved ``<manifest-dir>/vendor/other``. The loader uses this to
+    resolve ``import X.mod`` directly from the declared directory, so
+    the declared ``path`` is honoured even when the directory's
+    basename (``other``) differs from the dependency name (``X``).
+    Without it the loader only tried ``<search-root>/X/mod.capa`` and
+    silently ignored the declared path.
+
+    Only path dependencies appear here (regular + dev, matching the
+    search-path treatment). Git deps are vendored by name into
+    ``./vendor`` and resolved through the search path, so they are
+    intentionally excluded; no git verification runs on this cheap
+    path (it never reads ``./vendor``). A missing or broken
+    ``capa.toml`` yields an empty map so the search-path fallback in
+    ``_capa_search_paths`` still applies and the CLI never aborts.
+    """
+    roots: dict[str, Path] = {}
+    manifest_path = Path.cwd() / "capa.toml"
+    if not manifest_path.exists():
+        return roots
+    try:
+        from capa.pkg import read_manifest
+        manifest = read_manifest(manifest_path)
+        all_deps = manifest.dependencies + manifest.dev_dependencies
+        for d in all_deps:
+            if d.is_path and d.path is not None:
+                roots[d.name] = (manifest.manifest_dir / d.path).resolve()
+    except Exception:
+        # A broken capa.toml is already surfaced (as a one-line
+        # warning) by ``_capa_search_paths``; here we degrade to an
+        # empty map rather than emit a second warning or abort.
+        return {}
+    return roots
+
+
 def _dispatch_init(argv: list[str]) -> int:
     """Handle ``python -m capa init [name]``.
 
@@ -503,7 +542,10 @@ def _dispatch_migrate(argv: list[str]) -> int:
     try:
         tokens = Lexer(source, filename=filename).lex()
         del tokens  # lexing validates; the loader re-lexes the root
-        loader = ModuleLoader(search_paths=_capa_search_paths())
+        loader = ModuleLoader(
+            search_paths=_capa_search_paths(),
+            dependency_roots=_capa_dependency_roots(),
+        )
         linked = loader.load_root(source, filename)
     except LexerError as e:
         print(e.format(), file=sys.stderr)
@@ -612,7 +654,10 @@ def _dispatch_build(argv: list[str]) -> int:
 
     from capa.loader import ModuleLoader, LoaderError
     try:
-        loader = ModuleLoader(search_paths=_capa_search_paths())
+        loader = ModuleLoader(
+            search_paths=_capa_search_paths(),
+            dependency_roots=_capa_dependency_roots(),
+        )
         linked = loader.load_root(source, filename)
     except LexerError as e:
         print(e.format(), file=sys.stderr)
@@ -1503,6 +1548,7 @@ def _main_dispatch() -> int:
                 try:
                     loader = ModuleLoader(
                         search_paths=_capa_search_paths(),
+                        dependency_roots=_capa_dependency_roots(),
                     )
                     linked = loader.load_root(source, filename)
                     module = linked.module
@@ -2939,7 +2985,10 @@ def _run_watch_loop(filename: str, program_args: list[str]) -> int:
         try:
             from capa.loader import ModuleLoader
             source = target.read_text(encoding="utf-8")
-            loader = ModuleLoader(search_paths=_capa_search_paths())
+            loader = ModuleLoader(
+                search_paths=_capa_search_paths(),
+                dependency_roots=_capa_dependency_roots(),
+            )
             linked = loader.load_root(source, str(target))
             for f in linked.sources.keys():
                 f_abs = str(Path(f).resolve())
