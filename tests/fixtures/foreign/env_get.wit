@@ -1,0 +1,8 @@
+package capa:host;
+interface env {
+  get: func(handle: u32, name: string) -> option<string>;
+}
+world envget {
+  import env;
+  export get-env: func(name: string) -> string;
+}

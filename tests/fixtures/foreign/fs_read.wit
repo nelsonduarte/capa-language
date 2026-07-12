@@ -1,0 +1,14 @@
+package capa:host;
+interface fs {
+  record io-error {
+    message: string,
+    cause: string,
+  }
+  read: func(handle: u32, path: string) -> result<string, io-error>;
+  restrict-to: func(handle: u32, prefix: string) -> u32;
+}
+world fsread {
+  import fs;
+  export read-it: func(path: string) -> string;
+  export widen-read: func(path: string) -> string;
+}
