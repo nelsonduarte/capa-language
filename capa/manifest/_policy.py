@@ -781,7 +781,17 @@ def _eval_no_declassification(pol, composed, paths):
     unknown) FAILS CLOSED with ``authority_unknown`` unless
     ``allow_unknown`` is set: an unanalyzable subtree may declassify unseen,
     so a confident "zero" cannot be proven. A named package absent from the
-    graph is ``unsatisfiable``."""
+    graph is ``unsatisfiable``.
+
+    What this proves, precisely: the package/product performs no AUDITED
+    ``declassify`` (an @secret -> @public bridge) anywhere in its resolved
+    closure. The stronger reading - "releases no secret data" - holds under
+    the opt-in ``@strict_ifc()`` attribute, where a raw secret-to-sink leak
+    is a HARD ERROR rather than the default WARNING, so ``declassify`` is the
+    only remaining release path. Absent ``@strict_ifc`` this predicate bounds
+    the AUDITED release path only; it composes with, and does not replace,
+    strict IFC. (A machine-checked strict-IFC precondition is planned as a
+    follow-up.)"""
     target = pol.params["package"]
     if target is None:
         # Product-wide: read the roll-up in ``composed``.
@@ -849,7 +859,41 @@ def _eval_no_secret_egress(pol, composed, paths):
     ``violation``; a TOP in-scope package (its declassification status
     and/or capability set unknown) FAILS CLOSED with ``authority_unknown``
     unless ``allow_unknown`` is set; a named absent package is
-    ``unsatisfiable``. Both facts are the COMPOSED (transitive) ones."""
+    ``unsatisfiable``.
+
+    The concrete-violation test reads the package's OWN (attributed)
+    declassification count, NOT the composed/transitive one, but keeps the
+    COMPOSED capability set for the egress side. A package only forms an
+    exfiltration path when IT ITSELF unmasks secret data AND can reach an
+    egress capability; a package that merely WIRES a separate declassifier
+    dependency and a separate networker dependency (the separation-of-duties
+    shape this policy is meant to REWARD) composes a transitive
+    declassification and an egress cap from two DIFFERENT children without
+    ever unmasking-and-sending in its own code, and must not be flagged.
+
+    What this proves, precisely: no single in-scope package holds BOTH the
+    AUDITED-declassification authority (a ``declassify`` site in its own
+    code) AND the egress authority (a policy-declared egress capability such
+    as Net). It SEPARATES those two authorities across packages, so an
+    audited unmask and an outbound send cannot co-reside without a review
+    boundary between them. Restricting the concrete-violation test to
+    OWN-declassification is what removes the false positive on wiring
+    packages (a package that merely composes a transitive declassification
+    and an egress cap from two DIFFERENT children never unmasks-and-sends in
+    its own code); the composed capability set is still used for the egress
+    side, and the fail-closed-on-TOP behavior is unchanged.
+
+    It does NOT by itself prove the absence of un-audited RAW secret-to-sink
+    flows. Capa's secret-to-public-sink information-flow check is WARN-ONLY
+    by default (it does not fail the build) and a HARD ERROR only under the
+    opt-in ``@strict_ifc()`` attribute. So the stronger reading - "no secret
+    value can be exfiltrated by an egress-reaching package" - holds only
+    when those egress-reaching packages are compiled under ``@strict_ifc``,
+    which makes ``declassify`` the SOLE path by which secret data can reach
+    a sink (a raw leak is then a hard error, not a warning). This policy
+    COMPOSES WITH ``@strict_ifc``; it does not replace it. (A machine-checked
+    strict-IFC precondition - verifying that egress-reaching packages are
+    built under ``@strict_ifc`` - is planned as a follow-up.)"""
     egress = set(pol.params["capabilities"])
     display = sorted(egress)
     target = pol.params["package"]
@@ -860,7 +904,7 @@ def _eval_no_secret_egress(pol, composed, paths):
     out: list[PolicyViolation] = []
     for pkg in pkgs:
         name = pkg["name"]
-        count = pkg.get("composed_declassification_sites", 0)
+        count = pkg.get("attributed_declassification_sites", 0)
         held = sorted(egress & set(pkg.get("composed_capabilities", [])))
         if count > 0 and held:
             out.append(PolicyViolation(

@@ -1121,6 +1121,75 @@ class TestNoSecretEgress(_TmpTree):
         report, _ = _eval(root, "main.capa")
         self.assertTrue(_result(report, "nse")["pass"])
 
+    def _orchestrator_tree(self, policy: str) -> Path:
+        # Separation-of-duties product (feature #6, P2 dogfood F-1): an
+        # orchestrator WIRES a declassifier dependency (unmasks, holds no
+        # egress cap) and a networker dependency (holds Net, declassifies
+        # nothing). The orchestrator's OWN code neither unmasks nor sends; it
+        # only composes a transitive declassification (from redactor) AND an
+        # egress cap (from sender) out of two DIFFERENT children. This is the
+        # exact shape the policy is meant to REWARD, so it must PASS.
+        root = self.tmp / "prod"
+        _write(root, "capa.toml", (
+            '[package]\nname = "prod"\nversion = "0.1.0"\n\n'
+            '[dependencies.redactor]\n'
+            'git = "https://github.com/example/redactor"\ntag = "v1"\n\n'
+            '[dependencies.sender]\n'
+            'git = "https://github.com/example/sender"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa",
+               "import redactor.redact\nimport sender.send\n\n"
+               "pub fun run() -> Unit\n    return\n")
+        # redactor: declassifies in its OWN code, egress-free (Stdio only).
+        _write(root, "vendor/redactor/capa.toml",
+               '[package]\nname = "redactor"\nversion = "0.1.0"\n')
+        _write(root, "vendor/redactor/redact.capa", _DISCLOSE)
+        # sender: holds Net, declassifies nothing.
+        _write(root, "vendor/sender/capa.toml",
+               '[package]\nname = "sender"\nversion = "0.1.0"\n')
+        _write(root, "vendor/sender/send.capa", self._NET_ONLY)
+        _write(root, "capa-policy.toml", policy)
+        return root
+
+    def test_product_wide_orchestrator_wiring_passes(self):
+        # F-1 regression: the product-wide form (no `package`) must NOT flag
+        # the orchestrator that merely wires a separate declassifier and a
+        # separate networker. The orchestrator composes both a transitive
+        # declassification and Net, but its OWN declassification count is 0.
+        root = self._orchestrator_tree(
+            '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+            'capabilities = ["Net"]\n',
+        )
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertTrue(r["pass"], r["violations"])
+        # And specifically: the orchestrator is not among any flagged package.
+        self.assertEqual(r["violations"], [])
+
+    def test_own_declassify_plus_wired_egress_still_violation(self):
+        # The egress side stays COMPOSED: a package that unmasks in its OWN
+        # code AND wires a networker child (so Net enters its composed reach)
+        # is a real single-package unmask-and-send and must still fire.
+        root = self.tmp / "leaker"
+        _write(root, "capa.toml", (
+            '[package]\nname = "leaker"\nversion = "0.1.0"\n\n'
+            '[dependencies.sender]\n'
+            'git = "https://github.com/example/sender"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa", "import sender.api\n\n" + _DISCLOSE)
+        _write(root, "vendor/sender/capa.toml",
+               '[package]\nname = "sender"\nversion = "0.1.0"\n')
+        _write(root, "vendor/sender/api.capa", self._NET_ONLY)
+        _write(root, "capa-policy.toml",
+               '[[policy]]\nid = "nse"\nkind = "no-secret-egress"\n'
+               'capabilities = ["Net"]\n')
+        report, _ = _eval(root, "main.capa")
+        r = _result(report, "nse")
+        self.assertFalse(r["pass"])
+        v = next(x for x in r["violations"] if x["package"] == "leaker")
+        self.assertEqual(v["verdict"], "violation")
+        self.assertIn("Net", v["detail"])
+
     def test_egress_set_is_explicit_no_hardcoded_default(self):
         # The package declassifies AND holds Net, but the DECLARED egress set
         # is [Fs]: no co-residence with the declared set -> passes. Confirms
