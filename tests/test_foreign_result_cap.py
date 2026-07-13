@@ -41,11 +41,13 @@ from unittest import mock
 
 from capa.cli import _wasm_tooling_available, main
 from capa.runtime._capabilities import Net, ResultCapExceeded
-from capa.runtime._foreign import (
-    DEFAULT_FOREIGN_RESULT_CAP_BYTES,
-    ForeignResourceExceeded,
-    _read_text_capped,
-)
+
+# NOTE: ``capa.runtime._foreign`` imports ``wasmtime`` at module load, so it is
+# NOT imported at top level here: the plain ``test`` CI job does not install the
+# ``wasm`` extra and importing it would ERROR the whole module at collection.
+# Every class below is gated on ``_wasm_tooling_available()`` and imports the
+# ``_foreign`` symbols it needs LOCALLY, so the module loads (and skips) cleanly
+# when wasmtime is absent -- the same idiom the sibling foreign test modules use.
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "foreign"
 
@@ -123,8 +125,12 @@ class _BodyServer:
 # ---- unit: the bounded text-read helper ------------------------------
 
 
+@unittest.skipUnless(
+    _wasm_tooling_available(), "wasm-tools / wasmtime missing",
+)
 class TestReadTextCappedUnit(unittest.TestCase):
     def _read(self, text: str, cap):
+        from capa.runtime._foreign import _read_text_capped
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "f.txt"
             p.write_text(text, encoding="utf-8")
@@ -136,6 +142,7 @@ class TestReadTextCappedUnit(unittest.TestCase):
         self.assertEqual(self._read("x" * 100, 100), "x" * 100)
 
     def test_one_over_cap_raises(self):
+        from capa.runtime._foreign import ForeignResourceExceeded
         with self.assertRaises(ForeignResourceExceeded) as cm:
             self._read("x" * 101, 100)
         self.assertIn("result cap", str(cm.exception))
@@ -147,6 +154,7 @@ class TestReadTextCappedUnit(unittest.TestCase):
     def test_multibyte_counted_in_bytes_not_chars(self):
         # A 3-char string of 3-byte chars is 9 bytes: under a 9-byte cap it
         # passes, under an 8-byte cap it is denied (byte, not char, ceiling).
+        from capa.runtime._foreign import ForeignResourceExceeded
         s = "中" * 3  # 3 chars, 9 UTF-8 bytes
         self.assertEqual(self._read(s, 9), s)
         with self.assertRaises(ForeignResourceExceeded):
@@ -156,6 +164,9 @@ class TestReadTextCappedUnit(unittest.TestCase):
 # ---- unit: Net.get / Net.post max_bytes (the NORMAL path is unchanged) ----
 
 
+@unittest.skipUnless(
+    _wasm_tooling_available(), "wasm-tools / wasmtime missing",
+)
 class TestNetMaxBytesUnit(unittest.TestCase):
     def test_get_none_returns_full_body_unchanged(self):
         # max_bytes=None (the default the normal path uses) returns the
@@ -201,6 +212,9 @@ class TestNetMaxBytesUnit(unittest.TestCase):
 # ---- flag semantics --------------------------------------------------
 
 
+@unittest.skipUnless(
+    _wasm_tooling_available(), "wasm-tools / wasmtime missing",
+)
 class TestFlagSemantics(unittest.TestCase):
     def test_negative_rejected(self):
         with tempfile.TemporaryDirectory() as td:
@@ -213,6 +227,7 @@ class TestFlagSemantics(unittest.TestCase):
             self.assertIn("--foreign-result-cap must be >= 0", err)
 
     def test_default_applies_when_unset(self):
+        from capa.runtime._foreign import DEFAULT_FOREIGN_RESULT_CAP_BYTES
         from capa.runtime._wasm_host import WasmHost
         host = WasmHost()
         self.assertEqual(
@@ -336,6 +351,7 @@ class TestForeignDbResultCap(unittest.TestCase):
         )
 
     def test_over_cap_raises(self):
+        from capa.runtime._foreign import ForeignResourceExceeded
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td, 500)
             with self.assertRaises(ForeignResourceExceeded) as cm:
@@ -393,6 +409,9 @@ def _db_query_closure(db, cap):
     return captured["query"]
 
 
+@unittest.skipUnless(
+    _wasm_tooling_available(), "wasm-tools / wasmtime missing",
+)
 class TestForeignDbQueryClosure(unittest.TestCase):
     _CAP = 1024 * 1024  # 1 MiB, the review PoC cap
 
@@ -421,6 +440,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # raise ForeignResourceExceeded AND never materialise -- the peak
         # host allocation stays a few MiB, not the ~200 MiB the review saw.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -439,6 +459,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
 
     def test_single_value_group_concat_refused_at_cap_peak(self):
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -460,6 +481,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
 
     def test_single_value_recursive_cte_refused_at_cap_peak(self):
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -481,6 +503,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # A genuine large STORED value larger than the cap is also refused
         # (SQLITE_TOOBIG -> ForeignResourceExceeded), not materialised.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -496,6 +519,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # Many rows summing past the cap still abort early, with the peak
         # bounded near the cap (a large improvement on the review's ~8.8x).
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -528,6 +552,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # the real retained memory, so the abort fires after ~cap/PER_ROW rows
         # and the peak stays a few MiB.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -550,6 +575,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # Same axis with a tiny non-empty value (``select 1`` -> "1", 1 byte).
         # A payload-only count barely moves; the object charge aborts at ~cap.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         for literal in ("1", "null"):
             with tempfile.TemporaryDirectory() as td:
@@ -574,6 +600,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # 1M to 10M does NOT raise the peak beyond ~cap -- the abort happens
         # after ~cap/PER_ROW rows regardless of how many rows the SQL asks for.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         peaks = []
         for limit in (1_000_000, 10_000_000):
@@ -600,6 +627,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # SQLITE_LIMIT_COLUMN now refuses the >100-column result outright, so
         # no row materialises and the peak stays ~cap.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -622,6 +650,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # first value at ~cap peak (Vector A cannot smuggle width in under 100
         # columns of giant values either).
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -644,6 +673,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # ~1 MiB each (17 columns x 60 KiB, each value under the per-value
         # bound, 17 under the column bound) would be ~400 MiB unbounded.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -670,6 +700,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # Combined width x depth: many rows, many (but <= 100) columns. Still
         # bounded ~cap because each row is source-bounded and fetched alone.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -696,7 +727,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # single-row bound). A value just UNDER the per-value limit succeeds.
         from capa.runtime._capabilities import Db
         from capa.runtime._foreign import (
-            MAX_RESULT_COLUMNS, _FOREIGN_DB_VALUE_FLOOR,
+            MAX_RESULT_COLUMNS, ForeignResourceExceeded, _FOREIGN_DB_VALUE_FLOOR,
         )
 
         per_value = max(self._CAP // MAX_RESULT_COLUMNS, _FOREIGN_DB_VALUE_FLOOR)
@@ -721,6 +752,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # missed this, letting a ~6x-cap dump cross to the child. 400 rows x
         # 2000 ``chr(1)`` = ~800 KiB raw (< 1 MiB cap) but ~4.8 MiB escaped.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         with tempfile.TemporaryDirectory() as td:
             dbp = self._make_db(td)
@@ -857,7 +889,9 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         import json as _j
 
         from capa.runtime._foreign import (
-            _FOREIGN_DB_PER_ROW_COST, _FOREIGN_DB_PER_VALUE_COST,
+            ForeignResourceExceeded,
+            _FOREIGN_DB_PER_ROW_COST,
+            _FOREIGN_DB_PER_VALUE_COST,
         )
 
         value = "v" * 100  # dumps() = 102 bytes > the 64 floor: no slack
@@ -891,7 +925,9 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         import json as _j
 
         from capa.runtime._foreign import (
-            _FOREIGN_DB_PER_ROW_COST, _FOREIGN_DB_PER_VALUE_COST,
+            ForeignResourceExceeded,
+            _FOREIGN_DB_PER_ROW_COST,
+            _FOREIGN_DB_PER_VALUE_COST,
         )
 
         value = "w" * 100
@@ -1030,6 +1066,7 @@ class TestForeignDbQueryClosure(unittest.TestCase):
         # < 3.11), a CAPPED foreign query fails closed rather than risk an
         # unbounded host allocation. Simulated by a proxy that hides setlimit.
         from capa.runtime._capabilities import Db
+        from capa.runtime._foreign import ForeignResourceExceeded
 
         class _NoSetlimit:
             def __init__(self, conn):
@@ -1071,6 +1108,7 @@ class TestForeignNetResultCap(unittest.TestCase):
         )
 
     def test_over_cap_raises(self):
+        from capa.runtime._foreign import ForeignResourceExceeded
         with _BodyServer(50_000) as srv:
             with self.assertRaises(ForeignResourceExceeded) as cm:
                 self._fetch(srv.url, 1_000)
