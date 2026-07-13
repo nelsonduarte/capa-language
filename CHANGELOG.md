@@ -9,7 +9,143 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.16.0], 2026-07-13
+
 **Added.**
+
+- *A composed capability SBOM per PRODUCT, not just a manifest per program
+  (`--compose-sbom`, `--check-capabilities`, `--manifest-digest`).* The
+  flattened whole-program manifest is attributed back to its owning
+  packages, the dependency DAG is walked from the root `capa.toml`'s
+  `[dependencies]` (recursively reading each vendored dependency's own
+  `capa.toml`), and the capability surface rolls up bottom-up over a lattice
+  with a distinguished authority-unknown TOP element. A dependency that is
+  not analyzable -- no vendored Capa source, an absent/unreadable
+  `capa.toml`, a native/non-Capa dependency, or a subtree that crosses
+  `Unsafe` -- composes as TOP, which DOMINATES the join and is visibly
+  labelled, never treated as the empty set: an unanalyzable subtree makes
+  the product authority-unknown, not dishonestly clean. `--manifest-digest`
+  emits the canonical, content-addressable per-function manifest
+  (byte-reproducible, signABLE); `--compose-sbom` emits the composed product
+  SBOM. A package can DECLARE its intended ceiling in a strict/closed
+  `[capabilities]` block (`max = [...]`, `pure = true` sugar for `max = []`,
+  opt-in `allow_unknown = true`), and `--check-capabilities` is the CI gate
+  that proves the product's composed authority stays subset-or-equal to that
+  ceiling, attributing each offending capability to the transitive
+  dependency edge that introduces it. TOP fails CLOSED with a distinct
+  `authority_unknown` verdict (separate from an exceeds-by-capability
+  breach); `allow_unknown = true` waives only that TOP failure, never a
+  positively observed capability outside the bound.
+
+- *A signed authority changelog between two capability artifacts
+  (`--capability-diff <old.json> <new.json>`, `--fail-on-widening`).* Given
+  version N and N+1 (each a `--manifest` / `--manifest-digest` per-function
+  manifest or a `--compose-sbom` product SBOM), the diff classifies which
+  capabilities each exported function and the product GAINED, LOST, or had a
+  guarantee change. Functions are matched across versions by the STABLE
+  `(container, name)` identity, never by position, so a line-only move
+  produces an empty diff. A gained transitively-reachable capability, or a
+  capability leaving `provably_excluded`, is a WIDENING; a lost capability or
+  one entering `provably_excluded` is a NARROWING; an authority-known ->
+  authority-unknown transition is a high-severity widening. Operator grants
+  (`--preopen` / `--allow-host`) are modelled as a method set per target
+  (`ro`->`rw`, `get`->`connect` = widening). The diff records both inputs'
+  content digests and is wrapped in the same content-integrity envelope as
+  the manifests. `--fail-on-widening` is the CI gate: exit non-zero on any
+  widening or authority-unknown transition.
+
+- *A typed foreign Wasm Component Model boundary
+  (`extern component Name from "<path>.wasm"`) whose calls are sandbox-
+  confined at runtime to exactly the capabilities the caller passes.* A
+  program declares the boundary with an indentation body:
+
+      extern component Bureau from "vendor/bureau.wasm"
+          fun submit(net: Net, payload: Report) -> Receipt
+
+  `extern` is a reserved word; `component` and `from` are contextual
+  keywords (still usable as ordinary identifiers). Crossing types are
+  restricted to Wasm-component-expressible shapes: `Int` / `Bool` / `Float`
+  / `String` and nested non-self-referential aggregates (structs, tuples,
+  lists, `Option`, `Result`) marshal across; `Unsafe` as a capability or
+  anywhere in a crossing type, a user-defined capability parameter, a bare
+  `Fun`/closure, a cap-bearing struct passed as a value, and a generic
+  method are all REJECTED at analysis time. At runtime the untrusted child
+  runs on a restricted linker granted ONLY the capabilities the call
+  passes, so a component handed `net` cannot reach `Fs` or `Env`; the
+  host-mediated capability closures (`fs.read`, `net.get`/`post`,
+  `db.query`) are attenuated to the caller's own grant. A resource ceiling
+  bounds the child against DoS: `--foreign-fuel <N>` (CPU, default 1e9)
+  traps an infinite loop with a clean "exceeded its CPU/fuel budget"
+  diagnostic, `--foreign-memory-cap <MiB>` (child linear memory, default
+  256) refuses an over-cap child, and the newest `--foreign-result-cap
+  <MiB>` (default 256) bounds the PEAK HOST allocation of a result-returning
+  crossing (chunked capped `fs.read` with peak ~cap, bounded `net` read with
+  peak ~2x cap, and a `db.query` accumulator that charges each value/row so
+  the total is >= the crossing JSON's length and aborts before the cap is
+  exceeded), closing the host-side OOM axis that the child-store caps do not
+  cover. `0` opts out of each ceiling; a negative value is rejected. The
+  manifest records each boundary and its declared capability set as
+  information with authority `unproven-top`; a function invoking a foreign
+  component is not treated as authority-clean.
+
+- *Organization capability-compliance policies over the composed graph
+  (`capa-policy.toml`, `--check-policies`, `--conformance-report`).* A
+  product-level `capa-policy.toml` declares rules evaluated purely over what
+  `--compose-sbom` emits, parsed by the same strict/closed parser as
+  `[capabilities]` (an unknown key, predicate kind, or capability name is a
+  hard error). P1 provides six fixed predicate kinds: `exclusion` (no
+  package holds two named caps at once), `product-subset` (product composed
+  authority subset-of a set), `purity` (a named package, or all, must be
+  pure), `forbid-capability`, `forbid-dependency`, and
+  `no-unresolved-dependencies`. P2 adds two DECLASSIFICATION-AWARE
+  predicates, using the audited `declassify` points rolled up the dependency
+  tree as durable evidence: `no-declassification` (a package or the product
+  releases no secret data) and `no-secret-egress` (a package may not both
+  declassify secret data and hold a policy-declared egress capability, so
+  the authority to unmask and the authority to send out are separated across
+  packages). Every predicate FAILS CLOSED over an authority-unknown (TOP)
+  subtree with a distinct `authority_unknown` verdict (never reported as
+  passing over an unanalyzable subtree) unless the policy sets
+  `allow_unknown = true`, which waives only the TOP failure. `--check-
+  policies` is the CI gate (exit non-zero on any violation);
+  `--conformance-report` emits the signable evidence, wrapped in the same
+  content-integrity envelope. `no-secret-egress` further catches UN-AUDITED
+  raw secret-to-egress-sink flows, not only audited `declassify`+egress
+  co-residence: the analyzer records, per function, the sink capabilities an
+  un-audited `@secret` value reaches (the warn-tier secret-to-sink flow it
+  already computes) and the policy fires when a package's own leak-caps
+  intersect the declared egress set. This makes the guarantee machine-
+  checked rather than documented; the honest residual is the IFC analysis's
+  own detection completeness, not the warn-vs-`@strict_ifc` distinction (a
+  `@strict_ifc` flow is a hard error and never reaches a manifest). The
+  change is purely observational in the IFC layer (byte-identical against
+  the pre-feature analyzer): it never alters any warn-or-error decision, the
+  label lattice, or the sink/source tables.
+
+- *Information-flow control is now sound across HIGHER-ORDER code: closure-
+  return secret flows (Phase A) and element-granular combinator labels
+  (Phase B).* Phase A gives the internal function type a constant flow-label
+  channel (a per-parameter label tuple and a return label over the two-point
+  lattice): a closure stamps its inferred return label onto its type, and a
+  store-site check flags a secret-returning closure flowing into a public-
+  returning slot (a struct field, a typed `let`/`var`, a var reassignment,
+  or a function return). This closes four laundering shapes -- closure by
+  name, in a struct field, in a reassigned var, and laundered by a return --
+  that were accepted before. Like the rest of the IFC it is WARN by default
+  and a HARD error only under `@strict_ifc`; call arguments are deliberately
+  not checked, so a built-in combinator accepting a secret-returning closure
+  is not a new false positive. Phase B makes a combinator result ELEMENT-
+  granular: a container result carries a `(structure, element)` label split,
+  so a shape query (`length` / `is_empty` / `is_some` / `is_ok`) over a
+  secret-element result answers PUBLIC while an element read (indexing,
+  iteration, payload unwrap) stays tainted and a whole-container sink is
+  still caught -- removing a class of false positive, the worse failure
+  under the project posture. B covers the built-in combinators
+  (`List`/`Range` `map`/`filter`/`fold`/`flat_map`; `Option`
+  `map`/`and_then`/`filter`; `Result` `map`/`and_then`/`map_err`) and, per-
+  call by parametricity, user-defined generic higher-order functions. Both
+  phases are analysis-only: no type-system change (`unify` / `compatible`
+  untouched), IR stays label-free, backend output byte-unaffected.
 
 - *`--allow-host <host>[:get|:post]`: per-method scope on the operator Net
   grant.* A grant can now be scoped to READ (`:get`) or WRITE (`:post`)
@@ -66,6 +202,20 @@ breaking changes and the discipline is still being shaped.
   backends. No observable effect.
 
 **Fixed.**
+
+- *A declared dependency `path` is now honored when its on-disk directory
+  basename differs from the dependency name.* A `[dependencies.X]
+  path = "..."` was ignored by the import resolver when the directory
+  basename differed from `X`: `import X.mod` only resolved when the
+  directory was named `X`, and the declared path was never even listed in
+  the "tried ..." error. The declared path is now authoritative and the
+  highest-priority candidate for both the module form (`import X.mod`) and
+  the whole-package form (`import X`), taking precedence over a colliding
+  same-named importer-relative directory or ambient `CAPA_PATH` module (a
+  declared dependency is authoritative), and it appears in the tried-paths
+  error on a genuine miss. Import path segments are identifiers only, so an
+  import can never escape the declared directory. Found by dogfooding the
+  #6 P2 policy work on a downstream demo.
 
 - *A `Map` whose VALUE type is `Fun(...)` now compiles on the Wasm backend,
   at parity with the Python interpreter.* `let m: Map<String, Fun(Int) -> Int>`
@@ -415,6 +565,28 @@ breaking changes and the discipline is still being shaped.
   a NON-empty `cause` (Python rendered `message: cause`, the Wasm
   FormatStr emitter only `message`) -- is closed by the FormatStr fix
   above.
+
+**Formal.**
+
+- *A gated Agda variant (`proofs/CapaManifestExact.agda`) mechanically
+  proves INTRODUCTION CONFINEMENT of capability literals.* The proof refines
+  `CapaSyntax`'s typing judgement with a top-level gate on capability
+  literals and shows, machine-checked under `--safe`, that in a gate-true
+  well-typed program EVERY capability literal occurs OUTSIDE all lambda
+  binders (introduced only at the top-level spine, never under a binder),
+  with a divergence witness that the two relations genuinely differ. This
+  closes the Capa-vs-lambda_cap gap on the INTRODUCTION dimension only. It
+  does NOT prove full `manifest == decl` equality: `spine-lit` ("not under a
+  binder") is strictly broader than "is a runtime-supplied parameter of the
+  main lambda", the use/restrict tags of a dead nested cap-lambda still
+  survive in the footprint (the known declared-but-unused caveat), so the
+  manifest remains a SOUND UPPER BOUND that is TIGHT on introduction, not an
+  equality. Gated preservation is FALSE (the runtime bound is routed through
+  `forget-flag` to the source program's footprint, not a gated preservation
+  lemma). The translation from Capa's surface syntax to gate-true-typable
+  `lambda_cap` is NOT formalized: `confine` is conditional on gated
+  typability, matching the informal calculus-vs-analyser fidelity that
+  `proofs/README.md` already flags.
 
 **CI.**
 

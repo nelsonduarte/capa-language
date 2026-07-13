@@ -19,6 +19,56 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.16.0: composed SBOMs, signed capability diffs, typed FFI boundary, compliance policies, higher-order IFC (2026-07-13)
+
+- **Composed capability SBOM per product (#1).** `--compose-sbom`,
+  `--check-capabilities`, `--manifest-digest`: attribute the flattened
+  manifest to owning packages, walk the dependency DAG, roll capabilities up
+  bottom-up over a lattice with an authority-unknown TOP element (an
+  unanalyzable / `Unsafe`-crossing subtree composes as TOP and fails closed,
+  never dishonestly clean). A strict `[capabilities]` ceiling is proven
+  subset-or-equal per package and gated in CI.
+- **Signed authority changelog between releases (#2).** `--capability-diff
+  <old> <new>` classifies per-function and product widening / narrowing over
+  the stable `(container, name)` identity (position-independent), wrapped in
+  the content-integrity envelope; `--fail-on-widening` is the CI gate.
+- **Typed foreign-component boundary (#4).** `extern component Name from
+  "<path>.wasm"` with runtime sandbox confinement to exactly the passed
+  capabilities; `Int`/`Bool`/`Float`/`String` + nested non-self-referential
+  aggregate marshalling; a DoS ceiling via `--foreign-fuel` (CPU),
+  `--foreign-memory-cap` (child memory), and `--foreign-result-cap`
+  (host-side peak result bound). `Unsafe`/user-cap/bare-`Fun`/cap-bearing
+  struct/generic crossings rejected at analysis time.
+- **Capability-compliance policies over the composed graph (#6).**
+  `capa-policy.toml`, `--check-policies`, `--conformance-report`: P1 six
+  fixed predicates + P2 declassification-aware `no-declassification` /
+  `no-secret-egress`, all fail-closed on authority-unknown. `no-secret-
+  egress` machine-checks un-audited secret-to-egress-sink flows (residual =
+  IFC detection completeness, not warn-vs-`@strict_ifc`).
+- **Higher-order IFC.** Phase A: closure-return secret flows (per-parameter
+  + return flow-label channel on function types), warn by default / hard
+  error under `@strict_ifc`. Phase B: element-granular `(structure,
+  element)` labels for built-in combinators and per-call user generic HOFs,
+  so a shape query over a secret-element result stays public. Analysis-only,
+  backend byte-unaffected.
+- **`--allow-host` operator Net grant for `--wasi`.** The network analogue
+  of `--preopen`, with per-method (`:get` / `:post`) scope; guest-side host
+  extraction validated against a Python reference; recorded in the SBOM as
+  an operator-declared grant. DNS-rebinding is an acknowledged limitation.
+- **Wasm codegen parity sweep + loader fix.** Closed the remaining
+  Python-vs-Wasm parity gaps (`Map<_, Fun>`, nested variant/tuple/struct
+  sub-patterns in match, fn-refs as `Fun` values in aggregates and tuple
+  slots, `String.split` multi-char separator, `IoError` construction +
+  `${e}` cause rendering, aggregate/payload slot type inference); a new
+  `wasm_parity_smoke.sh` CI gate. Loader now honors a declared dependency
+  `path` whose directory basename differs from the name.
+- **Formal (Agda).** `proofs/CapaManifestExact.agda` machine-checks
+  INTRODUCTION confinement (capability literals occur only outside all
+  lambda binders); closes the Capa-vs-lambda_cap gap on the introduction
+  dimension only, NOT full `manifest == decl` equality (manifest stays a
+  sound upper bound), and the surface-to-calculus translation stays
+  informal.
+
 ## v1.15.1: verified `capa install` repaired (2026-07-03)
 
 - **`capa install` verifies again with modern `gh`.** The SLSA
