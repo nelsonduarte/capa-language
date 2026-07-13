@@ -37,3 +37,6 @@ jobs:
       - name: Typecheck CapaNoninterference
         working-directory: proofs
         run: agda --safe CapaNoninterference.agda
+      - name: Typecheck CapaManifestExact
+        working-directory: proofs
+        run: agda --safe CapaManifestExact.agda
