@@ -18,13 +18,19 @@
 -- We prove two structural lemmas and NOTHING else in this phase (no
 -- preservation, no exactness theorem yet):
 --
---   * weaken-top  (Lemma A): a term typed under the FALSE flag is
---     also typed under the TRUE flag. TRUE is strictly more
+--   * weaken-top  (Lemma A): a term typed under the FALSE gate is
+--     also typed under the TRUE gate. TRUE is strictly more
 --     permissive (it additionally admits the capability-literal
---     rule), so a restrictive derivation is trivially a permissive
---     one. This is the lemma that will later rescue substitution /
---     preservation when a top-typed capability value is substituted
---     into a non-top body -- but that is future work.
+--     rule G-Cap), so a restrictive (false-gate) derivation is
+--     trivially a permissive (true-gate) one. This is exactly the
+--     permissive-direction structural weakening `false => true`;
+--     its precise role in later phases is TBD. (It is NOT the
+--     direction preservation would want: substituting a true-gate
+--     capability value into a false-gate body would need
+--     `true => false`, which is inadmissible BY DESIGN -- that
+--     inadmissibility is the whole point of the gate, and is why
+--     gated preservation is false; see the counterexample near the
+--     end of this file. weaken-top does not, and cannot, rescue it.)
 --
 --   * forget-flag (Lemma B): a term typed in the gated judgement
 --     (under EITHER flag) is typed in CapaSyntax's ORIGINAL ungated
@@ -118,7 +124,9 @@ infix 4 _|-[_]_!_
 -- Any term well-typed under the FALSE gate is also well-typed under
 -- the TRUE gate (same context, same term, same type). TRUE only ADDS
 -- the capability-literal rule G-Cap, so every FALSE derivation is
--- already a TRUE one.
+-- already a TRUE one. This is a plain permissive-direction weakening
+-- (`false => true`); it makes NO claim about preservation, and its
+-- precise use in later phases is left open.
 --
 -- Structural induction on the gated derivation. The G-Cap case does
 -- not arise: G-Cap concludes at gate `true`, which cannot unify with
@@ -173,10 +181,70 @@ forget-flag (G-Restrict d) = T-Restrict (forget-flag d)
 forget-flag (G-Consume d)  = T-Consume (forget-flag d)
 
 ------------------------------------------------------------------
+-- Sanity anchors and the preservation counterexample.
+--
+-- These are permanent, machine-checked definitions that pin down the
+-- meaning of the gated judgement so it cannot silently rot:
+--
+--   * `positive` witnesses NON-VACUITY: a genuine top-level program
+--     (main takes a Net capability and uses it) types at gate true,
+--     with the cap appearing as a VARIABLE inside the body (never a
+--     literal), exactly as Capa's discipline intends.
+--
+--   * `prog` / `prog-typed` / `prog-step` / `reduct-untypable`
+--     together REFUTE gated preservation: a gate-true program steps
+--     (by beta, substituting a cap LITERAL argument into the body) to
+--     a term that is untypable at EVERY gate. So `t ==> t'` does not
+--     preserve gated typing. This is deliberate -- it is the machine
+--     evidence that the manifest-exactness theorem must NOT be routed
+--     through a gated preservation lemma, and instead be established
+--     as a SOURCE-level property of the initial program (via
+--     forget-flag, below).
+------------------------------------------------------------------
+
+-- Empty type (no constructors), for the untypability half. CapaSyntax
+-- exports no such type, so we declare a local one.
+data Empty : Set where
+
+-- Non-vacuity: a real top-level main, capability used as a bound
+-- variable inside the (gate-false) body.
+positive : empty |-[ true ] lam (TyCap Net) (use Net (var vzero)) ! (TyCap Net => TyUnit)
+positive = G-Lam (G-Use (G-Var here))
+
+-- A gate-true program: (\ (n : Net) -> \ (_ : Unit) -> use Net n) applied
+-- to the capability LITERAL `cap Net`.
+prog : Tm
+prog = app (lam (TyCap Net) (lam TyUnit (use Net (var (vsuc vzero))))) (cap Net)
+
+prog-typed : empty |-[ true ] prog ! (TyUnit => TyUnit)
+prog-typed = G-App (G-Lam (G-Lam (G-Use (G-Var (there here))))) G-Cap
+
+-- One beta step substitutes the literal `cap Net` for the outer
+-- binder, producing a lambda whose body now contains a cap LITERAL.
+prog-step : prog ==> lam TyUnit (use Net (cap Net))
+prog-step = R-Beta V-Cap
+
+-- The reduct is untypable at EVERY gate: inverting G-Lam then G-Use
+-- exposes the premise `(empty , TyUnit) |-[ false ] cap Net ! TyCap Net`,
+-- and no constructor types a cap literal at gate false (only G-Cap
+-- could, and it pins gate true, which cannot unify with false). The
+-- `()` therefore lands on that cap-at-false premise.
+reduct-untypable : forall {b}
+                 -> empty |-[ b ] lam TyUnit (use Net (cap Net)) ! (TyUnit => TyUnit)
+                 -> Empty
+reduct-untypable (G-Lam (G-Use ()))
+
+------------------------------------------------------------------
 -- That is Phase 1. The gated judgement `_|-[_]_!_` refines
 -- CapaSyntax's `_|-_!_` with a top-level gate on capability
 -- literals; weaken-top and forget-flag are real, total, --safe
--- definitions by structural induction. Preservation for the gated
--- judgement and the manifest-exactness theorem are deferred to a
--- later phase.
+-- definitions by structural induction.
+--
+-- Gated preservation is FALSE (the counterexample above), so the
+-- eventual manifest-exactness theorem will be proven as a SOURCE-
+-- level property of the initial program: forget-flag hands a gated-
+-- typed program off to CapaSyntax / CapaSoundness, and the already-
+-- proven multi-step manifest-completeness there supplies the runtime
+-- capability bound. It will NOT be obtained by re-deriving
+-- preservation under the gate.
 ------------------------------------------------------------------
