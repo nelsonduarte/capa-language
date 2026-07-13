@@ -246,8 +246,9 @@ reduct-untypable (G-Lam (G-Use ()))
 -- The gate exists to guarantee ONE precise source-level fact: a
 -- capability LITERAL `cap c` is never conjured under a binder. This
 -- section formalizes and proves exactly that; it is the load-bearing
--- lemma for Phase 3's manifest-exactness (the literal part of the
--- manifest = the top-level, runtime-supplied capabilities).
+-- lemma for Phase 3's introduction-confinement result (capability
+-- literals are introduced only at the top level, never under a
+-- binder).
 --
 -- We need a LITERAL-ONLY occurrence relation, distinct from
 -- CapaSyntax's `_∈caps_`. `_∈caps_` also counts the TAG on `use c t`
@@ -369,12 +370,16 @@ confine (G-Restrict d) (lit-restrict h) = spine-restrict (confine d h)
 confine (G-Consume d)  (lit-consume h)  = spine-consume (confine d h)
 
 ------------------------------------------------------------------
--- The runtime-soundness half, for free, via forget-flag: a gated-
--- typed closed program hands off to CapaSyntax's ungated typing, and
--- CapaSoundness's already-proven multi-step `manifest-completeness`
--- bounds the runtime-reachable capabilities by the program's
--- syntactic footprint. (`manifest-completeness` takes the capability
--- as an EXPLICIT argument; we let Agda infer it via `_`.)
+-- The pre-existing multi-step runtime bound, restricted to gated
+-- programs. This is NOT a new guarantee earned by the gate: it is
+-- CapaSoundness's already-proven `manifest-completeness` composed with
+-- forget-flag, i.e. the SAME bound restricted (via gate-typability) to
+-- a subset of programs, hence strictly WEAKER than the existing
+-- theorem. It is recorded only to note that gate-typable programs
+-- inherit that bound; the one genuinely new result of this file is
+-- `confine` (introduction confinement), not this corollary.
+-- (`manifest-completeness` takes the capability as an EXPLICIT
+-- argument; we let Agda infer it via `_`.)
 ------------------------------------------------------------------
 
 gated-runtime-bound : forall {e e' A c}
@@ -405,17 +410,54 @@ prog-runtime-bound : Net ∈caps prog
 prog-runtime-bound = gated-runtime-bound prog-typed (step* prog-step done*) (inside-lam here-use-tag)
 
 ------------------------------------------------------------------
+-- Divergence witness: `_spine-lit_` is STRICTLY contained in
+-- `_∈lit_`, so `confine` is non-trivial and its gate-true hypothesis
+-- is load-bearing. On `lam TyUnit (cap Net)` the literal DOES occur
+-- (under the binder), yet there is NO spine occurrence; and the term
+-- is not gate-typable at any gate, so `confine` never applies to it --
+-- exactly as it must, since `confine`'s conclusion would be false
+-- here. Together these show the gap between the two relations is real
+-- and that gate-typability is precisely what rules the bad term out.
+------------------------------------------------------------------
+
+-- ∈lit holds: the literal cap Net occurs, but under a lambda binder.
+witness-lit : Net ∈lit (lam TyUnit (cap Net))
+witness-lit = lit-lam lit-here
+
+-- spine-lit FAILS on the same term: no spine-lit constructor targets a lam.
+witness-not-spine : Net spine-lit (lam TyUnit (cap Net)) -> Empty
+witness-not-spine ()
+
+-- The gate hypothesis is load-bearing: this term is not gate-typable
+-- at any gate (its body would need `cap Net` typed at gate false).
+witness-untypable : forall {b A} -> empty |-[ b ] lam TyUnit (cap Net) ! A -> Empty
+witness-untypable (G-Lam ())
+
+------------------------------------------------------------------
 -- That is Phases 1-3. The gated judgement `_|-[_]_!_` refines
 -- CapaSyntax's `_|-_!_` with a top-level gate on capability literals.
 -- Phase 1 (weaken-top, forget-flag) relates the gate to the original
 -- calculus; Phase 2 (`_∈lit_`, no-cap-literal-under-false) shows no
 -- literal appears under a binder; Phase 3 (`_spine-lit_`, confine)
 -- lifts that to the whole program -- in a gate-true well-typed program
--- EVERY capability literal is confined to the top-level spine (the
--- declared, runtime-supplied environment). This closes the Capa-vs-
--- lambda_cap gap on the INTRODUCTION dimension. gated-runtime-bound
--- adds the runtime half: reachable caps are bounded by the manifest
--- via forget-flag + manifest-completeness.
+-- EVERY capability literal occurs OUTSIDE all lambda binders. This is
+-- INTRODUCTION CONFINEMENT, and it closes the Capa-vs-lambda_cap gap on
+-- the INTRODUCTION dimension. gated-runtime-bound is NOT a new result:
+-- it merely records that CapaSoundness's pre-existing multi-step bound
+-- still applies to gate-typable programs (via forget-flag).
+--
+-- WHAT `confine` DOES AND DOES NOT SAY. It proves literals are
+-- introduced only at the top level, never under a binder. It does NOT
+-- prove that those top-level literals equal `decl(e_0)`, the cap-typed
+-- PARAMETER list of the leading lambda prefix: `spine-lit` ("not under
+-- a binder") is strictly broader than "is a runtime-supplied parameter
+-- of the main lambda". For instance `use Net (cap Net)` is gate-true
+-- typable (G-Use G-Cap) and its literal is a spine occurrence, yet it
+-- declares no cap parameter -- the capability is exercised directly at
+-- top level, not passed in as an argument to a `main` lambda.
+-- INFORMALLY, in the intended whole-program shape `app main (cap c)`
+-- the top-level literals are exactly what the runtime supplies, but
+-- that correspondence is not what `confine` establishes.
 --
 -- HONEST SCOPE. We do NOT claim full `∈caps` equality. The use /
 -- restrict TAGS of a dead nested cap-lambda survive in `∈caps` (the
@@ -426,4 +468,11 @@ prog-runtime-bound = gated-runtime-bound prog-typed (step* prog-step done*) (ins
 -- counterexample), which is exactly why the runtime bound is routed
 -- through forget-flag + the source program's footprint rather than a
 -- gated preservation lemma.
+--
+-- NOT MECHANIZED. The translation from Capa's surface syntax to gate-
+-- true-typable lambda_cap is not formalized here: `confine` is
+-- conditional on gated typability, matching the informal calculus-vs-
+-- analyser fidelity that proofs/README.md already flags. What is proved
+-- is that the gated CALCULUS has the confinement property -- not, on
+-- its own, that "Capa closes the gap".
 ------------------------------------------------------------------
