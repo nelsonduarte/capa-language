@@ -138,12 +138,22 @@ class WasmHost:
         from ._foreign import (
             DEFAULT_FOREIGN_FUEL,
             DEFAULT_FOREIGN_MEMORY_CAP_BYTES,
+            DEFAULT_FOREIGN_RESULT_CAP_BYTES,
             new_foreign_engine,
         )
         self._foreign_engine = new_foreign_engine()
         self._foreign_fuel: Optional[int] = DEFAULT_FOREIGN_FUEL
         self._foreign_memory_cap_bytes: Optional[int] = (
             DEFAULT_FOREIGN_MEMORY_CAP_BYTES
+        )
+        # Result-size ceiling (bytes) on the value a host-mediated
+        # ``capa:host/<cap>`` closure materialises for an untrusted child
+        # (``fs.read`` / ``net`` body / ``db.query`` result set). The fuel
+        # / memory caps bound the CHILD store; this bounds the HOST-side
+        # buffer -- the last DoS axis of the foreign resource ceiling.
+        # Wired to ``--foreign-result-cap``.
+        self._foreign_result_cap_bytes: Optional[int] = (
+            DEFAULT_FOREIGN_RESULT_CAP_BYTES
         )
         # Holds the instance's exported memory after instantiation;
         # host callbacks read string arguments out of this memory.
@@ -218,18 +228,26 @@ class WasmHost:
         self,
         fuel: Optional[int] = None,
         memory_cap_bytes: Optional[int] = None,
+        result_cap_bytes: Optional[int] = None,
     ) -> None:
         """Override the untrusted-child resource ceiling (feature #4
         hardening). ``fuel`` bounds child CPU (``None`` keeps the default;
         a non-positive value skips the CPU bound); ``memory_cap_bytes``
-        bounds child linear-memory growth likewise. Call BEFORE
-        :meth:`register_foreign_methods` runs the program. Wired to the
-        CLI's ``--foreign-fuel`` / ``--foreign-memory-cap`` flags."""
+        bounds child linear-memory growth likewise; ``result_cap_bytes``
+        bounds the HOST-side buffer a granted host-mediated closure
+        materialises (``fs.read`` / ``net`` body / ``db.query`` result),
+        likewise. Call BEFORE :meth:`register_foreign_methods` runs the
+        program. Wired to the CLI's ``--foreign-fuel`` /
+        ``--foreign-memory-cap`` / ``--foreign-result-cap`` flags."""
         if fuel is not None:
             self._foreign_fuel = fuel if fuel > 0 else None
         if memory_cap_bytes is not None:
             self._foreign_memory_cap_bytes = (
                 memory_cap_bytes if memory_cap_bytes > 0 else None
+            )
+        if result_cap_bytes is not None:
+            self._foreign_result_cap_bytes = (
+                result_cap_bytes if result_cap_bytes > 0 else None
             )
 
     def register_foreign_methods(self, methods: list) -> None:
@@ -336,6 +354,7 @@ class WasmHost:
                     _meta["method"], granted, scalar_args, _label,
                     fuel=self._foreign_fuel,
                     memory_cap_bytes=self._foreign_memory_cap_bytes,
+                    result_cap_bytes=self._foreign_result_cap_bytes,
                 )
                 if _meta["return_wasm"] is None:
                     return None
@@ -418,6 +437,7 @@ class WasmHost:
                 aggregate_result=_meta["return_kind"] == "aggregate",
                 fuel=self._foreign_fuel,
                 memory_cap_bytes=self._foreign_memory_cap_bytes,
+                result_cap_bytes=self._foreign_result_cap_bytes,
             )
             if _meta["return_kind"] == "aggregate":
                 # Write the child's returned value back into the parent's

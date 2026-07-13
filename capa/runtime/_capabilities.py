@@ -35,11 +35,61 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from . import _fs_guard
 from ._list import CapaList
 from ._result import Err, None_, Ok, Some
+
+
+class ResultCapExceeded(RuntimeError):
+    """Raised by a capability's bounded-read path when the response /
+    result it is materialising would exceed the caller-supplied byte
+    ceiling (``max_bytes``). Deliberately NOT a subclass of ``OSError`` /
+    ``ValueError`` so a capability method's own ``except (OSError,
+    ValueError)`` IO-error funnel does not swallow it: it must propagate
+    to the caller that set the cap.
+
+    Only ever raised when a caller opts in by passing ``max_bytes``; the
+    default (``None``) path is unbounded and never raises this. The typed
+    foreign-component sandbox (``capa.runtime._foreign``) is the sole such
+    caller today, translating it into ``ForeignResourceExceeded`` (a clean
+    exit-1 diagnostic) so an untrusted child cannot OOM the host by making
+    the host-mediated closure buffer a giant response body."""
+
+
+# Chunk size for a bounded host-side read (a capped network body). Reading
+# in bounded chunks keeps PEAK host allocation at ~``max_bytes`` rather
+# than materialising the whole (possibly multi-GiB) response before the
+# ceiling is checked.
+_CAPPED_READ_CHUNK = 65536
+
+
+def _read_body_capped(resp, max_bytes: Optional[int]) -> bytes:
+    """Read an HTTP response body, bounding PEAK host allocation.
+
+    ``max_bytes is None`` -> unbounded, the current behaviour (read the
+    whole body). Otherwise read at most ``max_bytes + 1`` bytes in bounded
+    chunks and raise :class:`ResultCapExceeded` the moment the body proves
+    LARGER than ``max_bytes`` -- so the host never buffers more than
+    ~``max_bytes`` bytes. A body of EXACTLY ``max_bytes`` is allowed (the
+    ``+ 1`` probe byte is what distinguishes at-cap from over-cap)."""
+    if max_bytes is None:
+        return resp.read()
+    chunks: list[bytes] = []
+    remaining = max_bytes + 1
+    while remaining > 0:
+        chunk = resp.read(min(remaining, _CAPPED_READ_CHUNK))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    raw = b"".join(chunks)
+    if len(raw) > max_bytes:
+        raise ResultCapExceeded(
+            f"response body exceeded the result cap ({max_bytes} bytes)"
+        )
+    return raw
 
 
 @dataclass(frozen=True)
@@ -571,7 +621,16 @@ class Net:
     def allows(self, host: str) -> bool:
         return self._allowed is None or host in self._allowed
 
-    def get(self, url: str):
+    def get(self, url: str, max_bytes: Optional[int] = None):
+        """HTTP GET, gated by the current restriction set.
+
+        ``max_bytes`` bounds the response body the host will materialise:
+        ``None`` (the default) is the unbounded, historical behaviour, so
+        every normal caller is UNCHANGED. A non-negative ``max_bytes``
+        reads at most that many bytes and raises
+        :class:`ResultCapExceeded` if the body is larger, so a caller can
+        bound peak host allocation (the typed foreign-component sandbox
+        passes its ``--foreign-result-cap``)."""
         from urllib.parse import urlparse
         from urllib.request import Request, urlopen
 
@@ -591,7 +650,9 @@ class Net:
 
         try:
             with urlopen(Request(url), timeout=10) as resp:
-                data = resp.read().decode("utf-8", errors="replace")
+                data = _read_body_capped(resp, max_bytes).decode(
+                    "utf-8", errors="replace",
+                )
                 return Ok(data)
         except (OSError, ValueError) as e:
             # ``HTTPError`` (a subclass of OSError raised on status >= 400)
@@ -602,7 +663,7 @@ class Net:
                 close()
             return Err(IoError("HTTP GET failed", str(e)))
 
-    def post(self, url: str, body: str):
+    def post(self, url: str, body: str, max_bytes: Optional[int] = None):
         """HTTP POST: same attenuation gate as ``get``, sends ``body``
         as a UTF-8 byte string with Content-Type
         ``application/octet-stream``. Errors lower into the same
@@ -612,7 +673,10 @@ class Net:
 
         ``urllib.request.urlopen`` triggers a POST automatically when
         ``data`` is supplied; the Wasm host bridge mirrors that
-        exactly via ``Request(url, data=body.encode(\"utf-8\"))``."""
+        exactly via ``Request(url, data=body.encode(\"utf-8\"))``.
+
+        ``max_bytes`` bounds the response body exactly as in :meth:`get`
+        (``None`` = unbounded, the historical default)."""
         from urllib.parse import urlparse
         from urllib.request import Request, urlopen
 
@@ -637,7 +701,9 @@ class Net:
                 headers={"Content-Type": "application/octet-stream"},
             )
             with urlopen(req, timeout=10) as resp:
-                data = resp.read().decode("utf-8", errors="replace")
+                data = _read_body_capped(resp, max_bytes).decode(
+                    "utf-8", errors="replace",
+                )
                 return Ok(data)
         except (OSError, ValueError) as e:
             close = getattr(e, "close", None)

@@ -1399,6 +1399,22 @@ def _main_dispatch() -> int:
         ),
     )
     parser.add_argument(
+        "--foreign-result-cap",
+        type=int,
+        default=None,
+        metavar="<MiB>",
+        help=(
+            "with --wasm --run, cap the RESULT an untrusted foreign "
+            "component (feature #4) may make a granted host-mediated "
+            "closure materialise, in MiB: an fs.read file, a net body, a "
+            "db.query result set. The fuel / memory caps bound the child "
+            "store; this bounds the HOST-side buffer, so a child cannot "
+            "OOM the host by reading a multi-GiB result. The read aborts "
+            "early instead of buffering the whole result. Default: 256 "
+            "MiB. Use 0 to skip the result bound (host decides)."
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI colors in the output",
@@ -1425,6 +1441,13 @@ def _main_dispatch() -> int:
         print(
             "capa: --foreign-memory-cap must be >= 0 MiB (use 0 to opt out "
             f"of the memory bound); got {args.foreign_memory_cap}",
+            file=sys.stderr,
+        )
+        return 2
+    if args.foreign_result_cap is not None and args.foreign_result_cap < 0:
+        print(
+            "capa: --foreign-result-cap must be >= 0 MiB (use 0 to opt out "
+            f"of the result bound); got {args.foreign_result_cap}",
             file=sys.stderr,
         )
         return 2
@@ -2488,9 +2511,15 @@ def _main_dispatch() -> int:
                         if args.foreign_memory_cap is None
                         else args.foreign_memory_cap * 1024 * 1024
                     )
+                    _result_cap_bytes = (
+                        None
+                        if args.foreign_result_cap is None
+                        else args.foreign_result_cap * 1024 * 1024
+                    )
                     host.configure_foreign_limits(
                         fuel=args.foreign_fuel,
                         memory_cap_bytes=_mem_cap_bytes,
+                        result_cap_bytes=_result_cap_bytes,
                     )
                     host.register_foreign_methods(_foreign_methods)
                 host.run_main(blob)

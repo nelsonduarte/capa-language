@@ -1,0 +1,12 @@
+package capa:host;
+interface net {
+  record io-error {
+    message: string,
+    cause: string,
+  }
+  get: func(handle: u32, url: string) -> result<string, io-error>;
+}
+world netget {
+  import net;
+  export fetch: func(url: string) -> string;
+}

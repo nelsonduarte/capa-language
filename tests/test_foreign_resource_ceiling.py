@@ -364,7 +364,9 @@ class TestForeignResourceCeiling(unittest.TestCase):
             with mock.patch.object(
                 _foreign, "MAX_FOREIGN_BLOCKING_SECS", 0.5,
             ):
-                _foreign._bind_db(_Root(), Db())
+                # result_cap None: this test exercises the query DEADLINE,
+                # not the result-size cap, so the cap is opted out here.
+                _foreign._bind_db(_Root(), Db(), None)
                 query = captured["query"]
                 runaway = (
                     "WITH RECURSIVE r(n) AS ("

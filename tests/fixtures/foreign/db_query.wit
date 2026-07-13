@@ -1,0 +1,12 @@
+package capa:host;
+interface db {
+  record io-error {
+    message: string,
+    cause: string,
+  }
+  query: func(handle: u32, path: string, sql: string) -> result<string, io-error>;
+}
+world dbquery {
+  import db;
+  export run-query: func(path: string, sql: string) -> string;
+}

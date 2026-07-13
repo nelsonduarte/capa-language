@@ -37,12 +37,24 @@ from __future__ import annotations
 
 import json as _stdlib_json
 import os
+import sqlite3 as _sqlite3
 from typing import Any
 
 import wasmtime
 import wasmtime.component as wc
 
-from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Random, Stdio, _write_safe
+from ._capabilities import (
+    Clock,
+    Db,
+    Env,
+    Fs,
+    Net,
+    Proc,
+    Random,
+    ResultCapExceeded,
+    Stdio,
+    _write_safe,
+)
 from ._fs_guard import PostOpenDenied
 from ._result import Ok
 from ._wasm_component_host import IoErrorRecord
@@ -92,6 +104,121 @@ class ForeignResourceExceeded(ForeignDenied):
 #   below the ~4 GiB a malicious self-allocation would reach.
 DEFAULT_FOREIGN_FUEL = 1_000_000_000
 DEFAULT_FOREIGN_MEMORY_CAP_BYTES = 256 * 1024 * 1024
+
+# Result-size ceiling (bytes) on the value a host-mediated ``capa:host/<cap>``
+# closure materialises for an untrusted foreign child (feature #4 hardening,
+# the last DoS gap in the foreign resource ceiling). The fuel / memory caps
+# bound the CHILD store; they do NOT bound the HOST-side buffer a granted,
+# host-mediated read allocates. A single ``fs.read`` of a multi-GiB in-prefix
+# file, a giant HTTP body, or a huge ``db.query`` result set runs in the HOST
+# Python process and materialises the WHOLE result before lifting it to the
+# child -- charging ~no child fuel -- so an untrusted child could OOM the host
+# regardless of ``--foreign-memory-cap``. This bound caps the VALUE THAT
+# CROSSES to the child: a read whose crossing value would exceed it aborts
+# EARLY (for ``db.query`` the crossing value is the ``json.dumps`` result, and
+# ``total`` is charged in its escaped size so the returned dump is ``<= cap``;
+# for ``fs.read`` / ``net`` it is the raw byte count) and surfaces as
+# :class:`ForeignResourceExceeded`. The retained host intermediate is ``<= cap``
+# in raw terms too, so the peak host allocation is ~2x cap (intermediate +
+# crossing value both live during the final serialise), never the whole result.
+# 256 MiB matches the child memory cap -- the result must fit the child anyway,
+# so this is the natural ceiling. ``0`` / ``None`` opts out (unbounded).
+DEFAULT_FOREIGN_RESULT_CAP_BYTES = 256 * 1024 * 1024
+
+# Chunk size (characters) for a bounded host-side text read (``fs.read``).
+_FOREIGN_TEXT_READ_CHUNK = 65536
+
+# Result-ROW bound for a capped host-side ``db.query`` fetch. A single result
+# row = (number of result columns) x (per-value size). A per-value SOURCE
+# guard plus a POST-materialisation accumulator cannot bound an ATOMIC C-layer
+# fetch whose row width (columns) or batch size (rows) the untrusted child
+# controls -- it drives host peak far above the cap two ways: a wide single
+# row (``select zeroblob(900k), ... x 500``) and a big fetch batch (256 rows
+# x ~cap). We bound BOTH terms of a single row at the sqlite SOURCE, before
+# fetching, then fetch ONE row at a time (below), so the peak host allocation
+# for a capped ``db.query`` is a small constant multiple of the cap (~2x),
+# independent of the attacker's column count, value sizes, or row count:
+#
+# - ``MAX_RESULT_COLUMNS`` caps the result-set column count via
+#   ``SQLITE_LIMIT_COLUMN`` (verified: this limits a SELECT RESULT width, not
+#   only a table definition). A query with more columns is REFUSED by sqlite
+#   ("too many columns in result set") before any row materialises -- this
+#   kills the arbitrary-width attack. 100 is generous for real queries.
+# - ``_FOREIGN_DB_VALUE_FLOOR`` is the minimum per-value length limit so small
+#   legitimate values are never broken even at a tiny cap. The per-value
+#   ``SQLITE_LIMIT_LENGTH`` is ``max(cap // MAX_RESULT_COLUMNS, FLOOR)``, so a
+#   single row is bounded to about ``cap`` (cap binding) or
+#   ``MAX_RESULT_COLUMNS * FLOOR`` = ~6.4 MiB (floor binding) -- a small fixed
+#   constant either way, NOT attacker-scalable. 64 KiB floor.
+MAX_RESULT_COLUMNS = 100
+_FOREIGN_DB_VALUE_FLOOR = 65536
+
+# The per-row accumulator (below) must be a SOUND OVER-ESTIMATE of
+# ``len(_stdlib_json.dumps(stringified))`` -- the JSON string that ACTUALLY
+# CROSSES to the child -- so that aborting the moment ``total > cap`` guarantees
+# the crossing dump is ``<= cap`` for ANY attacker choice of value sizes, column
+# count, row count AND escape content. Counting the raw UTF-8 payload bytes is
+# unsound TWO ways. (1) Escape expansion: ``json.dumps`` with ``ensure_ascii``
+# expands a control char to ``\uXXXX`` (6x), a quote / backslash to 2x, so an
+# escape-heavy result whose RAW payload is just under the cap serialises to a
+# dump ~6x it -- the value that crosses the boundary blows the cap. We therefore
+# charge each VALUE its JSON-ESCAPED size ``len(_stdlib_json.dumps(s))`` -- its
+# EXACT contribution to the dump -- or ``_FOREIGN_DB_PER_VALUE_COST``, whichever
+# is larger. (2) Tiny / empty value flood: an attacker emitting millions of
+# ``''`` values (``with recursive c(x) as (select '' ... limit 1000000) select
+# x from c``) grows the retained ``list``-of-``list`` while a size-only ``total``
+# barely moves. The per-value floor and the per-row charge close it: per
+# accumulated ROW we charge a constant covering the row's STRUCTURAL dump bytes
+# plus the retained ``list`` object; per accumulated VALUE the floor covers the
+# retained ``str`` object (so an empty / tiny value still consumes budget).
+#
+# The per-row STRUCTURAL charge must cover the real dump separators. Note that
+# ``json.dumps`` default separators are TWO bytes (``", "`` between items,
+# ``": "`` in objects), NOT one: so a row's structural dump bytes are at most
+# ``2 * MAX_RESULT_COLUMNS + 2`` -- the row's ``[`` ``]`` (2), up to
+# ``MAX_RESULT_COLUMNS`` - 1 two-byte inter-value separators, and the two-byte
+# inter-row separator (max 2*100 + 2 = 202 at ``MAX_RESULT_COLUMNS`` = 100).
+# ``_FOREIGN_DB_ROW_STRUCTURAL`` is DERIVED from ``MAX_RESULT_COLUMNS`` so it
+# cannot silently under-charge if that limit changes; ``_FOREIGN_DB_PER_ROW_COST``
+# adds a 64-byte margin for the retained ``list`` object overhead. (On CPython
+# an empty ``str`` is ~49 bytes <= 64, the per-value floor.) Because ``total``
+# >= ``len(_stdlib_json.dumps(stringified))`` at every step, the abort fires
+# early and the crossing dump stays ``<= cap``; the retained intermediate (raw
+# payload <= its JSON size) stays ``<= cap`` in raw terms too, so the host peak
+# is ~2x cap.
+_FOREIGN_DB_PER_VALUE_COST = 64
+_FOREIGN_DB_ROW_STRUCTURAL = 2 * MAX_RESULT_COLUMNS + 2
+_FOREIGN_DB_PER_ROW_COST = _FOREIGN_DB_ROW_STRUCTURAL + 64
+
+# sqlite ``SQLITE_TOOBIG`` (18): the extended-result-code sqlite raises when a
+# string / blob exceeds ``SQLITE_LIMIT_LENGTH``. Resolved via ``getattr`` so a
+# 3.10 interpreter (where the named constant is absent) still has the numeric
+# fallback -- though that path fails closed before it is reached (no
+# ``setlimit``). Named on the module so the too-big translation matches the
+# length limit precisely, never a blanket ``except``.
+_SQLITE_TOOBIG = getattr(_sqlite3, "SQLITE_TOOBIG", 18)
+
+
+def _is_sqlite_length_limit_error(exc: Exception) -> bool:
+    """True when ``exc`` is a sqlite RESULT-CAP breach we translate to
+    :class:`ForeignResourceExceeded`: either the ``SQLITE_LIMIT_LENGTH`` breach
+    (``SQLITE_TOOBIG``, "string or blob too big") or the ``SQLITE_LIMIT_COLUMN``
+    breach ("too many columns in result set"), as opposed to a genuine SQL / IO
+    error. The length breach keys off the extended result code when available
+    (3.11+, where ``setlimit`` also lives) and falls back to the stable message
+    text; the column breach surfaces as a generic ``SQLITE_ERROR`` (code 1) so
+    it is matched by its stable message text. A normal ``sqlite3.Error`` (a
+    missing table, a syntax error) is NEVER misclassified as the result-cap
+    breach."""
+    if not isinstance(exc, _sqlite3.Error):
+        return False
+    if getattr(exc, "sqlite_errorcode", None) == _SQLITE_TOOBIG:
+        return True
+    text = str(exc).lower()
+    return (
+        "string or blob too big" in text
+        or "too many columns in result set" in text
+    )
 
 # Store growable-resource caps (feature #4 hardening, review C2). Fuel and
 # the linear-memory ceiling do NOT bound table growth or object counts, so
@@ -216,6 +343,7 @@ def dispatch_foreign_call(
     aggregate_result: bool = False,
     fuel: int | None = DEFAULT_FOREIGN_FUEL,
     memory_cap_bytes: int | None = DEFAULT_FOREIGN_MEMORY_CAP_BYTES,
+    result_cap_bytes: int | None = DEFAULT_FOREIGN_RESULT_CAP_BYTES,
 ):
     """Instantiate the child component at ``artifact_path`` with a
     restricted linker binding ONLY the ``granted`` caps, call its
@@ -236,7 +364,17 @@ def dispatch_foreign_call(
     (or a non-positive value) for either to skip that bound. ``engine``
     MUST come from :func:`new_foreign_engine` for the fuel bound to
     apply; the confinement (restricted linker, granted caps, host-bound
-    closures) is UNCHANGED -- this only adds the store ceiling."""
+    closures) is UNCHANGED -- this only adds the store ceiling.
+
+    ``result_cap_bytes`` bounds the HOST-side buffer a granted,
+    host-mediated closure materialises (``fs.read`` file bytes, a
+    ``net.get`` / ``net.post`` body, a ``db.query`` result set). The fuel
+    / memory caps bound the CHILD store; they do NOT bound this host-side
+    allocation, so this is the last DoS axis of the foreign resource
+    ceiling: a read that would exceed the cap aborts EARLY (peak host
+    allocation stays ~cap, never the whole result) and surfaces as
+    :class:`ForeignResourceExceeded`. ``None`` / a non-positive value
+    opts out (unbounded)."""
     if not os.path.isfile(artifact_path):
         raise ForeignDenied(
             f"foreign component {boundary_label}: artifact not found at "
@@ -268,9 +406,16 @@ def dispatch_foreign_call(
             tables=_FOREIGN_MAX_TABLES,
             instances=_FOREIGN_MAX_INSTANCES,
         )
+    # Normalise the result cap once: a non-positive value opts out
+    # (unbounded), mirroring the fuel / memory-cap on/off convention.
+    result_cap = (
+        result_cap_bytes
+        if (result_cap_bytes is not None and result_cap_bytes > 0)
+        else None
+    )
     linker = wc.Linker(engine)
     root = linker.root()
-    _register_granted_caps(root, granted)
+    _register_granted_caps(root, granted, result_cap)
     root.close()
     try:
         instance = linker.instantiate(store, component)
@@ -328,10 +473,19 @@ def dispatch_foreign_call(
     return result
 
 
-def _register_granted_caps(root: wc.LinkerInstance, granted: dict[str, Any]) -> None:
+def _register_granted_caps(
+    root: wc.LinkerInstance,
+    granted: dict[str, Any],
+    result_cap: int | None,
+) -> None:
     """Register the ``capa:host/<cap>`` interface for each granted cap,
     bound to the caller's attenuated cap instance. Only these interfaces
-    are linked, so a child importing any other one fails to instantiate."""
+    are linked, so a child importing any other one fails to instantiate.
+
+    ``result_cap`` (bytes, or ``None`` for unbounded) is the host-side
+    result-size ceiling threaded to every result-returning binder
+    (``fs.read`` / ``net.get`` / ``net.post`` / ``db.query``); binders
+    that materialise no unbounded host buffer ignore it."""
     for cap_name, cap in granted.items():
         binder = _CAP_BINDERS.get(cap_name)
         if binder is None:
@@ -340,7 +494,29 @@ def _register_granted_caps(root: wc.LinkerInstance, granted: dict[str, Any]) -> 
             # Leaving it unregistered means a child importing it is
             # denied -- fail closed.
             continue
-        binder(root, cap)
+        binder(root, cap, result_cap)
+
+
+def _read_text_capped(f, cap: int, label: str) -> str:
+    """Read a text stream in bounded chunks, aborting the moment the
+    UTF-8 byte size would exceed ``cap`` so PEAK host allocation stays
+    ~``cap`` bytes (never the whole, possibly multi-GiB, file). A stream
+    whose bytes total EXACTLY ``cap`` is allowed; ``cap + 1`` raises."""
+    parts: list[str] = []
+    total = 0
+    while True:
+        chunk = f.read(_FOREIGN_TEXT_READ_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk.encode("utf-8"))
+        if total > cap:
+            raise ForeignResourceExceeded(
+                f"{label} result exceeded the foreign result cap "
+                f"({cap} bytes) -- the host aborted the read before "
+                f"buffering the whole result"
+            )
+        parts.append(chunk)
+    return "".join(parts)
 
 
 # ---- per-cap bound registrations -------------------------------------
@@ -353,11 +529,18 @@ def _register_granted_caps(root: wc.LinkerInstance, granted: dict[str, Any]) -> 
 # privileged op uses the captured ``cap`` regardless of the handle.
 
 
-def _bind_net(root: wc.LinkerInstance, net: Net) -> None:
+def _bind_net(root: wc.LinkerInstance, net: Net, result_cap: int | None) -> None:
     ifc = root.add_instance("capa:host/net")
 
     def net_get(_s, _handle, url: str):
-        result = net.get(url)
+        try:
+            result = net.get(url, max_bytes=result_cap)
+        except ResultCapExceeded as e:
+            raise ForeignResourceExceeded(
+                f"Net.get result exceeded the foreign result cap "
+                f"({result_cap} bytes) -- the host aborted the read before "
+                f"buffering the whole response body"
+            ) from e
         if isinstance(result, Ok):
             return result.value
         err = result.error
@@ -367,7 +550,14 @@ def _bind_net(root: wc.LinkerInstance, net: Net) -> None:
         )
 
     def net_post(_s, _handle, url: str, body: str):
-        result = net.post(url, body)
+        try:
+            result = net.post(url, body, max_bytes=result_cap)
+        except ResultCapExceeded as e:
+            raise ForeignResourceExceeded(
+                f"Net.post result exceeded the foreign result cap "
+                f"({result_cap} bytes) -- the host aborted the read before "
+                f"buffering the whole response body"
+            ) from e
         if isinstance(result, Ok):
             return result.value
         err = result.error
@@ -383,7 +573,7 @@ def _bind_net(root: wc.LinkerInstance, net: Net) -> None:
     ifc.close()
 
 
-def _bind_fs(root: wc.LinkerInstance, fs: Fs) -> None:
+def _bind_fs(root: wc.LinkerInstance, fs: Fs, result_cap: int | None) -> None:
     ifc = root.add_instance("capa:host/fs")
 
     def fs_read(_s, _h, path: str):
@@ -393,7 +583,14 @@ def _bind_fs(root: wc.LinkerInstance, fs: Fs) -> None:
             )
         try:
             with fs._open_read(path) as f:
-                return f.read()
+                # Bound the HOST-side buffer: an unbounded ``f.read()`` of
+                # a multi-GiB in-prefix file would OOM the host regardless
+                # of the child fuel / memory cap. The bounded read aborts
+                # early (peak host allocation ~cap), raising
+                # ForeignResourceExceeded past the ``except`` funnel below.
+                if result_cap is None:
+                    return f.read()
+                return _read_text_capped(f, result_cap, "Fs.read")
         except PostOpenDenied:
             return IoErrorRecord(
                 message=f"Fs capability does not permit read: {path}"
@@ -449,7 +646,7 @@ def _bind_fs(root: wc.LinkerInstance, fs: Fs) -> None:
     ifc.close()
 
 
-def _bind_env(root: wc.LinkerInstance, env: Env) -> None:
+def _bind_env(root: wc.LinkerInstance, env: Env, _result_cap: int | None) -> None:
     ifc = root.add_instance("capa:host/env")
 
     def env_get(_s, _h, name: str):
@@ -464,7 +661,7 @@ def _bind_env(root: wc.LinkerInstance, env: Env) -> None:
     ifc.close()
 
 
-def _bind_clock(root: wc.LinkerInstance, clock: Clock) -> None:
+def _bind_clock(root: wc.LinkerInstance, clock: Clock, _result_cap: int | None) -> None:
     import time
 
     ifc = root.add_instance("capa:host/clock")
@@ -488,7 +685,7 @@ def _bind_clock(root: wc.LinkerInstance, clock: Clock) -> None:
     ifc.close()
 
 
-def _bind_db(root: wc.LinkerInstance, db: Db) -> None:
+def _bind_db(root: wc.LinkerInstance, db: Db, result_cap: int | None) -> None:
     import sqlite3
     import time
 
@@ -538,25 +735,148 @@ def _bind_db(root: wc.LinkerInstance, db: Db) -> None:
             )
         try:
             conn = db._connect_verified(path)
+            prev_len = None
+            prev_col = None
+            limit_scoped = False
             try:
                 _install_deadline(conn)
+                if result_cap is not None:
+                    # Bound the ATOMIC fetch unit at the SOURCE. The untrusted
+                    # child controls the SQL and drives host peak far above the
+                    # cap two ways a per-value SOURCE guard + a POST-fetch
+                    # accumulator cannot stop, because sqlite materialises a
+                    # whole ROW (all columns) in one C-layer fetch BEFORE any
+                    # host check fires:
+                    #  - Vector A (wide row): ``select zeroblob(900k), ... x
+                    #    500`` -> ~N x 900 KiB in one fetch, linear in the
+                    #    attacker's column count.
+                    #  - Vector B (fetch batch): pulling many rows atomically.
+                    # We bound BOTH terms of a single row here, then fetch ONE
+                    # row at a time (below) to remove the batch multiplier:
+                    #  - ``SQLITE_LIMIT_COLUMN`` = ``MAX_RESULT_COLUMNS`` refuses
+                    #    a wider result set outright (Vector A cannot use 500 /
+                    #    2000 columns).
+                    #  - ``SQLITE_LIMIT_LENGTH`` = ``per_value_limit`` refuses to
+                    #    build any single string / blob past that bound.
+                    # A single row is then bounded to ~``MAX_RESULT_COLUMNS *
+                    # per_value_limit``: about the cap when the cap binds, or a
+                    # small fixed constant (~6.4 MiB) when the floor binds --
+                    # NOT attacker-scalable. TRADE-OFF (intended, the price of
+                    # the single-row bound): a single db value larger than
+                    # ``per_value_limit`` = ``max(cap // MAX_RESULT_COLUMNS,
+                    # FLOOR)`` is refused; raise ``--foreign-result-cap`` to
+                    # allow larger single values. Both limits are scoped to THIS
+                    # foreign query and restored in the ``finally`` (``setlimit``
+                    # mutates the connection and returns the prior value), so the
+                    # normal / trusted ``Db.query`` path is untouched.
+                    if not hasattr(conn, "setlimit"):
+                        # Fail closed: without ``setlimit`` (sqlite ``setlimit``
+                        # is Python 3.11+; the project floor is 3.10) the
+                        # per-row accumulator cannot bound a single value, so a
+                        # capped foreign db query could OOM the host. Refuse it
+                        # rather than silently allow the OOM.
+                        raise ForeignResourceExceeded(
+                            f"Db.query cannot enforce the foreign result cap "
+                            f"({result_cap} bytes) on this interpreter -- the "
+                            f"sqlite result-length limit is unavailable "
+                            f"(Python < 3.11); refusing the capped query "
+                            f"rather than risk unbounded host allocation"
+                        )
+                    per_value_limit = max(
+                        result_cap // MAX_RESULT_COLUMNS, _FOREIGN_DB_VALUE_FLOOR
+                    )
+                    prev_len = conn.setlimit(
+                        sqlite3.SQLITE_LIMIT_LENGTH, per_value_limit
+                    )
+                    prev_col = conn.setlimit(
+                        sqlite3.SQLITE_LIMIT_COLUMN, MAX_RESULT_COLUMNS
+                    )
+                    limit_scoped = True
                 cur = conn.execute(sql)
-                rows = cur.fetchall()
+                # Bound the HOST-side buffer: fetch ONE row at a time (never a
+                # ``fetchall`` / ``fetchmany`` batch) so only a single, bounded
+                # row is ever materialised by a fetch. The accumulator ``total``
+                # is a SOUND OVER-ESTIMATE of ``len(_stdlib_json.dumps(
+                # stringified))`` -- the JSON string that ACTUALLY CROSSES to the
+                # child. We charge each value its JSON-ESCAPED size
+                # ``len(_stdlib_json.dumps(s))`` (its EXACT contribution to the
+                # final dump, since ``ensure_ascii`` escaping only EXPANDS: a
+                # control char -> ``\uXXXX`` is 6x, a quote / backslash 2x), or
+                # ``_FOREIGN_DB_PER_VALUE_COST``, whichever is larger (the floor
+                # covers the retained ``str`` overhead of a tiny value so an
+                # empty / tiny value still consumes budget). Per row we charge
+                # ``_FOREIGN_DB_PER_ROW_COST`` (>= the row's STRUCTURAL dump bytes
+                # -- its ``[`` ``]`` plus its two-byte inter-value separators, at
+                # most ``2 * MAX_RESULT_COLUMNS + 2`` = 202 at MAX=100 since
+                # ``json.dumps`` separators are two bytes -- plus the retained
+                # ``list``), and seed ``total`` with the outer list's ``[`` ``]``.
+                # So ``total`` >=
+                # ``len(dumps(stringified))`` at every step: aborting the moment
+                # ``total > cap`` guarantees the crossing dump is ``<= cap`` for
+                # ANY attacker choice of value sizes, column count, row count AND
+                # escape content -- closing the escape-expansion vector (an
+                # escape-heavy result whose RAW payload is under the cap but whose
+                # dump is ~6x it) and the tiny / empty value flood alike. Each
+                # value's raw payload is <= its JSON size (escaping only expands),
+                # so the retained intermediate is <= cap in raw terms too; both
+                # the intermediate and the crossing dump are ``<= cap``, so the
+                # host peak (both live during the final serialise) is ~2x cap.
+                # The charge drives ONLY the abort; returned data is exact for an
+                # under-cap query.
+                stringified: list = []
+                total = 2 if result_cap is not None else 0  # outer '[' and ']'
+                while True:
+                    row = cur.fetchone()
+                    if row is None:
+                        break
+                    srow = []
+                    if result_cap is not None:
+                        total += _FOREIGN_DB_PER_ROW_COST
+                    for v in row:
+                        s = (
+                            "null" if v is None
+                            else v if isinstance(v, str) else str(v)
+                        )
+                        srow.append(s)
+                        if result_cap is not None:
+                            total += max(
+                                len(_stdlib_json.dumps(s)),
+                                _FOREIGN_DB_PER_VALUE_COST,
+                            )
+                            if total > result_cap:
+                                raise ForeignResourceExceeded(
+                                    f"Db.query result exceeded the foreign "
+                                    f"result cap ({result_cap} bytes) -- "
+                                    f"the host aborted the fetch before "
+                                    f"buffering the whole result set"
+                                )
+                    stringified.append(srow)
             finally:
+                if limit_scoped:
+                    # Restore the prior limits before close so a shared /
+                    # reused connection never inherits the foreign-query caps.
+                    conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, prev_len)
+                    conn.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, prev_col)
                 conn.close()
-            stringified = [
-                [
-                    "null" if v is None else v if isinstance(v, str) else str(v)
-                    for v in row
-                ]
-                for row in rows
-            ]
             return _stdlib_json.dumps(stringified)
         except PostOpenDenied:
             return IoErrorRecord(
                 message=f"Db capability does not permit query: {path}"
             )
         except (sqlite3.Error, OSError, ValueError) as e:
+            # A single value / row that overran ``SQLITE_LIMIT_LENGTH``
+            # (``SQLITE_TOOBIG``) OR a result set wider than
+            # ``SQLITE_LIMIT_COLUMN`` ("too many columns in result set")
+            # surfaces here; translate ONLY those into the same clean
+            # result-cap diagnostic. A genuine SQL / IO error (missing table,
+            # syntax error) still surfaces as the existing db error, unswallowed.
+            if _is_sqlite_length_limit_error(e):
+                raise ForeignResourceExceeded(
+                    f"Db.query result exceeded the foreign result cap "
+                    f"({result_cap} bytes) -- a single value / row overran the "
+                    f"per-value or column bound and sqlite refused to "
+                    f"materialise it in host memory"
+                ) from e
             return IoErrorRecord(message="SQLite query failed", cause=str(e))
 
     ifc.add_func("exec", db_exec)
@@ -566,9 +886,14 @@ def _bind_db(root: wc.LinkerInstance, db: Db) -> None:
     ifc.close()
 
 
-def _bind_proc(root: wc.LinkerInstance, proc: Proc) -> None:
+def _bind_proc(root: wc.LinkerInstance, proc: Proc, _result_cap: int | None) -> None:
     import subprocess
 
+    # NOTE: ``proc.exec`` stdout is NOT result-capped here. Bounding it
+    # needs a STREAMING subprocess read (``subprocess.run`` already
+    # buffers the whole ``capture_output`` before this closure sees it),
+    # a distinct axis from the fs / net / db host buffers this change
+    # bounds. Left out of scope deliberately; proc keeps its 30s timeout.
     ifc = root.add_instance("capa:host/proc")
 
     def proc_exec(_s, _h, cmd: str, args_json: str):
@@ -610,7 +935,7 @@ def _bind_proc(root: wc.LinkerInstance, proc: Proc) -> None:
     ifc.close()
 
 
-def _bind_stdio(root: wc.LinkerInstance, _stdio: Stdio) -> None:
+def _bind_stdio(root: wc.LinkerInstance, _stdio: Stdio, _result_cap: int | None) -> None:
     import sys
 
     ifc = root.add_instance("capa:host/stdio")
@@ -631,7 +956,7 @@ def _bind_stdio(root: wc.LinkerInstance, _stdio: Stdio) -> None:
     ifc.close()
 
 
-def _bind_random(root: wc.LinkerInstance, _random: Random) -> None:
+def _bind_random(root: wc.LinkerInstance, _random: Random, _result_cap: int | None) -> None:
     ifc = root.add_instance("capa:host/random")
     ifc.add_func(
         "system-seed",
