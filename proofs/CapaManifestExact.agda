@@ -235,16 +235,89 @@ reduct-untypable : forall {b}
 reduct-untypable (G-Lam (G-Use ()))
 
 ------------------------------------------------------------------
--- That is Phase 1. The gated judgement `_|-[_]_!_` refines
--- CapaSyntax's `_|-_!_` with a top-level gate on capability
--- literals; weaken-top and forget-flag are real, total, --safe
--- definitions by structural induction.
+-- Phase 2: literal-only occurrence, and "no cap literal under a
+-- binder".
 --
--- Gated preservation is FALSE (the counterexample above), so the
+-- The gate exists to guarantee ONE precise source-level fact: a
+-- capability LITERAL `cap c` is never conjured under a binder. This
+-- section formalizes and proves exactly that; it is the load-bearing
+-- lemma for Phase 3's manifest-exactness (the literal part of the
+-- manifest = the top-level, runtime-supplied capabilities).
+--
+-- We need a LITERAL-ONLY occurrence relation, distinct from
+-- CapaSyntax's `_∈caps_`. `_∈caps_` also counts the TAG on `use c t`
+-- / `restrict c t` (via its `here-use-tag` / `here-restrict-tag`
+-- constructors). Here we deliberately DROP those: a `use Net n` whose
+-- subject `n` is a variable is a legitimate exercise of a declared
+-- capability, not a conjured literal. So `_∈lit_` has a single
+-- introduction (`lit-here` at `cap c`) plus pure congruence descents;
+-- it has NO tag "here" cases and NO cases at var / i / unit.
+------------------------------------------------------------------
+
+data _∈lit_ : Cap -> Tm -> Set where
+  lit-here     : forall {c}       -> c ∈lit (cap c)
+  lit-lam      : forall {c A t}   -> c ∈lit t  -> c ∈lit (lam A t)
+  lit-app-l    : forall {c t1 t2} -> c ∈lit t1 -> c ∈lit (app t1 t2)
+  lit-app-r    : forall {c t1 t2} -> c ∈lit t2 -> c ∈lit (app t1 t2)
+  lit-use      : forall {c c' t}  -> c ∈lit t  -> c ∈lit (use c' t)
+  lit-restrict : forall {c c' t}  -> c ∈lit t  -> c ∈lit (restrict c' t)
+  lit-consume  : forall {c t}     -> c ∈lit t  -> c ∈lit (consume t)
+
+infix 4 _∈lit_
+
+------------------------------------------------------------------
+-- Core Phase-2 lemma: a term well-typed at gate FALSE contains no
+-- capability literal. Structural induction on the gated typing
+-- derivation, mirroring the shape of `capability-soundness` in
+-- CapaSoundness.agda.
+--
+-- The G-Cap case does NOT arise: G-Cap concludes at gate `true`,
+-- which cannot unify with the input gate `false`, so the coverage
+-- checker excludes it (same mechanism as `weaken-top`). That single
+-- exclusion is the entire content of the theorem -- with G-Cap gone,
+-- no literal can be introduced, and every remaining rule either has
+-- an empty occurrence relation (var / i / unit, discharged by `()`)
+-- or only descends into an already-false sub-derivation (recurse).
+------------------------------------------------------------------
+
+no-cap-literal-under-false : forall {G t A c}
+                           -> G |-[ false ] t ! A
+                           -> c ∈lit t
+                           -> Empty
+no-cap-literal-under-false (G-Var _)      ()
+no-cap-literal-under-false (G-Lam d)      (lit-lam h)      = no-cap-literal-under-false d h
+no-cap-literal-under-false (G-App d1 d2)  (lit-app-l h)    = no-cap-literal-under-false d1 h
+no-cap-literal-under-false (G-App d1 d2)  (lit-app-r h)    = no-cap-literal-under-false d2 h
+no-cap-literal-under-false G-Int          ()
+no-cap-literal-under-false G-Unit         ()
+no-cap-literal-under-false (G-Use d)      (lit-use h)      = no-cap-literal-under-false d h
+no-cap-literal-under-false (G-Restrict d) (lit-restrict h) = no-cap-literal-under-false d h
+no-cap-literal-under-false (G-Consume d)  (lit-consume h)  = no-cap-literal-under-false d h
+
+------------------------------------------------------------------
+-- Non-vacuity anchor for `_∈lit_`: the relation really does pick out
+-- the top-level literal. `prog` (from Phase 1) has `cap Net` as the
+-- argument of its top-level application, so the occurrence descends
+-- through the `app` (right) to `lit-here`.
+------------------------------------------------------------------
+
+prog-has-lit : Net ∈lit prog
+prog-has-lit = lit-app-r lit-here
+
+------------------------------------------------------------------
+-- That is Phases 1 and 2. The gated judgement `_|-[_]_!_` refines
+-- CapaSyntax's `_|-_!_` with a top-level gate on capability literals;
+-- weaken-top and forget-flag (Phase 1) plus the literal-only
+-- occurrence relation `_∈lit_` and no-cap-literal-under-false
+-- (Phase 2) are real, total, --safe definitions by structural
+-- induction.
+--
+-- Gated preservation is FALSE (the Phase-1 counterexample), so the
 -- eventual manifest-exactness theorem will be proven as a SOURCE-
 -- level property of the initial program: forget-flag hands a gated-
 -- typed program off to CapaSyntax / CapaSoundness, and the already-
 -- proven multi-step manifest-completeness there supplies the runtime
--- capability bound. It will NOT be obtained by re-deriving
--- preservation under the gate.
+-- capability bound; no-cap-literal-under-false pins the literal part
+-- of the manifest to the top level. It will NOT be obtained by
+-- re-deriving preservation under the gate.
 ------------------------------------------------------------------
