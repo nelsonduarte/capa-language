@@ -51,6 +51,11 @@
 module CapaManifestExact where
 
 open import CapaSyntax
+-- Phase 3 reuses the already-proven runtime metatheory. CapaSoundness
+-- itself `open import CapaSyntax`s (without `public`), so it does not
+-- re-export CapaSyntax names; there is no clash with our own direct
+-- import above. We use `manifest-completeness` and `_∈caps_` from it.
+open import CapaSoundness
 
 ------------------------------------------------------------------
 -- Gated typing relation.
@@ -305,19 +310,120 @@ prog-has-lit : Net ∈lit prog
 prog-has-lit = lit-app-r lit-here
 
 ------------------------------------------------------------------
--- That is Phases 1 and 2. The gated judgement `_|-[_]_!_` refines
--- CapaSyntax's `_|-_!_` with a top-level gate on capability literals;
--- weaken-top and forget-flag (Phase 1) plus the literal-only
--- occurrence relation `_∈lit_` and no-cap-literal-under-false
--- (Phase 2) are real, total, --safe definitions by structural
--- induction.
+-- Phase 3: literal confinement (the payoff), and the runtime bound.
 --
--- Gated preservation is FALSE (the Phase-1 counterexample), so the
--- eventual manifest-exactness theorem will be proven as a SOURCE-
--- level property of the initial program: forget-flag hands a gated-
--- typed program off to CapaSyntax / CapaSoundness, and the already-
--- proven multi-step manifest-completeness there supplies the runtime
--- capability bound; no-cap-literal-under-false pins the literal part
--- of the manifest to the top level. It will NOT be obtained by
--- re-deriving preservation under the gate.
+-- Phase 2 proved no capability literal appears under a binder. Phase 3
+-- lifts that to the whole program: in a gate-TRUE well-typed program,
+-- every capability literal occurs at the TOP LEVEL (outside all lambda
+-- binders) -- the precise formal content of "capabilities are only
+-- introduced at the top, where the runtime supplies them". This closes
+-- the Capa-vs-lambda_cap gap on the INTRODUCTION dimension.
+--
+-- `_spine-lit_` is `_∈lit_` MINUS the lambda-descent case: a spine
+-- occurrence is a literal reachable without crossing any binder. The
+-- omission of a `lam` constructor is the whole point.
+------------------------------------------------------------------
+
+data _spine-lit_ : Cap -> Tm -> Set where
+  spine-here     : forall {c}       -> c spine-lit (cap c)
+  spine-app-l    : forall {c t1 t2} -> c spine-lit t1 -> c spine-lit (app t1 t2)
+  spine-app-r    : forall {c t1 t2} -> c spine-lit t2 -> c spine-lit (app t1 t2)
+  spine-use      : forall {c c' t}  -> c spine-lit t  -> c spine-lit (use c' t)
+  spine-restrict : forall {c c' t}  -> c spine-lit t  -> c spine-lit (restrict c' t)
+  spine-consume  : forall {c t}     -> c spine-lit t  -> c spine-lit (consume t)
+
+infix 4 _spine-lit_
+
+-- Ex-falso for the local Empty (no constructors, so the argument is
+-- absurd). Used to discharge the lam case of confinement.
+Empty-elim : forall {A : Set} -> Empty -> A
+Empty-elim ()
+
+------------------------------------------------------------------
+-- Confinement theorem: every literal occurrence in a gate-true term
+-- is a spine (non-under-binder) occurrence.
+--
+-- Induction matching the `_∈lit_` witness against the gated typing
+-- derivation. The lam case (`G-Lam d` with `lit-lam h`) is the crux:
+-- the body is gate `false`, so `no-cap-literal-under-false d h`
+-- (Phase 2) yields `Empty`, discharged by ex-falso -- an under-binder
+-- literal simply cannot exist in a well-typed term. Every other case
+-- is a congruence: recurse into the matching gate-true sub-derivation
+-- and re-wrap with the corresponding spine constructor. The var / i /
+-- unit cases have an empty `_∈lit_` and are discharged by `()`.
+------------------------------------------------------------------
+
+confine : forall {G e A c}
+        -> G |-[ true ] e ! A
+        -> c ∈lit e
+        -> c spine-lit e
+confine (G-Var _)      ()
+confine (G-Lam d)      (lit-lam h)      = Empty-elim (no-cap-literal-under-false d h)
+confine (G-App d1 d2)  (lit-app-l h)    = spine-app-l (confine d1 h)
+confine (G-App d1 d2)  (lit-app-r h)    = spine-app-r (confine d2 h)
+confine G-Int          ()
+confine G-Unit         ()
+confine G-Cap          lit-here         = spine-here
+confine (G-Use d)      (lit-use h)      = spine-use (confine d h)
+confine (G-Restrict d) (lit-restrict h) = spine-restrict (confine d h)
+confine (G-Consume d)  (lit-consume h)  = spine-consume (confine d h)
+
+------------------------------------------------------------------
+-- The runtime-soundness half, for free, via forget-flag: a gated-
+-- typed closed program hands off to CapaSyntax's ungated typing, and
+-- CapaSoundness's already-proven multi-step `manifest-completeness`
+-- bounds the runtime-reachable capabilities by the program's
+-- syntactic footprint. (`manifest-completeness` takes the capability
+-- as an EXPLICIT argument; we let Agda infer it via `_`.)
+------------------------------------------------------------------
+
+gated-runtime-bound : forall {e e' A c}
+                    -> empty |-[ true ] e ! A
+                    -> e ==>* e'
+                    -> c ∈caps e'
+                    -> c ∈caps e
+gated-runtime-bound d r h = manifest-completeness (forget-flag d) r _ h
+
+------------------------------------------------------------------
+-- Machine-checked anchors.
+--
+-- `prog-confined` confirms the confinement theorem on the Phase-1
+-- program; `prog-confined-explicit` is the hand-written witness, and
+-- the two agree by construction (confine computes exactly this shape).
+-- `prog-runtime-bound` exercises the runtime bound: the reduct of
+-- `prog` exercises Net (as `use Net (cap Net)` under a lambda), and
+-- the bound pulls that back to `Net ∈caps prog`.
+------------------------------------------------------------------
+
+prog-confined : Net spine-lit prog
+prog-confined = confine prog-typed prog-has-lit
+
+prog-confined-explicit : Net spine-lit prog
+prog-confined-explicit = spine-app-r spine-here
+
+prog-runtime-bound : Net ∈caps prog
+prog-runtime-bound = gated-runtime-bound prog-typed (step* prog-step done*) (inside-lam here-use-tag)
+
+------------------------------------------------------------------
+-- That is Phases 1-3. The gated judgement `_|-[_]_!_` refines
+-- CapaSyntax's `_|-_!_` with a top-level gate on capability literals.
+-- Phase 1 (weaken-top, forget-flag) relates the gate to the original
+-- calculus; Phase 2 (`_∈lit_`, no-cap-literal-under-false) shows no
+-- literal appears under a binder; Phase 3 (`_spine-lit_`, confine)
+-- lifts that to the whole program -- in a gate-true well-typed program
+-- EVERY capability literal is confined to the top-level spine (the
+-- declared, runtime-supplied environment). This closes the Capa-vs-
+-- lambda_cap gap on the INTRODUCTION dimension. gated-runtime-bound
+-- adds the runtime half: reachable caps are bounded by the manifest
+-- via forget-flag + manifest-completeness.
+--
+-- HONEST SCOPE. We do NOT claim full `∈caps` equality. The use /
+-- restrict TAGS of a dead nested cap-lambda survive in `∈caps` (the
+-- known declared-but-unused caveat), so the footprint can strictly
+-- exceed what the program exercises. The manifest remains a SOUND
+-- UPPER BOUND, and is TIGHT on introduction: literal capabilities
+-- enter only at the top. Gated preservation is FALSE (the Phase-1
+-- counterexample), which is exactly why the runtime bound is routed
+-- through forget-flag + the source program's footprint rather than a
+-- gated preservation lemma.
 ------------------------------------------------------------------
