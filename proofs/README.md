@@ -2,11 +2,14 @@
 
 [![agda](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml)
 
-> **Status (2026-06-09): all four capability soundness theorems
+> **Status (2026-07-13): all four capability soundness theorems
 > proved, PLUS Lemma 1, Lemma 2, the declassify-free
 > noninterference theorem (Theorem 3) AND the delimited-release
-> theorem (Theorem 4) for λ_if; mechanically typechecked in CI; no
-> postulates remain.** This directory holds two formalisations in
+> theorem (Theorem 4) for λ_if; PLUS a gated λ_cap variant that
+> mechanizes literal-INTRODUCTION CONFINEMENT (in a gate-true
+> program every capability literal occurs outside all lambda
+> binders); all mechanically typechecked in CI under `--safe`; no
+> postulates remain.** This directory holds three formalisations in
 > Agda. (1) The λ_cap capability calculus: syntax, typing,
 > reduction, PLFA-style parallel substitution, the inductive
 > `_∈caps_` relation, and the reflexive-transitive closure
@@ -19,9 +22,16 @@
 > semantics, low-equivalence, the noninterference theorem
 > (Theorem 3) with its two supporting lemmas, AND the
 > delimited-release / relaxed-noninterference theorem (Theorem 4)
-> for the full calculus WITH `declassify`. The noninterference
-> modules typecheck under Agda's `--safe` flag, which mechanically
-> forbids postulates, `trustMe`, and unsafe pragmas.
+> for the full calculus WITH `declassify`. (3) A gated λ_cap
+> variant (`CapaManifestExact.agda`) whose typing judgement carries
+> a top-level flag admitting capability literals only at the top;
+> it proves introduction confinement for gate-true programs. This
+> closes the Capa-vs-λ_cap gap on the INTRODUCTION dimension only:
+> it does NOT prove `manifest == decl(e_0)`, and the surface-syntax
+> to gated-calculus translation stays informal (see "Out of scope"
+> below). The noninterference modules and the gated variant
+> typecheck under Agda's `--safe` flag, which mechanically forbids
+> postulates, `trustMe`, and unsafe pragmas.
 
 ## What this directory is for
 
@@ -109,6 +119,30 @@ tactics differ.
   equality `k1 == k2`, so Theorem 4 does not collapse into
   Theorem 3.
 
+- `CapaManifestExact.agda`: a gated variant of the λ_cap typing
+  relation and the introduction-confinement result. Defines the
+  gated judgement `_|-[_]_!_` (a top-level `Bool` flag; the
+  capability-literal rule is admissible only when the flag is
+  `true`, so no literal can be conjured under a binder), with
+  `weaken-top` and `forget-flag` relating the gate to the original
+  `_|-_!_` of `CapaSyntax.agda` (`forget-flag` exhibits the gated
+  calculus as a strict restriction, so the four existing theorems
+  still apply). Includes a machine-checked counterexample that
+  gated PRESERVATION is FALSE (a gate-true program beta-reduces to
+  an untypable term, because substitution can push a literal under
+  a binder). The literal-only relation `_∈lit_` (unlike `_∈caps_`
+  it ignores the `use`/`restrict` TAGS) supports
+  `no-cap-literal-under-false` (no literal appears under a binder),
+  and `_spine-lit_` with `confine` proves introduction confinement:
+  in a gate-true well-typed program every capability literal is a
+  spine occurrence, i.e. occurs outside all lambda binders. Also
+  provides `gated-runtime-bound`, which is NOT a new guarantee but
+  the existing multi-step `manifest-completeness` restricted to
+  gated programs via `forget-flag`. The whole module is `--safe`;
+  its closing note states the honest scope (no `manifest == decl`
+  equality, informal surface translation). See the file's closing
+  note for the precise "what confine does and does not say".
+
 ## How to typecheck
 
 The skeleton declares its own `Nat` / `Bool` / `==`, so
@@ -124,9 +158,10 @@ agda CapaSyntax.agda
 agda CapaSoundness.agda
 agda CapaIF.agda
 agda CapaNoninterference.agda   # checks under --safe too
+agda CapaManifestExact.agda     # gated variant; checks under --safe too
 ```
 
-CI typechecks all four files on every push that touches
+CI typechecks all five files on every push that touches
 `proofs/` (see `.github/workflows/agda.yml`).
 
 ## Mechanisation stages (all landed)
@@ -189,7 +224,16 @@ of mechanised Agda.
   The translation is sketched informally in `docs/semantics.md`
   § 7.4. Mechanising it would close the soundness story for
   the production language, not just the calculus.
-  Out of workshop-paper budget; out of scope here.
+  Out of workshop-paper budget; out of scope here. Note that the
+  INTRODUCTION-confinement property (capability literals only at
+  the top level, never under a binder) is now mechanized in a
+  gated calculus variant (`CapaManifestExact.agda`), but two
+  honestly-remaining gaps stand: (i) the surface-syntax to
+  gated-calculus translation itself is still informal, and (ii)
+  full `manifest == decl(e_0)` equality remains open (the
+  declared-but-unused caveat: a dead nested cap-lambda's
+  `use`/`restrict` tags survive in the `_∈caps_` footprint, so
+  the footprint is a sound upper bound rather than an equality).
 - **Mechanising the runtime trace correspondence**. The Capa
   runtime has an opt-in trace
   (`capa/runtime/_trace.py`) that records each capability
@@ -215,6 +259,7 @@ Honest tracking:
 | λ_if Lemma 2: confinement / high-pc | landed |
 | λ_if Theorem 3: declassify-free noninterference | landed |
 | λ_if Theorem 4: delimited release | landed (machine-checked, `--safe`) |
+| λ_cap gated variant: literal-introduction confinement (introduction dimension only) | landed (machine-checked, `--safe`) |
 
 The four capability soundness theorems and BOTH λ_if
 noninterference theorems (Theorem 3 for the declassify-free
