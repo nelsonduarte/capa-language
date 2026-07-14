@@ -36,6 +36,28 @@ from capa.init_project import init_project
 from capa._debug import _rewrite_traceback
 
 
+# Commands section appended to `capa --help`. The top-level parser is
+# flag-based; the subcommands below are dispatched by hand before
+# argparse runs (see ``_main_dispatch``), so argparse cannot advertise
+# them on its own. This epilog keeps them discoverable. Each summary is
+# a one-line condensation of that subcommand's own parser description.
+_COMMANDS_EPILOG = (
+    "commands:\n"
+    "  init      Scaffold a minimal Capa project (main.capa, README, .gitignore).\n"
+    "  add       Declare a new dependency in capa.toml and install it into vendor/.\n"
+    "  install   Resolve capa.toml dependencies into vendor/, and write capa.lock.\n"
+    "  search    Search the package registry by name and description.\n"
+    "  test      Run the project's Capa tests (tests/test_*.capa), like `capa --run`.\n"
+    "  build     Ahead-of-time compile a Capa program to a portable AOT artifact.\n"
+    "  run-aot   Run an AOT artifact built by `capa build --release`.\n"
+    "  migrate   Report Python-to-Capa gradual-hardening progress for a .capa file.\n"
+    "  lsp       Start the Capa language server (LSP) on stdin/stdout.\n"
+    "  repl      Start the interactive Capa REPL.\n"
+    "\n"
+    "Run 'capa <command> --help' for options of a specific command."
+)
+
+
 # wasm32 caps linear memory at 65536 pages of 64 KiB = 4 GiB. A
 # ``--wasm-memory-cap`` above this produces a module that wasm-tools
 # rejects, so the CLI refuses it rather than writing an invalid
@@ -971,6 +993,8 @@ def _main_dispatch() -> int:
 
     parser = argparse.ArgumentParser(
         description="Lexer, parser and analyzer for the Capa language",
+        epilog=_COMMANDS_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version",

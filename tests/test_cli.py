@@ -136,6 +136,17 @@ class TestCliInProcess(unittest.TestCase):
         # argparse writes the help text to stdout; the SystemExit's
         # code is 0 on --help.
 
+    def test_help_advertises_subcommands(self):
+        # The subcommands are dispatched by hand before argparse, so
+        # the top-level --help must advertise them via the epilog or
+        # they are invisible to a user.
+        rc, out, _err = _run_main(["--help"])
+        self.assertEqual(rc, 0)
+        for cmd in ("init", "add", "install", "search", "test",
+                    "migrate", "build", "run-aot", "lsp", "repl"):
+            self.assertIn(cmd, out)
+        self.assertIn("capa <command> --help", out)
+
     def test_no_args_prints_usage_to_stderr(self):
         rc, _out, err = _run_main([])
         self.assertEqual(rc, 2)
