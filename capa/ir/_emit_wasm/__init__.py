@@ -1704,10 +1704,17 @@ class WasmEmitter(
             self._write("i32.wrap_i64")
             self._write(f"local.set ${instr.dst}_len")
             return
-        head_dst = dst_ty.split("<", 1)[0] if dst_ty else ""
-        if head_dst in self._struct_layouts or head_dst in self._sum_layouts \
-                or (dst_ty and dst_ty.startswith(("List", "Map", "Set"))):
-            # Pointer-shaped payload stored as i64.extend; unpack.
+        if dst_ty and (
+            self._is_pointer_shape_ty(dst_ty)
+            or dst_ty in self._variant_to_sum
+        ):
+            # Pointer-shaped payload (struct / sum / List / Map / Set /
+            # tuple / trait value) stored as i64.extend; unpack back to
+            # the i32 pointer. The tuple case matters for a destructured
+            # ``let (m, s) = f()?`` whose element is itself pointer-
+            # shaped (Map / List / Set): the payload local is i32, so
+            # loading the slot as a bare i64 without the wrap would
+            # mismatch the Wasm validator.
             self._write("local.get $_m_scrut")
             self._write("i64.load offset=8")
             self._write("i32.wrap_i64")

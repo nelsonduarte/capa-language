@@ -1370,6 +1370,160 @@ class TestWasmTupleStructInVariantPayload(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestWasmTuplePointerElementThroughTry(unittest.TestCase):
+    """A tuple whose element is pointer-shaped (``Map`` / ``List`` /
+    ``Set``) returned through a ``?`` / ``Result`` boundary and then
+    destructured.
+
+    Pre-fix ``_lower_try`` defaulted the ``?`` payload type to
+    ``Unknown`` when the analyzer left the ``Try`` node untyped; the
+    ``let (m, s) = f()?`` binders inherited it, and the Wasm tuple
+    emitter sized the ``Map`` element as an i64 slot even though a
+    ``Map`` is an i32 heap pointer. The module then failed the Wasm
+    validator (``expected i32, found i64``) despite passing ``--check``
+    and running on the Python backend. Each case asserts byte-exact
+    stdout parity with the Python backend."""
+
+    def _run_capturing_stdout(self, src: str) -> tuple[str, str]:
+        import io
+        import sys
+        from capa.runtime._wasm_host import WasmHost
+        _, types, ast_mod = _parse_lower(src)
+        blob = compile_wasm(ast_mod, types=types)
+        host = WasmHost()
+        out, err = io.StringIO(), io.StringIO()
+        saved_out, saved_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            host.run_main(blob)
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+        return out.getvalue(), err.getvalue()
+
+    def test_map_element_let_destructure_through_try(self):
+        src = (
+            "type E =\n"
+            "    Bad\n"
+            "fun build() -> Result<(Map<String, String>, String), E>\n"
+            "    let m: Map<String, String> = new_map()\n"
+            '    m.set("k", "v")\n'
+            '    return Ok((m, "tail"))\n'
+            "fun run() -> Result<String, E>\n"
+            "    let (m, s) = build()?\n"
+            '    let got = match m.get("k")\n'
+            '        None -> "missing"\n'
+            "        Some(v) -> v\n"
+            '    return Ok(got + "-" + s)\n'
+            "fun main(stdio: Stdio)\n"
+            "    match run()\n"
+            "        Ok(v) -> stdio.println(v)\n"
+            '        Err(_) -> stdio.println("err")\n'
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "v-tail\n")
+
+    def test_map_element_match_ok_destructure(self):
+        src = (
+            "type E =\n"
+            "    Bad\n"
+            "fun build() -> Result<(Map<String, String>, String), E>\n"
+            "    let m: Map<String, String> = new_map()\n"
+            '    m.set("k", "v")\n'
+            '    return Ok((m, "tail"))\n'
+            "fun run() -> String\n"
+            "    match build()\n"
+            "        Ok((m, s)) ->\n"
+            '            let got = match m.get("k")\n'
+            '                None -> "missing"\n'
+            "                Some(v) -> v\n"
+            '            return got + "-" + s\n'
+            '        Err(_) -> return "err"\n'
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(run())\n"
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "v-tail\n")
+
+    def test_list_element_let_destructure_through_try(self):
+        src = (
+            "type E =\n"
+            "    Bad\n"
+            "fun build() -> Result<(List<Int>, String), E>\n"
+            "    let xs: List<Int> = [1, 2, 3]\n"
+            '    return Ok((xs, "tail"))\n'
+            "fun run() -> Result<String, E>\n"
+            "    let (xs, s) = build()?\n"
+            '    return Ok("${xs.length()}-${s}")\n'
+            "fun main(stdio: Stdio)\n"
+            "    match run()\n"
+            "        Ok(v) -> stdio.println(v)\n"
+            '        Err(_) -> stdio.println("err")\n'
+        )
+        out, _ = self._run_capturing_stdout(src)
+        self.assertEqual(out, "3-tail\n")
+
+
+class TestWasmTuplePointerSlotGuard(unittest.TestCase):
+    """Fail-loud guard (defense in depth) for the tuple slot emitter.
+    A pointer-shaped value reaching an unresolved (``Unknown`` / tyvar)
+    slot type must raise a clear compiler diagnostic rather than fall
+    silently into the i64 branch and ship invalid Wasm. These are pure
+    emitter unit tests (no Wasm toolchain), so the class is not skip-
+    guarded: it must run on the plain ``test`` CI job too."""
+
+    def _emitter(self):
+        from capa.ir._emit_wasm import WasmEmitter
+        return WasmEmitter()
+
+    def test_store_pointer_value_into_unknown_slot_raises(self):
+        from capa.ir._nodes import Value
+        em = self._emitter()
+        v = Value(kind="local", name="m", ty="Map<String, String>")
+        with self.assertRaises(WasmEmissionError) as ctx:
+            em._store_tuple_slot(v, "Unknown", 0)
+        self.assertIn("pointer-shaped", str(ctx.exception))
+
+    def test_index_pointer_from_unknown_dst_raises(self):
+        from types import SimpleNamespace
+        from capa.ir._nodes import Value, Index
+        em = self._emitter()
+        em._current_fn = SimpleNamespace(locals={"m": "Unknown"})
+        recv = Value(
+            kind="local", name="t", ty="(Map<String, String>, String)",
+        )
+        instr = Index(
+            dst="m", receiver=recv,
+            index=Value(kind="lit_int", literal=0),
+        )
+        with self.assertRaises(WasmEmissionError) as ctx:
+            em._emit_tuple_index(instr)
+        self.assertIn("pointer-shaped", str(ctx.exception))
+
+    def test_store_int_value_into_unknown_slot_does_not_raise(self):
+        # Neighbour guard: a legitimately i64-typed element (Int) in an
+        # unresolved slot must NOT trip the guard.
+        from capa.ir._nodes import Value
+        em = self._emitter()
+        v = Value(kind="local", name="n", ty="Int")
+        em._store_tuple_slot(v, "Unknown", 0)  # no raise
+
+    def test_index_int_from_unknown_dst_does_not_raise(self):
+        from types import SimpleNamespace
+        from capa.ir._nodes import Value, Index
+        em = self._emitter()
+        em._current_fn = SimpleNamespace(locals={"n": "Unknown"})
+        recv = Value(kind="local", name="t", ty="(Int, String)")
+        instr = Index(
+            dst="n", receiver=recv,
+            index=Value(kind="lit_int", literal=0),
+        )
+        em._emit_tuple_index(instr)  # no raise
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestWasmSumAndStruct(unittest.TestCase):
     """Phase 6C: sum types, structs, and pattern matching compile
     to a heap-allocator-backed memory layout and execute on

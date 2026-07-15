@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from .. import capa_ast as A
 from ._capa_types import BUILTIN_CAPS
-from ._lower_helpers import _type_name, _ty_to_str, UnsupportedInIR
+from ._lower_helpers import (
+    _type_name, _ty_to_str, _unwrap_try_payload_ty, UnsupportedInIR,
+)
 from ._nodes import (
     AssignConst, BinOp, Call, FieldAccess, FormatStr, If, Index, MakeLambda,
     MakeList, MakeMap, MakeRange, MakeSet, MakeStruct, MakeTuple, Match,
@@ -382,14 +384,24 @@ class _LowerExprMixin:
         # isinstance / is-None_ check + early return; no exception
         # path is involved.
         inner = self._lower_expr(e.expr)
-        # The unwrapped type is the inner's type-arg if known;
-        # without precise inference here we settle for Unknown and
-        # let the emitter rely on duck-typing.
+        # The unwrapped type is the inner's type-arg if known.
         result_ty = "Unknown"
         if self.types:
             t = self.types.get(id(e))
             if t is not None:
                 result_ty = _ty_to_str(t)
+        # When the analyzer left the ``Try`` node untyped, recover the
+        # payload from the operand's ``Result<T, E>`` / ``Option<T>``
+        # type by stripping the Ok / Some arm. Otherwise the payload
+        # defaults to ``Unknown``, which flows into ``_lower_let`` and
+        # makes a destructured ``let (m, s) = f()?`` binder lose its
+        # element type; the Wasm tuple emitter then sizes a pointer-
+        # shaped element (Map / List / Set) as an i64 slot and the
+        # module fails the Wasm validator.
+        if result_ty in ("Unknown", "") or result_ty.startswith("?"):
+            recovered = _unwrap_try_payload_ty(inner.ty or "")
+            if recovered:
+                result_ty = recovered
         dst = fresh_local(self._counter)
         self._locals[dst] = result_ty
         self._instrs.append(TryUnwrap(dst=dst, src=inner))

@@ -5888,5 +5888,122 @@ class TestStructDestructureLetForParity(unittest.TestCase):
         self._assert_src_parity(src, expect="7\n")
 
 
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestTuplePointerElementThroughTryParity(unittest.TestCase):
+    """Regression net for the silent Wasm miscompile where a tuple whose
+    element is pointer-shaped (``Map`` / ``List`` / ``Set``) is returned
+    through a ``?`` / ``Result`` boundary and destructured.
+
+    Root cause: ``_lower_try`` defaulted the ``?`` result type to
+    ``Unknown`` when the analyzer left the ``Try`` node untyped. That
+    ``Unknown`` flowed into the ``let (m, s) = f()?`` binders, so the
+    Wasm tuple emitter sized the ``Map`` element as an i64 slot even
+    though a ``Map`` is an i32 heap pointer, and the module failed the
+    Wasm validator (``expected i32, found i64``). ``--check`` and the
+    Python backend were always correct; these assert byte-identical
+    output across both backends. The ``match Ok((m, s))`` form was
+    already saved by the pattern-bind refinement and is pinned here as a
+    neighbour."""
+
+    def _assert_src_parity(self, src: str, expect: str | None = None) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm output divergence.\n"
+                f"--- python ---\n{py_out}\n"
+                f"--- wasm ---\n{wasm_out}"
+            ),
+        )
+        if expect is not None:
+            self.assertEqual(py_out, expect)
+
+    def test_map_element_let_destructure_through_try(self):
+        # The headline repro: ``let (m, s) = build()?`` where the tuple's
+        # first element is a Map. Pre-fix this shipped invalid Wasm.
+        src = (
+            "type E =\n"
+            "    Bad\n"
+            "fun build() -> Result<(Map<String, String>, String), E>\n"
+            "    let m: Map<String, String> = new_map()\n"
+            '    m.set("k", "v")\n'
+            '    return Ok((m, "tail"))\n'
+            "fun run() -> Result<String, E>\n"
+            "    let (m, s) = build()?\n"
+            '    let got = match m.get("k")\n'
+            '        None -> "missing"\n'
+            "        Some(v) -> v\n"
+            '    return Ok(got + "-" + s)\n'
+            "fun main(stdio: Stdio)\n"
+            "    match run()\n"
+            "        Ok(v) -> stdio.println(v)\n"
+            '        Err(_) -> stdio.println("err")\n'
+        )
+        self._assert_src_parity(src, expect="v-tail\n")
+
+    def test_map_element_match_ok_destructure(self):
+        # The ``match build() { Ok((m, s)) -> ... }`` form: already
+        # saved by the pattern-bind refinement, pinned as a neighbour.
+        src = (
+            "type E =\n"
+            "    Bad\n"
+            "fun build() -> Result<(Map<String, String>, String), E>\n"
+            "    let m: Map<String, String> = new_map()\n"
+            '    m.set("k", "v")\n'
+            '    return Ok((m, "tail"))\n'
+            "fun run() -> String\n"
+            "    match build()\n"
+            "        Ok((m, s)) ->\n"
+            '            let got = match m.get("k")\n'
+            '                None -> "missing"\n'
+            "                Some(v) -> v\n"
+            '            return got + "-" + s\n'
+            '        Err(_) -> return "err"\n'
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(run())\n"
+        )
+        self._assert_src_parity(src, expect="v-tail\n")
+
+    def test_list_element_let_destructure_through_try(self):
+        # A List element in the pointer slot must decode too.
+        src = (
+            "type E =\n"
+            "    Bad\n"
+            "fun build() -> Result<(List<Int>, String), E>\n"
+            "    let xs: List<Int> = [1, 2, 3]\n"
+            '    return Ok((xs, "tail"))\n'
+            "fun run() -> Result<String, E>\n"
+            "    let (xs, s) = build()?\n"
+            '    return Ok("${xs.length()}-${s}")\n'
+            "fun main(stdio: Stdio)\n"
+            "    match run()\n"
+            "        Ok(v) -> stdio.println(v)\n"
+            '        Err(_) -> stdio.println("err")\n'
+        )
+        self._assert_src_parity(src, expect="3-tail\n")
+
+    def test_scalar_tuple_element_through_try_unaffected(self):
+        # Neighbour guard: a scalar-only tuple element (Int) through
+        # ``?`` was always correct and must stay so.
+        src = (
+            "type E =\n"
+            "    Bad\n"
+            "fun build() -> Result<(Int, String), E>\n"
+            '    return Ok((7, "tail"))\n'
+            "fun run() -> Result<String, E>\n"
+            "    let (n, s) = build()?\n"
+            '    return Ok("${n}-${s}")\n'
+            "fun main(stdio: Stdio)\n"
+            "    match run()\n"
+            "        Ok(v) -> stdio.println(v)\n"
+            '        Err(_) -> stdio.println("err")\n'
+        )
+        self._assert_src_parity(src, expect="7-tail\n")
+
+
 if __name__ == "__main__":
     unittest.main()
