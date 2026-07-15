@@ -34,6 +34,14 @@ from .._lower_helpers import _split_tuple_elem_types
 from ._layout import WasmEmissionError
 
 
+def _is_unknown_slot_ty(ty: str) -> bool:
+    """True iff ``ty`` is an unresolved placeholder (empty, ``Unknown``,
+    ``Any``, or an analyzer tyvar ``?...``). Such a type carries no
+    shape information, so the emitter cannot pick the correct slot
+    encoding from it alone."""
+    return ty in ("", "Unknown", "Any") or ty.startswith("?")
+
+
 def _tuple_arity(tuple_ty: str) -> int:
     """Count elements in a tuple type string. ``(A, B)`` -> 2.
     Returns 0 when the string isn't tuple-shaped."""
@@ -104,7 +112,24 @@ class _TupleEmissionMixin:
             self._write("i64.extend_i32_u")
             self._write(f"i64.store offset={offset}")
             return
-        # Int / Unknown -> i64 store.
+        # Int -> i64 store. Fail-loud guard (defense in depth): a
+        # pointer-shaped VALUE reaching an unresolved slot type is a
+        # compiler type-propagation gap. The value is an i32 heap
+        # pointer, so sizing the slot as a bare i64 would ship invalid
+        # Wasm (an operand-stack type mismatch at the validator). The
+        # guard only fires when the value itself is pointer-shaped, so
+        # a legitimately i64-typed Int element never trips it.
+        if _is_unknown_slot_ty(ty) and (
+            self._is_pointer_shape_ty(v.ty or "")
+            or (v.ty or "") in self._variant_to_sum
+        ):
+            raise WasmEmissionError(
+                f"tuple element at offset {offset} has an unresolved "
+                f"slot type {ty!r} but its value is pointer-shaped "
+                f"(value type {v.ty!r}); the slot would be mis-sized "
+                f"as i64. This is a compiler type-propagation gap, "
+                f"not a source error."
+            )
         self._push_value(v)
         self._write(f"i64.store offset={offset}")
 
@@ -160,6 +185,24 @@ class _TupleEmissionMixin:
             self._write("i32.wrap_i64")
             self._write(f"local.set ${instr.dst}")
             return
-        # Int / Unknown -> direct i64.load.
+        # Int -> direct i64.load. Fail-loud guard (defense in depth):
+        # when the dst binder type is unresolved we recover the slot's
+        # real type from the receiver tuple's element list. If that
+        # element is pointer-shaped the binder would be read as a bare
+        # i64 and stored into an i32 local, shipping invalid Wasm.
+        # Fail loud on that type-propagation gap; a genuine Int element
+        # (non-pointer) still falls through to the i64.load below.
+        if _is_unknown_slot_ty(dst_ty):
+            recv_elems = _tuple_elem_types(instr.receiver.ty or "")
+            slot_ty = recv_elems[idx] if idx < len(recv_elems) else ""
+            if self._is_pointer_shape_ty(slot_ty) \
+                    or slot_ty in self._variant_to_sum:
+                raise WasmEmissionError(
+                    f"tuple index {idx} binds an unresolved dst type "
+                    f"{dst_ty!r} but the element is pointer-shaped "
+                    f"(slot type {slot_ty!r}); reading it as an i64 "
+                    f"would ship invalid Wasm. This is a compiler "
+                    f"type-propagation gap, not a source error."
+                )
         self._write(f"i64.load offset={offset}")
         self._write(f"local.set ${instr.dst}")

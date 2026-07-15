@@ -121,6 +121,31 @@ def _split_tuple_elem_types(ty: str) -> list[str]:
     return _split_top_level(inner)
 
 
+def _unwrap_try_payload_ty(ty: str) -> str:
+    """Strip the ``Ok`` / ``Some`` arm from a ``Result<T, E>`` /
+    ``Option<T>`` type string and return the unwrapped payload ``T``.
+    Returns ``""`` when ``ty`` is not Result / Option shaped so the
+    caller keeps its own fallback.
+
+    This lets ``_lower_try`` recover the precise ``?`` result type
+    from the operand's ``Result`` / ``Option`` type when the analyzer
+    left the ``Try`` node untyped. Without it the payload defaults to
+    ``Unknown``, which the Wasm tuple emitter then sizes as an i64
+    slot even for a pointer-shaped element (Map / List / Set), so a
+    destructured ``let (m, s) = f()?`` binder loses its pointer type
+    and the module fails the Wasm validator."""
+    head, sep, rest = ty.partition("<")
+    if not sep or not rest.endswith(">"):
+        return ""
+    inner = rest[:-1].strip()
+    if head == "Result":
+        payload, _err = _split_top_level_comma(inner)
+        return payload.strip()
+    if head == "Option":
+        return inner
+    return ""
+
+
 def _split_top_level_comma(s: str) -> tuple[str, str]:
     """Split ``"T, Map<K, V>"`` into ``("T", "Map<K, V>")`` by
     counting angle brackets AND parentheses so commas inside
