@@ -2302,6 +2302,18 @@ class WasmEmitter(
             return
         self._push_call_args(instr.args)
         self._write(f"call ${instr.callee_name}")
+        if instr.dst is None:
+            # Value-discarded call (``c.advance()`` as a statement):
+            # nothing binds the result, so drop exactly as many values
+            # as the callee's return type pushed. A Unit / erased-cap
+            # callee pushed nothing (drop 0); a String pushed a
+            # ``(ptr, len)`` pair (drop 2); every scalar / pointer
+            # pushed one (drop 1). Leaving them on the stack fails
+            # Wasm validation ("values remaining on stack").
+            self._drop_call_result(
+                self._user_fn_return_types.get(instr.callee_name, "")
+            )
+            return
         if instr.dst is not None:
             # Bug #3: a Unit-returning callee leaves nothing on the
             # stack (its header has no result clause), so binding the

@@ -187,6 +187,51 @@ class TestWasmEmissionShape(unittest.TestCase):
             self.assertIn("$Counter_bump", wat)
             self.assertIn("$Counter_value", wat)
 
+    def test_discarded_call_drops_exact_result_slot_count(self):
+        # A value-discarded call must drop EXACTLY as many operand-stack
+        # slots as the callee's return type pushed: 0 for Unit (a
+        # negative that must NOT gain a drop), 1 for a scalar / pointer,
+        # 2 for a String (ptr + len). A blanket single ``drop`` would
+        # leave one String value on the stack and fail validation. The
+        # callee ``m`` is emitted with no drops; the discarding
+        # ``caller`` holds all of them, so counting module-wide ``drop``
+        # lines pins caller's count. Pure emitter path.
+        import re
+        cases = [
+            ("String", 'return "x"', 2),
+            ("Int", "return 1", 1),
+            ("List<Int>", "return [1, 2]", 1),
+            ("Unit", "return ()", 0),
+        ]
+        for ret, body, expected in cases:
+            # Method form (routes through _store_trait_call_result).
+            method_src = (
+                "type C { n: Int }\n"
+                "impl C\n"
+                f"    fun m(self) -> {ret}\n"
+                f"        {body}\n"
+                "    fun caller(self) -> Unit\n"
+                "        self.m()\n"
+                "        return ()\n"
+            )
+            # Free-function form (routes through _emit_call).
+            free_src = (
+                f"fun m() -> {ret}\n"
+                f"    {body}\n"
+                "fun caller() -> Unit\n"
+                "    m()\n"
+                "    return ()\n"
+            )
+            for src, kind in ((method_src, "method"), (free_src, "free")):
+                ir_mod, _, _ = _parse_lower(src)
+                wat = emit_wat(ir_mod)
+                n = len(re.findall(r"(?m)^\s*drop\s*$", wat))
+                self.assertEqual(
+                    n, expected,
+                    msg=f"{kind} discard of {ret}: expected "
+                        f"{expected} drop(s), got {n}",
+                )
+
 
 @unittest.skipUnless(_has_wasm_tools(), "wasm-tools CLI not installed")
 class TestWasmAssembles(unittest.TestCase):

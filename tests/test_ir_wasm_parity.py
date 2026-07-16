@@ -4536,6 +4536,130 @@ class TestSelfCopiedIntoUnannotatedBindingParity(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestDiscardedNonUnitCallParity(unittest.TestCase):
+    """Closed gap: a bare, value-discarded call to a NON-Unit-returning
+    function or method used as a statement (``c.advance()`` where
+    ``advance -> String``) used to fail Wasm validation with "values
+    remaining on stack at end of block" while the Python backend ran it
+    correctly.
+
+    The discard path returned without dropping the pushed result. It
+    fires for any discarded non-Unit call, method OR free function, in
+    any position (tail / non-tail / if-branch / match-arm), and is not
+    String-specific (String pushes 2 slots, scalar / pointer 1, Unit 0).
+    The emitter now drops exactly the callee return type's slot count.
+    These assert byte-identical Python/Wasm output; the side effect
+    (the visible ``println`` in each discarded method) still runs."""
+
+    def _assert_parity(self, src: str, expect: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm divergence.\n"
+                f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
+            ),
+        )
+        self.assertEqual(py_out, expect)
+
+    _PRELUDE = (
+        "type C { n: Int }\n"
+        "impl C\n"
+        "    fun m_str(self) -> String\n"
+        '        return "s"\n'
+        "    fun m_int(self) -> Int\n"
+        "        return 1\n"
+        "    fun m_list(self) -> List<Int>\n"
+        "        return [1, 2]\n"
+        "fun f_str() -> String\n"
+        '    return "f"\n'
+        "fun f_int() -> Int\n"
+        "    return 7\n"
+        "fun f_list() -> List<Int>\n"
+        "    return [3, 4]\n"
+    )
+
+    def test_discarded_calls_tail_position(self):
+        # Every non-Unit call kind discarded as the trailing statements
+        # of ``main`` (String / Int / List, method AND free function).
+        src = self._PRELUDE + (
+            "fun main(stdio: Stdio)\n"
+            "    let c = C { n: 0 }\n"
+            '    stdio.println("start")\n'
+            "    c.m_str()\n"
+            "    c.m_int()\n"
+            "    c.m_list()\n"
+            "    f_str()\n"
+            "    f_int()\n"
+            "    f_list()\n"
+        )
+        self._assert_parity(src, "start\n")
+
+    def test_discarded_calls_non_tail_position(self):
+        # The discarded calls sit BEFORE further statements, so a leaked
+        # value would corrupt the stack the later work reads from.
+        src = self._PRELUDE + (
+            "fun main(stdio: Stdio)\n"
+            "    let c = C { n: 0 }\n"
+            "    c.m_str()\n"
+            "    f_list()\n"
+            "    c.m_int()\n"
+            '    stdio.println("after")\n'
+        )
+        self._assert_parity(src, "after\n")
+
+    def test_discarded_calls_in_if_branch(self):
+        src = self._PRELUDE + (
+            "fun main(stdio: Stdio)\n"
+            "    let c = C { n: 0 }\n"
+            "    if true\n"
+            "        c.m_str()\n"
+            "        f_int()\n"
+            "        c.m_list()\n"
+            '    stdio.println("done")\n'
+        )
+        self._assert_parity(src, "done\n")
+
+    def test_discarded_calls_in_match_arm(self):
+        # The discarded calls are non-tail statements inside each arm
+        # (the arm's tail is the shared ``println`` so the arms unify).
+        src = self._PRELUDE + (
+            "fun main(stdio: Stdio)\n"
+            "    let c = C { n: 0 }\n"
+            "    match c.m_int()\n"
+            "        1 ->\n"
+            "            c.m_str()\n"
+            "            f_list()\n"
+            '            stdio.println("one")\n'
+            "        _ ->\n"
+            "            c.m_list()\n"
+            '            stdio.println("other")\n'
+        )
+        self._assert_parity(src, "one\n")
+
+    def test_discarded_method_side_effect_still_runs(self):
+        # A discarded String-returning method whose body prints: the
+        # value is dropped but the side effect must remain, on both
+        # backends, byte-identically.
+        src = (
+            "type C { n: Int }\n"
+            "impl C\n"
+            "    fun shout(self, stdio: Stdio) -> String\n"
+            '        stdio.println("boom")\n'
+            '        return "loud"\n'
+            "fun main(stdio: Stdio)\n"
+            "    let c = C { n: 0 }\n"
+            "    c.shout(stdio)\n"
+            '    stdio.println("end")\n'
+        )
+        self._assert_parity(src, "boom\nend\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestStringBytesParity(unittest.TestCase):
     """``String.bytes() -> List<Int>`` parity (slice 2026-06-13).
 
