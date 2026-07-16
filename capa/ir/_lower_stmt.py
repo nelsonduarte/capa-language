@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from .. import capa_ast as A
 from ._lower_helpers import (
-    _type_name, _split_tuple_elem_types, UnsupportedInIR,
+    _type_name, _ty_to_str, _split_tuple_elem_types, UnsupportedInIR,
 )
 from ._nodes import (
     AssignConst, Reassign, BinOp, Call, MethodCall,
@@ -55,6 +55,29 @@ class _LowerStmtMixin:
             return self._lower_expr_stmt(s)
         raise UnsupportedInIR(f"statement {type(s).__name__}")
 
+    def _binding_local_ty(self, expr, ann_ty, value):
+        """Pick the recorded type for a ``let``/``var`` binding.
+
+        A concrete annotation wins; otherwise the initializer's
+        inferred ``value.ty``; and when that is still ``Unknown``/
+        ``?`` (an unannotated copy of ``self``, whose IR param carries
+        no concrete impl type, is the motivating case) fall back to the
+        analyzer's recorded type for the initializer expression. This
+        mirrors what ``_lower_ident`` already does for module globals
+        and keeps the "a concrete annotation beats value.ty" precedence
+        intact."""
+        if ann_ty and ann_ty != "Unknown":
+            return ann_ty
+        if value.ty not in ("Unknown", "?"):
+            return value.ty
+        if self.types:
+            t = self.types.get(id(expr))
+            if t is not None:
+                recovered = _ty_to_str(t)
+                if recovered and recovered not in ("Unknown", "?"):
+                    return recovered
+        return value.ty
+
     def _lower_let(self, s: A.LetStmt) -> None:
         # Ident pattern: ``let x = expr``. Tuple pattern:
         # ``let (a, b) = expr`` destructures positionally. Wildcard
@@ -90,10 +113,7 @@ class _LowerStmtMixin:
             # than the user's annotation, particularly for
             # ``new_map()`` / ``new_set()`` calls).
             ann_ty = _type_name(s.type_expr) if s.type_expr else None
-            local_ty = (
-                ann_ty if ann_ty and ann_ty != "Unknown"
-                else value.ty
-            )
+            local_ty = self._binding_local_ty(s.value, ann_ty, value)
             bound = self._bind_local(s.pattern.name, local_ty)
             self._instrs.append(AssignConst(dst=bound, src=value))
             return
@@ -178,10 +198,7 @@ class _LowerStmtMixin:
         # working on the concrete shape the user wrote.
         value = self._lower_expr(s.value)
         ann_ty = _type_name(s.type_expr) if s.type_expr else None
-        local_ty = (
-            ann_ty if ann_ty and ann_ty != "Unknown"
-            else value.ty
-        )
+        local_ty = self._binding_local_ty(s.value, ann_ty, value)
         bound = self._bind_local(s.name, local_ty)
         self._instrs.append(AssignConst(dst=bound, src=value))
 

@@ -163,6 +163,30 @@ class TestWasmEmissionShape(unittest.TestCase):
             wat = emit_wat(ir_mod)
             self.assertIn(fn, wat)
 
+    def test_self_copied_into_unannotated_binding_emits(self):
+        # An unannotated copy of ``self`` (``var cur = self``) followed
+        # by a method call on the copy used to raise
+        # ``WasmEmissionError: MethodCall on receiver of type
+        # 'Unknown'`` because the copy inherited the ``self`` param's
+        # ``Unknown`` type. The lowerer now recovers the copy's type
+        # from the analyzer's type map, so emission succeeds. Pure
+        # emitter path -- no wasm tooling needed.
+        for bind in ("var cur = self", "let cur = self"):
+            src = (
+                "type Counter { n: Int }\n"
+                "impl Counter\n"
+                "    fun bump(self) -> Int\n"
+                f"        {bind}\n"
+                "        return cur.value()\n"
+                "    fun value(self) -> Int\n"
+                "        return self.n\n"
+            )
+            ir_mod, _, _ = _parse_lower(src)
+            # Must not raise WasmEmissionError.
+            wat = emit_wat(ir_mod)
+            self.assertIn("$Counter_bump", wat)
+            self.assertIn("$Counter_value", wat)
+
 
 @unittest.skipUnless(_has_wasm_tools(), "wasm-tools CLI not installed")
 class TestWasmAssembles(unittest.TestCase):

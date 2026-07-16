@@ -4453,6 +4453,89 @@ class TestSelfCapturedInImplMethodLambda(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestSelfCopiedIntoUnannotatedBindingParity(unittest.TestCase):
+    """Closed gap: an unannotated binding that copies ``self``
+    (``var cur = self`` / ``let cur = self``) then calls a method on
+    the copy used to fail loud on Wasm with "MethodCall on receiver of
+    type 'Unknown'" while the Python backend ran it correctly.
+
+    The IR lowerer records the ``self`` param as ``Unknown`` (it has no
+    ``type_expr``); an unannotated copy inherited that ``Unknown`` via
+    ``value.ty``, so the Wasm method-dispatch never resolved the copy's
+    receiver type. The lowerer now recovers the copy's type from the
+    analyzer's type map when ``value.ty`` is ``Unknown``, so a concrete
+    type flows to the copy. These assert byte-identical Python/Wasm
+    output across all four ``let``/``var`` x unannotated/annotated
+    cells plus a transitive alias."""
+
+    def _assert_parity(self, src: str, expect: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm divergence.\n"
+                f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
+            ),
+        )
+        self.assertEqual(py_out, expect)
+
+    @staticmethod
+    def _program(bind: str) -> str:
+        # ``bind`` is the copy-of-self binding line inside ``bump``.
+        return (
+            "type Counter { n: Int }\n"
+            "\n"
+            "impl Counter\n"
+            "    fun bump(self) -> Int\n"
+            f"        {bind}\n"
+            "        return cur.value()\n"
+            "    fun value(self) -> Int\n"
+            "        return self.n\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Counter { n: 5 }\n"
+            '    stdio.println("${c.bump()}")\n'
+        )
+
+    def test_var_unannotated_copy_of_self(self):
+        self._assert_parity(self._program("var cur = self"), "5\n")
+
+    def test_let_unannotated_copy_of_self(self):
+        self._assert_parity(self._program("let cur = self"), "5\n")
+
+    def test_var_annotated_copy_of_self(self):
+        self._assert_parity(self._program("var cur: Counter = self"), "5\n")
+
+    def test_let_annotated_copy_of_self(self):
+        self._assert_parity(self._program("let cur: Counter = self"), "5\n")
+
+    def test_transitive_alias_of_self(self):
+        # ``let a = self; var cur = a; cur.value()`` -- the copy is one
+        # hop removed from the ``self`` param, so the type must flow
+        # through the intermediate unannotated binding too.
+        src = (
+            "type Counter { n: Int }\n"
+            "\n"
+            "impl Counter\n"
+            "    fun bump(self) -> Int\n"
+            "        let a = self\n"
+            "        var cur = a\n"
+            "        return cur.value()\n"
+            "    fun value(self) -> Int\n"
+            "        return self.n\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Counter { n: 9 }\n"
+            '    stdio.println("${c.bump()}")\n'
+        )
+        self._assert_parity(src, "9\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestStringBytesParity(unittest.TestCase):
     """``String.bytes() -> List<Int>`` parity (slice 2026-06-13).
 
