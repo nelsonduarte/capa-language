@@ -65,8 +65,11 @@ class _SetAlgebraMixin:
         self._push_value(instr.receiver)
         self._push_value(instr.args[0])
         self._write(f"call $set_{instr.method}_{key}")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        # union / intersection / difference yield a fresh Set<T> pointer;
+        # is_subset yields an i32 Bool. Both are a single slot, dropped
+        # when the call's value is discarded.
+        ret_ty = "Bool" if instr.method == "is_subset" else f"Set<{elem_ty}>"
+        self._store_or_drop_result(instr.dst, ret_ty)
 
     def _reject_unsupported_set_elem(self, elem_ty: str) -> None:
         """Trait-typed Set elements are rejected for the same Python-

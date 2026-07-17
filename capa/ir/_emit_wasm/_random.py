@@ -358,8 +358,7 @@ class _RandomEmissionMixin:
         self._push_value(instr.args[0])
         self._push_value(instr.args[1])
         self._write("call $rand_int_range")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        self._store_or_drop_result(instr.dst, "Int")
 
     def _emit_random_float_unit(self, instr: MethodCall) -> None:
         if instr.args:
@@ -368,5 +367,4 @@ class _RandomEmissionMixin:
                 f"{len(instr.args)}"
             )
         self._write("call $rand_float_unit")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        self._store_or_drop_result(instr.dst, "Float")

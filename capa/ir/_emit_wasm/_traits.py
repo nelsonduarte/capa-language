@@ -372,9 +372,21 @@ class _TraitEmissionMixin:
             recv_ty = _strip_type_qualifiers(
                 self._effective_value_ty(instr.receiver)
             )
-            self._drop_call_result(
-                self._method_return_ty.get((recv_ty, instr.method), "")
-            )
+            key = (recv_ty, instr.method)
+            if key not in self._method_return_ty:
+                # Unreachable for a well-formed module: the table is
+                # populated in lockstep with ``_method_table``, and both
+                # dispatch paths that reach here have already resolved
+                # the method against one of those tables. Fail loud
+                # rather than default to "drop nothing", which would
+                # silently leave the pushed result on the stack and
+                # surface much later as an opaque validator error.
+                raise WasmEmissionError(
+                    f"no recorded return type for discarded method call "
+                    f"{recv_ty}.{instr.method!r}; cannot determine how "
+                    f"many result slots to drop"
+                )
+            self._drop_call_result(self._method_return_ty[key])
             return
         dst_ty = self._dst_capa_ty(instr.dst)
         if dst_ty == "String":

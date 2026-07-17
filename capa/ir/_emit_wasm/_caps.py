@@ -603,8 +603,8 @@ class _CapDispatchMixin:
         self._push_fs_handle(instr.receiver)
         self._push_string_arg(instr.args[0])
         self._write("call $Fs_restrict_to")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        # Returns the attenuated Fs handle (i32).
+        self._store_or_drop_result(instr.dst, "Fs")
 
     def _emit_fs_method_with_handle(
         self, instr: MethodCall, method: str,
@@ -646,8 +646,7 @@ class _CapDispatchMixin:
         self._push_fs_handle(instr.receiver)
         self._push_string_arg(instr.args[0])
         self._write(f"call $Fs_{method}")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        self._store_or_drop_result(instr.dst, "Bool")
 
     # ---- WASI Fs metadata call sites (wasi:filesystem) ---------
 
@@ -761,8 +760,8 @@ class _CapDispatchMixin:
             self._write(f"i32.const {rel_off}")
             self._write(f"i32.const {rel_len}")
             self._write(f"call $Fs_{method}")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            # exists / is_dir: i32 Bool (mkdir took the ret-area branch).
+            self._store_or_drop_result(instr.dst, "Bool")
 
     def _emit_wasi_fs_read_call(self, instr: MethodCall) -> None:
         """Emit ``fs.read(path)`` in WASI mode.
@@ -1018,8 +1017,8 @@ class _CapDispatchMixin:
         self._write(f"i32.const {idx}")
         self._push_wasi_dynamic_fs_path(arg)       # rel (ptr, len) == full
         self._write(f"call $Fs_{method}")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        # exists / is_dir: i32 Bool (mkdir took the ret-area branch).
+        self._store_or_drop_result(instr.dst, "Bool")
 
     def _emit_wasi_fs_dynamic_read_call(self, instr: MethodCall) -> None:
         """Dynamic-path ``fs.read`` under ``--preopen``. Mirrors
@@ -1122,8 +1121,8 @@ class _CapDispatchMixin:
         self._push_net_handle(instr.receiver)
         self._push_string_arg(instr.args[0])
         self._write("call $Net_restrict_to")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        # Returns the attenuated Net handle (i32).
+        self._store_or_drop_result(instr.dst, "Net")
 
     def _emit_net_method_with_handle(
         self, instr: MethodCall, method: str,
@@ -1471,8 +1470,8 @@ class _CapDispatchMixin:
         self._push_cap_handle(instr.receiver, cap)
         self._push_string_arg(instr.args[0])
         self._write(f"call ${cap}_restrict_to")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        # Returns the attenuated capability handle (i32).
+        self._store_or_drop_result(instr.dst, cap)
 
     def _emit_env_restrict_to_keys(self, instr: MethodCall) -> None:
         """Emit ``new = env.restrict_to_keys(keys)``. Pushes
@@ -1512,8 +1511,8 @@ class _CapDispatchMixin:
         # len at offset 0
         self._write("i32.load offset=0")
         self._write("call $Env_restrict_to_keys")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        # Returns the attenuated Env handle (i32).
+        self._store_or_drop_result(instr.dst, "Env")
 
     def _emit_clock_restrict_to_after(self, instr: MethodCall) -> None:
         """Emit ``new = clock.restrict_to_after(t)``. Pushes
@@ -1529,8 +1528,8 @@ class _CapDispatchMixin:
         self._push_cap_handle(instr.receiver, "Clock")
         self._push_value(instr.args[0])
         self._write("call $Clock_restrict_to_after")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        # Returns the attenuated Clock handle (i32).
+        self._store_or_drop_result(instr.dst, "Clock")
 
     def _emit_indirect_with_cap_handle(
         self, instr: MethodCall, cap: str, method: str,
@@ -1564,10 +1563,11 @@ class _CapDispatchMixin:
         for arg in instr.args:
             self._push_value(arg)
         self._write(f"call $Clock_{method}")
-        # now_secs / now_monotonic return f64 -> dst; sleep returns
-        # nothing.
-        if method in ("now_secs", "now_monotonic") and instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        # now_secs / now_monotonic return f64 -> dst (dropped when the
+        # value is discarded); sleep returns nothing, so it must never
+        # drop or the stack would underflow.
+        if method in ("now_secs", "now_monotonic"):
+            self._store_or_drop_result(instr.dst, "Float")
 
     def _emit_clock_allows_with_handle(self, instr: MethodCall) -> None:
         """Emit ``clock.allows()`` with the receiver handle. The
@@ -1581,8 +1581,7 @@ class _CapDispatchMixin:
             )
         self._push_cap_handle(instr.receiver, "Clock")
         self._write("call $Clock_allows")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        self._store_or_drop_result(instr.dst, "Bool")
 
     def _emit_cap_allows_with_handle(
         self, instr: MethodCall, cap: str,
@@ -1604,8 +1603,7 @@ class _CapDispatchMixin:
         self._push_cap_handle(instr.receiver, cap)
         self._push_string_arg(instr.args[0])
         self._write(f"call ${cap}_allows")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        self._store_or_drop_result(instr.dst, "Bool")
 
     def _push_string_arg(self, arg) -> None:
         """Push a string Value as (ptr, len). Replicates the inline
