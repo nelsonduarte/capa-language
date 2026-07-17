@@ -133,7 +133,17 @@ class _MatchEmissionMixin:
         # Sum-layout lookups strip generic args: ``Option<Int>`` ->
         # ``Option``. The built-in Option / Result and user-defined
         # sums are all keyed by the bare type name.
-        sum_layout = self._sum_layouts.get(scrut_ty.split("<", 1)[0])
+        sum_head = scrut_ty.split("<", 1)[0]
+        # A payloadless variant literal (``let l = Leaf``) is typed by
+        # the lowerer as the VARIANT name, not the owning sum; the
+        # sum-layout table is keyed by the sum, so resolve it here
+        # (mirrors _equality._normalize_eq_ty). A bare variant carries
+        # no generic args, so the whole scrutinee type becomes the sum.
+        if (sum_head not in self._sum_layouts
+                and sum_head in self._variant_to_sum):
+            sum_head = self._variant_to_sum[sum_head]
+            scrut_ty = sum_head
+        sum_layout = self._sum_layouts.get(sum_head)
         if sum_layout is None:
             raise WasmEmissionError(
                 f"Match on scrutinee of type {scrut_ty!r}: only sum "

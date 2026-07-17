@@ -322,6 +322,46 @@ class TestWasmEmissionShape(unittest.TestCase):
         self.assertEqual(drop_count("            to_json(j)\n"), 2)
         self.assertEqual(drop_count("            j.is_null()\n"), 1)
 
+    def test_method_call_on_payloadless_variant_receiver_emits(self):
+        # An unannotated ``let l = Leaf`` is typed as the VARIANT name
+        # (``Leaf``), not the sum (``Tree``); the method-table lookup is
+        # keyed by the sum, so the emitter must resolve the variant head
+        # to its owning sum. Before the fix this raised
+        # "MethodCall on receiver of type 'Leaf'".
+        src = (
+            "type Tree =\n"
+            "    Leaf\n"
+            "    Node(Int)\n"
+            "impl Tree\n"
+            "    fun val_of(self) -> Int\n"
+            "        return match self\n"
+            "            Leaf -> 0\n"
+            "            Node(n) -> n\n"
+            "fun f() -> Int\n"
+            "    let l = Leaf\n"
+            "    return l.val_of()\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)  # must not raise
+        self.assertIn("call $Tree_val_of", wat)
+
+    def test_match_on_payloadless_variant_scrutinee_emits(self):
+        # Sibling of the method-call case: a match on the same binding
+        # used to raise "Match on scrutinee of type 'Leaf'".
+        src = (
+            "type Tree =\n"
+            "    Leaf\n"
+            "    Node(Int)\n"
+            "fun g() -> Int\n"
+            "    let l = Leaf\n"
+            "    return match l\n"
+            "        Leaf -> 0\n"
+            "        Node(n) -> n\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)  # must not raise
+        self.assertIn('(func $g (export "g")', wat)
+
 
 @unittest.skipUnless(_has_wasm_tools(), "wasm-tools CLI not installed")
 class TestWasmAssembles(unittest.TestCase):
@@ -1829,6 +1869,65 @@ class TestWasmSumAndStruct(unittest.TestCase):
         q = exp["mk"](store, 1, 2)
         self.assertNotEqual(p, q, "allocator must hand out distinct pointers")
         self.assertEqual(exp["diff"](store, p, q), 99)
+
+    # A payloadless variant literal bound by an UNANNOTATED let/var is
+    # typed by the lowerer as the VARIANT name (``Leaf``), not the owning
+    # sum (``Tree``). The method-table and sum-layout lookups are keyed
+    # by the sum, so both a method call and a match on that binding used
+    # to raise on the Wasm backend. They now resolve through
+    # ``_variant_to_sum`` at the consumer sites.
+    _TREE_IMPL = (
+        "type Tree =\n"
+        "    Leaf\n"
+        "    Node(Int)\n"
+        "impl Tree\n"
+        "    fun val_of(self) -> Int\n"
+        "        return match self\n"
+        "            Leaf -> 0\n"
+        "            Node(n) -> n\n"
+    )
+
+    def test_method_call_on_unannotated_payloadless_variant_let(self):
+        src = self._TREE_IMPL + (
+            "fun f() -> Int\n"
+            "    let l = Leaf\n"
+            "    return l.val_of()\n"
+        )
+        self.assertEqual(self._exec(src, "f"), 0)
+
+    def test_method_call_on_unannotated_payloadless_variant_var(self):
+        src = self._TREE_IMPL + (
+            "fun f() -> Int\n"
+            "    var l = Leaf\n"
+            "    return l.val_of()\n"
+        )
+        self.assertEqual(self._exec(src, "f"), 0)
+
+    def test_match_on_unannotated_payloadless_variant_let(self):
+        src = (
+            "type Tree =\n"
+            "    Leaf\n"
+            "    Node(Int)\n"
+            "fun g() -> Int\n"
+            "    let l = Leaf\n"
+            "    return match l\n"
+            "        Leaf -> 0\n"
+            "        Node(n) -> n\n"
+        )
+        self.assertEqual(self._exec(src, "g"), 0)
+
+    def test_match_on_unannotated_payloadless_variant_var(self):
+        src = (
+            "type Tree =\n"
+            "    Leaf\n"
+            "    Node(Int)\n"
+            "fun g() -> Int\n"
+            "    var l = Leaf\n"
+            "    return match l\n"
+            "        Leaf -> 0\n"
+            "        Node(n) -> n\n"
+        )
+        self.assertEqual(self._exec(src, "g"), 0)
 
 
 @unittest.skipUnless(

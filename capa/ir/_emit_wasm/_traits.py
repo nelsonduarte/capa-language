@@ -285,6 +285,14 @@ class _TraitEmissionMixin:
         calls resolve to the right concrete-type entry in the
         method table."""
         recv_ty = _strip_type_qualifiers(self._effective_value_ty(instr.receiver))
+        # A payloadless variant literal (``let l = Leaf``) is typed by
+        # the lowerer as the VARIANT name, not the owning sum; the
+        # method table and the multi-impl candidate table are both keyed
+        # by the sum, so resolve it here (mirrors
+        # _equality._normalize_eq_ty, which does the same for ==).
+        if (recv_ty not in self._sum_layouts
+                and recv_ty in self._variant_to_sum):
+            recv_ty = self._variant_to_sum[recv_ty]
         candidates = self._multi_impl_candidates.get((recv_ty, instr.method))
         if candidates:
             # Multi-impl trait receiver: dynamic dispatch by type-id.
