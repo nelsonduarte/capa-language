@@ -24,8 +24,10 @@ buffers match exactly. Audit 2026-05-25 (item #4).
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -5215,6 +5217,113 @@ class TestParseFloatBitParity(unittest.TestCase):
                     f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
                 ),
             )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestCapErrorMessageParity(unittest.TestCase):
+    """Cross-backend Err-payload parity for Fs/Db/Proc failures.
+
+    The Python runtime wraps an OSError as ``failed to <op> '<path>'``
+    with the raw errno text as the cause, and routes a permission deny
+    through ``<Cap>._deny`` (which names the op, the path, and the
+    current restriction). The two Wasm hosts used to drop the wrap
+    (bare errno text) and emit a terser deny with no restriction cause.
+    This sweep runs the SAME program on the Python backend, the core
+    ``WasmHost``, and the Component Model ``WasmComponentHost`` and
+    asserts all three print the identical Err payload. The errno text is
+    OS-specific, so the comparison is backend-to-backend rather than
+    against a golden string.
+
+    The ``--wasi`` compiled path is intentionally NOT covered: it emits
+    a fixed path-less message by documented contract (its parity test is
+    discriminant-only, in test_wasi_mode.py).
+    """
+
+    def _probe(self, template: str, path: str) -> str:
+        # Forward slashes work on every OS and avoid escaping a
+        # backslash into the Capa string literal.
+        return template.replace("PATH", path.replace("\\", "/"))
+
+    def _assert_all_backends_agree(self, src: str, label: str) -> None:
+        py = _capture_stdout(lambda: _run_python(src))
+        core = _capture_stdout(lambda: _run_wasm(src))
+        cm = _capture_stdout(lambda: _run_wasm_component(src))
+        self.assertEqual(
+            py, core,
+            msg=f"{label}: Python vs core WasmHost diverge\n{src}",
+        )
+        self.assertEqual(
+            py, cm,
+            msg=f"{label}: Python vs WasmComponentHost diverge\n{src}",
+        )
+
+    def test_fs_oserror_wrap_matches(self):
+        with tempfile.TemporaryDirectory() as d:
+            missing = os.path.join(d, "no_such_file.txt")
+            missing_dir = os.path.join(d, "no_such_dir")
+            write_into_missing = os.path.join(d, "no_such_dir", "f.txt")
+            a_file = os.path.join(d, "a_file")
+            with open(a_file, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            # makedirs fails because a path component is a regular file.
+            mkdir_under_file = os.path.join(a_file, "sub")
+            cases = [
+                ("fs.read", self._probe(
+                    "fun main(fs: Fs, stdio: Stdio)\n"
+                    '    match fs.read("PATH")\n'
+                    '        Ok(x) -> stdio.println("ok")\n'
+                    '        Err(e) -> stdio.println("${e}")\n',
+                    missing)),
+                ("fs.write", self._probe(
+                    "fun main(fs: Fs, stdio: Stdio)\n"
+                    '    match fs.write("PATH", "data")\n'
+                    '        Ok(x) -> stdio.println("ok")\n'
+                    '        Err(e) -> stdio.println("${e}")\n',
+                    write_into_missing)),
+                ("fs.mkdir", self._probe(
+                    "fun main(fs: Fs, stdio: Stdio)\n"
+                    '    match fs.mkdir("PATH")\n'
+                    '        Ok(x) -> stdio.println("ok")\n'
+                    '        Err(e) -> stdio.println("${e}")\n',
+                    mkdir_under_file)),
+                ("fs.list_dir", self._probe(
+                    "fun main(fs: Fs, stdio: Stdio)\n"
+                    '    match fs.list_dir("PATH")\n'
+                    '        Ok(x) -> stdio.println("ok")\n'
+                    '        Err(e) -> stdio.println("${e}")\n',
+                    missing_dir)),
+            ]
+            for label, src in cases:
+                with self.subTest(op=label):
+                    self._assert_all_backends_agree(src, label)
+
+    def test_class_b_deny_matches(self):
+        cases = [
+            ("fs.read deny",
+             "fun main(fs: Fs, stdio: Stdio)\n"
+             '    let scoped = fs.restrict_to("allowed")\n'
+             '    match scoped.read("outside.txt")\n'
+             '        Ok(x) -> stdio.println("ok")\n'
+             '        Err(e) -> stdio.println("${e}")\n'),
+            ("db.exec deny",
+             "fun main(db: Db, stdio: Stdio)\n"
+             '    let scoped = db.restrict_to("allowed")\n'
+             '    match scoped.exec("other.db", "SELECT 1")\n'
+             '        Ok(x) -> stdio.println("ok")\n'
+             '        Err(e) -> stdio.println("${e}")\n'),
+            ("proc.exec deny",
+             "fun main(proc: Proc, stdio: Stdio)\n"
+             '    let scoped = proc.restrict_to("ls")\n'
+             '    match scoped.exec("rm", "[]")\n'
+             '        Ok(x) -> stdio.println("ok")\n'
+             '        Err(e) -> stdio.println("${e}")\n'),
+        ]
+        for label, src in cases:
+            with self.subTest(deny=label):
+                self._assert_all_backends_agree(src, label)
 
 
 @unittest.skipUnless(

@@ -70,6 +70,14 @@ class IoErrorRecord(wc.Record):
         self.cause = cause
 
 
+def _deny_record(err) -> "IoErrorRecord":
+    """Render a shared Fs/Db/Proc ``_deny()`` result (an ``Err(IoError)``)
+    into an ``IoErrorRecord`` so the CM host's deny message + restriction
+    cause match the Python backend byte for byte."""
+    io = err.error
+    return IoErrorRecord(message=io.message, cause=io.cause)
+
+
 class WasmComponentHost:
     """Wraps a Component Model ``.wasm`` artifact in a wasmtime
     linker pre-populated with Capa's ``capa:host/*`` interfaces.
@@ -763,9 +771,7 @@ class WasmComponentHost:
                     cause=str(handle),
                 )
             if not fs.allows(path):
-                return IoErrorRecord(
-                    message=f"Fs capability does not permit read: {path}",
-                )
+                return _deny_record(fs._deny("read", path))
             # TOCTOU hardening (2026-06-10): same shared Fs._open_read
             # as the Python backend and the core-Wasm host; on a
             # restricted cap the open handle's true path is
@@ -774,12 +780,10 @@ class WasmComponentHost:
                 with fs._open_read(path) as f:
                     return f.read()
             except PostOpenDenied:
-                return IoErrorRecord(
-                    message=f"Fs capability does not permit read: {path}",
-                )
+                return _deny_record(fs._deny("read", path))
             except OSError as e:
                 return IoErrorRecord(
-                    message=str(e), cause=type(e).__name__,
+                    message=f"failed to read {path!r}", cause=str(e),
                 )
 
         def fs_write(_store, handle: int, path: str, content: str):
@@ -792,9 +796,7 @@ class WasmComponentHost:
                     cause=str(handle),
                 )
             if not fs.allows(path):
-                return IoErrorRecord(
-                    message=f"Fs capability does not permit write: {path}",
-                )
+                return _deny_record(fs._deny("write", path))
             # TOCTOU hardening: no truncation until the handle's true
             # path passes verification (shared Fs._open_write).
             try:
@@ -802,12 +804,10 @@ class WasmComponentHost:
                     f.write(content)
                 return None
             except PostOpenDenied:
-                return IoErrorRecord(
-                    message=f"Fs capability does not permit write: {path}",
-                )
+                return _deny_record(fs._deny("write", path))
             except OSError as e:
                 return IoErrorRecord(
-                    message=str(e), cause=type(e).__name__,
+                    message=f"failed to write {path!r}", cause=str(e),
                 )
 
         def fs_restrict_to(_store, parent: int, prefix: str) -> int:
@@ -836,15 +836,13 @@ class WasmComponentHost:
                     cause=str(handle),
                 )
             if not fs.allows(path):
-                return IoErrorRecord(
-                    message=f"Fs capability does not permit mkdir: {path}",
-                )
+                return _deny_record(fs._deny("mkdir", path))
             try:
                 os.makedirs(path, exist_ok=True)
                 return None
             except OSError as e:
                 return IoErrorRecord(
-                    message=str(e), cause=type(e).__name__,
+                    message=f"failed to mkdir {path!r}", cause=str(e),
                 )
 
         def fs_list_dir(_store, handle: int, path: str):
@@ -858,14 +856,12 @@ class WasmComponentHost:
                     cause=str(handle),
                 )
             if not fs.allows(path):
-                return IoErrorRecord(
-                    message=f"Fs capability does not permit list_dir: {path}",
-                )
+                return _deny_record(fs._deny("list_dir", path))
             try:
                 return sorted(os.listdir(path))
             except OSError as e:
                 return IoErrorRecord(
-                    message=str(e), cause=type(e).__name__,
+                    message=f"failed to list {path!r}", cause=str(e),
                 )
 
         def fs_allows(_store, handle: int, path: str) -> bool:
@@ -991,9 +987,7 @@ class WasmComponentHost:
                     cause=str(handle),
                 )
             if not db.allows(path):
-                return IoErrorRecord(
-                    message=f"Db capability does not permit exec: {path}",
-                )
+                return _deny_record(db._deny(path, "exec"))
             try:
                 # _connect_verified applies the post-open symlink-swap
                 # guard (audit 2026-06-17) and installs the
@@ -1007,9 +1001,7 @@ class WasmComponentHost:
                     conn.close()
                 return None
             except PostOpenDenied:
-                return IoErrorRecord(
-                    message=f"Db capability does not permit exec: {path}",
-                )
+                return _deny_record(db._deny(path, "exec"))
             except (sqlite3.Error, OSError, ValueError) as e:
                 return IoErrorRecord(
                     message="SQLite exec failed", cause=str(e),
@@ -1023,9 +1015,7 @@ class WasmComponentHost:
                     cause=str(handle),
                 )
             if not db.allows(path):
-                return IoErrorRecord(
-                    message=f"Db capability does not permit query: {path}",
-                )
+                return _deny_record(db._deny(path, "query"))
             try:
                 conn = db._connect_verified(path)
                 try:
@@ -1043,9 +1033,7 @@ class WasmComponentHost:
                 ]
                 return _stdlib_json.dumps(stringified)
             except PostOpenDenied:
-                return IoErrorRecord(
-                    message=f"Db capability does not permit query: {path}",
-                )
+                return _deny_record(db._deny(path, "query"))
             except (sqlite3.Error, OSError, ValueError) as e:
                 return IoErrorRecord(
                     message="SQLite query failed", cause=str(e),
@@ -1090,9 +1078,7 @@ class WasmComponentHost:
                     cause=str(handle),
                 )
             if not proc.allows(cmd):
-                return IoErrorRecord(
-                    message=f"Proc capability does not permit exec: {cmd}",
-                )
+                return _deny_record(proc._deny(cmd))
             try:
                 tail = _stdlib_json_proc.loads(args_json)
             except (ValueError, TypeError) as e:
