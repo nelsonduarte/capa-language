@@ -202,8 +202,7 @@ class _OptionEmissionMixin:
         self._write("i32.load")
         self._write(f"i32.const {expected_tag}")
         self._write("i32.eq")
-        if dst is not None:
-            self._write(f"local.set ${dst}")
+        self._store_or_drop_result(dst, "Bool")
 
     def _emit_optres_unwrap_or(
         self, recv: Value, default: Value, dst,

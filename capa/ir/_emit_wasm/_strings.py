@@ -127,29 +127,24 @@ class _StringEmissionMixin:
             self._push_string_value_as_ptr_len(recv)
             self._write("call $str_codepoint_count")
             self._write("i64.extend_i32_s")
-            if dst is not None:
-                self._write(f"local.set ${dst}")
+            self._store_or_drop_result(dst, "Int")
             return
         if method == "is_empty":
             self._push_string_len_only(recv)
             self._write("i32.eqz")
-            if dst is not None:
-                self._write(f"local.set ${dst}")
+            self._store_or_drop_result(dst, "Bool")
             return
         if method == "contains":
             self._emit_string_contains(recv, instr.args[0])
-            if dst is not None:
-                self._write(f"local.set ${dst}")
+            self._store_or_drop_result(dst, "Bool")
             return
         if method == "starts_with":
             self._emit_string_starts_with(recv, instr.args[0])
-            if dst is not None:
-                self._write(f"local.set ${dst}")
+            self._store_or_drop_result(dst, "Bool")
             return
         if method == "ends_with":
             self._emit_string_ends_with(recv, instr.args[0])
-            if dst is not None:
-                self._write(f"local.set ${dst}")
+            self._store_or_drop_result(dst, "Bool")
             return
         if method == "substring":
             self._emit_string_substring(recv, instr.args[0], instr.args[1], dst)

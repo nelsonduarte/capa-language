@@ -4660,6 +4660,176 @@ class TestDiscardedNonUnitCallParity(unittest.TestCase):
     _has_wasm_tools() and _has_wasmtime_py(),
     "wasm-tools and/or wasmtime-py not installed",
 )
+class TestDiscardedBuiltinMethodParity(unittest.TestCase):
+    """Closed gap (sibling of ``TestDiscardedNonUnitCallParity``): a
+    discarded SCALAR-returning BUILTIN method (``t.length()``,
+    ``xs.length()``, ``t.contains("e")``) used to fail Wasm validation
+    with "values remaining on stack at end of block" while the Python
+    backend ran it correctly.
+
+    The builtin per-type method emitters push their result before they
+    know whether anything binds it, and the ``dst is None`` path stored
+    nothing and dropped nothing. This is NOT all builtins: the
+    allocating / String-returning ones (``to_upper``, ``substring``,
+    ``keys``) early-return before pushing and never leaked, and the
+    capability methods materialise into a ``_ret_area`` in linear
+    memory rather than the operand stack. Every pushing emitter now
+    routes its result through ``_store_or_drop_result``, which drops
+    exactly ``_call_result_slot_count`` slots when the value is
+    discarded."""
+
+    def _assert_parity(self, src: str, expect: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        wasm_out = _capture_stdout(lambda: _run_wasm(src))
+        self.assertEqual(
+            py_out, wasm_out,
+            msg=(
+                f"Python/Wasm divergence.\n"
+                f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
+            ),
+        )
+        self.assertEqual(py_out, expect)
+
+    _SETUP = (
+        '    let t = "hello"\n'
+        "    let xs = [1, 2, 3]\n"
+        "    var m = new_map()\n"
+        '    m.set("k", 1)\n'
+        "    var st = new_set()\n"
+        "    st.add(1)\n"
+        "    let o = Some(1)\n"
+        "    let r = 0..5\n"
+    )
+
+    def test_discarded_scalar_builtins_tail_position(self):
+        # The three reported repros plus the rest of the scalar-
+        # returning builtin surface (Int and Bool returns), each a bare
+        # discarded statement in tail position.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            + self._SETUP
+            + '    stdio.println("start")\n'
+            "    t.length()\n"
+            "    xs.length()\n"
+            '    t.contains("e")\n'
+            "    t.is_empty()\n"
+            '    t.starts_with("h")\n'
+            '    t.ends_with("o")\n'
+            "    xs.is_empty()\n"
+            "    xs.contains(2)\n"
+            "    m.length()\n"
+            "    m.is_empty()\n"
+            '    m.contains_key("k")\n'
+            "    st.length()\n"
+            "    st.is_empty()\n"
+            "    st.contains(1)\n"
+            "    o.is_some()\n"
+            "    o.is_none()\n"
+            "    r.length()\n"
+            "    r.is_empty()\n"
+            "    r.contains(2)\n"
+        )
+        self._assert_parity(src, "start\n")
+
+    def test_discarded_scalar_builtins_non_tail_position(self):
+        # A leaked value here would corrupt the stack the later work
+        # reads from, so this pins the non-tail case specifically.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            + self._SETUP
+            + "    t.length()\n"
+            "    xs.length()\n"
+            '    t.contains("e")\n'
+            '    stdio.println("after")\n'
+        )
+        self._assert_parity(src, "after\n")
+
+    def test_discarded_builtins_in_if_branch(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            + self._SETUP
+            + "    if true\n"
+            "        t.length()\n"
+            "        xs.length()\n"
+            '        t.contains("e")\n'
+            '    stdio.println("done")\n'
+        )
+        self._assert_parity(src, "done\n")
+
+    def test_discarded_builtins_in_match_arm(self):
+        src = (
+            "fun main(stdio: Stdio)\n"
+            + self._SETUP
+            + "    match xs.length()\n"
+            "        3 ->\n"
+            "            t.length()\n"
+            '            t.contains("e")\n'
+            '            stdio.println("three")\n'
+            "        _ ->\n"
+            "            xs.length()\n"
+            '            stdio.println("other")\n'
+        )
+        self._assert_parity(src, "three\n")
+
+    def test_discarded_pointer_and_string_returning_builtins(self):
+        # Controls: a String-returning builtin (``to_upper``, 2 slots)
+        # and pointer-returning builtins (``keys`` / ``map.get`` /
+        # ``split``, 1 slot each). These must stay correct -- the
+        # early-returning ones must not gain a spurious drop.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            + self._SETUP
+            + "    t.to_upper()\n"
+            "    t.to_lower()\n"
+            "    t.trim()\n"
+            '    t.substring(0, 2)\n'
+            '    t.split("l")\n'
+            "    m.keys()\n"
+            "    m.values()\n"
+            '    m.get("k")\n'
+            "    st.to_list()\n"
+            "    xs.map(fun (a: Int) -> Int => a + 1)\n"
+            "    r.to_list()\n"
+            '    stdio.println("done")\n'
+        )
+        self._assert_parity(src, "done\n")
+
+    def test_discarded_builtin_result_does_not_disturb_later_reads(self):
+        # The discarded calls sit between two reads of the SAME
+        # receivers, so a leak or an over-drop would corrupt the values
+        # the later reads observe. Pins that the drop is exact.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            + self._SETUP
+            + '    stdio.println("${t.length()}")\n'
+            "    t.length()\n"
+            "    xs.length()\n"
+            '    t.contains("e")\n'
+            '    stdio.println("${t.length()} ${xs.length()}")\n'
+            '    stdio.println("${t.contains("e")}")\n'
+        )
+        self._assert_parity(src, "5\n5 3\ntrue\n")
+
+    def test_discarded_json_builtins(self):
+        # ``parse_json`` (Result pointer, 1 slot), ``to_json``
+        # (String, 2 slots) and ``is_null`` (Bool, 1 slot) discarded.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    parse_json("1")\n'
+            '    match parse_json("1")\n'
+            "        Ok(j) ->\n"
+            "            j.is_null()\n"
+            "            to_json(j)\n"
+            '            stdio.println("ok")\n'
+            '        Err(e) -> stdio.println("err")\n'
+        )
+        self._assert_parity(src, "ok\n")
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
 class TestStringBytesParity(unittest.TestCase):
     """``String.bytes() -> List<Int>`` parity (slice 2026-06-13).
 

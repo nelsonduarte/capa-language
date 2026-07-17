@@ -133,6 +133,29 @@ class _ValueEmissionMixin:
         for _ in range(self._call_result_slot_count(ret_ty)):
             self._write("drop")
 
+    def _store_or_drop_result(self, dst, ret_ty: str) -> None:
+        """Bind a builtin method's already-pushed result to ``dst``, or
+        drop it when the call's value is discarded (``dst is None``).
+
+        The builtin per-type method emitters (String / List / Map / Set
+        / Range / Option / Result / JsonValue) push their result before
+        they know whether anything binds it. A discarded call must drop
+        exactly what was pushed or the module fails validation with
+        "values remaining on stack at end of block"; the count comes
+        from the same ``_call_result_slot_count`` the call paths use, so
+        the store and drop shapes can never drift. Only for emitters
+        that DO push: the ones that early-return before pushing (the
+        pure allocating ops) and the capability methods that
+        materialise into ``_ret_area`` must not call this."""
+        if dst is None:
+            self._drop_call_result(ret_ty)
+            return
+        if self._call_result_slot_count(ret_ty) == 2:
+            # String: the (ptr, len) pair lands in the dst's two locals.
+            self._set_string_dst(dst)
+            return
+        self._write(f"local.set ${dst}")
+
     def _is_unit_sink(self, dst: str, src: Value) -> bool:
         """True when binding ``src`` into local ``dst`` carries a Unit
         value, which has no Wasm representation. Either the destination

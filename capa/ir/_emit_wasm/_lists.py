@@ -63,15 +63,13 @@ class _ListEmissionMixin:
             self._push_value(recv)
             self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
             self._write("i64.extend_i32_s")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Int")
             return
         if method == "is_empty":
             self._push_value(recv)
             self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
             self._write("i32.eqz")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Bool")
             return
         if method == "push":
             self._emit_list_push(recv, instr.args[0], elem_size, elem_ty)
@@ -108,8 +106,7 @@ class _ListEmissionMixin:
                 self._emit_list_contains(
                     recv, instr.args[0], elem_size, elem_ty,
                 )
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Bool")
             return
         raise WasmEmissionError(
             f"List method {method!r} is not implemented on the Wasm backend"
@@ -1852,8 +1849,7 @@ class _ListEmissionMixin:
         recv = instr.receiver
         if method == "length":
             self._emit_range_length(recv)
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Int")
             return
         if method == "is_empty":
             # is_empty == (length <= 0). length is always >= 0, so
@@ -1861,13 +1857,11 @@ class _ListEmissionMixin:
             self._emit_range_count(recv)
             self._write("i64.const 0")
             self._write("i64.le_s")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Bool")
             return
         if method == "contains":
             self._emit_range_contains(recv, instr.args[0])
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Bool")
             return
         if method == "to_list":
             self._emit_range_to_list(recv, instr.dst)

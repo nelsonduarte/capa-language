@@ -232,6 +232,94 @@ class TestWasmEmissionShape(unittest.TestCase):
                         f"{expected} drop(s), got {n}",
                 )
 
+    def test_discarded_builtin_method_drops_exact_slot_count(self):
+        # Sibling of the test above for BUILTIN methods. A builtin that
+        # pushes its result must drop it exactly when discarded: a
+        # scalar-returning builtin (length / contains / is_empty ->
+        # Int / Bool) drops 1. The negatives matter just as much: the
+        # builtins that early-return BEFORE pushing (the allocating /
+        # String-returning ones) must NOT gain a spurious drop, which
+        # would underflow the stack. The setup below emits no drops of
+        # its own (asserted as the baseline), so a module-wide count
+        # pins the discarded call's contribution exactly.
+        import re
+
+        def drop_count(body: str) -> int:
+            src = (
+                "fun main(stdio: Stdio)\n"
+                '    let t = "hello"\n'
+                "    let xs = [1, 2, 3]\n"
+                "    var m = new_map()\n"
+                '    m.set("k", 1)\n'
+                "    var st = new_set()\n"
+                "    st.add(1)\n"
+                "    let o = Some(1)\n"
+                "    let r = 0..5\n"
+                f"{body}"
+                '    stdio.println("x")\n'
+            )
+            ir_mod, _, _ = _parse_lower(src)
+            return len(re.findall(r"(?m)^\s*drop\s*$", emit_wat(ir_mod)))
+
+        # Baseline: the setup alone contributes no drops, so every
+        # count below is attributable to the discarded call.
+        self.assertEqual(drop_count(""), 0)
+
+        pushes_one = [
+            "t.length()", "t.is_empty()", 't.contains("e")',
+            't.starts_with("h")', 't.ends_with("o")',
+            "xs.length()", "xs.is_empty()", "xs.contains(2)",
+            "m.length()", "m.is_empty()", 'm.contains_key("k")',
+            'm.get("k")',
+            "st.length()", "st.is_empty()", "st.contains(1)",
+            "o.is_some()", "o.is_none()",
+            "r.length()", "r.is_empty()", "r.contains(2)",
+        ]
+        for expr in pushes_one:
+            self.assertEqual(
+                drop_count(f"    {expr}\n"), 1,
+                msg=f"discarded {expr}: expected exactly 1 drop",
+            )
+
+        # Negatives: these never push on the discard path (they
+        # early-return), so they must emit NO drop.
+        pushes_none = [
+            "t.to_upper()", "t.to_lower()", "t.trim()",
+            "t.substring(0, 2)", 't.split("l")', "t.bytes()",
+            "m.keys()", "m.values()", "st.to_list()", "r.to_list()",
+            "xs.map(fun (a: Int) -> Int => a + 1)",
+            "xs.reverse()",
+        ]
+        for expr in pushes_none:
+            self.assertEqual(
+                drop_count(f"    {expr}\n"), 0,
+                msg=f"discarded {expr}: expected NO drop (it pushes "
+                    f"nothing on the discard path; a drop would "
+                    f"underflow)",
+            )
+
+    def test_discarded_json_builtin_drops_exact_slot_count(self):
+        # ``to_json`` returns a multi-value String and so must drop 2;
+        # ``is_null`` returns Bool and drops 1. A blanket single drop
+        # would leave one String value on the stack.
+        import re
+
+        def drop_count(body: str) -> int:
+            src = (
+                "fun main(stdio: Stdio)\n"
+                '    match parse_json("1")\n'
+                "        Ok(j) ->\n"
+                f"{body}"
+                '            stdio.println("ok")\n'
+                '        Err(e) -> stdio.println("err")\n'
+            )
+            ir_mod, _, _ = _parse_lower(src)
+            return len(re.findall(r"(?m)^\s*drop\s*$", emit_wat(ir_mod)))
+
+        self.assertEqual(drop_count(""), 0)
+        self.assertEqual(drop_count("            to_json(j)\n"), 2)
+        self.assertEqual(drop_count("            j.is_null()\n"), 1)
+
 
 @unittest.skipUnless(_has_wasm_tools(), "wasm-tools CLI not installed")
 class TestWasmAssembles(unittest.TestCase):

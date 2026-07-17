@@ -119,28 +119,25 @@ class _MapEmissionMixin:
             self._push_value(recv)
             self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
             self._write("i64.extend_i32_s")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Int")
             return
         if method == "is_empty":
             self._push_value(recv)
             self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
             self._write("i32.eqz")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Bool")
             return
         if method == "set":
             self._emit_map_set(recv, instr.args[0], instr.args[1], key_ty, value_ty)
             return
         if method == "contains_key":
             self._emit_map_contains_key(recv, instr.args[0], key_ty)
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Bool")
             return
         if method == "get":
             self._emit_map_get(recv, instr.args[0], key_ty, value_ty)
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            # ``get`` yields an Option<V> record pointer (one i32 slot).
+            self._store_or_drop_result(instr.dst, f"Option<{value_ty}>")
             return
         if method == "pairs":
             self._emit_map_pairs(recv, key_ty, value_ty, instr.dst)

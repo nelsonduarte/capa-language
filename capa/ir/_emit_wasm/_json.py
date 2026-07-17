@@ -84,8 +84,7 @@ class _JsonEmissionMixin:
         self._write("i32.load")
         self._write("i32.const 0")
         self._write("i32.eq")
-        if dst is not None:
-            self._write(f"local.set ${dst}")
+        self._store_or_drop_result(dst, "Bool")
 
     def _emit_jv_as_some_or_none(self, recv: Value, dst, expected_tag: int):
         """Shared template for ``as_bool`` / ``as_num`` / ``as_string``
@@ -221,8 +220,8 @@ class _JsonEmissionMixin:
         else:
             self._push_string_value_as_ptr_len(arg)
         self._write("call $__capa_parse_json")
-        if instr.dst is not None:
-            self._write(f"local.set ${instr.dst}")
+        # Result<JsonValue, String> record pointer: one i32 slot.
+        self._store_or_drop_result(instr.dst, "Result<JsonValue, String>")
 
     def _emit_call_host_json_to_string(self, instr: Call) -> None:
         """``to_json(jv: JsonValue) -> String``.
@@ -236,5 +235,5 @@ class _JsonEmissionMixin:
         arg = instr.args[0]
         self._push_value(arg)
         self._write("call $__capa_to_json")
-        if instr.dst is not None:
-            self._set_string_dst(instr.dst)
+        # Multi-value (ptr, len) String: two slots.
+        self._store_or_drop_result(instr.dst, "String")
