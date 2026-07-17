@@ -297,6 +297,11 @@ class WasmEmitter(
         # string-to-float parser; emit them at most once even when both
         # paths are present.
         self._bignum_helpers_emitted = False
+        # ``$pow10_i32`` is called by both Grisu2 digit generation and
+        # the bignum ``$bn_mul_pow10`` helper (used by parse_float). Its
+        # own latch lets whichever caller is emitted first pull it in,
+        # so it is never left undefined (see _emit_pow10_i32_function).
+        self._pow10_emitted = False
         # Module-level string pool: maps a Python string to its
         # (offset, length_in_bytes) in the data segment. Populated
         # by ``_intern_string`` as the emitter walks the function

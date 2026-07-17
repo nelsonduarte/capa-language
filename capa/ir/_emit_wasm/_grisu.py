@@ -164,7 +164,14 @@ class _GrisuEmissionMixin:
         decimal digit at a time from the integer part of the
         scaled significand. Larger exponents are unreachable
         (kappa starts at 10 but the first divisor is 10**9 so we
-        only ever index by 0..9)."""
+        only ever index by 0..9).
+
+        Idempotent: emitted at most once whether pulled in by the
+        float-format Grisu path or by the ``$bn_mul_pow10`` bignum
+        helper that backs parse_float."""
+        if self._pow10_emitted:
+            return
+        self._pow10_emitted = True
         self._write("(func $pow10_i32 (param $k i32) (result i32)")
         self._indent += 1
         # Hand-rolled jump table -- ten branches is much smaller
@@ -1176,6 +1183,11 @@ class _GrisuEmissionMixin:
         if self._bignum_helpers_emitted:
             return
         self._bignum_helpers_emitted = True
+        # $bn_mul_pow10 calls $pow10_i32, so ensure that helper is
+        # present whenever the bignum family is. Idempotent: the latch
+        # inside _emit_pow10_i32_function keeps the float-format path
+        # from emitting it twice.
+        self._emit_pow10_i32_function()
         # $bn_alloc(n) -> ptr : 4 + n*4 bytes, count=n, limbs zeroed.
         self._emit_wat_block(
             """

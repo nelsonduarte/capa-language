@@ -5185,6 +5185,37 @@ class TestParseFloatBitParity(unittest.TestCase):
             total += len(vals)
         self.assertGreater(total, 1000)
 
+    def test_parse_float_without_any_float_format(self):
+        # Regression for the Ticket-1 gap: parse_float pulls in the
+        # bignum slow path whose $bn_mul_pow10 calls $pow10_i32, but
+        # $pow10_i32 used to be emitted ONLY under Float formatting.
+        # A program that parses a Float but never interpolates one left
+        # $pow10_i32 undefined, so the Wasm module failed to assemble.
+        # The probe here deliberately renders NO Float (it prints an Int
+        # and a discriminant), so it exercises the parse path without
+        # the float-format path that masked the bug.
+        for src in (
+            # Result bound but never formatted as a Float.
+            "fun main(stdio: Stdio)\n"
+            '    match parse_float("3.5")\n'
+            '        Some(f) -> stdio.println("ok")\n'
+            '        None -> stdio.println("none")\n',
+            # Result discarded entirely.
+            "fun main(stdio: Stdio)\n"
+            '    parse_float("3.5")\n'
+            '    stdio.println("done")\n',
+        ):
+            py_out = _capture_stdout(lambda: _run_python(src))
+            wasm_out = _capture_stdout(lambda: _run_wasm(src))
+            self.assertEqual(
+                py_out, wasm_out,
+                msg=(
+                    "parse_float-no-format divergence.\n"
+                    f"--- program ---\n{src}"
+                    f"--- python ---\n{py_out}\n--- wasm ---\n{wasm_out}"
+                ),
+            )
+
 
 @unittest.skipUnless(
     _has_wasm_tools() and _has_wasmtime_py(),
