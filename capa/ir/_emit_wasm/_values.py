@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .._nodes import Value
+from .._capa_types import BUILTIN_CAPS
 from ._layout import (
     WasmEmissionError, _TYPE_SIZE,
     _size_of, _store_op_for_size, _load_op_for_size,
@@ -99,6 +100,61 @@ class _ValueEmissionMixin:
         if self._current_fn is None:
             return ""
         return self._current_fn.locals.get(name, "")
+
+    def _call_result_slot_count(self, ret_ty: str) -> int:
+        """Number of operand-stack slots a callee's return type pushes.
+
+        Mirrors the shape logic the result-store paths already use when
+        a call's value IS bound: Unit / erased capability push nothing;
+        String is a multi-value ``(ptr, len)`` pair; every scalar and
+        every pointer type (including the handle-carrying capabilities
+        Fs / Net / Db / Proc / Env / Clock) is a single value. A
+        discarded (dst-less) call drops exactly this many values so the
+        operand stack is balanced at the end of the block."""
+        if not ret_ty:
+            return 0
+        head = _strip_type_qualifiers(ret_ty)
+        if head in ("Unit", "") or ret_ty == "()":
+            return 0
+        if head == "String":
+            return 2
+        if head in ("Fs", "Net", "Db", "Proc", "Env", "Clock"):
+            return 1
+        if head in BUILTIN_CAPS:
+            # Non-handle capabilities (e.g. Stdio) are erased at the
+            # Wasm level and push nothing.
+            return 0
+        return 1
+
+    def _drop_call_result(self, ret_ty: str) -> None:
+        """Emit exactly the ``drop`` count a discarded call's return
+        type leaves on the operand stack (see
+        ``_call_result_slot_count``)."""
+        for _ in range(self._call_result_slot_count(ret_ty)):
+            self._write("drop")
+
+    def _store_or_drop_result(self, dst, ret_ty: str) -> None:
+        """Bind a builtin method's already-pushed result to ``dst``, or
+        drop it when the call's value is discarded (``dst is None``).
+
+        The builtin per-type method emitters (String / List / Map / Set
+        / Range / Option / Result / JsonValue) push their result before
+        they know whether anything binds it. A discarded call must drop
+        exactly what was pushed or the module fails validation with
+        "values remaining on stack at end of block"; the count comes
+        from the same ``_call_result_slot_count`` the call paths use, so
+        the store and drop shapes can never drift. Only for emitters
+        that DO push: the ones that early-return before pushing (the
+        pure allocating ops) and the capability methods that
+        materialise into ``_ret_area`` must not call this."""
+        if dst is None:
+            self._drop_call_result(ret_ty)
+            return
+        if self._call_result_slot_count(ret_ty) == 2:
+            # String: the (ptr, len) pair lands in the dst's two locals.
+            self._set_string_dst(dst)
+            return
+        self._write(f"local.set ${dst}")
 
     def _is_unit_sink(self, dst: str, src: Value) -> bool:
         """True when binding ``src`` into local ``dst`` carries a Unit

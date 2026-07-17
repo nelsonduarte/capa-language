@@ -90,20 +90,17 @@ class _SetEmissionMixin:
             self._push_value(recv)
             self._write(f"i32.load offset={_SET_LEN_OFFSET}")
             self._write("i64.extend_i32_s")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Int")
             return
         if method == "is_empty":
             self._push_value(recv)
             self._write(f"i32.load offset={_SET_LEN_OFFSET}")
             self._write("i32.eqz")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Bool")
             return
         if method == "contains":
             self._emit_set_contains(recv, instr.args[0], elem_size, elem_ty)
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Bool")
             return
         if method == "add":
             self._emit_set_add(recv, instr.args[0], elem_size, elem_ty)

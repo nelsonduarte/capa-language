@@ -69,6 +69,11 @@ class _TraitEmissionMixin:
         unambiguously."""
         self._trait_to_impl: dict[str, object] = {}
         self._method_table: dict[tuple[str, str], str] = {}
+        # Declared return type per ``(receiver_type, method_name)``,
+        # keyed identically to ``_method_table``. A value-discarded
+        # method call consults this to drop the exact number of result
+        # slots the callee pushed (see ``_store_trait_call_result``).
+        self._method_return_ty: dict[tuple[str, str], str] = {}
         # Multi-impl traits are dispatched dynamically via a type-id
         # tag stored at a UNIFORM offset (``_TYPE_ID_OFFSET`` = 4) of
         # every participating value -- struct OR sum (a small per-
@@ -130,6 +135,9 @@ class _TraitEmissionMixin:
                 mangled = _impl_method_name(impl.type_name, method.name)
                 # Concrete-type entry: always populated.
                 self._method_table[(impl.type_name, method.name)] = mangled
+                self._method_return_ty[(impl.type_name, method.name)] = (
+                    method.return_type or "Unit"
+                )
             if impl.trait_name:
                 by_trait.setdefault(impl.trait_name, []).append(impl)
         # Assign stable per-concrete-type ids. A type that implements a
@@ -147,6 +155,9 @@ class _TraitEmissionMixin:
                     mangled = _impl_method_name(impls[0].type_name, method.name)
                     # Trait entry: only when impl is unique.
                     self._method_table[(trait_name, method.name)] = mangled
+                    self._method_return_ty[(trait_name, method.name)] = (
+                        method.return_type or "Unit"
+                    )
                 # Single-impl eq dispatch: one concrete type, no type-id.
                 self._trait_eq_candidates[trait_name] = [
                     (None, impls[0].type_name)
@@ -158,6 +169,10 @@ class _TraitEmissionMixin:
             # must supply all of them; use the first impl's method list
             # as the canonical set).
             method_names = [m.name for m in impls[0].methods]
+            for method in impls[0].methods:
+                self._method_return_ty[(trait_name, method.name)] = (
+                    method.return_type or "Unit"
+                )
             for method_name in method_names:
                 self._multi_impl_candidates[(trait_name, method_name)] = []
             sum_names = self._sum_layout_names(module)
@@ -348,6 +363,30 @@ class _TraitEmissionMixin:
         so the two never drift. The result (if any) is already on the
         operand stack from the preceding ``call``."""
         if instr.dst is None:
+            # Value-discarded method call: drop exactly the slots the
+            # method's return type pushed so the operand stack stays
+            # balanced. The absent dst carries no type, so recover the
+            # return type from the method table (keyed identically),
+            # consulting the effective receiver type so self.method()
+            # and trait-typed receivers both resolve.
+            recv_ty = _strip_type_qualifiers(
+                self._effective_value_ty(instr.receiver)
+            )
+            key = (recv_ty, instr.method)
+            if key not in self._method_return_ty:
+                # Unreachable for a well-formed module: the table is
+                # populated in lockstep with ``_method_table``, and both
+                # dispatch paths that reach here have already resolved
+                # the method against one of those tables. Fail loud
+                # rather than default to "drop nothing", which would
+                # silently leave the pushed result on the stack and
+                # surface much later as an opaque validator error.
+                raise WasmEmissionError(
+                    f"no recorded return type for discarded method call "
+                    f"{recv_ty}.{instr.method!r}; cannot determine how "
+                    f"many result slots to drop"
+                )
+            self._drop_call_result(self._method_return_ty[key])
             return
         dst_ty = self._dst_capa_ty(instr.dst)
         if dst_ty == "String":

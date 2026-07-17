@@ -2231,8 +2231,8 @@ class WasmEmitter(
             else:
                 self._push_string_value_as_ptr_len(arg)
             self._write(f"call ${instr.callee_name}")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            # Option<Int> / Option<Float> record pointer: one i32 slot.
+            self._store_or_drop_result(instr.dst, "Option<Int>")
             return
         # panic (builtin): write the message to the host's stderr via
         # the ``capa:host/panic`` import, then trap. The ``unreachable``
@@ -2286,14 +2286,12 @@ class WasmEmitter(
         if instr.callee_name == "to_float" and len(instr.args) == 1:
             self._push_value(instr.args[0])
             self._write("f64.convert_i64_s")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Float")
             return
         if instr.callee_name == "to_int" and len(instr.args) == 1:
             self._push_value(instr.args[0])
             self._write("i64.trunc_f64_s")
-            if instr.dst is not None:
-                self._write(f"local.set ${instr.dst}")
+            self._store_or_drop_result(instr.dst, "Int")
             return
         # Closure call: callee is a local / param of Fun type.
         callee_ty = self._lookup_local_or_param_ty(instr.callee_name)
@@ -2302,6 +2300,18 @@ class WasmEmitter(
             return
         self._push_call_args(instr.args)
         self._write(f"call ${instr.callee_name}")
+        if instr.dst is None:
+            # Value-discarded call (``c.advance()`` as a statement):
+            # nothing binds the result, so drop exactly as many values
+            # as the callee's return type pushed. A Unit / erased-cap
+            # callee pushed nothing (drop 0); a String pushed a
+            # ``(ptr, len)`` pair (drop 2); every scalar / pointer
+            # pushed one (drop 1). Leaving them on the stack fails
+            # Wasm validation ("values remaining on stack").
+            self._drop_call_result(
+                self._user_fn_return_types.get(instr.callee_name, "")
+            )
+            return
         if instr.dst is not None:
             # Bug #3: a Unit-returning callee leaves nothing on the
             # stack (its header has no result clause), so binding the
