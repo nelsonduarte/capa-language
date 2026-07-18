@@ -45,6 +45,7 @@ from typing import Optional
 import wasmtime
 import wasmtime.component as wc
 
+from ..ir._capa_types import HANDLE_BEARING_CAPS
 from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Stdio, _write_safe
 from ._fs_guard import PostOpenDenied
 from ._cap_handles import (
@@ -3165,14 +3166,7 @@ class WasmHost:
             clock=self._root_clock,
             stdio=self._root_stdio,
         )
-        name_to_root: dict[str, int] = {
-            "fs": roots.get("fs", 0),
-            "net": roots.get("net", 0),
-            "db": roots.get("db", 0),
-            "proc": roots.get("proc", 0),
-            "env": roots.get("env", 0),
-            "clock": roots.get("clock", 0),
-        }
+        name_to_root = _root_handle_map(roots)
         handle_args: list[int] = []
         for i in range(n_params):
             name = param_names[i] if i < len(param_names) else ""
@@ -3181,6 +3175,30 @@ class WasmHost:
 
 
 # ---- helpers ----------------------------------------------------
+
+
+def _root_handle_map(roots: dict) -> dict[str, int]:
+    """Map ``main``'s cap PARAM NAME to the root handle it should
+    receive, for the caps that lower to an i32 handle.
+
+    DERIVED from ``HANDLE_BEARING_CAPS`` rather than hand-listed, so
+    reclassifying a capability as handle-bearing cannot leave this
+    map behind. It was a hardcoded six-entry literal until
+    2026-07-18; had a future attenuation slice un-erased Stdio or
+    Random, that slice would have had to remember to edit this
+    literal too, and forgetting would have silently routed the new
+    cap's slot to the Fs root instead of failing.
+
+    Extracted from ``_invoke_main`` (and kept module-level) so the
+    registry guard in ``tests/test_cap_handles.py`` can assert
+    against the real map rather than against
+    ``bootstrap_root_handles``' output, which is a strictly larger
+    dict (it also serves the erased caps).
+    """
+    return {
+        cap.lower(): roots.get(cap.lower(), 0)
+        for cap in HANDLE_BEARING_CAPS
+    }
 
 
 def _read_uleb128(buf: bytes, off: int) -> tuple[int, int]:

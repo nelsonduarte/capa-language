@@ -97,8 +97,10 @@ def compute_completions(
 
 
 def _floor_completions() -> list[Completion]:
-    """Keywords + curated built-ins. Always present so the
-    suggestion list never goes dark on a half-typed line."""
+    """Keywords + built-ins. Always present so the suggestion list
+    never goes dark on a half-typed line. Types, variants and
+    functions are curated; capabilities are derived from the
+    checker's registry so they cannot go stale."""
     out: list[Completion] = []
     for kw in KEYWORDS:
         out.append(Completion(label=kw, kind="keyword"))

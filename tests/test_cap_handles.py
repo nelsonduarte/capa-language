@@ -17,6 +17,7 @@ from capa.ir._capa_types import (
 )
 from capa.ir._emit_wit import _KNOWN_CAPABILITIES
 from capa.lsp.completion import _BUILTIN_CAPABILITIES
+from capa.runtime._wasm_host import _root_handle_map
 from capa.runtime._capabilities import (
     Clock,
     Db,
@@ -217,21 +218,36 @@ class TestCapabilityRegistry(unittest.TestCase):
 
     def test_host_root_handle_map_covers_every_handle_bearing_cap(self):
         # ``WasmHost._invoke_main`` maps each i32 slot of ``main`` to
-        # a root handle by the LOWERCASE cap name recovered from the
-        # wasm name section. A handle-bearing cap missing from that
-        # map would fall back to the Fs root - a silent cross-cap
-        # substitution rather than an error.
+        # a root handle by the PARAM NAME recovered from the wasm
+        # name section (NOT by cap type - the host never sees the
+        # type, only the identifier the program chose). A handle-
+        # bearing cap missing from that map falls back to the Fs
+        # root: a silent cross-cap substitution rather than an error.
+        #
+        # This asserts against ``_root_handle_map`` itself, not
+        # against ``bootstrap_root_handles``' output. The latter is a
+        # strictly larger dict (it serves the erased caps too), so
+        # checking it would pass for a cap that bootstrap supports
+        # but the param-name map omits - exactly the divergence this
+        # guard exists to catch.
         roots = bootstrap_root_handles(
             CapHandleTable(),
             fs=Fs(), net=Net(), db=Db(), proc=Proc(),
             env=Env(), clock=Clock(), stdio=Stdio(),
         )
+        name_to_root = _root_handle_map(roots)
         for cap in sorted(HANDLE_BEARING_CAPS):
             self.assertIn(
-                cap.lower(), roots,
-                f"{cap} bears a Wasm handle but the host has no root "
-                "handle for it (see bootstrap_root_handles and "
-                "WasmHost._invoke_main)",
+                cap.lower(), name_to_root,
+                f"{cap} bears a Wasm handle but WasmHost's param-name "
+                "map has no entry for it, so a main declaring it would "
+                "silently receive the Fs root (see _root_handle_map)",
+            )
+            self.assertNotEqual(
+                name_to_root[cap.lower()], 0,
+                f"{cap} bears a Wasm handle but _invoke_main never "
+                "bootstraps a root instance for it, so its slot would "
+                "carry handle 0 (the 'no cap' sentinel)",
             )
 
     def test_lsp_offers_every_builtin_capability(self):
