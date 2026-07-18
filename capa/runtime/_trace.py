@@ -84,9 +84,20 @@ def enable() -> None:
 
     from . import _capabilities as caps
 
+    # ``Unsafe`` is absent because it is method-less (it exists only as
+    # proof of authority the checker verifies), so there is nothing to
+    # wrap.
+    #
+    # ``Serve`` IS wrapped, so ``classes_used()`` sees it, but note it
+    # is NOT covered by the property suite's attenuation-honoured
+    # invariant: that replay models a restriction as a single string
+    # argument (``_ATTENUATORS`` / ``_GATED_OPS`` in
+    # tests/test_properties.py), and ``Serve.allows`` takes an address
+    # AND a port. Its attenuation is covered directly instead, by
+    # TestServeAttenuation* in tests/test_serve_capability.py.
     for cls in (
         caps.Stdio, caps.Fs, caps.Env, caps.Clock, caps.Random, caps.Net,
-        caps.Db, caps.Proc,
+        caps.Db, caps.Proc, caps.Serve,
     ):
         _wrap_class(cls)
 

@@ -25,12 +25,15 @@ Classes:
 - ``Proc`` - sandboxed subprocess execution with basename-prefix
   attenuation (slice 15, 2026-05).
 - ``Net`` - HTTP GET with host-set attenuation.
+- ``Serve`` - inbound TCP listener with bind-address + port-range
+  attenuation (2026-07, Python backend only).
 - ``Unsafe`` - the Python-interop trust boundary (method-less).
 """
 
 from __future__ import annotations
 
 import os
+import socket
 import sys
 import time
 from dataclasses import dataclass
@@ -710,6 +713,390 @@ class Net:
             if callable(close):
                 close()
             return Err(IoError("HTTP POST failed", str(e)))
+
+
+# Bounded waits for the Serve capability. Nothing in Capa may block
+# forever: ``Net.get`` bounds an outbound request at 10s and
+# ``Proc.exec`` bounds a child at 30s, so the two inbound waits get
+# the same treatment. ``accept`` waits for a client that may never
+# arrive, which is closer to "wait for a child to finish" than to
+# "wait for a server to answer", hence the 30s bound; a per-connection
+# ``recv`` gets the same budget so a peer that opens a socket and then
+# goes silent cannot pin the program.
+#
+# Both bounds return ``Err(IoError("... timed out", ...))``. They are
+# NOT a way to poll: a program that wants to keep serving calls
+# ``accept`` again after a timeout Err.
+_SERVE_ACCEPT_TIMEOUT_SECS = 30.0
+_SERVE_CONN_TIMEOUT_SECS = 30.0
+
+# Listen backlog. Serve is sequential by construction (one open
+# connection at a time), so the kernel queue exists only to avoid
+# refusing a client that arrives while the program is still writing
+# the previous response.
+_SERVE_BACKLOG = 8
+
+# Hard ceiling on a single ``read``. The caller's ``max_bytes`` is
+# clamped to this, so a program cannot ask the host to allocate an
+# arbitrarily large buffer on behalf of a remote peer. A caller that
+# wants more bytes loops.
+_SERVE_MAX_READ = 1 << 20
+
+# The rule a malformed ``restrict_to`` spec parses to: a host nothing
+# matches and an empty port range. Attenuation cannot report an error
+# (``restrict_to`` returns a ``Serve``, not a ``Result``), so a spec
+# that does not parse must deny rather than be ignored - ignoring it
+# would silently WIDEN authority, which is the one thing attenuation
+# must never do.
+_SERVE_DENY_ALL_RULE = ("", 1, 0)
+
+
+class Serve:
+    """Capability to listen on a network address and accept inbound
+    connections, with first-class attenuation.
+
+    This is the language's only INBOUND authority: ``Net`` reaches
+    out, ``Serve`` is reached. It is deliberately connection-level,
+    not HTTP-level - the trusted runtime binds a socket, hands out
+    accepted connections, and moves bytes. Request parsing (HTTP or
+    anything else) is ordinary Capa code in a library, so a protocol
+    bug is not a bug in the trusted computing base.
+
+    **Sequential only.** One connection is open at a time. There are
+    no threads, no async, and no concurrency anywhere in this class:
+    ``accept`` on a cap that already holds an open connection returns
+    an ``Err`` telling the caller to ``close`` first. Capa's async
+    story is deliberately gated (``docs/design/async-feasibility.md``)
+    and ``Serve`` does not pre-empt it. A program serves one client,
+    finishes with it, and loops.
+
+    **Nothing blocks forever.** ``accept`` and ``read`` are bounded by
+    ``_SERVE_ACCEPT_TIMEOUT_SECS`` / ``_SERVE_CONN_TIMEOUT_SECS`` and
+    return ``Err`` on expiry rather than hanging.
+
+    Attenuation domain: the pair (bind address, port). An instance
+    carries either ``None`` (unrestricted authority, the fresh
+    capability supplied by ``main``) or a frozen set of RULES, each
+    parsed from a spec string:
+
+    - ``"127.0.0.1:8080"``   - that address, that port
+    - ``"127.0.0.1:8000-8100"`` - that address, that inclusive port
+      range
+    - ``"127.0.0.1:*"``      - that address, any port
+    - ``"*:8080"``           - any address, that port
+    - ``"*:*"``              - any address, any port
+
+    A bind is permitted only if it satisfies EVERY rule in the set,
+    the same conjunctive rule ``Fs`` uses for path prefixes. That is
+    what makes ``restrict_to`` narrowing-only: adding a rule can only
+    ever remove (addr, port) pairs from the permitted set, never add
+    one, so ``restrict_to("*:*")`` on an already-narrowed cap does not
+    restore anything. A spec that does not parse yields a rule nothing
+    satisfies (fail closed).
+
+    The address is matched by exact string equality (or ``"*"``);
+    ``"127.0.0.1"`` and ``"localhost"`` are different rules, and IPv6
+    literals with their embedded colons are not expressible. Both are
+    documented limits rather than oversights: the alternative is
+    resolving names inside the attenuation check, which would make the
+    permitted set depend on DNS and therefore not be a static property
+    of the cap at all.
+
+    Enforcement happens BEFORE the syscall: ``listen`` consults
+    ``allows`` and returns the deny ``Err`` without creating a socket,
+    so a denied address/port is never bound even momentarily.
+
+    Socket state does NOT survive attenuation. ``restrict_to`` returns
+    a fresh, un-bound ``Serve``; a narrowed capability is something you
+    take before you listen, not a second handle onto an already-open
+    listener.
+
+    **Python backend only.** ``wasi:sockets`` is not vendored and is
+    unreachable from the wasmtime bindings the Wasm hosts use, so a
+    program holding ``Serve`` is rejected at Wasm emit time with an
+    explicit diagnostic (see
+    ``capa.ir._emit_wasm._discovery._reject_python_only_cap_signatures``).
+
+    Methods:
+
+    - ``restrict_to(spec: String) -> Serve``: attenuation
+    - ``allows(addr: String, port: Int) -> Bool``: query without IO
+    - ``listen(addr: String, port: Int) -> Result<Unit, IoError>``:
+      bind + listen. Port ``0`` asks the OS for an ephemeral port
+      (permitted only if the restriction admits port 0).
+    - ``local_port() -> Result<Int, IoError>``: the port actually
+      bound, which is how a caller learns the ephemeral port
+    - ``accept() -> Result<Int, IoError>``: wait for one client and
+      return a connection id
+    - ``recv(conn: Int, max_bytes: Int) -> Result<List<Int>, IoError>``:
+      up to ``max_bytes`` bytes as ints in ``0..=255``. An EMPTY list
+      means the peer closed (EOF).
+    - ``send(conn: Int, bytes: List<Int>) -> Result<Unit, IoError>``:
+      send every byte; each element is masked with ``& 0xFF``
+    - ``close(conn: Int) -> Result<Unit, IoError>``: close one
+      connection
+    - ``stop() -> Result<Unit, IoError>``: close the listener and any
+      open connection
+
+    Spelled ``recv`` / ``send`` rather than ``read`` / ``write``: they
+    are the standard socket verbs, and ``write`` specifically is
+    unavailable because ``Fs.write`` already owns that name in the IFC
+    sink table, whose per-capability attribution is sound only while
+    each sink method name belongs to exactly one capability (see
+    ``capa.analyzer._ifc_summary``).
+
+    Information flow: bytes arriving from a client are ``@public``.
+    Capa's IFC lattice models CONFIDENTIALITY, not integrity or taint,
+    so ``@public`` here says "this is not a secret whose disclosure
+    the lattice must prevent" - it emphatically does NOT say the bytes
+    are trustworthy. Validate inbound data like you would anywhere
+    else. Labelling it ``@secret`` would make echoing a request back
+    to its own sender an IFC violation, which is the normal case for a
+    server, so the useful signal would drown in noise.
+    """
+
+    __slots__ = ("_rules", "_listener", "_conns", "_next_conn")
+
+    def __init__(self, _rules=None):
+        # ``_rules`` is either None (unrestricted) or a frozenset of
+        # ``(host, port_lo, port_hi)`` triples produced by
+        # ``_parse_rule``.
+        self._rules = _rules
+        self._listener = None
+        self._conns: dict[int, Any] = {}
+        # Connection ids start at 1 so 0 is never a live connection,
+        # matching the "0 is the no-cap sentinel" convention of the
+        # Wasm cap handle table.
+        self._next_conn = 1
+
+    # ---- attenuation ------------------------------------------------
+
+    @staticmethod
+    def _parse_rule(spec: str):
+        """Parse an attenuation spec into ``(host, lo, hi)``.
+
+        Returns ``_SERVE_DENY_ALL_RULE`` for anything that does not
+        parse, so a typo narrows to nothing instead of being dropped.
+        """
+        if not isinstance(spec, str) or ":" not in spec:
+            return _SERVE_DENY_ALL_RULE
+        host, _, ports = spec.rpartition(":")
+        if not host:
+            return _SERVE_DENY_ALL_RULE
+        if ports == "*":
+            return (host, 0, 65535)
+        if "-" in ports:
+            lo_s, _, hi_s = ports.partition("-")
+        else:
+            lo_s = hi_s = ports
+        try:
+            lo, hi = int(lo_s), int(hi_s)
+        except ValueError:
+            return _SERVE_DENY_ALL_RULE
+        if not (0 <= lo <= 65535 and 0 <= hi <= 65535) or lo > hi:
+            return _SERVE_DENY_ALL_RULE
+        return (host, lo, hi)
+
+    def restrict_to(self, spec: str) -> "Serve":
+        existing = self._rules or frozenset()
+        return Serve(_rules=existing | {self._parse_rule(spec)})
+
+    def allows(self, addr: str, port: int) -> bool:
+        if self._rules is None:
+            return True
+        if not isinstance(port, int) or isinstance(port, bool):
+            return False
+        if not (0 <= port <= 65535):
+            return False
+        for host, lo, hi in self._rules:
+            if host != "*" and host != addr:
+                return False
+            if not (lo <= port <= hi):
+                return False
+        return True
+
+    def _rules_repr(self):
+        if self._rules is None:
+            return "unrestricted"
+        return sorted(
+            f"{host}:{lo}-{hi}" for host, lo, hi in self._rules
+        )
+
+    def _deny(self, addr: str, port: int):
+        return Err(IoError(
+            f"Serve capability does not permit listening on "
+            f"{addr!r} port {port}",
+            f"current restrictions: {self._rules_repr()}",
+        ))
+
+    # ---- listener ---------------------------------------------------
+
+    def listen(self, addr: str, port: int) -> "Result[None, IoError]":
+        # Attenuation is checked BEFORE any socket exists, so a denied
+        # address/port is never bound, not even transiently.
+        if not self.allows(addr, port):
+            return self._deny(addr, port)
+        if self._listener is not None:
+            return Err(IoError(
+                "Serve is already listening",
+                "call stop() before listening on another address",
+            ))
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # No SO_REUSEADDR: on Windows it permits a second process
+            # to steal a bound port, which would undermine the whole
+            # point of a capability that names an address and port.
+            sock.settimeout(_SERVE_ACCEPT_TIMEOUT_SECS)
+            sock.bind((addr, port))
+            sock.listen(_SERVE_BACKLOG)
+        except (OSError, ValueError, OverflowError) as e:
+            if sock is not None:
+                sock.close()
+            return Err(IoError(
+                f"failed to listen on {addr!r} port {port}", str(e),
+            ))
+        self._listener = sock
+        return Ok(None)
+
+    def local_port(self) -> "Result[int, IoError]":
+        if self._listener is None:
+            return Err(IoError(
+                "Serve is not listening",
+                "call listen(addr, port) first",
+            ))
+        try:
+            return Ok(int(self._listener.getsockname()[1]))
+        except (OSError, IndexError, ValueError) as e:
+            return Err(IoError("failed to read the bound port", str(e)))
+
+    def accept(self) -> "Result[int, IoError]":
+        if self._listener is None:
+            return Err(IoError(
+                "Serve is not listening",
+                "call listen(addr, port) first",
+            ))
+        if self._conns:
+            return Err(IoError(
+                "Serve handles one connection at a time",
+                "close the open connection before accepting another",
+            ))
+        try:
+            self._listener.settimeout(_SERVE_ACCEPT_TIMEOUT_SECS)
+            conn, _peer = self._listener.accept()
+        except TimeoutError:
+            # ``socket.timeout`` is an alias of ``TimeoutError`` and a
+            # subclass of OSError, so this arm must precede the OSError
+            # arm or a timeout would be reported as a generic failure.
+            return Err(IoError(
+                "accept timed out",
+                f"{_SERVE_ACCEPT_TIMEOUT_SECS:g}s elapsed with no "
+                f"inbound connection",
+            ))
+        except OSError as e:
+            return Err(IoError("accept failed", str(e)))
+        conn.settimeout(_SERVE_CONN_TIMEOUT_SECS)
+        handle = self._next_conn
+        self._next_conn += 1
+        self._conns[handle] = conn
+        return Ok(handle)
+
+    # ---- connection IO ----------------------------------------------
+
+    def _conn_or_none(self, conn: int):
+        if isinstance(conn, bool) or not isinstance(conn, int):
+            return None
+        return self._conns.get(conn)
+
+    @staticmethod
+    def _unknown_conn(conn):
+        return Err(IoError(
+            "unknown connection",
+            f"no open connection with id {conn!r}",
+        ))
+
+    def recv(self, conn: int, max_bytes: int):
+        sock = self._conn_or_none(conn)
+        if sock is None:
+            return self._unknown_conn(conn)
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
+            return Err(IoError(
+                "read size must be an integer", f"got {max_bytes!r}",
+            ))
+        if max_bytes <= 0:
+            return Err(IoError(
+                "read size must be positive", f"got {max_bytes}",
+            ))
+        try:
+            data = sock.recv(min(max_bytes, _SERVE_MAX_READ))
+        except TimeoutError:
+            return Err(IoError(
+                "read timed out",
+                f"{_SERVE_CONN_TIMEOUT_SECS:g}s elapsed with no data",
+            ))
+        except OSError as e:
+            return Err(IoError("read failed", str(e)))
+        # An empty list is EOF: the peer closed its side. Bytes are
+        # ints in 0..=255, the same shape every other Capa byte API
+        # uses.
+        return Ok(CapaList([b & 0xFF for b in data]))
+
+    def send(self, conn: int, data) -> "Result[None, IoError]":
+        sock = self._conn_or_none(conn)
+        if sock is None:
+            return self._unknown_conn(conn)
+        try:
+            payload = bytes(int(b) & 0xFF for b in data)
+        except (TypeError, ValueError) as e:
+            return Err(IoError(
+                "write payload is not a list of byte values", str(e),
+            ))
+        try:
+            sock.sendall(payload)
+        except TimeoutError:
+            return Err(IoError(
+                "write timed out",
+                f"{_SERVE_CONN_TIMEOUT_SECS:g}s elapsed",
+            ))
+        except OSError as e:
+            return Err(IoError("write failed", str(e)))
+        return Ok(None)
+
+    def close(self, conn: int) -> "Result[None, IoError]":
+        sock = self._conn_or_none(conn)
+        if sock is None:
+            return self._unknown_conn(conn)
+        del self._conns[conn]
+        _close_quietly(sock)
+        return Ok(None)
+
+    def stop(self) -> "Result[None, IoError]":
+        if self._listener is None:
+            return Err(IoError(
+                "Serve is not listening",
+                "call listen(addr, port) first",
+            ))
+        for sock in self._conns.values():
+            _close_quietly(sock)
+        self._conns.clear()
+        _close_quietly(self._listener)
+        self._listener = None
+        return Ok(None)
+
+
+def _close_quietly(sock) -> None:
+    """Close a socket, ignoring the errors a close can raise on an
+    already-broken peer. Teardown must not manufacture a new failure
+    for the caller: ``close`` / ``stop`` report success once the
+    program can no longer use the socket, which is true either way."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        sock.close()
+    except OSError:
+        pass
 
 
 class Proc:

@@ -62,6 +62,20 @@ _PUBLIC_SINKS: dict[tuple[str, str], set[int]] = {
     ("Fs", "write"):       {0, 1},
     ("Db", "exec"):        {0, 1},
     ("Db", "query"):       {0, 1},
+    # Serve.send writes bytes to whoever is on the other end of an
+    # inbound connection -- exfiltration exactly like Net.post. Only
+    # argument 1 (the payload) is a sink; argument 0 is the connection
+    # id the runtime handed out, not program data, so gating it would
+    # be noise.
+    #
+    # It is spelled ``send`` and not ``write`` because the summary pass
+    # in ``_ifc_summary`` attributes a sink to a capability BY METHOD
+    # NAME (it has no receiver type at that point), which is sound only
+    # while each sink method name belongs to exactly one capability.
+    # ``Fs.write`` already owns "write", so a ``Serve.write`` made every
+    # ``fs.write`` report Serve as a reached capability too -- caught by
+    # tests/test_unaudited_secret_sink_fact.py when this landed.
+    ("Serve", "send"):     {1},
 }
 
 # Built-in capability methods that PRODUCE secret data -- the sources.
@@ -78,6 +92,26 @@ _PUBLIC_SINKS: dict[tuple[str, str], set[int]] = {
 # and over-labelling it would warn on every legitimate file echo. A
 # program that does hold a secret in a file can annotate the binding
 # ``@secret`` explicitly. Future levels could make this configurable.
+#
+# ``Serve.read`` is deliberately NOT a source either, and this is the
+# one entry whose ABSENCE is a decision worth spelling out. Serve
+# (2026-07) is the language's first INBOUND data source, so it is the
+# first time the question "is data arriving from outside secret?" has
+# an answer to give. It is ``@public``.
+#
+# The reason is that this lattice models CONFIDENTIALITY -- who is
+# allowed to LEARN a value -- and not integrity or taint. An inbound
+# request is untrusted, but "untrusted" is an integrity property, and
+# labelling it ``@secret`` would encode it in the wrong lattice: the
+# immediate consequence is that echoing a request back to the client
+# that sent it (the single most ordinary thing a server does) becomes
+# a reported violation. The useful signal would drown in that noise.
+#
+# ``Serve.read`` being ``@public`` therefore asserts only "these bytes
+# are not a secret whose disclosure this analysis must prevent". It
+# asserts NOTHING about whether they can be trusted. Integrity /
+# taint tracking would be a second lattice, not a relabelling of this
+# one.
 _SECRET_SOURCES: frozenset = frozenset({
     ("Env", "get"),
 })

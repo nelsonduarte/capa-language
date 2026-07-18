@@ -14,6 +14,7 @@ from capa.ir._capa_types import (
     BUILTIN_CAPS,
     ERASED_CAPS,
     HANDLE_BEARING_CAPS,
+    PYTHON_ONLY_CAPS,
 )
 from capa.ir._emit_wit import _KNOWN_CAPABILITIES
 from capa.lsp.completion import _BUILTIN_CAPABILITIES
@@ -278,15 +279,47 @@ class TestCapabilityRegistry(unittest.TestCase):
         # the editor never suggested them.
         self.assertEqual(set(_BUILTIN_CAPABILITIES), set(CAPABILITY_NAMES))
 
-    def test_wit_generator_knows_every_capability_except_unsafe(self):
-        # ``Unsafe`` is deliberately absent from the WIT generator's
-        # known set: it is the Python-only FFI escape hatch and the
-        # Wasm emitter rejects it up front, so it can never reach WIT
+    def test_wit_generator_knows_every_capability_except_python_only(self):
+        # The ``PYTHON_ONLY_CAPS`` are deliberately absent from the WIT
+        # generator's known set: the Wasm emitter rejects any signature
+        # reaching them up front, so they can never get as far as WIT
         # generation. Every OTHER built-in must be known, or its
         # interface would be silently skipped and the host would be
         # asked for an import it was never told to provide.
+        #
+        # Derived from ``PYTHON_ONLY_CAPS`` rather than a hard-coded
+        # ``{"Unsafe"}``: when ``Serve`` landed (2026-07) the literal
+        # spelling made this guard fire for the right reason but with
+        # the wrong remedy on offer ("teach WIT about Serve", when the
+        # correct answer is "Serve never reaches WIT"). Deriving keeps
+        # the exemption and its justification the same fact.
         self.assertEqual(
-            set(_KNOWN_CAPABILITIES), set(BUILTIN_CAPS) - {"Unsafe"},
+            set(_KNOWN_CAPABILITIES), set(BUILTIN_CAPS) - PYTHON_ONLY_CAPS,
+        )
+
+    def test_python_only_caps_are_a_subset_of_the_builtins(self):
+        # A stale name here would silently exempt nothing while
+        # reading as though it exempted something.
+        stray = PYTHON_ONLY_CAPS - BUILTIN_CAPS
+        self.assertEqual(
+            stray, set(),
+            "PYTHON_ONLY_CAPS names capabilities that are not "
+            f"built-ins: {sorted(stray)}",
+        )
+
+    def test_python_only_caps_are_erased_on_the_wasm_side(self):
+        # A cap the Wasm backend REJECTS must not also be declared
+        # handle-bearing: that would claim a Wasm lowering for codegen
+        # that never runs, and if the rejection ever developed a hole
+        # the cap would occupy an i32 slot with no root-handle entry
+        # and silently degrade to the Fs root. Erased fails loud
+        # instead.
+        misclassified = PYTHON_ONLY_CAPS & HANDLE_BEARING_CAPS
+        self.assertEqual(
+            misclassified, set(),
+            "capabilities the Wasm backend rejects must be in "
+            f"ERASED_CAPS, not HANDLE_BEARING_CAPS: "
+            f"{sorted(misclassified)}",
         )
 
 

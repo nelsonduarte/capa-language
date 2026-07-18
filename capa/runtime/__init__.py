@@ -7,7 +7,7 @@ but which are not part of the Python language:
   types used for fallible and optional values.
 - Concrete capabilities (see :mod:`._capabilities`): ``Stdio``,
   ``Fs``, ``Env``, ``Clock``, ``Random``, ``Net``, ``Proc``, ``Db``,
-  ``Unsafe``. Each is instantiated in ``main`` and threaded through
+  ``Serve``, ``Unsafe``. Each is instantiated in ``main`` and threaded through
   function arguments. There are no "ambient capabilities": importing
   this runtime does not grant any authority.
 - The Python-interop boundary (see :mod:`._pyinterop`): ``py_import``
@@ -45,6 +45,7 @@ from ._capabilities import (
     Net,
     Proc,
     Random,
+    Serve,
     Stdio,
     Unsafe,
     _StubCapability,
@@ -115,6 +116,7 @@ __all__ = [
     "Net",
     "Proc",
     "Db",
+    "Serve",
     "Unsafe",
     "py_import",
     "py_invoke",

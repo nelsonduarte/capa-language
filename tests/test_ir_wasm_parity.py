@@ -841,6 +841,18 @@ _PARITY_PROGRAMS: list[str] = [
 # here so a future contributor doesn't accidentally widen the
 # parity list without thinking about the divergence.
 _EXCLUDED: dict[str, str] = {
+    "serve_demo.capa": (
+        "The Serve capability is Python-backend-only, so there is no "
+        "Wasm side to be at parity WITH: binding a listening socket "
+        "needs wasi:sockets, which is neither vendored in "
+        "capa/wasi_wit nor reachable from the wasmtime-py bindings "
+        "the hosts are built on. The Wasm emitter rejects any "
+        "signature reaching Serve up front (same treatment as "
+        "Unsafe); that rejection is covered by "
+        "TestWasmRejectsServe in tests/test_serve_capability.py, and "
+        "the program's actual behaviour by TestServeEndToEnd in the "
+        "same file, which drives it with a real socket client."
+    ),
     "clock_demo.capa": (
         "Clock.now_secs / now_monotonic are time-dependent; their "
         "values differ between back-to-back runs even on one backend."

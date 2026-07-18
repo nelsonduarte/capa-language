@@ -9330,6 +9330,29 @@ _FREE_FN_EXEMPT = {
 }
 
 
+def _method_is_exempt_from_the_sweep(ty: str) -> bool:
+    """True for methods that can never reach the Wasm emitter, so a
+    discarded-call recipe for them could not be built (and would not
+    mean anything if it were).
+
+    The sweep proves a DISCARDED call still balances the Wasm operand
+    stack. A capability the Wasm backend rejects outright at discovery
+    time has no emit path at all: any program exercising it raises
+    ``WasmEmissionError`` before a single instruction is produced, so
+    there is no stack to balance.
+
+    Derived from ``PYTHON_ONLY_CAPS`` rather than spelled out, for the
+    same reason the WIT guard is: the exemption and its justification
+    should be one fact, not two that can drift. ``Serve`` (2026-07) is
+    the first such capability that HAS methods -- ``Unsafe`` is
+    method-less, which is why this guard never had to express the idea
+    before. This mirrors the ``py_import`` / ``py_invoke`` exemption in
+    ``_FREE_FN_EXEMPT`` directly above.
+    """
+    from capa.ir._capa_types import PYTHON_ONLY_CAPS
+    return ty in PYTHON_ONLY_CAPS
+
+
 class _EmitVariant(typing.NamedTuple):
     """One flag-selected emit path for a discarded call.
 
@@ -9473,6 +9496,7 @@ class TestDiscardedCallSweepCoverage(unittest.TestCase):
             for ty, entries in METHODS.items()
             for entry in entries
             if (ty, entry[0]) not in _DISCARD_RECIPES
+            and not _method_is_exempt_from_the_sweep(ty)
         ]
         self.assertEqual(
             missing_methods, [],
@@ -9481,6 +9505,20 @@ class TestDiscardedCallSweepCoverage(unittest.TestCase):
                 "call recipe. Add one to _DISCARD_RECIPES so the sweep "
                 "proves a discarded call of that shape still balances "
                 "the Wasm operand stack."
+            ),
+        )
+        # The exemption must not become a hiding place: a recipe for a
+        # Wasm-rejected capability would fail to emit, so assert none
+        # was written rather than silently tolerating one.
+        exempt_with_recipes = [
+            key for key in _DISCARD_RECIPES
+            if _method_is_exempt_from_the_sweep(key[0])
+        ]
+        self.assertEqual(
+            exempt_with_recipes, [],
+            msg=(
+                "a discarded-call recipe exists for a capability the "
+                "Wasm backend rejects outright; it can never emit"
             ),
         )
         missing_free = [
