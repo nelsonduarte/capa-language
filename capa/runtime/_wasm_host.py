@@ -1552,6 +1552,15 @@ class WasmHost:
                 caller, c_len.to_bytes(4, "little"), ret_area + 16,
             )
 
+        def _write_deny(caller, ret_area, err):
+            # Render a shared Fs._deny() result into the Err arm so the
+            # deny message + allowed-prefix cause match the Python
+            # backend byte for byte.
+            io = err.error
+            _write_result_err_ioerror(
+                caller, ret_area, io.message, io.cause,
+            )
+
         def _lookup_fs_or_err(caller, handle, ret_area):
             """Resolve the receiver Fs cap from the handle table.
             On failure (unknown handle / wrong type / zero sentinel)
@@ -1595,10 +1604,7 @@ class WasmHost:
             if fs is None:
                 return
             if not fs.allows(path):
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Fs capability does not permit read: {path}",
-                )
+                _write_deny(caller, ret_area, fs._deny("read", path))
                 return
             # TOCTOU hardening (2026-06-10): route through the same
             # Fs._open_read used by the Python backend, which
@@ -1612,12 +1618,11 @@ class WasmHost:
                 s_ptr, s_len = _alloc_utf8(caller, content)
                 _write_result_ok_string(caller, ret_area, s_ptr, s_len)
             except PostOpenDenied:
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Fs capability does not permit read: {path}",
-                )
+                _write_deny(caller, ret_area, fs._deny("read", path))
             except OSError as e:
-                _write_result_err_ioerror(caller, ret_area, str(e))
+                _write_result_err_ioerror(
+                    caller, ret_area, f"failed to read {path!r}", str(e),
+                )
 
         def fs_write(caller, handle, p_ptr, p_len, c_ptr, c_len, ret_area):
             if self._memory is None or self._alloc_export is None:
@@ -1649,10 +1654,7 @@ class WasmHost:
             if fs is None:
                 return
             if not fs.allows(path):
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Fs capability does not permit write: {path}",
-                )
+                _write_deny(caller, ret_area, fs._deny("write", path))
                 return
             # TOCTOU hardening: same routing as fs_read; on a
             # restricted cap the open does NOT truncate until the
@@ -1663,12 +1665,11 @@ class WasmHost:
                     f.write(content)
                 _write_result_ok_unit(caller, ret_area)
             except PostOpenDenied:
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Fs capability does not permit write: {path}",
-                )
+                _write_deny(caller, ret_area, fs._deny("write", path))
             except OSError as e:
-                _write_result_err_ioerror(caller, ret_area, str(e))
+                _write_result_err_ioerror(
+                    caller, ret_area, f"failed to write {path!r}", str(e),
+                )
 
         self.linker.define_func(
             "capa:host/fs", "read", ft_fs_read_indirect,
@@ -1863,16 +1864,15 @@ class WasmHost:
             if fs is None:
                 return
             if not fs.allows(path):
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Fs capability does not permit mkdir: {path}",
-                )
+                _write_deny(caller, ret_area, fs._deny("mkdir", path))
                 return
             try:
                 _os_mod.makedirs(path, exist_ok=True)
                 _write_result_ok_unit(caller, ret_area)
             except OSError as e:
-                _write_result_err_ioerror(caller, ret_area, str(e))
+                _write_result_err_ioerror(
+                    caller, ret_area, f"failed to mkdir {path!r}", str(e),
+                )
 
         self.linker.define_func(
             "capa:host/fs", "mkdir", ft_mkdir,
@@ -1906,15 +1906,14 @@ class WasmHost:
             if fs is None:
                 return
             if not fs.allows(path):
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Fs capability does not permit list_dir: {path}",
-                )
+                _write_deny(caller, ret_area, fs._deny("list_dir", path))
                 return
             try:
                 entries = sorted(_os_mod.listdir(path))
             except OSError as e:
-                _write_result_err_ioerror(caller, ret_area, str(e))
+                _write_result_err_ioerror(
+                    caller, ret_area, f"failed to list {path!r}", str(e),
+                )
                 return
             n = len(entries)
             data_ptr = self._host_alloc(caller, n * 8) if n else 0
@@ -2341,6 +2340,14 @@ class WasmHost:
                 caller, c_len.to_bytes(4, "little"), ret_area + 16,
             )
 
+        def _write_deny(caller, ret_area, err):
+            # Render a shared Db._deny() result into the Err arm so the
+            # deny message + restriction cause match the Python backend.
+            io = err.error
+            _write_result_err_ioerror(
+                caller, ret_area, io.message, io.cause,
+            )
+
         def _lookup_db_or_err(caller, handle, ret_area):
             """Resolve the receiver Db cap. On failure write an
             Err(IoError) into ``ret_area`` and return None;
@@ -2381,10 +2388,7 @@ class WasmHost:
             if db is None:
                 return
             if not db.allows(path):
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Db capability does not permit exec: {path}",
-                )
+                _write_deny(caller, ret_area, db._deny(path, "exec"))
                 return
             try:
                 # _connect_verified applies the post-open symlink-swap
@@ -2399,10 +2403,7 @@ class WasmHost:
                     conn.close()
                 _write_result_ok_unit(caller, ret_area)
             except PostOpenDenied:
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Db capability does not permit exec: {path}",
-                )
+                _write_deny(caller, ret_area, db._deny(path, "exec"))
             except (sqlite3.Error, OSError, ValueError) as e:
                 _write_result_err_ioerror(
                     caller, ret_area, "SQLite exec failed", str(e),
@@ -2431,10 +2432,7 @@ class WasmHost:
             if db is None:
                 return
             if not db.allows(path):
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Db capability does not permit query: {path}",
-                )
+                _write_deny(caller, ret_area, db._deny(path, "query"))
                 return
             try:
                 conn = db._connect_verified(path)
@@ -2458,10 +2456,7 @@ class WasmHost:
                 s_ptr, s_len = _alloc_utf8(caller, payload)
                 _write_result_ok_string(caller, ret_area, s_ptr, s_len)
             except PostOpenDenied:
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Db capability does not permit query: {path}",
-                )
+                _write_deny(caller, ret_area, db._deny(path, "query"))
             except (sqlite3.Error, OSError, ValueError) as e:
                 _write_result_err_ioerror(
                     caller, ret_area, "SQLite query failed", str(e),
@@ -2628,6 +2623,14 @@ class WasmHost:
                 caller, c_len.to_bytes(4, "little"), ret_area + 16,
             )
 
+        def _write_deny(caller, ret_area, err):
+            # Render a shared Proc._deny() result into the Err arm so the
+            # deny message + restriction cause match the Python backend.
+            io = err.error
+            _write_result_err_ioerror(
+                caller, ret_area, io.message, io.cause,
+            )
+
         def _lookup_proc_or_err(caller, handle, ret_area):
             """Resolve the receiver Proc cap. On failure write an
             Err(IoError) into ``ret_area`` and return None."""
@@ -2665,10 +2668,7 @@ class WasmHost:
             if proc is None:
                 return
             if not proc.allows(cmd):
-                _write_result_err_ioerror(
-                    caller, ret_area,
-                    f"Proc capability does not permit exec: {cmd}",
-                )
+                _write_deny(caller, ret_area, proc._deny(cmd))
                 return
             try:
                 tail = json.loads(args_json)

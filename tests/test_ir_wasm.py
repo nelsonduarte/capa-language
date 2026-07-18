@@ -36,6 +36,7 @@ machines without the Wasm side-stack installed.
 
 from __future__ import annotations
 
+import re
 import shutil
 import typing
 import unittest
@@ -320,6 +321,46 @@ class TestWasmEmissionShape(unittest.TestCase):
         self.assertEqual(drop_count(""), 0)
         self.assertEqual(drop_count("            to_json(j)\n"), 2)
         self.assertEqual(drop_count("            j.is_null()\n"), 1)
+
+    def test_method_call_on_payloadless_variant_receiver_emits(self):
+        # An unannotated ``let l = Leaf`` is typed as the VARIANT name
+        # (``Leaf``), not the sum (``Tree``); the method-table lookup is
+        # keyed by the sum, so the emitter must resolve the variant head
+        # to its owning sum. Before the fix this raised
+        # "MethodCall on receiver of type 'Leaf'".
+        src = (
+            "type Tree =\n"
+            "    Leaf\n"
+            "    Node(Int)\n"
+            "impl Tree\n"
+            "    fun val_of(self) -> Int\n"
+            "        return match self\n"
+            "            Leaf -> 0\n"
+            "            Node(n) -> n\n"
+            "fun f() -> Int\n"
+            "    let l = Leaf\n"
+            "    return l.val_of()\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)  # must not raise
+        self.assertIn("call $Tree_val_of", wat)
+
+    def test_match_on_payloadless_variant_scrutinee_emits(self):
+        # Sibling of the method-call case: a match on the same binding
+        # used to raise "Match on scrutinee of type 'Leaf'".
+        src = (
+            "type Tree =\n"
+            "    Leaf\n"
+            "    Node(Int)\n"
+            "fun g() -> Int\n"
+            "    let l = Leaf\n"
+            "    return match l\n"
+            "        Leaf -> 0\n"
+            "        Node(n) -> n\n"
+        )
+        ir_mod, _, _ = _parse_lower(src)
+        wat = emit_wat(ir_mod)  # must not raise
+        self.assertIn('(func $g (export "g")', wat)
 
 
 @unittest.skipUnless(_has_wasm_tools(), "wasm-tools CLI not installed")
@@ -1828,6 +1869,65 @@ class TestWasmSumAndStruct(unittest.TestCase):
         q = exp["mk"](store, 1, 2)
         self.assertNotEqual(p, q, "allocator must hand out distinct pointers")
         self.assertEqual(exp["diff"](store, p, q), 99)
+
+    # A payloadless variant literal bound by an UNANNOTATED let/var is
+    # typed by the lowerer as the VARIANT name (``Leaf``), not the owning
+    # sum (``Tree``). The method-table and sum-layout lookups are keyed
+    # by the sum, so both a method call and a match on that binding used
+    # to raise on the Wasm backend. They now resolve through
+    # ``_variant_to_sum`` at the consumer sites.
+    _TREE_IMPL = (
+        "type Tree =\n"
+        "    Leaf\n"
+        "    Node(Int)\n"
+        "impl Tree\n"
+        "    fun val_of(self) -> Int\n"
+        "        return match self\n"
+        "            Leaf -> 0\n"
+        "            Node(n) -> n\n"
+    )
+
+    def test_method_call_on_unannotated_payloadless_variant_let(self):
+        src = self._TREE_IMPL + (
+            "fun f() -> Int\n"
+            "    let l = Leaf\n"
+            "    return l.val_of()\n"
+        )
+        self.assertEqual(self._exec(src, "f"), 0)
+
+    def test_method_call_on_unannotated_payloadless_variant_var(self):
+        src = self._TREE_IMPL + (
+            "fun f() -> Int\n"
+            "    var l = Leaf\n"
+            "    return l.val_of()\n"
+        )
+        self.assertEqual(self._exec(src, "f"), 0)
+
+    def test_match_on_unannotated_payloadless_variant_let(self):
+        src = (
+            "type Tree =\n"
+            "    Leaf\n"
+            "    Node(Int)\n"
+            "fun g() -> Int\n"
+            "    let l = Leaf\n"
+            "    return match l\n"
+            "        Leaf -> 0\n"
+            "        Node(n) -> n\n"
+        )
+        self.assertEqual(self._exec(src, "g"), 0)
+
+    def test_match_on_unannotated_payloadless_variant_var(self):
+        src = (
+            "type Tree =\n"
+            "    Leaf\n"
+            "    Node(Int)\n"
+            "fun g() -> Int\n"
+            "    var l = Leaf\n"
+            "    return match l\n"
+            "        Leaf -> 0\n"
+            "        Node(n) -> n\n"
+        )
+        self.assertEqual(self._exec(src, "g"), 0)
 
 
 @unittest.skipUnless(
@@ -9207,6 +9307,7 @@ _FREE_FN_RECIPES: dict[str, tuple[list, list, str]] = {
     "to_json": ([], ["__JSON__"], "to_json(j)"),
     "new_map": ([], [], "new_map()"),
     "new_set": ([], [], "new_set()"),
+    "parse_float": ([], [], 'parse_float("1.0")'),
 }
 
 # Free-function builtins deliberately outside the sweep, with the
@@ -9226,12 +9327,6 @@ _FREE_FN_EXEMPT = {
     "declassify",
     # Python-interop FFI: rejected on the Wasm backend by design.
     "py_import", "py_invoke",
-    # Pre-existing unrelated Wasm gap: parse_float's emitted body calls
-    # a `$pow10_i32` helper that is never defined, so the module fails
-    # to assemble whether the result is BOUND or DISCARDED. That is a
-    # missing-runtime-helper bug, not a discard-drop bug; sweeping it
-    # would assert on an unrelated failure.
-    "parse_float",
 }
 
 
@@ -9476,6 +9571,121 @@ class TestDiscardedCallSweepValidates(unittest.TestCase):
             with self.subTest(variant=variant.label):
                 self._assert_validates(
                     variant.src, variant.label, **variant.compile_kw,
+                )
+
+
+# ----------------------------------------------------------------------
+# WAT call-closure guard.
+#
+# Every ``call $x`` in an emitted module must resolve to a function that
+# the module either DEFINES (``(func $x ...)``) or IMPORTS
+# (``(import ... (func $x ...))``). The conditionally-emitted runtime
+# helpers ($pow10_i32, $ftoa, $bn_*, $str_cmp, ...) are gated on feature
+# predicates, and a called-but-ungated helper produces a module that
+# fails to assemble ("unknown func"). This guard walks a corpus that
+# lights up each gated feature (and the combinations that previously
+# left a callee ungated, notably parse_float WITHOUT any Float
+# formatting) and asserts the call graph is closed.
+# ----------------------------------------------------------------------
+
+_WAT_CLOSURE_CORPUS: list[tuple[str, str]] = [
+    # The Ticket-1 regression: parse_float pulls in $bn_mul_pow10, which
+    # calls $pow10_i32; without a Float format nothing else emits it.
+    ("parse_float_no_format",
+     "fun main(stdio: Stdio)\n"
+     '    let f = parse_float("3.5")\n'
+     '    stdio.println("done")\n'),
+    ("parse_float_discarded",
+     "fun main(stdio: Stdio)\n"
+     '    parse_float("3.5")\n'
+     '    stdio.println("done")\n'),
+    # Float formatting alone: the other $pow10_i32 caller (Grisu2).
+    ("float_format_only",
+     "fun main(stdio: Stdio)\n"
+     "    let x = 3.5\n"
+     '    stdio.println("${x}")\n'),
+    # Both callers present: the latch must not double-define anything.
+    ("parse_float_and_float_format",
+     "fun main(stdio: Stdio)\n"
+     '    let f = parse_float("3.5").unwrap_or(0.0)\n'
+     '    stdio.println("${f}")\n'),
+    ("parse_int",
+     "fun main(stdio: Stdio)\n"
+     '    let n = parse_int("3")\n'
+     '    stdio.println("done")\n'),
+    ("int_format",
+     "fun main(stdio: Stdio)\n"
+     "    let n = 3\n"
+     '    stdio.println("${n}")\n'),
+    ("string_ops",
+     "fun main(stdio: Stdio)\n"
+     '    let s = "hello"\n'
+     "    stdio.println(s.to_upper())\n"),
+    ("string_order_cmp",
+     "fun main(stdio: Stdio)\n"
+     '    let b = "a" < "b"\n'
+     '    stdio.println("done")\n'),
+    ("compound_equality",
+     "fun main(stdio: Stdio)\n"
+     "    let a = [1, 2]\n"
+     "    let b = [1, 2]\n"
+     "    let eq = a == b\n"
+     '    stdio.println("done")\n'),
+    ("set_algebra",
+     "fun main(stdio: Stdio)\n"
+     "    var s1 = new_set()\n"
+     "    s1.add(1)\n"
+     "    var s2 = new_set()\n"
+     "    s2.add(2)\n"
+     "    let u = s1.union(s2)\n"
+     '    stdio.println("done")\n'),
+    ("json_parse",
+     "fun main(stdio: Stdio)\n"
+     '    match parse_json("1")\n'
+     '        Ok(j) -> stdio.println("ok")\n'
+     '        Err(e) -> stdio.println("e")\n'),
+]
+
+_WAT_FUNC_DECL = re.compile(r"\(func\s+\$(\w+)")
+_WAT_IMPORT_FUNC = re.compile(r"\(import\b.*\(func\s+\$(\w+)")
+_WAT_CALL = re.compile(r"\bcall\s+\$(\w+)")
+
+
+def _wat_call_closure(wat: str) -> set[str]:
+    """Return the set of ``call $x`` targets with no defining or
+    importing ``(func $x ...)`` in the module (should be empty)."""
+    declared = set(_WAT_FUNC_DECL.findall(wat))
+    imported = {
+        m
+        for line in wat.splitlines()
+        if "(import" in line
+        for m in _WAT_IMPORT_FUNC.findall(line)
+    }
+    called = set(_WAT_CALL.findall(wat))
+    return called - declared - imported
+
+
+class TestWatCallClosure(unittest.TestCase):
+    """Feature-agnostic guard: no emitted module may ``call`` a function
+    it neither defines nor imports. Structurally catches a callable-but-
+    ungated runtime helper for any future feature, not just parse_float.
+    """
+
+    def test_every_call_is_defined_or_imported(self):
+        for label, src in _WAT_CLOSURE_CORPUS:
+            with self.subTest(program=label):
+                # compile_wat runs the full pipeline (inject_into splices
+                # the bundled JSON parser, monomorphise specialises
+                # generics), so the WAT here is exactly what assembles.
+                _, types, ast_mod = _parse_lower(src)
+                wat = compile_wat(ast_mod, types=types)
+                missing = _wat_call_closure(wat)
+                self.assertEqual(
+                    missing, set(),
+                    msg=(
+                        f"{label}: module calls undefined/unimported "
+                        f"function(s): {sorted(missing)}"
+                    ),
                 )
 
 

@@ -121,6 +121,13 @@ class _InstrDispatchMixin:
             # Reduce to the bare type name the method table is keyed by
             # (drops generic args and a typestate state index).
             recv_head = _strip_type_qualifiers(recv_ty)
+            # A payloadless variant literal (``let l = Leaf``) is typed
+            # by the lowerer as the VARIANT name, not the owning sum; the
+            # method table is keyed by the sum, so resolve it here
+            # (mirrors _equality._normalize_eq_ty).
+            if (recv_head not in self._sum_layouts
+                    and recv_head in self._variant_to_sum):
+                recv_head = self._variant_to_sum[recv_head]
             if (recv_head, instr.method) in self._method_table:
                 self._emit_trait_method_call(instr)
                 return
