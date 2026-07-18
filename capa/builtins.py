@@ -302,6 +302,41 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("allows",      fun(TyString, TyBool),                                     []),
         ("exec",        fun(TyString, TyString, _str_res),                         []),
     ],
+    "Serve": [
+        # Inbound TCP listener (2026-07). Connection-level on purpose:
+        # the trusted runtime binds, accepts, and moves bytes; HTTP (or
+        # any other protocol) is parsed by ordinary Capa code, so a
+        # protocol bug is not a bug in the trusted computing base.
+        #
+        # Attenuation domain is the (bind address, port) pair, spelled
+        # ``"addr:port"`` / ``"addr:lo-hi"`` / ``"addr:*"`` with ``*``
+        # also accepted as the address. ``allows`` mirrors ``listen``'s
+        # argument shape rather than the one-String shape of the other
+        # caps, precisely so "allows(a, p)" answers "would listen(a, p)
+        # be permitted".
+        #
+        # Bytes are ``List<Int>`` with each element in ``0..=255``.
+        # ``recv`` returning an EMPTY list means EOF (the peer closed).
+        # Spelled recv/send, the standard socket verbs; ``write`` in
+        # particular is unavailable because IFC sink attribution
+        # requires sink method names to be unique per capability and
+        # ``Fs.write`` already holds that name.
+        # Serve is sequential: one open connection at a time, no
+        # threads and no async. ``accept`` and ``read`` are bounded by
+        # a timeout and return ``Err`` rather than hanging.
+        #
+        # Python backend only: the Wasm emitter rejects any signature
+        # reaching Serve (no vendored ``wasi:sockets``).
+        ("restrict_to", fun(TyString, TyName("Serve")),                            []),
+        ("allows",      fun(TyString, TyInt, TyBool),                              []),
+        ("listen",      fun(TyString, TyInt, _unit_res),                           []),
+        ("local_port",  fun(res(TyInt, _io_err)),                                  []),
+        ("accept",      fun(res(TyInt, _io_err)),                                  []),
+        ("recv",        fun(TyInt, TyInt, res(lst(TyInt), _io_err)),               []),
+        ("send",        fun(TyInt, lst(TyInt), _unit_res),                         []),
+        ("close",       fun(TyInt, _unit_res),                                     []),
+        ("stop",        fun(_unit_res),                                            []),
+    ],
     "JsonValue": [
         ("is_null",   fun(TyBool),                                                 []),
         ("as_bool",   fun(opt(TyBool)),                                            []),

@@ -103,7 +103,7 @@ For a progressive 10-chapter introduction to the language, open
 | `capa --check file.capa` | Type-check only (do not run). |
 | `capa --transpile file.capa` | Print the generated Python code. |
 | `capa --ir [--run|--transpile] file.capa` | Use the CIR (capability-aware IR) pipeline instead of the direct legacy transpiler. Same observable output; falls back to legacy when CIR lowering hits an unsupported construct. |
-| `capa --wasm --run file.capa` | Compile via CIR -> WAT -> binary `.wasm` and execute on `wasmtime` with a Python host bridge. Requires `wasm-tools` and `wasmtime` on PATH. The Wasm backend has full generics and trait parity with the Python reference; the main remaining limits are a few stdlib surface gaps and a loud error if a trait is used as a `Map` key / `Set` element. See `examples/wasm/`. |
+| `capa --wasm --run file.capa` | Compile via CIR -> WAT -> binary `.wasm` and execute on `wasmtime` with a Python host bridge. Requires `wasm-tools` and `wasmtime` on PATH. The Wasm backend has full generics and trait parity with the Python reference; the main remaining limits are a few stdlib surface gaps, a loud error if a trait is used as a `Map` key / `Set` element, and a loud rejection of programs reaching the Python-only `Serve` / `Unsafe` capabilities. See `examples/wasm/`. |
 | `capa --wasm --transpile file.capa` | Print the WAT (WebAssembly text format) the Wasm backend would compile. |
 | `capa --wasm -o X.wasm file.capa` | Save the assembled core module to `X.wasm`. Add `--component` to wrap it in a Component Model component (via `wasm-tools component new`). |
 | `capa --wit file.capa` | Emit the WIT spec describing the program's capability imports. Useful for inspecting what a Wasm component would request from its host. |
@@ -130,7 +130,26 @@ fun main(stdio: Stdio)
 The `stdio` parameter is a *capability*, only functions that receive
 it can perform I/O. Other available capabilities: `fs` (filesystem),
 `env` (environment variables), `clock` (time), `random` (random
-numbers).
+numbers), `net` (outbound HTTP), `db` (SQLite), `proc` (subprocesses),
+`serve` (inbound TCP), and `unsafe` (the Python escape hatch). Full
+reference in [`stdlib.md`](stdlib.md).
+
+> **Two capabilities are Python-backend only: `Serve` and `Unsafe`.**
+> This is a permanent stance, not a backlog item. `Serve` would need
+> `wasi:sockets`, which is neither vendored nor reachable from the
+> `wasmtime-py` bindings the Wasm hosts use; `Unsafe` grants raw
+> pointer / FFI / memory-map primitives with no sandboxed Wasm
+> equivalent. `capa --run` and `capa --check` handle both. `capa
+> --wasm` refuses such a program at discovery time, before any
+> lowering, and names every offending site:
+>
+> ```
+> capa: --wasm: the Serve capability is intentionally not supported on the Wasm backend (binding a listening socket needs wasi:sockets, which is neither vendored in capa/wasi_wit nor reachable from the wasmtime-py bindings the Wasm hosts are built on, so a guest can never be handed an inbound connection). Use the Python backend for these functions, or refactor to remove the Serve parameter.
+>   - main(serve: Serve)
+> ```
+>
+> Wasm serving is a known future item contingent on `wasi:sockets`,
+> not a silent gap.
 
 ## 6. A recommended first "real" program
 

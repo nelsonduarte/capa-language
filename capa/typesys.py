@@ -140,7 +140,7 @@ PRIMITIVE_NAMES: frozenset[str] = frozenset({
 # so parameters of type Stdio, Fs, etc. are accepted as annotations.
 CAPABILITY_NAMES: frozenset[str] = frozenset({
     "Stdio", "Fs", "Net", "Env", "Proc", "Clock", "Random", "Db",
-    "Unsafe",
+    "Serve", "Unsafe",
 })
 
 

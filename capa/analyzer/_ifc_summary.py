@@ -1028,7 +1028,12 @@ class _SummaryBuilder:
                     # this argument reach this built-in sink, so record its
                     # capability against EACH of them. A sink method name is
                     # unique to one capability in ``_PUBLIC_SINKS``, so
-                    # ``_cap`` is determinate.
+                    # ``_cap`` is determinate. That uniqueness is not a
+                    # happy accident to be relied on quietly: it is now
+                    # pinned by
+                    # ``test_sink_method_names_are_unique_per_capability``
+                    # in tests/test_serve_capability.py, which fired when
+                    # Serve was first given a ``write``.
                     self._attribute_sink_caps(arg_srcs[pos], (_cap,))
 
         # A mutating container method (push / add / set) routes the

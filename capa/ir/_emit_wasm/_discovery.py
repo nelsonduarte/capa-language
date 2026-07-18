@@ -31,7 +31,6 @@ orchestration + per-instruction dispatch.
 
 from __future__ import annotations
 
-import re
 
 from .._nodes import (
     Module, Instr, Value, Function,
@@ -41,12 +40,14 @@ from .._nodes import (
 )
 from .._lower_pattern import PatStruct, PatOr
 from .._capa_types import BUILTIN_CAPS
+from .._python_only_caps import find_rejection
 from .._emit_wit import _WIT_SIGNATURES
 from .._walk import iter_functions, walk_instrs, walk_module
 from ._layout import (
     _element_type_of_list, _element_type_of_set, _map_key_type,
     WasmEmissionError,
 )
+
 
 
 def _pattern_has_str_literal(pat) -> bool:
@@ -469,107 +470,37 @@ class _DiscoveryMixin:
         which read as "this is a backlog item" rather than the
         permanent stance it actually is. The single early raise
         is more honest and points the user at the correct
-        workaround (Python backend or refactor the call site)."""
-        self._reject_unsafe_signatures(module)
+        workaround (Python backend or refactor the call site).
+
+        2026-07: the same scan now covers every member of
+        ``PYTHON_ONLY_CAPS``, so ``Serve`` gets the identical early,
+        site-listing rejection."""
+        self._reject_python_only_cap_signatures(module)
         for fn in iter_functions(module):
             self._discover_instrs(fn.body)
 
-    @staticmethod
-    def _type_name_tokens(ty: str) -> set[str]:
-        """Every type-name identifier appearing in a CIR type
-        string, including generic args and tuple elements. A simple
-        word scan is sound for the Unsafe reachability check: the
-        only false positives would be a user type whose name happens
-        to be a substring of another, which the ``\\b`` boundaries
-        rule out."""
-        if not ty:
-            return set()
-        return set(re.findall(r"[A-Za-z_]\w*", ty))
+    def _reject_python_only_cap_signatures(self, module: Module) -> None:
+        """Reject a program whose signatures reach a member of
+        ``PYTHON_ONLY_CAPS`` (``Unsafe``, ``Serve``), naming the
+        capability, why it can never work here, what to do instead,
+        and the offending sites.
 
-    def _unsafe_bearing_type_names(self, module: Module) -> set[str]:
-        """Fixpoint set of struct / sum type names that
-        transitively reach ``Unsafe`` through a field or variant
-        payload, so a parameter of such a type is rejected even
-        when ``Unsafe`` never appears literally in the signature
-        (audit 2026-06-17 C5(b))."""
-        field_tys: dict[str, list[str]] = {}
-        for decl in module.types:
-            fields = getattr(decl, "fields", None)
-            if fields is not None:
-                field_tys[decl.name] = [f.ty for f in fields]
-                continue
-            variants = getattr(decl, "variants", None)
-            if variants is not None:
-                field_tys[decl.name] = [
-                    pty for v in variants for pty in v.payload_tys
-                ]
-        bearing: set[str] = set()
-        changed = True
-        while changed:
-            changed = False
-            for name, tys in field_tys.items():
-                if name in bearing:
-                    continue
-                for ty in tys:
-                    toks = self._type_name_tokens(ty)
-                    if "Unsafe" in toks or toks & bearing:
-                        bearing.add(name)
-                        changed = True
-                        break
-        return bearing
+        The scan itself lives in
+        [`_python_only_caps.py`](../_python_only_caps.py) because WIT
+        generation needs exactly the same predicate and is reachable
+        on its own (``capa --wit`` never runs this discovery pass).
+        Two copies of a security-relevant reachability check would
+        drift silently, so there is one.
 
-    def _reject_unsafe_signatures(self, module: Module) -> None:
-        """Surface ``Unsafe``-reaching parameters at discovery time
-        with a diagnostic that names the function, the parameter,
-        and the only two valid responses (run on the Python
-        backend, or remove the Unsafe argument). Scans both
-        top-level functions and impl methods.
-
-        Audit 2026-06-17 C5(b): the check walks each param type
-        RECURSIVELY through named struct fields, sum-variant
-        payloads, and generic arguments, so a param of a type that
-        merely *contains* Unsafe (``type Wrapper { u: Unsafe }``)
-        is rejected loud rather than slipping through to emit an
-        invalid ``call $py_import``. Mirrors the manifest's
-        reachability traversal: Unsafe is detected wherever it is
-        reachable through the type, not only as a literal head."""
-        unsafe_bearing = self._unsafe_bearing_type_names(module)
-
-        def reaches_unsafe(ty: str) -> bool:
-            for name in self._type_name_tokens(ty):
-                if name == "Unsafe" or name in unsafe_bearing:
-                    return True
-            return False
-
-        offenders: list[str] = []
-        for fn in module.functions:
-            for p in fn.params:
-                if reaches_unsafe(p.ty):
-                    offenders.append(f"{fn.name}({p.name}: {p.ty})")
-        for impl in module.impls:
-            impl_label = (
-                f"impl {impl.trait_name} for {impl.type_name}"
-                if impl.trait_name else f"impl {impl.type_name}"
-            )
-            for method in impl.methods:
-                for p in method.params:
-                    if reaches_unsafe(p.ty):
-                        offenders.append(
-                            f"{impl_label}::{method.name}"
-                            f"({p.name}: {p.ty})"
-                        )
-        if not offenders:
-            return
-        sites = "\n  - ".join(offenders)
-        raise WasmEmissionError(
-            "the Unsafe capability is intentionally not supported "
-            "on the Wasm backend (it grants raw pointer / FFI / "
-            "memory-map primitives that have no sandboxed Wasm "
-            "equivalent). Use the Python backend for these "
-            "functions, or refactor to remove the Unsafe "
-            "parameter.\n  - "
-            f"{sites}"
-        )
+        Raising early matters: pre-2026-05 the rejection happened deep
+        in cap-method dispatch ("capability method Unsafe.alloc has no
+        WIT/Wasm encoding yet; widen the signature tables"), which read
+        as a backlog item rather than the permanent stance it is.
+        """
+        found = find_rejection(module)
+        if found is not None:
+            _cap, message = found
+            raise WasmEmissionError(message)
 
     def _discover_instrs(self, instrs: list[Instr]) -> None:
         for instr in walk_instrs(instrs):

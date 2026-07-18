@@ -18,7 +18,7 @@
 
 Capa is a small, capability-typed programming language. Every
 function declares the authorities it holds (`Fs`, `Net`, `Stdio`,
-`Clock`, `Random`, `Env`, `Db`, `Proc`, `Unsafe`), the analyzer
+`Clock`, `Random`, `Env`, `Db`, `Proc`, `Serve`, `Unsafe`), the analyzer
 enforces those declarations statically, and the compiler emits
 **CycloneDX SBOM**, **SPDX 2.3**, **VEX**, and **SLSA Build L1
 provenance** documents directly from the same capability signatures.
@@ -194,8 +194,10 @@ import is needed at the Component Model boundary.
 ## Standard library + seed libraries
 
 The runtime ships built-in types (`Result`, `Option`, `List`,
-`Map`, `Set`, `JsonValue`) and built-in capabilities (`Stdio`,
-`Fs`, `Net`, `Env`, `Clock`, `Random`, `Db`, `Proc`, `Unsafe`).
+`Map`, `Set`, `JsonValue`) and ten built-in capabilities (`Stdio`,
+`Fs`, `Net`, `Env`, `Clock`, `Random`, `Db`, `Proc`, `Serve`,
+`Unsafe`). `Serve` (inbound TCP) and `Unsafe` are Python-backend
+only; `capa --wasm` rejects a program whose signatures reach either.
 Full reference in [`docs/stdlib.md`](docs/stdlib.md).
 
 Eight **seed libraries** live in standalone repos and are
@@ -289,9 +291,10 @@ backend (with a Python/Wasm output parity harness), and
 Hypothesis-based property tests. The transpiler
 suite actually executes the generated Python and checks stdout; the
 property suite fuzzes the full pipeline with arbitrary text and
-syntax-aware Capa programs. The Wasm backend runs every capability
-(Fs, Env, Clock, Stdio, Net, Random, Db, Proc) and the full language
-surface with output byte-identical to the Python reference, and
+syntax-aware Capa programs. The Wasm backend runs every capability it
+supports (Fs, Env, Clock, Stdio, Net, Random, Db, Proc, all but the
+Python-only Serve and Unsafe, which it rejects loudly) and the full
+language surface with output byte-identical to the Python reference, and
 cross-function capability attenuation is enforced soundly at the Wasm
 runtime via host-side handle tables.
 

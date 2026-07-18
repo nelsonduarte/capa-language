@@ -59,7 +59,36 @@ def records() -> list[tuple[str, str, Optional[str]]]:
     ``(class, method, first_arg)`` triples, oldest first.
     ``first_arg`` is the first positional argument of the call
     when it is a string and ``None`` otherwise. This is the form
-    the attenuation-honoured invariant consumes."""
+    the attenuation-honoured invariant consumes.
+
+    .. note::
+        **The record is one string wide, so a capability whose
+        restriction domain is not a single string is UNDER-RECORDED.**
+        ``Serve`` (2026-07) is the first such capability: its domain is
+        the pair (bind address, port), and ``listen("127.0.0.1", 8080)``
+        records only ``"127.0.0.1"`` -- the port is lost. A replay over
+        these records therefore cannot decide whether a ``Serve``
+        restriction was honoured, and must not pretend to.
+
+        Deliberately NOT widened. The triple shape is consumed by the
+        property suite's ``_attenuation_violations`` /
+        ``_ATTENUATORS`` / ``_GATED_OPS`` machinery, and changing it
+        would churn a soundness harness that currently covers seven
+        capabilities correctly, to buy coverage for one that is tested
+        directly and more thoroughly by ``TestServeAttenuation`` /
+        ``TestServeAttenuationIsEnforced`` in
+        tests/test_serve_capability.py (including the check that a
+        denied bind leaves the port genuinely unbound, which a trace
+        replay could not establish at all).
+
+        The consequence to keep in mind: ``Serve`` appears in
+        :func:`classes_used` (so the cap-subset invariant does cover
+        it), but it is absent from ``_ATTENUATORS`` / ``_GATED_OPS``,
+        so the attenuation-honoured invariant silently skips it. That
+        is a known gap, not an oversight. A future capability with a
+        multi-part restriction domain should widen this record rather
+        than inherit the gap.
+    """
     return list(_records)
 
 
@@ -84,9 +113,20 @@ def enable() -> None:
 
     from . import _capabilities as caps
 
+    # ``Unsafe`` is absent because it is method-less (it exists only as
+    # proof of authority the checker verifies), so there is nothing to
+    # wrap.
+    #
+    # ``Serve`` IS wrapped, so ``classes_used()`` sees it, but note it
+    # is NOT covered by the property suite's attenuation-honoured
+    # invariant: that replay models a restriction as a single string
+    # argument (``_ATTENUATORS`` / ``_GATED_OPS`` in
+    # tests/test_properties.py), and ``Serve.allows`` takes an address
+    # AND a port. Its attenuation is covered directly instead, by
+    # TestServeAttenuation* in tests/test_serve_capability.py.
     for cls in (
         caps.Stdio, caps.Fs, caps.Env, caps.Clock, caps.Random, caps.Net,
-        caps.Db, caps.Proc,
+        caps.Db, caps.Proc, caps.Serve,
     ):
         _wrap_class(cls)
 

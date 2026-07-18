@@ -31,7 +31,32 @@ from __future__ import annotations
 # that module skips wholesale when Hypothesis is absent and a
 # registry guard must never be skippable.)
 BUILTIN_CAPS: frozenset[str] = frozenset({
-    "Stdio", "Fs", "Net", "Env", "Clock", "Random", "Proc", "Db", "Unsafe",
+    "Stdio", "Fs", "Net", "Env", "Clock", "Random", "Proc", "Db",
+    "Serve", "Unsafe",
+})
+
+
+# The built-in caps the Wasm backends cannot implement at all. A
+# program whose signatures reach one of these is rejected up front
+# with a diagnostic naming the offending sites, so it never reaches
+# lowering or the host bridges.
+#
+# TWO independent paths must reject, because each is reachable on
+# its own: the Wasm emitter's discovery pass (``capa --wasm``) and
+# WIT generation (``capa --wit``, which never runs the emitter). The
+# shared reachability scan they both call lives in
+# [`_python_only_caps.py`](_python_only_caps.py).
+#
+# These are PERMANENT stances, not backlog items:
+#
+# - ``Unsafe`` grants raw pointer / FFI / mmap-class primitives that
+#   have no sandboxed Wasm equivalent (slice 7 / D5, 2026-05).
+# - ``Serve`` needs ``wasi:sockets`` to bind a listening socket. That
+#   world is not vendored in ``capa/wasi_wit`` and is not reachable
+#   from the wasmtime-py 44 bindings the hosts are built on, so there
+#   is no inbound socket for the guest to be handed (2026-07).
+PYTHON_ONLY_CAPS: frozenset[str] = frozenset({
+    "Unsafe", "Serve",
 })
 
 
@@ -60,6 +85,19 @@ HANDLE_BEARING_CAPS: frozenset[str] = frozenset({
 # derived from ``BUILTIN_CAPS - HANDLE_BEARING_CAPS`` so that adding
 # a capability forces an explicit choice instead of silently
 # defaulting to "erased".
+#
+# ``Unsafe`` and ``Serve`` are here because they are members of
+# ``PYTHON_ONLY_CAPS``: the Wasm backends reject them before lowering,
+# so neither ever reaches a Wasm slot and "handle-bearing" would be a
+# claim about codegen that never runs. Erased is also the SAFER
+# classification for a rejected cap. If the rejection ever developed a
+# hole, an erased cap pushes no value and the module fails to link
+# against a host import nobody defined (loud); a handle-bearing cap
+# would occupy an i32 slot with no entry in the host's root-handle
+# map and silently fall back to the ``Fs`` root, which is exactly the
+# quiet cross-cap substitution
+# ``test_host_root_handle_map_covers_every_handle_bearing_cap``
+# exists to prevent.
 ERASED_CAPS: frozenset[str] = frozenset({
-    "Stdio", "Random", "Unsafe",
+    "Stdio", "Random", "Unsafe", "Serve",
 })

@@ -1,0 +1,42 @@
+// serve_demo.capa - the Serve capability: bind, accept one client,
+// read its bytes, write a response, close.
+//
+// Serve is connection-level, not HTTP-level: the runtime moves bytes
+// and nothing else, so any protocol handling is ordinary Capa code
+// rather than trusted-runtime code. Bytes are List<Int> with each
+// element in 0..=255, the same shape String.bytes() already returns.
+//
+// Serve is sequential: one connection at a time, no threads and no
+// async. Both accept() and read() are bounded by a timeout and return
+// Err rather than hanging forever.
+//
+// PYTHON BACKEND ONLY. The Wasm emitter rejects any signature that
+// reaches Serve (wasi:sockets is not vendored and is not reachable
+// from the wasmtime bindings the Wasm hosts use), so this file is
+// listed in _EXCLUDED in tests/test_ir_wasm_parity.py.
+
+fun main(stdio: Stdio, serve: Serve)
+    // Attenuate FIRST, then listen. The narrowed cap admits only the
+    // loopback interface, and only an ephemeral port.
+    let local = serve.restrict_to("127.0.0.1:0")
+
+    match local.listen("127.0.0.1", 0)
+        Ok(_) -> stdio.println("listening")
+        Err(e) -> stdio.println("listen failed: " + e.message)
+
+    match local.accept()
+        Ok(conn) ->
+            match local.recv(conn, 1024)
+                Ok(request) -> stdio.println("read ${request.length()} bytes")
+                Err(e) -> stdio.println("read failed: " + e.message)
+            match local.send(conn, "pong".bytes())
+                Ok(_) -> stdio.println("wrote pong")
+                Err(e) -> stdio.println("write failed: " + e.message)
+            match local.close(conn)
+                Ok(_) -> stdio.println("closed")
+                Err(e) -> stdio.println("close failed: " + e.message)
+        Err(e) -> stdio.println("accept failed: " + e.message)
+
+    match local.stop()
+        Ok(_) -> stdio.println("stopped")
+        Err(e) -> stdio.println("stop failed: " + e.message)
