@@ -9,6 +9,184 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.17.0], 2026-07-18
+
+**Added.**
+
+- *`Serve`, the tenth built-in capability: the authority to listen on a
+  network address and accept INBOUND connections.* Every capability so
+  far reaches out; `Serve` is reached. The surface is connection-level
+  rather than HTTP-level (`restrict_to`, `allows`, `listen`,
+  `local_port`, `accept`, `recv`, `send`, `close`, `stop`): the runtime
+  binds, accepts, and moves bytes, so protocol parsing is ordinary Capa
+  code in a library and a protocol bug is not a bug in the trusted
+  computing base. Bytes are `List<Int>` masked to `& 0xFF` (matching
+  `String.bytes()`), an empty `recv` is EOF, and every fallible method
+  returns `Result<T, IoError>`. Attenuation is over the `(bind address,
+  port)` pair, spelled `"addr:port"`, `"addr:lo-hi"` or `"addr:*"` with
+  `"*"` also accepted as the address; a bind must satisfy EVERY
+  accumulated rule, the same conjunctive model `Fs` uses for path
+  prefixes, so `restrict_to` can only ever narrow and
+  `restrict_to("*:*")` on an already-narrowed capability restores
+  nothing. A spec that does not parse denies everything, because
+  ignoring it would silently widen. Enforcement runs BEFORE the syscall,
+  so a denied address or port is never bound, not even transiently (the
+  test proves it by asserting the refused port is still free
+  afterwards). The model is deliberately SEQUENTIAL: one open connection
+  at a time, no threads and no async, and a second `accept` while a
+  connection is open returns `Err` telling the caller to close first
+  (the async work stays gated, see
+  `docs/design/async-feasibility.md`). Nothing blocks forever: `accept`,
+  `recv` and `send` are bounded at 30s, in the spirit of `Net.get`'s 10s
+  and `Proc.exec`'s 30s, and return `Err` on expiry. `Serve.recv` is the
+  language's first INBOUND information-flow SOURCE and is `@public`,
+  with `Serve.send` a sink on its payload argument only: the lattice
+  models CONFIDENTIALITY, not integrity or taint, so `@secret` would
+  make echoing a request back to its own sender a violation, which is
+  the normal case for a server, and `@public` on an attacker-controlled
+  request asserts nothing about its trustworthiness. This is documented
+  rather than left implicit. `Serve` is PYTHON-BACKEND-ONLY:
+  `wasi:sockets` is neither vendored nor reachable from the wasmtime
+  bindings the hosts use, so the Wasm emitter and the `--wit` generator
+  reject any program whose signatures reach `Serve`, listing the
+  offending sites. Honest limits, all documented: IPv4 only, exact
+  address matching, and a port-0 caveat where the check runs on the
+  REQUESTED port, so an ephemeral bind can land on a port the same rule
+  would refuse by number. On an `Err` from `send` the number of bytes
+  actually transmitted is UNSPECIFIED, so a naive retry can duplicate a
+  prefix; close the connection rather than resume.
+
+**Changed.**
+
+- *`capa --help` now advertises the subcommands.* `init`, `add`,
+  `install`, `search`, `test`, `build`, `run-aot`, `migrate`, `lsp` and
+  `repl` are dispatched by a manual `sys.argv[1]` chain before argparse
+  ever runs, so the top-level `--help` never mentioned them and `capa
+  add` / `capa install` / `capa search` were undiscoverable. The help
+  now carries a commands epilog listing all ten with one-line summaries
+  and a `capa <command> --help` hint. Dispatch and flags are unchanged.
+
+- *Internal refactor: one registry for the handle-bearing capability
+  set.* The six capabilities that are un-erased on the Wasm side (`Fs` /
+  `Net` / `Db` / `Proc` / `Env` / `Clock`) were spelled out as a
+  verbatim tuple at 21 sites across the Wasm emitter and the WIT
+  generator, with no named constant anywhere, so adding a seventh meant
+  finding all 21 by hand and missing one would silently drop that
+  capability's handle at whichever slot the site governs. They now route
+  through a shared `HANDLE_BEARING_CAPS` (with its deliberately
+  spelled-out complement `ERASED_CAPS`), the Wasm host's root-handle map
+  is DERIVED from it rather than hand-listed, and the near-variant sets
+  that mean something genuinely different are audited, left alone, and
+  annotated with why. A cross-check the code comment had long claimed
+  existed, but which did not, now actually runs: the two capability
+  registries must agree exactly, every built-in must be classified as
+  handle-bearing or erased, the classes must be disjoint, and every
+  handle-bearing capability must resolve to a non-zero host root handle.
+  Behaviour-neutral; no set changes value.
+
+**Fixed.**
+
+- *`parse_float` no longer produces an unbuildable Wasm module in a
+  program that never FORMATS a Float.* `parse_float` lowers to a helper
+  whose hard-rounding slow path calls `$pow10_i32`, which was emitted
+  only under the Float-format gate. A program that parsed a Float
+  without ever interpolating one therefore left `$pow10_i32` undefined
+  and the module failed to assemble with `unknown func: failed to find
+  name $pow10_i32`, whether the parse result was bound or discarded: a
+  hard build failure on a first-class stdlib function. The helper now
+  has its own emission latch. A new feature-agnostic guard asserts that
+  no emitted module calls a function it neither defines nor imports,
+  over a corpus that lights up each gated helper family, so this class
+  of gap cannot return quietly.
+
+- *`Fs` / `Db` / `Proc` error text is identical on the Python and Wasm
+  backends again.* Reading a missing file printed `failed to read 'x':
+  [Errno 2] ...` on the Python backend but a bare `[Errno 2] ...` on
+  both Wasm hosts, because the host binders passed the raw OS error as
+  the whole message and dropped the `failed to <op> '<path>'` wrap.
+  Permission denials were terser still: `<op>: <path>` with no
+  restriction cause, where Python names the operation, the path, and the
+  current allowed-prefix / restriction set. Both hosts now build the
+  message the same way and route every deny arm through the shared
+  `_deny` helpers, so the same failure reads identically whichever
+  backend ran it. The operation itself is unchanged: each host keeps its
+  own syscall for its TOCTOU / sandbox guarantees, only the surfaced
+  text is aligned. The `--wasi` compiled path is deliberately left
+  alone; its message is a documented path-less contract.
+
+- *A payloadless variant bound by an unannotated `let` / `var` now
+  supports method calls and `match` on the Wasm backend.* For `type Tree
+  = Leaf | Node(Int)`, `let l = Leaf` is typed by the lowerer as the
+  VARIANT name rather than the owning sum, and the method table, the
+  multi-impl candidate table and the sum-layout table are all keyed by
+  the sum, so `l.val_of()` raised `MethodCall on receiver of type
+  'Leaf'` and a `match` on the same binding raised the matching
+  scrutinee error. Both ran fine on the Python backend; only the Wasm
+  emitter diverged. The three consumer lookups now resolve the variant
+  head to its owning sum.
+
+- *A value-discarded call no longer produces an invalid Wasm module.* A
+  bare call to a non-`Unit`-returning function used as a statement
+  (`c.advance()` where `advance -> String`) passed `capa --check` and
+  ran on the Python backend, but failed Wasm validation with `values
+  remaining on stack at end of block`. The discard path returned without
+  dropping what the call had pushed, in any position (tail, non-tail,
+  `if` branch, `match` arm). All 47 affected shapes are closed through a
+  single `_store_or_drop_result` seam so the store and drop shapes
+  cannot drift: user free functions and impl / trait methods, the
+  `String` / `List` / `Range` / `Map` / `Set` / `Option` / `Result` /
+  `JsonValue` builtin methods, the capability `allows` and attenuator
+  families, `clock.now_secs` / `now_monotonic`, `random.int_range` /
+  `float_unit`, the set-algebra operations, and `parse_int` / `to_float`
+  / `to_int`. A sweep test gives every entry in the authoritative
+  builtin tables a discarded-call recipe that is compiled and validated,
+  with a coverage guard so a builtin added to either table without a
+  recipe fails CI, plus the flag-selected emit variants enumerated
+  explicitly.
+
+- *A method that copies `self` into an unannotated binding compiles on
+  the Wasm backend.* `var cur = self` followed by a method call on the
+  copy passed `capa --check` and ran on the Python backend, but the Wasm
+  backend raised `MethodCall on receiver of type 'Unknown'`: the `self`
+  parameter carries no type annotation, so the copy inherited its
+  `Unknown`. The binding type is now recovered from the analyzer's type
+  map when the value type is unknown and there is no annotation, which
+  also carries through a transitive alias.
+
+- *A tuple with a pointer-shaped element returned through a `?` boundary
+  compiles on the Wasm backend.* A tuple whose element is a `Map` /
+  `List` / `Set`, returned through `?` and then destructured, lost its
+  element type and emitted invalid Wasm; it passed `--check` and ran on
+  the Python backend, so only the Wasm validator rejected it. The `?`
+  lowering now recovers the unwrapped payload type from the operand's
+  `Result<T, E>` / `Option<T>`, the unwrap emitter decodes any
+  pointer-shaped payload including a tuple, and the tuple slot emitter
+  fails loud with a clear diagnostic if a pointer-shaped value ever
+  again reaches an unresolved slot type, so a future type-propagation
+  gap cannot ship as invalid Wasm.
+
+- *LSP completion offers `Proc` and `Db` again.* The editor's capability
+  completion floor was a hand-copied list of seven of the nine built-in
+  capabilities, so `Proc` and `Db` had never been offered since those
+  capabilities shipped. The list is now derived from the capability
+  registry, and the registry cross-check keeps it complete.
+
+- *`capa --wit` no longer emits a document describing a DIFFERENT
+  program.* `--wit` is a standalone path that never runs the Wasm
+  emitter, so a program holding a Python-only capability was not
+  rejected: the capability was silently dropped and the generator exited
+  0 having printed a world block declaring `export main: func()` for a
+  program whose `main` actually took that capability as a parameter, the
+  one thing a WIT document exists to describe. This was two distinct
+  silent drops with the same symptom, and both are closed: `Serve` was
+  dropped late by a known-capabilities guard, while `Unsafe` (which is
+  method-less, its authority flowing through the `py_import` /
+  `py_invoke` free functions) never reached the collector at all. The
+  check now scans SIGNATURES rather than observed capability uses, which
+  is what catches the method-less case, and raises up front. A program
+  holding one of these capabilities can never become a Wasm component,
+  so nothing legitimate is lost by refusing.
+
 ## [1.16.0], 2026-07-13
 
 **Added.**

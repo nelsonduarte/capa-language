@@ -19,6 +19,52 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.17.0: Serve (inbound capability), the capability registry, Python/Wasm parity fixes (2026-07-18)
+
+- **`Serve`, the tenth built-in capability (#82).** Inbound connections
+  on the Python backend: `restrict_to` / `allows` / `listen` /
+  `local_port` / `accept` / `recv` / `send` / `close` / `stop`,
+  connection-level rather than HTTP-level so protocol parsing stays out
+  of the trusted computing base. Conjunctive `addr:port` attenuation
+  enforced before the syscall (a denied bind never happens, not even
+  transiently), sequential-only by design, 30s bounds on
+  accept/recv/send. `Serve.recv` is the first inbound IFC source
+  (`@public`, because the lattice models confidentiality rather than
+  integrity or taint) and `Serve.send` a sink on its payload argument.
+  The Wasm and `--wit` paths reject a program reaching it, driven by a
+  `PYTHON_ONLY_CAPS` registry rather than a hard-coded `Unsafe`. Same PR
+  fixed `--wit` silently emitting a document describing a different
+  program, for `Serve` and for the identical pre-existing `Unsafe` hole.
+- **Single source of truth for the capability registry (#81).**
+  `HANDLE_BEARING_CAPS` / `ERASED_CAPS` replace a tuple hand-copied at
+  21 sites; the Wasm host root-handle map is derived from it. Added the
+  cross-check guard the code comment already claimed existed but which
+  did not (registries agree, every cap classified, classes disjoint,
+  every handle-bearing cap resolves to a non-zero root handle), kept
+  unskippable without Hypothesis or wasmtime. Caught the real drift: LSP
+  completion had been missing `Proc` and `Db`.
+- **Three Python-vs-Wasm parity fixes (#80).** `parse_float` in a
+  program that never formats a Float emitted a call to an undefined
+  helper (a hard build failure), now guarded by a call-closure test over
+  the emitted module; `Fs`/`Db`/`Proc` error text on both Wasm hosts
+  regained the `failed to <op> '<path>'` wrap and the restriction cause;
+  a payloadless variant bound by an unannotated `let` now resolves to
+  its owning sum for method calls and `match`.
+- **Discarded-result drop class + self-copy type recovery (#79).** 47
+  value-discarded call shapes left a value on the operand stack and
+  failed Wasm validation; closed through one `_store_or_drop_result`
+  seam with a sweep over the authoritative builtin tables and the
+  flag-selected emit variants. An unannotated copy of `self` recovers
+  its type from the analyzer's type map.
+- **Tuple pointer element type through the `?` boundary (#78).** A
+  silent miscompile: a tuple with a `Map`/`List`/`Set` element returned
+  through `?` and destructured emitted invalid Wasm. The `?` lowering
+  recovers the payload type and the tuple slot emitter now fails loud on
+  an unresolved pointer-shaped slot.
+- **`capa --help` advertises the subcommands.** The ten subcommands are
+  dispatched before argparse, so the top-level help never mentioned
+  them.
+
 ## v1.16.0: composed SBOMs, signed capability diffs, typed FFI boundary, compliance policies, higher-order IFC (2026-07-13)
 
 - **Composed capability SBOM per product (#1).** `--compose-sbom`,
