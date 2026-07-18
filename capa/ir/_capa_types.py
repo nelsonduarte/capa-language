@@ -37,10 +37,15 @@ BUILTIN_CAPS: frozenset[str] = frozenset({
 
 
 # The built-in caps the Wasm backends cannot implement at all. A
-# program whose signatures reach one of these is rejected at Wasm
-# discovery time with a diagnostic naming every offending site
-# (``_emit_wasm._discovery._reject_python_only_cap_signatures``), so
-# it never reaches lowering, WIT generation, or the host bridges.
+# program whose signatures reach one of these is rejected up front
+# with a diagnostic naming the offending sites, so it never reaches
+# lowering or the host bridges.
+#
+# TWO independent paths must reject, because each is reachable on
+# its own: the Wasm emitter's discovery pass (``capa --wasm``) and
+# WIT generation (``capa --wit``, which never runs the emitter). The
+# shared reachability scan they both call lives in
+# [`_python_only_caps.py`](_python_only_caps.py).
 #
 # These are PERMANENT stances, not backlog items:
 #

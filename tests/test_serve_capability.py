@@ -296,6 +296,36 @@ class TestServeAttenuation(unittest.TestCase):
         self.assertFalse(s.allows("127.0.0.1", 65536))
         self.assertFalse(s.allows("127.0.0.1", True))
 
+    def test_allows_agrees_with_listen_on_invalid_ports(self):
+        # ``allows`` documents itself as "would listen(a, p) be
+        # permitted", so the two must not disagree. The port-validity
+        # check used to sit AFTER the unrestricted early return, so an
+        # unrestricted cap answered True for port 65536 while listen
+        # refused: fail-safe, but a query that contradicts the
+        # operation it describes defeats the purpose of having one.
+        for label, cap in (
+            ("unrestricted", Serve()),
+            ("restricted", Serve().restrict_to("127.0.0.1:*")),
+        ):
+            for bad in (-1, 65536, True, "80"):
+                with self.subTest(cap=label, port=bad):
+                    self.assertFalse(cap.allows("127.0.0.1", bad))
+                    r = cap.listen("127.0.0.1", bad)
+                    self.assertTrue(r.is_err())
+                    # One consistent diagnostic regardless of whether
+                    # the cap is restricted; in particular never the
+                    # self-contradictory "does not permit ... current
+                    # restrictions: unrestricted".
+                    self.assertIn("invalid port", r.error.message)
+
+    def test_valid_ports_still_allowed_on_an_unrestricted_cap(self):
+        # Guard against the validity check over-rejecting: 0 (ephemeral)
+        # and 65535 (the boundary) must both survive.
+        s = Serve()
+        for good in (0, 1, 8080, 65535):
+            with self.subTest(port=good):
+                self.assertTrue(s.allows("127.0.0.1", good))
+
     def test_parent_is_not_mutated_by_restriction(self):
         parent = Serve()
         child = parent.restrict_to("127.0.0.1:8080")
@@ -475,6 +505,29 @@ class TestServeLifecycle(unittest.TestCase):
             self.assertEqual(client.recv(8), bytes([65, 255]))
         finally:
             client.close()
+            s.stop()
+
+    def test_send_error_discloses_that_transmitted_count_is_unspecified(self):
+        # ``sendall`` can push a PREFIX of the payload and only then
+        # raise, so an Err does not mean "nothing was sent". A caller
+        # that retries would duplicate the prefix. The error text has
+        # to say so, because the type (Result<Unit, IoError>) cannot.
+        s = Serve()
+        self.assertTrue(s.listen("127.0.0.1", 0).is_ok())
+        port = s.local_port().unwrap()
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            client.settimeout(5.0)
+            client.connect(("127.0.0.1", port))
+            conn = s.accept().unwrap()
+            # Force the failure arm by closing the peer, then sending
+            # enough to overflow any kernel buffer that would otherwise
+            # absorb the write silently.
+            client.close()
+            r = s.send(conn, [65] * (4 << 20))
+            if r.is_err():
+                self.assertIn("unspecified", r.error.cause)
+        finally:
             s.stop()
 
     def test_send_rejects_a_non_byte_payload(self):
@@ -767,6 +820,83 @@ class TestWasmRejectsServe(unittest.TestCase):
             "fun main(stdio: Stdio)\n    stdio.println(\"hi\")\n"
         )
         self.assertIn("(module", wat)
+
+
+class TestWitRejectsPythonOnlyCaps(unittest.TestCase):
+    """``capa --wit`` is a STANDALONE path: it never runs the Wasm
+    emitter, so the discovery-time rejection does not fire for it.
+
+    Before this was closed, ``--wit`` on a Serve program exited 0 and
+    printed a document that silently omitted Serve -- and whose
+    ``world`` block declared ``export main: func()`` while the real
+    ``main`` took a ``Serve`` parameter. A document whose entire
+    purpose is to describe the program's interface to a host was
+    describing a different program.
+
+    Both members of ``PYTHON_ONLY_CAPS`` are covered, because they
+    reach the generator by DIFFERENT routes and only a
+    signature-level scan catches both: ``Serve`` has methods and so
+    lands in ``used``; ``Unsafe`` is method-less and never does (its
+    authority goes through the ``py_import`` / ``py_invoke`` free
+    functions), which is why the omission for Unsafe was invisible.
+    """
+
+    def _wit(self, source: str):
+        from capa.ir import emit_wit
+        module, result = _parse_and_analyze(source)
+        return emit_wit(lower(module, types=result.types))
+
+    def _error(self):
+        from capa.ir._emit_wit import PythonOnlyCapabilityInWit
+        return PythonOnlyCapabilityInWit
+
+    def test_wit_rejects_serve(self):
+        source = (_EXAMPLES / "serve_demo.capa").read_text(encoding="utf-8")
+        with self.assertRaises(self._error()) as ctx:
+            self._wit(source)
+        msg = str(ctx.exception)
+        self.assertIn("Serve", msg)
+        self.assertIn("wasi:sockets", msg)
+        self.assertIn("main(serve: Serve)", msg)
+        self.assertEqual(ctx.exception.cap, "Serve")
+
+    def test_wit_rejects_method_less_unsafe(self):
+        # The regression that a ``used``-based check could never catch:
+        # Unsafe has no capability methods, so it is invisible to
+        # ``collect_used_capabilities``. Only the signature scan sees it.
+        with self.assertRaises(self._error()) as ctx:
+            self._wit(
+                "fun main(stdio: Stdio, u: Unsafe)\n"
+                "    let _m = py_import(u, \"math\")\n"
+                "    stdio.println(\"x\")\n"
+            )
+        self.assertIn("Unsafe", str(ctx.exception))
+        self.assertEqual(ctx.exception.cap, "Unsafe")
+
+    def test_wit_still_emits_for_a_normal_program(self):
+        wit = self._wit(
+            "fun main(stdio: Stdio, fs: Fs)\n"
+            "    let _ = fs.read(\"x.txt\")\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertIn("interface stdio {", wit)
+        self.assertIn("interface fs {", wit)
+
+    def test_cli_wit_exits_nonzero_on_serve(self):
+        # End to end through the real CLI, because the silent-success
+        # exit 0 was the actual user-visible bug.
+        import subprocess
+        import sys
+        proc = subprocess.run(
+            [sys.executable, "-m", "capa", "--wit",
+             str(_EXAMPLES / "serve_demo.capa")],
+            capture_output=True, text=True,
+            cwd=str(_EXAMPLES.parent.parent),
+        )
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("Serve", proc.stderr)
+        # And it must NOT have printed a WIT document.
+        self.assertNotIn("package capa:host", proc.stdout)
 
 
 # ---------------------------------------------------------------------------

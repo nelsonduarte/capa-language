@@ -813,9 +813,11 @@ class Serve:
 
     **Python backend only.** ``wasi:sockets`` is not vendored and is
     unreachable from the wasmtime bindings the Wasm hosts use, so a
-    program holding ``Serve`` is rejected at Wasm emit time with an
-    explicit diagnostic (see
-    ``capa.ir._emit_wasm._discovery._reject_python_only_cap_signatures``).
+    program holding ``Serve`` is rejected with an explicit diagnostic
+    by BOTH Wasm-facing paths -- the emitter (``capa --wasm``) and WIT
+    generation (``capa --wit``, which never runs the emitter and so
+    needs its own check). They share one reachability scan, in
+    ``capa.ir._python_only_caps``.
 
     Methods:
 
@@ -832,7 +834,11 @@ class Serve:
       up to ``max_bytes`` bytes as ints in ``0..=255``. An EMPTY list
       means the peer closed (EOF).
     - ``send(conn: Int, bytes: List<Int>) -> Result<Unit, IoError>``:
-      send every byte; each element is masked with ``& 0xFF``
+      send every byte; each element is masked with ``& 0xFF``. On
+      ``Ok`` the whole payload went out. On ``Err`` the number of bytes
+      already transmitted is UNSPECIFIED (a timeout can strike after a
+      prefix has been pushed), so a retry may duplicate data; close the
+      connection instead. See :meth:`send`.
     - ``close(conn: Int) -> Result<Unit, IoError>``: close one
       connection
     - ``stop() -> Result<Unit, IoError>``: close the listener and any
@@ -901,13 +907,27 @@ class Serve:
         existing = self._rules or frozenset()
         return Serve(_rules=existing | {self._parse_rule(spec)})
 
+    @staticmethod
+    def _is_valid_port(port) -> bool:
+        """A port that a bind could conceivably accept: an ``int`` (not
+        a ``bool`` -- ``True`` is an ``int`` in Python and would
+        otherwise read as port 1) in ``0..=65535``."""
+        if isinstance(port, bool) or not isinstance(port, int):
+            return False
+        return 0 <= port <= 65535
+
     def allows(self, addr: str, port: int) -> bool:
+        # Port validity is checked BEFORE the unrestricted early return,
+        # so ``allows`` means exactly what it documents: "would
+        # ``listen(addr, port)`` be permitted". Previously the checks
+        # sat after it, so an UNRESTRICTED cap answered True for port
+        # 65536 while ``listen`` refused -- fail-safe, but the query
+        # and the operation disagreed, which is precisely what an
+        # ``allows``-style predicate exists to prevent.
+        if not self._is_valid_port(port):
+            return False
         if self._rules is None:
             return True
-        if not isinstance(port, int) or isinstance(port, bool):
-            return False
-        if not (0 <= port <= 65535):
-            return False
         for host, lo, hi in self._rules:
             if host != "*" and host != addr:
                 return False
@@ -932,6 +952,19 @@ class Serve:
     # ---- listener ---------------------------------------------------
 
     def listen(self, addr: str, port: int) -> "Result[None, IoError]":
+        # An out-of-range port is reported as what it is, ahead of the
+        # attenuation check, so the diagnostic does not depend on
+        # whether the cap happens to be restricted. Without this, an
+        # unrestricted cap said "bind(): port must be 0-65535" while a
+        # restricted one said "does not permit ... current
+        # restrictions: unrestricted" -- two different messages for one
+        # invalid input, the second self-contradictory.
+        if not self._is_valid_port(port):
+            return Err(IoError(
+                f"invalid port {port!r}",
+                "a port must be an integer in 0-65535 (0 asks the OS "
+                "for an ephemeral port)",
+            ))
         # Attenuation is checked BEFORE any socket exists, so a denied
         # address/port is never bound, not even transiently.
         if not self.allows(addr, port):
@@ -1042,6 +1075,27 @@ class Serve:
         return Ok(CapaList([b & 0xFF for b in data]))
 
     def send(self, conn: int, data) -> "Result[None, IoError]":
+        """Send every byte of ``data`` on ``conn``.
+
+        ``Ok`` means the whole payload was handed to the kernel.
+
+        .. warning::
+            **On ``Err``, the number of bytes already transmitted is
+            UNSPECIFIED.** This delegates to ``socket.sendall``, which
+            can push a prefix of the payload and only then hit the
+            timeout or the error; it does not report how far it got,
+            and neither does this method. So an ``Err`` does NOT mean
+            "nothing was sent".
+
+            A caller that simply retries after an ``Err`` can therefore
+            duplicate a prefix on the wire. There is no safe generic
+            recovery: treat a failed ``send`` as having put the
+            connection into an indeterminate state and ``close`` it,
+            rather than attempting to resume. If a protocol needs
+            resumable writes it must carry its own sequencing, which is
+            exactly the kind of thing that belongs in a Capa library
+            rather than in this capability.
+        """
         sock = self._conn_or_none(conn)
         if sock is None:
             return self._unknown_conn(conn)
@@ -1049,17 +1103,22 @@ class Serve:
             payload = bytes(int(b) & 0xFF for b in data)
         except (TypeError, ValueError) as e:
             return Err(IoError(
-                "write payload is not a list of byte values", str(e),
+                "send payload is not a list of byte values", str(e),
             ))
         try:
             sock.sendall(payload)
         except TimeoutError:
             return Err(IoError(
-                "write timed out",
-                f"{_SERVE_CONN_TIMEOUT_SECS:g}s elapsed",
+                "send timed out",
+                f"{_SERVE_CONN_TIMEOUT_SECS:g}s elapsed; the number of "
+                f"bytes already transmitted is unspecified",
             ))
         except OSError as e:
-            return Err(IoError("write failed", str(e)))
+            return Err(IoError(
+                "send failed",
+                f"{e}; the number of bytes already transmitted is "
+                f"unspecified",
+            ))
         return Ok(None)
 
     def close(self, conn: int) -> "Result[None, IoError]":

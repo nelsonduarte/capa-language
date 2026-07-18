@@ -503,8 +503,9 @@ class _DeclarationsMixin:
         exact quarantine violation F2 relies on being impossible), so it
         must be rejected wherever it is reachable, not only as a literal
         head. The walk mirrors the Wasm backend's
-        ``_unsafe_bearing_type_names`` fixpoint (struct fields +
-        variant payloads + generic args) and is cycle-guarded on the
+        ``_python_only_caps._cap_bearing_type_names`` fixpoint
+        (struct fields + variant payloads + generic args) and is
+        cycle-guarded on the
         type name for recursive types (``type Tree { kids: List<Tree>
         }``)."""
         from . import SymbolKind

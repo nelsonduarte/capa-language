@@ -276,16 +276,36 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
 #
-# This is ``BUILTIN_CAPS`` MINUS ``Unsafe``, and the omission is
-# deliberate, not drift: ``Unsafe`` is the Python-only FFI escape
-# hatch and can never reach WIT generation. The Wasm emitter
-# rejects an ``Unsafe`` anywhere in a signature up front (see
-# ``_discovery._reject_unsafe_signatures``), so it never lands in
-# ``used``. Adding it here would be actively wrong - the interface
-# loop would then try to emit ``interface unsafe { ... }`` and
-# raise ``UnsupportedCapabilityMethod`` on the first method
+# This is ``BUILTIN_CAPS`` MINUS ``PYTHON_ONLY_CAPS`` (``Unsafe``,
+# ``Serve``), and the omission is deliberate, not drift.
+#
+# WHAT ACTUALLY KEEPS THEM OUT (corrected 2026-07; the previous
+# version of this comment described a mechanism that does not exist).
+# It is NOT the Wasm emitter's discovery rejection: ``capa --wit`` is
+# a standalone path that never runs the Wasm emitter at all. The two
+# capabilities stay out of the emitted document for two DIFFERENT
+# reasons, neither of which was what this comment used to claim:
+#
+# - ``Serve`` DOES land in ``used`` -- it has capability methods, so
+#   ``collect_used_capabilities`` records every ``serve.listen(...)``
+#   call. It is dropped later, by the ``cap not in
+#   _KNOWN_CAPABILITIES`` guard in the interface loop of ``emit_wit``.
+# - ``Unsafe`` never lands in ``used``, but because it is METHOD-LESS
+#   (no entry in ``capa.builtins.METHODS``), so there is no cap-method
+#   call for the collector to see. Its authority is exercised through
+#   the free functions ``py_import`` / ``py_invoke``.
+#
+# Both of those are SILENT drops, which is why ``emit_wit`` now raises
+# ``PythonOnlyCapabilityInWit`` up front rather than relying on them:
+# a document that quietly omits a capability the program genuinely
+# holds misdescribes the program. This set remains the backstop for
+# the interface loop.
+#
+# Adding a Python-only cap here would be actively wrong -- the
+# interface loop would then try to emit ``interface serve { ... }``
+# and raise ``UnsupportedCapabilityMethod`` on the first method
 # instead of skipping the cap. Kept as a literal (rather than
-# ``BUILTIN_CAPS - {"Unsafe"}``) so a newly added capability is
+# ``BUILTIN_CAPS - PYTHON_ONLY_CAPS``) so a newly added capability is
 # NOT silently assumed to have WIT signatures; the guard in
 # ``TestCapabilityRegistry`` (tests/test_cap_handles.py) flags the
 # omission when a new cap appears.
@@ -594,6 +614,29 @@ class UnsupportedCapabilityMethod(Exception):
         self.method = method
 
 
+class PythonOnlyCapabilityInWit(Exception):
+    """Raised when WIT generation is asked to describe a program that
+    holds a ``PYTHON_ONLY_CAPS`` capability (``Unsafe``, ``Serve``).
+
+    ``capa --wit`` is a STANDALONE path: it does not run the Wasm
+    emitter, so the discovery-time rejection never fires for it. Before
+    this existed, ``--wit`` on such a program exited 0 and printed a
+    document that silently omitted the capability -- and worse, whose
+    ``world`` block declared ``export main: func()`` while the real
+    ``main`` took the capability as a parameter. A document whose whole
+    purpose is to describe the program's interface to a host was
+    therefore describing a different program.
+
+    Failing loud is the right call here rather than emitting a partial
+    document, because a program holding one of these capabilities can
+    never become a Wasm component at all: there is no host that could
+    consume the WIT, so nothing legitimate is lost."""
+
+    def __init__(self, cap: str, message: str):
+        super().__init__(message)
+        self.cap = cap
+
+
 def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     """Walk every instruction in every function and return a
     capability_name -> set-of-method-names mapping.
@@ -692,6 +735,7 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
 
 
 from ._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
+from ._python_only_caps import find_rejection as find_python_only_rejection
 
 
 def _module_calls_panic(module: Module) -> bool:
@@ -785,7 +829,31 @@ def emit_wit(
     interfaces (resolved from the vendored WIT in ``capa/wasi_wit``)
     instead of the matching ``capa:host`` interfaces; every other
     capability keeps its ``capa:host`` interface (hybrid mode). See
-    ``docs/design/wasi_mode.md``."""
+    ``docs/design/wasi_mode.md``.
+
+    Raises ``PythonOnlyCapabilityInWit`` if ``module`` reaches a
+    ``PYTHON_ONLY_CAPS`` capability. ``--wit`` does not run the Wasm
+    emitter, so this is the only place that rejection can happen on
+    this path; without it the document would silently omit the
+    capability and misdescribe ``main``'s signature."""
+    # Before ``used`` is even collected, so the check is independent of
+    # whether the capability happens to be method-bearing (``Serve``
+    # is and shows up in ``used``; ``Unsafe`` is method-less and never
+    # does -- see the ``_KNOWN_CAPABILITIES`` comment). Both must be
+    # rejected, so this scans SIGNATURES, exactly as the Wasm
+    # discovery pass does, sharing that one implementation.
+    found = find_python_only_rejection(
+        module,
+        note=(
+            "There is no WIT to emit for it: a WIT document "
+            "describes a Wasm component, and this program cannot "
+            "be one."
+        ),
+    )
+    if found is not None:
+        cap, message = found
+        raise PythonOnlyCapabilityInWit(cap, message)
+
     used = collect_used_capabilities(module)
 
     if wasi:

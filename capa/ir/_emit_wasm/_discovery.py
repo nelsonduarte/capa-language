@@ -31,7 +31,6 @@ orchestration + per-instruction dispatch.
 
 from __future__ import annotations
 
-import re
 
 from .._nodes import (
     Module, Instr, Value, Function,
@@ -40,7 +39,8 @@ from .._nodes import (
     PatIdent, PatLiteral, PatTuple, PatVariant,
 )
 from .._lower_pattern import PatStruct, PatOr
-from .._capa_types import BUILTIN_CAPS, PYTHON_ONLY_CAPS
+from .._capa_types import BUILTIN_CAPS
+from .._python_only_caps import find_rejection
 from .._emit_wit import _WIT_SIGNATURES
 from .._walk import iter_functions, walk_instrs, walk_module
 from ._layout import (
@@ -48,24 +48,6 @@ from ._layout import (
     WasmEmissionError,
 )
 
-
-# Why each ``PYTHON_ONLY_CAPS`` member cannot work on Wasm, phrased to
-# go inside "the X capability is intentionally not supported on the
-# Wasm backend (...)". These are permanent stances, not backlog items,
-# and the wording says so: a programmer who reads "not supported"
-# should not go looking for the tracking issue.
-_PYTHON_ONLY_CAP_REASONS: dict[str, str] = {
-    "Unsafe": (
-        "it grants raw pointer / FFI / memory-map primitives that "
-        "have no sandboxed Wasm equivalent"
-    ),
-    "Serve": (
-        "binding a listening socket needs wasi:sockets, which is "
-        "neither vendored in capa/wasi_wit nor reachable from the "
-        "wasmtime-py bindings the Wasm hosts are built on, so a "
-        "guest can never be handed an inbound connection"
-    ),
-}
 
 
 def _pattern_has_str_literal(pat) -> bool:
@@ -497,113 +479,28 @@ class _DiscoveryMixin:
         for fn in iter_functions(module):
             self._discover_instrs(fn.body)
 
-    @staticmethod
-    def _type_name_tokens(ty: str) -> set[str]:
-        """Every type-name identifier appearing in a CIR type
-        string, including generic args and tuple elements. A simple
-        word scan is sound for the reachability check: the
-        only false positives would be a user type whose name happens
-        to be a substring of another, which the ``\\b`` boundaries
-        rule out."""
-        if not ty:
-            return set()
-        return set(re.findall(r"[A-Za-z_]\w*", ty))
-
-    def _cap_bearing_type_names(self, module: Module, cap: str) -> set[str]:
-        """Fixpoint set of struct / sum type names that
-        transitively reach ``cap`` through a field or variant
-        payload, so a parameter of such a type is rejected even
-        when ``cap`` never appears literally in the signature
-        (audit 2026-06-17 C5(b); generalised from Unsafe-only to
-        every ``PYTHON_ONLY_CAPS`` member in 2026-07)."""
-        field_tys: dict[str, list[str]] = {}
-        for decl in module.types:
-            fields = getattr(decl, "fields", None)
-            if fields is not None:
-                field_tys[decl.name] = [f.ty for f in fields]
-                continue
-            variants = getattr(decl, "variants", None)
-            if variants is not None:
-                field_tys[decl.name] = [
-                    pty for v in variants for pty in v.payload_tys
-                ]
-        bearing: set[str] = set()
-        changed = True
-        while changed:
-            changed = False
-            for name, tys in field_tys.items():
-                if name in bearing:
-                    continue
-                for ty in tys:
-                    toks = self._type_name_tokens(ty)
-                    if cap in toks or toks & bearing:
-                        bearing.add(name)
-                        changed = True
-                        break
-        return bearing
-
     def _reject_python_only_cap_signatures(self, module: Module) -> None:
-        """Surface parameters reaching a ``PYTHON_ONLY_CAPS`` member at
-        discovery time with a diagnostic that names the function, the
-        parameter, and the only two valid responses (run on the Python
-        backend, or remove the capability argument). Scans both
-        top-level functions and impl methods, and lists EVERY offending
-        site rather than the first, so one compile tells the programmer
-        the full extent of the refactor.
+        """Reject a program whose signatures reach a member of
+        ``PYTHON_ONLY_CAPS`` (``Unsafe``, ``Serve``), naming the
+        capability, why it can never work here, what to do instead,
+        and the offending sites.
 
-        Audit 2026-06-17 C5(b): the check walks each param type
-        RECURSIVELY through named struct fields, sum-variant
-        payloads, and generic arguments, so a param of a type that
-        merely *contains* the cap (``type Wrapper { u: Unsafe }``)
-        is rejected loud rather than slipping through to emit an
-        invalid ``call $py_import``. Mirrors the manifest's
-        reachability traversal: the cap is detected wherever it is
-        reachable through the type, not only as a literal head.
+        The scan itself lives in
+        [`_python_only_caps.py`](../_python_only_caps.py) because WIT
+        generation needs exactly the same predicate and is reachable
+        on its own (``capa --wit`` never runs this discovery pass).
+        Two copies of a security-relevant reachability check would
+        drift silently, so there is one.
 
-        2026-07: generalised from Unsafe-only so ``Serve`` inherits
-        the identical treatment. The rejection is deliberately per-cap
-        (one raise names one capability) because the two have entirely
-        different reasons and entirely different "what to do instead".
+        Raising early matters: pre-2026-05 the rejection happened deep
+        in cap-method dispatch ("capability method Unsafe.alloc has no
+        WIT/Wasm encoding yet; widen the signature tables"), which read
+        as a backlog item rather than the permanent stance it is.
         """
-        for cap in sorted(PYTHON_ONLY_CAPS):
-            self._reject_one_python_only_cap(module, cap)
-
-    def _reject_one_python_only_cap(self, module: Module, cap: str) -> None:
-        bearing = self._cap_bearing_type_names(module, cap)
-
-        def reaches(ty: str) -> bool:
-            for name in self._type_name_tokens(ty):
-                if name == cap or name in bearing:
-                    return True
-            return False
-
-        offenders: list[str] = []
-        for fn in module.functions:
-            for p in fn.params:
-                if reaches(p.ty):
-                    offenders.append(f"{fn.name}({p.name}: {p.ty})")
-        for impl in module.impls:
-            impl_label = (
-                f"impl {impl.trait_name} for {impl.type_name}"
-                if impl.trait_name else f"impl {impl.type_name}"
-            )
-            for method in impl.methods:
-                for p in method.params:
-                    if reaches(p.ty):
-                        offenders.append(
-                            f"{impl_label}::{method.name}"
-                            f"({p.name}: {p.ty})"
-                        )
-        if not offenders:
-            return
-        sites = "\n  - ".join(offenders)
-        raise WasmEmissionError(
-            f"the {cap} capability is intentionally not supported "
-            f"on the Wasm backend ({_PYTHON_ONLY_CAP_REASONS[cap]}). "
-            f"Use the Python backend for these functions, or "
-            f"refactor to remove the {cap} parameter.\n  - "
-            f"{sites}"
-        )
+        found = find_rejection(module)
+        if found is not None:
+            _cap, message = found
+            raise WasmEmissionError(message)
 
     def _discover_instrs(self, instrs: list[Instr]) -> None:
         for instr in walk_instrs(instrs):
