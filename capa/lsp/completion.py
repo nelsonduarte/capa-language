@@ -22,7 +22,7 @@ from ..errors import LexerError
 from ..lexer import Lexer
 from ..parser import Parser, ParserError
 from ..tokens import KEYWORDS
-from ..typesys import TyFun, TyName, ty_str
+from ..typesys import CAPABILITY_NAMES, TyFun, TyName, ty_str
 from .context import LspContext, walk
 
 
@@ -34,9 +34,12 @@ _BUILTIN_TYPES = [
     "List", "Option", "Result", "Map", "Set", "Fun", "JsonValue",
     "IoError",
 ]
-_BUILTIN_CAPABILITIES = [
-    "Stdio", "Fs", "Net", "Env", "Clock", "Random", "Unsafe",
-]
+# Capabilities are NOT curated: the built-in set is small and every
+# member is completable, so deriving from the checker's registry is
+# both complete and drift-proof. It was hand-copied until 2026-07-18
+# and had gone stale - ``Proc`` and ``Db`` shipped without ever being
+# added here, so neither was offered by the editor.
+_BUILTIN_CAPABILITIES = sorted(CAPABILITY_NAMES)
 _BUILTIN_VARIANTS = ["Some", "None", "Ok", "Err"]
 _BUILTIN_FUNCTIONS = [
     "parse_int", "parse_float", "to_int", "to_float",
