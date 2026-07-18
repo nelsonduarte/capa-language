@@ -275,6 +275,20 @@ _WIT_SIGNATURES: dict[tuple[str, str], str] = {
 # in ``_WIT_SIGNATURES`` raise ``UnsupportedCapability`` at WIT
 # generation time; the Wasm emitter mirrors this so the contract
 # stays in sync.
+#
+# This is ``BUILTIN_CAPS`` MINUS ``Unsafe``, and the omission is
+# deliberate, not drift: ``Unsafe`` is the Python-only FFI escape
+# hatch and can never reach WIT generation. The Wasm emitter
+# rejects an ``Unsafe`` anywhere in a signature up front (see
+# ``_discovery._reject_unsafe_signatures``), so it never lands in
+# ``used``. Adding it here would be actively wrong - the interface
+# loop would then try to emit ``interface unsafe { ... }`` and
+# raise ``UnsupportedCapabilityMethod`` on the first method
+# instead of skipping the cap. Kept as a literal (rather than
+# ``BUILTIN_CAPS - {"Unsafe"}``) so a newly added capability is
+# NOT silently assumed to have WIT signatures; the guard in
+# ``TestCapabilityRegistry`` (tests/test_cap_handles.py) flags the
+# omission when a new cap appears.
 _KNOWN_CAPABILITIES = {"Stdio", "Clock", "Env", "Fs", "Random", "Net", "Db", "Proc"}
 
 
@@ -677,7 +691,7 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     return out
 
 
-from ._capa_types import BUILTIN_CAPS
+from ._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
 
 
 def _module_calls_panic(module: Module) -> bool:
@@ -706,7 +720,7 @@ def _module_calls_panic(module: Module) -> bool:
 # too (metadata + streams + the guest-side restrict_to / allows), but the
 # WIT generator does not consult this set for Fs: it skips the WHOLE Fs
 # capa:host interface in WASI mode unconditionally (see the
-# ``cap in ("Random", "Clock", "Env", "Fs")`` skip in ``_emit_wit_wasi``),
+# ``_WASI_FULLY_MIGRATED_CAPS`` skip in ``_emit_wit_wasi``),
 # routing every Fs op to wasi:filesystem. This constant is unused by the
 # generator (the per-cap skips drive the logic); it is kept only as a
 # human-readable index, NOT a lockstep mirror of
@@ -736,6 +750,21 @@ _WASI_MIGRATED_METHODS: frozenset[tuple[str, str]] = frozenset({
 _WASI_STDIO_MIGRATED_METHODS: frozenset[str] = frozenset(
     {"print", "println", "eprintln", "read_line"}
 )
+
+
+# Capabilities that are FULLY migrated to wasi:* under ``--wasi``:
+# every reachable method either routes to a wasi interface or is
+# implemented guest-side, so the cap carries NO ``capa:host``
+# interface and no ``capa:host`` world import. This is NOT a subset
+# of ``HANDLE_BEARING_CAPS`` (Random is erased on the wasm side yet
+# fully migrated here, and Db / Proc bear handles yet are NOT
+# migrated) - the two express different axes, so this set is
+# maintained independently. Stdio is migrated per-METHOD rather
+# than wholesale (``_WASI_STDIO_MIGRATED_METHODS`` above), so it
+# does not belong here.
+_WASI_FULLY_MIGRATED_CAPS: frozenset[str] = frozenset({
+    "Random", "Clock", "Env", "Fs", "Net",
+})
 
 
 def emit_wit(
@@ -897,24 +926,21 @@ def _emit_wit_wasi(
     lines.append("")
 
     # ``capa:host`` interfaces for every NON-migrated capability,
-    # identical to the default path. Random / Clock / Env / Fs are
-    # skipped (they move to wasi:*). Fs in WASI mode is metadata-only
-    # (exists / is_dir / mkdir via wasi:filesystem); the stream-bearing
-    # and attenuation methods are rejected by the Wasm emitter's
-    # ``_validate_wasi_caps`` before we get here, so an Fs present in
-    # ``used`` carries no ``capa:host`` fs interface.
+    # identical to the default path. ``_WASI_FULLY_MIGRATED_CAPS``
+    # is skipped (those move to wasi:*). Fs in WASI mode is
+    # metadata-only (exists / is_dir / mkdir via wasi:filesystem);
+    # the stream-bearing and attenuation methods are rejected by the
+    # Wasm emitter's ``_validate_wasi_caps`` before we get here, so
+    # an Fs present in ``used`` carries no ``capa:host`` fs
+    # interface. Net is migrated the same way: the request ops
+    # ``get`` (Phase 1) and ``post`` (Phase 2) route to wasi:http,
+    # and the fine attenuators ``restrict_to`` / ``allows`` (Phase 3)
+    # are implemented GUEST-SIDE (Level 2 of
+    # ``docs/design/wasi-attenuation.md``, no host import).
     for cap in sorted(used.keys()):
         if cap not in _KNOWN_CAPABILITIES:
             continue
-        if cap in ("Random", "Clock", "Env", "Fs"):
-            continue
-        # Net in WASI mode is FULLY migrated: the request ops ``get``
-        # (Phase 1) and ``post`` (Phase 2) route to wasi:http, and the fine
-        # attenuators ``restrict_to`` / ``allows`` (Phase 3) are implemented
-        # GUEST-SIDE (Level 2 of ``docs/design/wasi-attenuation.md``, no
-        # host import). So a Net present in ``used`` carries no ``capa:host``
-        # net interface (mirroring Random / Clock / Env / Fs).
-        if cap == "Net":
+        if cap in _WASI_FULLY_MIGRATED_CAPS:
             continue
         # Stdio output migration (Phase 1, 2026-06-29): print / println /
         # eprintln route to wasi:cli/stdout|stderr (the world imports
@@ -1053,9 +1079,8 @@ def _emit_wit_wasi(
             if used["Stdio"] - _WASI_STDIO_MIGRATED_METHODS:
                 lines.append("  import stdio;")
             continue
-        if cap in _KNOWN_CAPABILITIES and cap not in (
-            "Random", "Clock", "Env", "Fs", "Net",
-        ):
+        if (cap in _KNOWN_CAPABILITIES
+                and cap not in _WASI_FULLY_MIGRATED_CAPS):
             lines.append(f"  import {cap.lower()};")
     # De-duplicate ``import`` lines (a wasi:io interface can be requested
     # by both an Fs stream op and Net.get); a world importing the same
@@ -1088,17 +1113,6 @@ def _emit_wit_wasi(
     return "\n".join(lines)
 
 
-# Caps that lower to a real i32 handle on ``main``'s wasm signature
-# (slices 25.2 - 25.6). Mirrors ``_emit_wasm.__init__._emit_function``
-# and ``_wasm_host.WasmHost.run_main``: Fs / Net / Db / Proc / Env /
-# Clock thread through the host handle table; everything else
-# (Stdio / Random / Unsafe) stays erased on the wasm side and so on
-# the WIT side too.
-_HANDLE_BEARING_CAPS: frozenset[str] = frozenset({
-    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-})
-
-
 def _main_handle_param_names(module: Module) -> list[str]:
     """Return the lowercase cap-param names of ``main`` for the WIT
     world export, in declaration order, filtered to caps that lower
@@ -1113,7 +1127,7 @@ def _main_handle_param_names(module: Module) -> list[str]:
             continue
         out: list[str] = []
         for p in fn.params:
-            if p.ty in _HANDLE_BEARING_CAPS:
+            if p.ty in HANDLE_BEARING_CAPS:
                 # WIT identifiers are strict kebab-case (lowercase
                 # ASCII letters / digits / dashes). Capa source-
                 # level param names are typically already conformant

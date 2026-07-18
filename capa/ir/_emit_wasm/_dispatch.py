@@ -16,7 +16,7 @@ etc.).
 
 from __future__ import annotations
 
-from .._capa_types import BUILTIN_CAPS
+from .._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
 from .._nodes import (
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
     If, While, Break, Continue, Return, TryUnwrap,
@@ -37,9 +37,7 @@ class _InstrDispatchMixin:
                 # (slices 25.2 - 25.6) which carry i32 handles so a
                 # restricted cap survives crossing function
                 # boundaries.
-                if dst_ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
+                if dst_ty in HANDLE_BEARING_CAPS:
                     self._push_value(instr.src)
                     self._write(f"local.set ${instr.dst}")
                 return
@@ -59,9 +57,7 @@ class _InstrDispatchMixin:
         if isinstance(instr, Reassign):
             dst_ty = self._dst_capa_ty(instr.dst)
             if dst_ty in BUILTIN_CAPS:
-                if dst_ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
+                if dst_ty in HANDLE_BEARING_CAPS:
                     self._push_value(instr.src)
                     self._write(f"local.set ${instr.dst}")
                 return

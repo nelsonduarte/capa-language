@@ -33,7 +33,7 @@ dispatch consumers see the concrete struct type.
 from __future__ import annotations
 
 from .._nodes import Function, MethodCall
-from .._capa_types import BUILTIN_CAPS
+from .._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
 from ._layout import (
     WasmEmissionError, _strip_type_qualifiers, _TYPE_ID_OFFSET,
 )
@@ -401,9 +401,7 @@ class _TraitEmissionMixin:
             # Multi-value (i32 i32) return -> dst pair.
             self._write(f"local.set ${instr.dst}_len")
             self._write(f"local.set ${instr.dst}_ptr")
-        elif dst_ty in (
-            "Fs", "Net", "Db", "Proc", "Env", "Clock",
-        ):
+        elif dst_ty in HANDLE_BEARING_CAPS:
             # Slices 25.2 - 25.6: Fs / Net / Db / Proc / Env /
             # Clock return the handle as i32.
             self._write(f"local.set ${instr.dst}")

@@ -32,7 +32,7 @@ from .._nodes import (
     If, While, For, Match, FormatStr,
     Pattern, PatIdent, PatVariant,
 )
-from .._capa_types import BUILTIN_CAPS
+from .._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
 from .._walk import walk_instrs
 from ._layout import (
     WasmEmissionError,
@@ -128,9 +128,7 @@ class _ClosureEmissionMixin:
                 p.ty for p in target.params
                 if (
                     p.ty not in BUILTIN_CAPS
-                    or p.ty in (
-                        "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                    )
+                    or p.ty in HANDLE_BEARING_CAPS
                 )
             ]
             ret_capa_ty = target.return_type or "Unit"
@@ -274,9 +272,7 @@ class _ClosureEmissionMixin:
                 # Clock are un-erased - the closure ABI must thread
                 # their i32 handles the same way it threads any
                 # other scalar.
-                if p.ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
+                if p.ty in HANDLE_BEARING_CAPS:
                     param_clauses.append(f"(param ${p.name} i32)")
                 continue
             if p.ty == "String":
@@ -298,9 +294,7 @@ class _ClosureEmissionMixin:
         # is intentionally ignored: thunks have no captured state.
         for p in params:
             if p.ty in BUILTIN_CAPS:
-                if p.ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
+                if p.ty in HANDLE_BEARING_CAPS:
                     self._write(f"local.get ${p.name}")
                 continue
             if p.ty == "String":
@@ -663,15 +657,11 @@ class _ClosureEmissionMixin:
                 # see whatever default the host bridge invented,
                 # defeating the cross-function soundness these
                 # slices deliver).
-                if capa_ty not in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
+                if capa_ty not in HANDLE_BEARING_CAPS:
                     continue
             size = (
                 self._size_of(capa_ty)
-                if capa_ty not in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ) else 4
+                if capa_ty not in HANDLE_BEARING_CAPS else 4
             )
             offset = _align_up(offset, size)
             env_layout[name] = (offset, capa_ty)
@@ -952,9 +942,7 @@ class _ClosureEmissionMixin:
         # handles; other built-in caps stay erased.
         for arg in instr.args:
             if arg.ty in BUILTIN_CAPS:
-                if arg.ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
+                if arg.ty in HANDLE_BEARING_CAPS:
                     self._push_value(arg)
                 continue
             if arg.ty == "String":
@@ -973,9 +961,7 @@ class _ClosureEmissionMixin:
                 dst_ty
                 and (
                     dst_ty not in BUILTIN_CAPS
-                    or dst_ty in (
-                        "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                    )
+                    or dst_ty in HANDLE_BEARING_CAPS
                 )
                 and dst_ty not in ("Unit",)
             ):

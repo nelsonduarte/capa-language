@@ -606,6 +606,13 @@ class _DiscoveryMixin:
                 # and return a fresh i32 handle bound to a narrower
                 # restriction. Register the imports so the linker
                 # resolves the host callbacks.
+                #
+                # Registry note: the three branches below TOGETHER
+                # cover exactly ``HANDLE_BEARING_CAPS``; the split is
+                # by ATTENUATOR METHOD NAME, not by cap class - Env
+                # narrows via ``restrict_to_keys`` and Clock via
+                # ``restrict_to_after``, so only the remaining four
+                # share the ``restrict_to`` spelling.
                 if (cap in ("Fs", "Net", "Db", "Proc")
                         and instr.method == "restrict_to"):
                     self._used_caps.add((cap, "restrict_to"))
@@ -621,6 +628,12 @@ class _DiscoveryMixin:
                     pass
                 elif (cap in ("Fs", "Env", "Db", "Proc", "Net")
                       and instr.method == "allows"):
+                    # Registry note: ``HANDLE_BEARING_CAPS`` minus
+                    # Clock, mirroring the emitter split in
+                    # ``_caps._emit_cap_method_call`` - these five
+                    # take a string arg, ``Clock.allows`` is nullary
+                    # and already had its own host route.
+                    #
                     # GAP-2b (2026-06-21): Fs.allows / Env.allows /
                     # Db.allows / Proc.allows / Net.allows route
                     # through the authoritative host function

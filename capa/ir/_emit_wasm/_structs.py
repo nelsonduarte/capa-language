@@ -26,7 +26,7 @@ from __future__ import annotations
 from .._nodes import (
     Call, FieldAccess, FieldStore, MakeStruct, Value,
 )
-from .._capa_types import BUILTIN_CAPS
+from .._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
 from ._layout import (
     WasmEmissionError, _store_op_for_size, _load_op_for_size,
     _strip_type_qualifiers, _TYPE_ID_OFFSET,
@@ -325,9 +325,7 @@ class _StructEmissionMixin:
                 # Proc / Env / Clock become i32 handles the struct
                 # must carry so a restricted cap stashed in a record
                 # survives across function boundaries.
-                if field_ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
+                if field_ty in HANDLE_BEARING_CAPS:
                     self._write(f"local.get ${instr.dst}")
                     self._push_value(fval)
                     self._write(f"i32.store offset={offset}")
@@ -388,9 +386,7 @@ class _StructEmissionMixin:
             # as the receiver of subsequent privileged calls
             # (closing audit slice 25 F1 for cap values stashed in
             # records).
-            if field_ty in (
-                "Fs", "Net", "Db", "Proc", "Env", "Clock",
-            ):
+            if field_ty in HANDLE_BEARING_CAPS:
                 self._push_value(instr.receiver)
                 self._write(f"i32.load offset={offset}")
                 self._write(f"local.set ${instr.dst}")
@@ -442,7 +438,7 @@ class _StructEmissionMixin:
             # carry i32 handles (slices 25.2 - 25.6); store the
             # handle. Every other cap is erased and has no Wasm value,
             # so the store is a no-op (matching _emit_make_struct).
-            if field_ty in ("Fs", "Net", "Db", "Proc", "Env", "Clock"):
+            if field_ty in HANDLE_BEARING_CAPS:
                 self._push_value(instr.receiver)
                 self._push_value(instr.src)
                 self._write(f"i32.store offset={offset}")
