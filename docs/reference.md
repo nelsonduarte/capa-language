@@ -435,9 +435,11 @@ the scrutinee's type arguments.
 ### 6.1. What they are
 
 Capabilities are primitive types representing access to system
-resources (`Stdio`, `Fs`, `Env`, `Clock`, `Random`, `Unsafe`). They
-are only accessible via function parameters, there are no global
-instances.
+resources (`Stdio`, `Fs`, `Env`, `Clock`, `Random`, `Net`, `Db`,
+`Proc`, `Serve`, `Unsafe`). They are only accessible via function
+parameters, there are no global instances. `Serve` and `Unsafe` run
+on the Python backend only; `capa --wasm` rejects a program whose
+signatures reach either (see [`stdlib.md`](stdlib.md)).
 
 ### 6.2. The capability discipline (three layers)
 
@@ -498,13 +500,29 @@ variable inherits the iterable's label; and a secret pushed / added /
 set into a mutable `List` / `Set` / `Map` taints the container.
 
 **Sources and sinks**. `env.get(...)` is secret-by-default (its
-result is `@secret` with no annotation). The public sinks are
-`Stdio.print` / `println` / `eprintln`, `Net.get` / `post`,
-`Fs.write`, and `Db.exec` / `query`. A `@secret` value reaching a
-sink-position argument is an information-flow violation: a warning by
-default, a hard error inside a function annotated `@strict_ifc()`
-(which also turns on implicit-flow checking, where a sink inside a
-branch guarded by a secret condition is reported).
+result is `@secret` with no annotation), and it is the *only* secret
+source: no other built-in method produces `@secret` data without an
+annotation. The public sinks are `Stdio.print` / `println` /
+`eprintln`, `Net.get` / `post`, `Fs.write`, `Db.exec` / `query`, and
+`Serve.send` (the payload argument only, not the connection id, which
+the runtime issued rather than the program). A `@secret` value
+reaching a sink-position argument is an information-flow violation: a
+warning by default, a hard error inside a function annotated
+`@strict_ifc()` (which also turns on implicit-flow checking, where a
+sink inside a branch guarded by a secret condition is reported).
+
+`Serve.recv(...)` is the one inbound *source*, and it is `@public`.
+**This lattice models confidentiality, not integrity or taint.**
+`@public` on an inbound request asserts only "this is not a secret
+whose disclosure the analysis must prevent". It asserts **nothing**
+about the data being trustworthy, well-formed, or safe to act on, and
+an inbound request is attacker-controlled: validate it as you would
+in any language. Labelling it `@secret` would encode an integrity
+property in a confidentiality lattice, whose immediate effect is that
+echoing a request back to the client that sent it, the normal case
+for a server, would be reported as a violation. Integrity / taint
+tracking would be a second lattice, not a relabelling of this one.
+See [`stdlib.md`](stdlib.md) under `Serve`.
 
 **Declassification**. `declassify(value, reason: "...")` is the
 single auditable secret-to-public bridge. It is identity at runtime

@@ -665,11 +665,190 @@ fun main(proc: Proc, stdio: Stdio)
         Err(e)  -> stdio.eprintln("${e}")
 ```
 
+### `Serve`
+
+Authority to listen on a TCP address and do I/O on inbound
+connections. Every other capability reaches out; `Serve` is the one
+that is reached. It is deliberately *connection-level*, not
+HTTP-level: the trusted runtime binds, accepts, and moves bytes, so
+protocol parsing is ordinary Capa code in a library rather than
+trusted-runtime code.
+
+> **Python backend only.** `Serve` is not available on the Wasm
+> backends, and this is a permanent stance rather than a backlog
+> item: binding a listening socket needs `wasi:sockets`, which is
+> neither vendored in `capa/wasi_wit/deps/` nor reachable from the
+> `wasmtime-py` bindings the Wasm hosts are built on. Both
+> Wasm-facing paths refuse a program whose signatures reach `Serve`:
+> `capa --wasm` at discovery time, before any lowering, and
+> `capa --wit`, which never runs the emitter and so carries its own
+> check. Each lists **every** offending site, so one compile shows the
+> full extent of the refactor:
+>
+> ```
+> capa: --wasm: the Serve capability is intentionally not supported on the Wasm backend (binding a listening socket needs wasi:sockets, which is neither vendored in capa/wasi_wit nor reachable from the wasmtime-py bindings the Wasm hosts are built on, so a guest can never be handed an inbound connection). Use the Python backend for these functions, or refactor to remove the Serve parameter.
+>   - main(serve: Serve)
+> ```
+>
+> Use `capa --run` / `capa --check` (the Python backend) for these
+> functions, or move the `Serve`-holding code into a separate program.
+> This is the same treatment `Unsafe` gets, driven by the same
+> `PYTHON_ONLY_CAPS` registry in
+> [`capa/ir/_capa_types.py`](../capa/ir/_capa_types.py). Wasm serving
+> is a known future item contingent on `wasi:sockets`, not a silent
+> gap.
+
+| Method | Type | Description |
+|---|---|---|
+| `restrict_to(spec: String)` | `Serve` | Attenuate: a fresh, **un-bound** `Serve` carrying the current rule set **plus** the rule parsed from `spec`. Monotonic, restrictions only narrow. |
+| `allows(addr: String, port: Int)` | `Bool` | Would `listen(addr, port)` be permitted? Performs no I/O. Takes the same two arguments as `listen` (unlike the one-`String` `allows` of `Fs` / `Net` / `Db` / `Proc`) precisely so the question and the answer line up. |
+| `listen(addr: String, port: Int)` | `Result<Unit, IoError>` | Bind and start listening. Returns `Err` *before* any socket exists when the restriction denies `(addr, port)`. Port `0` asks the OS for an ephemeral port. |
+| `local_port()` | `Result<Int, IoError>` | The port actually bound, which is how a caller learns the port chosen for `listen(addr, 0)`. |
+| `accept()` | `Result<Int, IoError>` | Wait for one client and return a **connection id** (ids start at 1). Bounded by a 30s timeout. |
+| `recv(conn: Int, max_bytes: Int)` | `Result<List<Int>, IoError>` | Read up to `max_bytes` bytes, each an `Int` in `0..=255`. An **empty list is EOF** (the peer closed). Bounded by a 30s timeout. The runtime additionally caps a single read at 1 MiB, so a larger `max_bytes` does not read more. |
+| `send(conn: Int, bytes: List<Int>)` | `Result<Unit, IoError>` | Send every byte; each element is masked with `& 0xFF`, so `[0x41, 0x1FF, -1]` goes out as `41 ff ff`. Same byte shape `String.bytes()` produces. On `Ok` the whole payload was handed to the kernel. **On `Err`, how many bytes already went out is unspecified** (see below). |
+| `close(conn: Int)` | `Result<Unit, IoError>` | Close one connection. Frees the slot, so the next `accept` can proceed. |
+| `stop()` | `Result<Unit, IoError>` | Close the listener and any open connection. |
+
+Every fallible method returns `Result<T, IoError>`; nothing panics
+and nothing blocks forever. A port outside `0..=65535` is refused
+rather than passed to the OS, and `allows` answers `False` for it.
+
+**A failed `send` is not "nothing was sent".** `send` delegates to
+`socket.sendall`, which can push a prefix of the payload and only
+then hit the timeout or the error, and it does not report how far it
+got. So an `Err` from `send` leaves the number of transmitted bytes
+**unspecified**, and a caller that simply retries can duplicate a
+prefix on the wire. There is no safe generic recovery: treat a failed
+`send` as having put the connection into an indeterminate state and
+`close` it. A protocol that needs resumable writes must carry its own
+sequencing, which is exactly the kind of thing that belongs in a Capa
+library rather than in the capability.
+
+**Sequential only, and enforced.** One connection is open at a time.
+There are no threads, no async, and no concurrency anywhere in the
+capability. Calling `accept` while a connection is still open does
+not queue and does not fork, it returns
+`Err(IoError("Serve handles one connection at a time", "close the
+open connection before accepting another"))`. `accept` and `recv`
+are each bounded at 30 seconds and return `Err("accept timed out")` /
+`Err("read timed out")` rather than hanging. A `Serve` program
+therefore serves one client, finishes with it, `close`s, and loops.
+This is a considered position, not an unfinished corner: see
+[`docs/design/async-feasibility.md`](design/async-feasibility.md),
+whose recommendation is to defer concurrency until there is a
+concrete I/O-bound driver **and** real GC has landed **and** there is
+appetite to reopen the machine-checked noninterference proof, which
+concurrency would reopen.
+
+**`@public` is a confidentiality statement, not a safety one.** Bytes
+returned by `recv` are `@public`. Capa's information-flow lattice
+models **confidentiality** (who may learn a value) and **not**
+integrity or taint. `@public` on an inbound request asserts only
+"this is not a secret whose disclosure the analysis must prevent". It
+asserts **nothing** about the data being trustworthy, well-formed, or
+safe to act on, and an inbound request is attacker-controlled.
+Validate it exactly as you would in any other language. The reason
+inbound data is not `@secret` is that it would put an integrity
+property in a confidentiality lattice: echoing a request back to the
+client that sent it, the most ordinary thing a server does, would be
+reported as a violation, and the useful signal would drown in the
+noise. `Serve.send` *is* a public sink (the payload argument only),
+so a `@secret` value reaching it is reported. See
+[`reference.md`](reference.md) section 6.4.
+
+**Attenuation.** The domain is the pair (bind address, port). A spec
+string is one of:
+
+| Spec | Meaning |
+|---|---|
+| `"127.0.0.1:8080"` | that address, that port |
+| `"127.0.0.1:8000-8100"` | that address, that inclusive port range |
+| `"127.0.0.1:*"` | that address, any port |
+| `"*:8080"` | any address, that port |
+| `"*:*"` | any address, any port |
+
+A `Serve` received from `main` is unrestricted. `restrict_to`
+*accumulates* a rule, and a bind is permitted only if it satisfies
+**every** accumulated rule, the same conjunctive model `Fs` uses for
+path prefixes. That is what makes narrowing monotonic: adding a rule
+can only remove `(addr, port)` pairs from the permitted set, never
+add one. In particular **`restrict_to("*:*")` on an
+already-narrowed capability restores nothing**, and two disjoint
+rules yield a capability that permits nothing.
+
+A spec that does not parse yields a rule nothing can satisfy: it
+denies everything. That is deliberate. `restrict_to` returns a
+`Serve`, not a `Result`, so there is nowhere to report a typo, and
+silently ignoring one would **widen** authority.
+
+Enforcement runs *before* the syscall: `listen` consults `allows` and
+returns the denial without ever creating a socket, so a denied
+address or port is never bound, not even transiently
+(`test_restricted_cap_cannot_bind_another_port` in
+[`tests/test_serve_capability.py`](../tests/test_serve_capability.py)
+asserts the refused port is still free afterwards). The denial
+carries the current rule set:
+
+```
+Serve capability does not permit listening on '127.0.0.1' port 8080: current restrictions: ['127.0.0.1:9000-9010']
+```
+
+Three honest limits:
+
+- **Addresses are matched by exact string equality** (or `"*"`).
+  `"127.0.0.1"` and `"localhost"` are different rules, and a rule for
+  one does not admit the other. The alternative, resolving names
+  inside the attenuation check, was rejected because it would make
+  the permitted set depend on DNS instead of being a static property
+  of the capability.
+- **IPv4 only.** The runtime creates `AF_INET` sockets, so an IPv6
+  address is not usable even though a spec mentioning one parses:
+  `listen("::1", 0)` fails with
+  `failed to listen on '::1' port 0` plus the OS resolver error.
+- **Port `0` means "whatever the OS picks".** The check runs against
+  the port you *request*, so a restriction that admits port `0`
+  admits binding an arbitrary ephemeral port, which the same
+  restriction would refuse if you named it. Read the actual port back
+  with `local_port()`.
+
+Socket state does not survive attenuation: `restrict_to` returns a
+fresh, un-bound `Serve`. A narrowed capability is something you take
+*before* you listen, not a second handle onto an open listener.
+
+```capa
+fun echo_once(serve: Serve, conn: Int) -> Result<Unit, IoError>
+    let request = serve.recv(conn, 1024)?
+    return serve.send(conn, request)
+
+fun main(stdio: Stdio, serve: Serve)
+    let local = serve.restrict_to("127.0.0.1:8080")
+    match local.listen("127.0.0.1", 8080)
+        Ok(_) -> match local.accept()
+            Ok(conn) ->
+                match echo_once(local, conn)
+                    Ok(_) -> stdio.println("echoed")
+                    Err(e) -> stdio.eprintln("${e}")
+                let _ = local.close(conn)
+                let _ = local.stop()
+            Err(e) -> stdio.eprintln("${e}")
+        Err(e) -> stdio.eprintln("${e}")
+```
+
+See [`examples/wasm/serve_demo.capa`](../examples/wasm/serve_demo.capa)
+for the ephemeral-port variant.
+
 ### `Unsafe`
 
 Marker capability for crossing the Python boundary. Has no methods -
 its only role is to gate `py_import` and `py_invoke` (see "Python
 interoperability" above).
+
+Like `Serve`, `Unsafe` is Python-backend only: `capa --wasm` rejects
+a program whose signatures reach it, with the same shape of
+diagnostic ("the Unsafe capability is intentionally not supported on
+the Wasm backend (it grants raw pointer / FFI / memory-map primitives
+that have no sandboxed Wasm equivalent) ...").
 
 ### User-defined capabilities
 

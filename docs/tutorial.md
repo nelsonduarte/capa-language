@@ -359,7 +359,11 @@ Available capabilities:
 | `Env` | environment variables, args |
 | `Clock` | time, sleep |
 | `Random` | random numbers |
-| `Unsafe` | crossing the Python boundary |
+| `Net` | outbound HTTP |
+| `Db` | SQLite databases |
+| `Proc` | sandboxed subprocesses |
+| `Serve` | inbound TCP: listen, accept, recv, send (Python backend only) |
+| `Unsafe` | crossing the Python boundary (Python backend only) |
 
 ### Why capabilities?
 
