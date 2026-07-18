@@ -424,6 +424,13 @@ class _CapDispatchMixin:
         # enforcement (the old guest-side lexical prefix check could
         # not realpath). ``Clock.allows`` was already host-side (it
         # takes no string arg) - see the branch below.
+        #
+        # Registry note: this is ``HANDLE_BEARING_CAPS`` minus Clock,
+        # and it legitimately differs - the set here is "handle-
+        # bearing caps whose ``allows`` takes a STRING argument", so
+        # Clock (whose ``allows`` is nullary) needs its own emitter.
+        # Kept as a literal so a future cap must be classified by
+        # hand rather than inherited by set arithmetic.
         if method == "allows" and cap in ("Fs", "Env", "Db", "Proc", "Net"):
             self._emit_cap_allows_with_handle(instr, cap)
             return
@@ -518,6 +525,12 @@ class _CapDispatchMixin:
         # passing helper. The host bridge looks up the receiver cap
         # from the table and enforces ``cap.allows(arg)`` before
         # the syscall, closing audit slice 25 F1 for these caps.
+        #
+        # Registry note: legitimately NOT ``HANDLE_BEARING_CAPS``.
+        # This is the GENERIC indirect-return path; the other three
+        # handle-bearing caps are dispatched before reaching here -
+        # Fs and Net by dedicated emitters above (Net also has WASI
+        # variants), Clock by the primitive-return branch below.
         if cap in ("Db", "Proc", "Env") and indirect is not None:
             self._emit_indirect_with_cap_handle(instr, cap, method, indirect)
             return

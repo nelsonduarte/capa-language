@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .._nodes import Value
-from .._capa_types import BUILTIN_CAPS
+from .._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
 from ._layout import (
     WasmEmissionError, _TYPE_SIZE,
     _size_of, _store_op_for_size, _load_op_for_size,
@@ -118,7 +118,7 @@ class _ValueEmissionMixin:
             return 0
         if head == "String":
             return 2
-        if head in ("Fs", "Net", "Db", "Proc", "Env", "Clock"):
+        if head in HANDLE_BEARING_CAPS:
             return 1
         if head in BUILTIN_CAPS:
             # Non-handle capabilities (e.g. Stdio) are erased at the
@@ -357,7 +357,7 @@ class _ValueEmissionMixin:
         # by routing through ``urlparse(url).hostname`` rather than
         # ``$str_contains``). Random / Unsafe / Stdio stay erased
         # (no attenuation surface to wire).
-        if head in ("Fs", "Net", "Db", "Proc", "Env", "Clock"):
+        if head in HANDLE_BEARING_CAPS:
             return "i32"
         # ``()`` is Capa's empty-tuple / Unit alias from the type
         # printer; treat it the same as Unit (no Wasm result).

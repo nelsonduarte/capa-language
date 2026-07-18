@@ -47,7 +47,7 @@ from .._nodes import (
 # ``_WIT_SIGNATURES`` is consumed in ``_caps.py`` (sig dispatch) and
 # ``_discovery.py`` (early validation); not referenced directly
 # from this module any more after the mixin extraction.
-from .._capa_types import BUILTIN_CAPS
+from .._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
 from .._walk import iter_functions, walk_module
 from ._layout import (
     WasmEmissionError,
@@ -1487,9 +1487,7 @@ class WasmEmitter(
         param_clauses = []
         for p in fn.params:
             if p.ty in BUILTIN_CAPS:
-                if p.ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
+                if p.ty in HANDLE_BEARING_CAPS:
                     param_clauses.append(f"(param ${p.name} i32)")
                 continue
             if p.ty == "String":
@@ -1641,7 +1639,7 @@ class WasmEmitter(
         (``_emit_trait_method_call``) so the three never drift."""
         for arg in args:
             if arg.ty in BUILTIN_CAPS:
-                if arg.ty in ("Fs", "Net", "Db", "Proc", "Env", "Clock"):
+                if arg.ty in HANDLE_BEARING_CAPS:
                     self._push_value(arg)
                 continue
             if arg.ty == "String":
@@ -2340,9 +2338,7 @@ class WasmEmitter(
             if dst_ty == "String":
                 self._write(f"local.set ${instr.dst}_len")
                 self._write(f"local.set ${instr.dst}_ptr")
-            elif dst_ty in (
-                "Fs", "Net", "Db", "Proc", "Env", "Clock",
-            ):
+            elif dst_ty in HANDLE_BEARING_CAPS:
                 # Slices 25.2 - 25.6: Fs / Net / Db / Proc / Env /
                 # Clock return values carry the handle as i32.
                 self._write(f"local.set ${instr.dst}")

@@ -24,9 +24,42 @@ from __future__ import annotations
 # their method calls to host imports (Wasm) or to capability
 # classes from ``capa.runtime`` (Python). The set must match
 # ``capa.typesys.CAPABILITY_NAMES`` and ``capa.builtins``'s
-# registered capability classes; cross-check fires the
-# manifest-vs-runtime property test in
-# [`tests/test_properties.py`](../../tests/test_properties.py).
+# registered capability classes; the cross-check that keeps the
+# copies in lockstep is ``TestCapabilityRegistry`` in
+# [`tests/test_cap_handles.py`](../../tests/test_cap_handles.py).
+# (This comment used to promise ``tests/test_properties.py``, but
+# that module skips wholesale when Hypothesis is absent and a
+# registry guard must never be skippable.)
 BUILTIN_CAPS: frozenset[str] = frozenset({
     "Stdio", "Fs", "Net", "Env", "Clock", "Random", "Proc", "Db", "Unsafe",
+})
+
+
+# The built-in caps that are UN-ERASED on the Wasm side: each one
+# lowers to a real i32 handle into the host's per-instance cap
+# table, so a restricted cap keeps its restriction across function
+# boundaries (audit slices 25.2 - 25.6, 2026-05-30). A handle
+# occupies a Wasm slot everywhere a value can live: params, locals,
+# struct fields, closure environments, call args, return values,
+# and ``main``'s exported signature.
+#
+# The complement (``ERASED_CAPS`` below) pushes no Wasm value at
+# all: those caps have no attenuation surface to thread.
+#
+# Every built-in capability MUST appear in exactly one of the two
+# sets; ``TestCapabilityRegistry`` in
+# [`tests/test_cap_handles.py`](../../tests/test_cap_handles.py)
+# fails if a new name lands in ``BUILTIN_CAPS`` without that
+# decision being recorded here.
+HANDLE_BEARING_CAPS: frozenset[str] = frozenset({
+    "Fs", "Net", "Db", "Proc", "Env", "Clock",
+})
+
+
+# The deliberately-erased complement. Spelled out rather than
+# derived from ``BUILTIN_CAPS - HANDLE_BEARING_CAPS`` so that adding
+# a capability forces an explicit choice instead of silently
+# defaulting to "erased".
+ERASED_CAPS: frozenset[str] = frozenset({
+    "Stdio", "Random", "Unsafe",
 })

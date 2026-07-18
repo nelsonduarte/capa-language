@@ -29,7 +29,7 @@ from .._nodes import (
     PatIdent, PatVariant, PatTuple,
 )
 from .._lower_pattern import PatStruct
-from .._capa_types import BUILTIN_CAPS
+from .._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
 from ._layout import (
     _element_type_of_list, _element_type_of_set, _map_key_type,
     WasmEmissionError,
@@ -746,9 +746,7 @@ class _LocalsCollectionMixin:
                     # so a restricted cap survives crossing function
                     # boundaries.
                     if capa_ty in BUILTIN_CAPS:
-                        if capa_ty in (
-                            "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                        ):
+                        if capa_ty in HANDLE_BEARING_CAPS:
                             out[dst] = "i32"
                         continue
                     # String locals expand to a (ptr, len) pair so
@@ -796,9 +794,7 @@ class _LocalsCollectionMixin:
                 # Slices 25.2 - 25.6 (2026-05-30): Fs / Net / Db /
                 # Proc / Env / Clock are un-erased; every other cap
                 # stays as a no-Wasm-value.
-                if capa_ty in (
-                    "Fs", "Net", "Db", "Proc", "Env", "Clock",
-                ):
+                if capa_ty in HANDLE_BEARING_CAPS:
                     out[name] = "i32"
                 continue
             if capa_ty == "String":
