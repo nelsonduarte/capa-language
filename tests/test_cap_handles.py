@@ -17,7 +17,6 @@ from capa.ir._capa_types import (
 )
 from capa.ir._emit_wit import _KNOWN_CAPABILITIES
 from capa.lsp.completion import _BUILTIN_CAPABILITIES
-from capa.runtime._wasm_host import _root_handle_map
 from capa.runtime._capabilities import (
     Clock,
     Db,
@@ -30,6 +29,23 @@ from capa.runtime._capabilities import (
     Unsafe,
 )
 from capa.typesys import CAPABILITY_NAMES
+
+
+# NOTE: ``capa.runtime._wasm_host`` imports ``wasmtime`` at module
+# load, so it is NOT imported at top level here: the plain ``test``
+# CI job does not install the ``wasm`` extra and importing it would
+# ERROR the whole module at collection (a failed import is an error,
+# not a skip). Only the root-handle guard needs it; it imports the
+# symbol LOCALLY and is gated on ``_has_wasmtime()``. Every other
+# capability-registry guard is pure data and MUST keep running on
+# the no-wasm job -- that is the whole reason these guards live here
+# instead of in the skip-happy ``tests/test_properties.py``.
+def _has_wasmtime() -> bool:
+    try:
+        import wasmtime  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 class TestCapHandleTable(unittest.TestCase):
@@ -216,7 +232,13 @@ class TestCapabilityRegistry(unittest.TestCase):
             f"built-ins: {sorted(stray)}",
         )
 
+    @unittest.skipUnless(_has_wasmtime(), "wasmtime-py not installed")
     def test_host_root_handle_map_covers_every_handle_bearing_cap(self):
+        # Imported here, not at module scope: ``_wasm_host`` pulls in
+        # wasmtime, and this is the only guard in the class that
+        # needs it. The rest stay importable on the no-wasm job.
+        from capa.runtime._wasm_host import _root_handle_map
+
         # ``WasmHost._invoke_main`` maps each i32 slot of ``main`` to
         # a root handle by the PARAM NAME recovered from the wasm
         # name section (NOT by cap type - the host never sees the
