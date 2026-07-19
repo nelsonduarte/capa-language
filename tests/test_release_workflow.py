@@ -19,10 +19,16 @@ import re
 import unittest
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:  # pragma: no cover - PyYAML is not a project dependency
-    yaml = None
+# Imported unconditionally. This was `try: import yaml / except
+# ImportError: yaml = None` with a `@unittest.skipIf` below, and its own
+# comment gave the reason: "PyYAML is not a project dependency". That was
+# accurate, and it meant these seven supply-chain checks skipped by
+# DEFAULT rather than by exception. A run without PyYAML reported OK
+# while verifying nothing about SHA-pinning, permissions, or attestation
+# coverage, which is the precise failure mode this module exists to
+# detect in the workflow it guards. PyYAML is now in the `[test]` extra,
+# so a missing one is a loud ERROR instead.
+import yaml
 
 WORKFLOW = (
     Path(__file__).resolve().parent.parent
@@ -47,7 +53,6 @@ def upload_paths(step: dict) -> list:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
-@unittest.skipIf(yaml is None, "PyYAML not installed")
 class TestReleaseWorkflow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

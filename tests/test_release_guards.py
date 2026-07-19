@@ -28,6 +28,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# Imported unconditionally, and deliberately so. These checks used to
+# wrap it in `try: import yaml / except ImportError: self.skipTest(...)`,
+# which meant that on any environment without PyYAML they reported OK
+# having verified nothing, and PyYAML was declared in no extra, so that
+# was the DEFAULT. It is now in the `[test]` extra, and a missing PyYAML
+# is an ERROR at import time under `python -m unittest discover tests`
+# rather than a silent pass. Failing loudly when a guard cannot run is
+# the same rule the guards themselves are built on.
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS = REPO_ROOT / "tools"
 CHECK_TAG_VERSION = TOOLS / "check_tag_version.sh"
@@ -667,10 +677,6 @@ class WorkflowWiringTests(unittest.TestCase):
         not for `gh attestation verify`, which only needs an API read.
         It was granted here on that mistaken reading and removed.
         """
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML is not installed")
         for name, job in yaml.safe_load(self.text)["jobs"].items():
             self.assertNotIn(
                 "write", set(job["permissions"].values()),
@@ -728,10 +734,6 @@ class WorkflowWiringTests(unittest.TestCase):
         system that should hand an input that power. The first draft of
         this workflow interpolated eleven of them.
         """
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML is not installed")
         import re
         doc = yaml.safe_load(self.text)
         offenders = []
@@ -743,10 +745,6 @@ class WorkflowWiringTests(unittest.TestCase):
                          "\n  ".join(offenders))
 
     def test_the_workflow_is_valid_yaml(self):
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML is not installed")
         doc = yaml.safe_load(self.text)
         # `on:` is the YAML 1.1 boolean True, which is why this reads it
         # by that key rather than the string.
@@ -758,6 +756,66 @@ class WorkflowWiringTests(unittest.TestCase):
                 "write", str(job.get("permissions", {}).get("contents", "")),
                 f"job {name} must not hold a contents write token",
             )
+
+
+class GuardsCannotSilentlyNotRunTests(unittest.TestCase):
+    """The guards on the guards must not be skippable.
+
+    This is the defect CodeQL's ``py/uninitialized-local-variable``
+    alerts led to, and it was worse than the alerts. Eleven checks
+    across this file and ``test_release_workflow.py`` were wrapped in
+    ``try: import yaml / except ImportError: skip``, while PyYAML was
+    declared in no extra of ``pyproject.toml``. So the skip was not a
+    courtesy for a contributor who omitted ``pip install -e .[test]``,
+    it was what happened by DEFAULT: a clean install ran none of them
+    and printed OK. Among the eleven were "every action is pinned to a
+    commit SHA" and "every uploaded artefact is attested".
+
+    The declaration in the ``[test]`` extra is what makes the
+    unconditional import safe, so this asserts the declaration is still
+    there. Deleting it would quietly restore the old behaviour.
+    """
+
+    def test_pyyaml_is_a_declared_test_dependency(self):
+        text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        in_optional = False
+        test_extra = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("["):
+                in_optional = stripped == "[project.optional-dependencies]"
+                continue
+            if in_optional and stripped.startswith("test"):
+                test_extra = stripped
+        self.assertIsNotNone(test_extra, "no [test] extra in pyproject.toml")
+        self.assertIn(
+            "pyyaml", test_extra.lower(),
+            "PyYAML must stay a declared test dependency, or the release "
+            "supply-chain guards go back to skipping silently",
+        )
+
+    def test_no_workflow_guard_module_makes_an_import_optional(self):
+        """A guarded import here is a guard that can decline to run.
+
+        Parsed rather than grepped: these modules discuss the defect in
+        their own prose, and a textual search matches the explanation as
+        readily as the thing explained.
+        """
+        import ast
+        for name in ("test_release_guards.py", "test_release_workflow.py"):
+            source = (REPO_ROOT / "tests" / name).read_text(encoding="utf-8")
+            handlers = [
+                node for node in ast.walk(ast.parse(source))
+                if isinstance(node, ast.ExceptHandler)
+                and isinstance(node.type, ast.Name)
+                and node.type.id == "ImportError"
+            ]
+            with self.subTest(module=name):
+                self.assertEqual(
+                    [h.lineno for h in handlers], [],
+                    f"{name} catches ImportError, so a supply-chain check "
+                    f"there can skip itself; that is not a check",
+                )
 
 
 class OwnReleaseIsGuardedTests(unittest.TestCase):
@@ -780,10 +838,6 @@ class OwnReleaseIsGuardedTests(unittest.TestCase):
         self.assertIn("pyproject.toml", self.text)
 
     def test_every_publishing_job_waits_for_the_guard(self):
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML is not installed")
         jobs = yaml.safe_load(self.text)["jobs"]
         self.assertIn("guard", jobs)
         for name, job in jobs.items():

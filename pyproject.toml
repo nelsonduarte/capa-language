@@ -38,7 +38,17 @@ lsp = ["pygls>=2.0"]
 # formatter with Hypothesis. The pytest floor is 9.0.3 to exclude
 # CVE-2025-71176 (GHSA-6w46-j5rx-g56g, predictable tmpdir; test-only,
 # local), which affects pytest < 9.0.3.
-test = ["pytest>=9.0.3", "hypothesis>=6"]
+#
+# PyYAML is here because the release supply-chain guards in
+# `tests/test_release_workflow.py` and `tests/test_release_guards.py`
+# parse the workflow YAML, and they were previously written to SKIP when
+# it was missing. It was declared nowhere, so on a correctly installed
+# environment those tests did not run at all: eleven checks, including
+# "every action is pinned to a commit SHA" and "every uploaded artefact
+# is attested", reported OK while executing nothing. Declaring it makes
+# the import unconditional, so a missing PyYAML is now a loud ERROR
+# under `python -m unittest discover tests` instead of a silent pass.
+test = ["pytest>=9.0.3", "hypothesis>=6", "pyyaml>=6"]
 # Install with: `pip install -e .[eval]`. Brings the matplotlib +
 # numpy stack used by the empirical-study scripts under
 # `evaluation/`. The core compiler does not depend on these; they
