@@ -413,24 +413,41 @@ CI or in any build whose supply-chain integrity you rely on.
 When the loader resolves `import x.y` from inside a `capa.toml`
 project, it walks the following search paths, in order:
 
-1. The directory of the importing `.capa` file (sibling
+1. The directory `capa.toml` binds to the import's leading name:
+   the declared directory of a `path = "..."` dependency of that
+   name, or the project root itself when it matches
+   `[package].name`. The latter is what lets a repository that
+   *is* the package import its own modules as `<pkg>.<module>`;
+   it is scoped to that one declared name, and a declared
+   dependency of the same name wins.
+2. The directory of the importing `.capa` file (sibling
    imports work without configuration).
-2. Every directory listed in the `CAPA_PATH` environment
+3. Every directory listed in the `CAPA_PATH` environment
    variable.
-3. `./vendor/`: when `capa.toml` declares at least one git
+4. `./vendor/`: when `capa.toml` declares at least one git
    dependency (in `[dependencies]` or `[dev-dependencies]`).
    Before this entry is added, the vendored git deps are
    re-verified against `capa.lock` (see "Build-time
    re-verification of `./vendor/`" above); an unverifiable vendor
    tree refuses the build unless `CAPA_NO_VERIFY=1` is set.
-4. The parent of every `path = "..."` dependency (both tables).
-5. `./libraries/`: conventional fallback for hand-vendored
+5. The parent of every `path = "..."` dependency (both tables).
+6. `./libraries/`: conventional fallback for hand-vendored
    projects.
-6. The directory of the root file (so a submodule can import a
+7. The directory of the root file (so a submodule can import a
    sibling of the file the user passed to `capa --run`).
 
 Each path is deduplicated, and a missing directory is silently
 skipped (so an unused entry never produces an error).
+
+The directory *containing* the project root is deliberately absent
+from that list. It was a search root once, to serve the
+self-reference in item 1, but as an open root it also satisfied
+imports that `./vendor/` could not: an undeclared transitive
+dependency would resolve against whatever same-named sibling
+directory happened to sit next to the project, linking sources
+that were never fetched, never verified against `capa.lock` and
+never recorded in the SBOM. A missing dependency now fails closed
+with "cannot resolve", which is the diagnosable failure.
 
 ## Worked example: extracting a library
 

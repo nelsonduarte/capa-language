@@ -89,18 +89,24 @@ one legitimately backend-specific surface.
 
 ## Module resolution inside tests
 
-Test files resolve imports like any Capa program, plus two
-conveniences: the runner prepends the project root and its parent
-to `CAPA_PATH` for each test process. In practice:
+Test files resolve imports like any Capa program, plus one
+convenience: the runner prepends the project root to `CAPA_PATH`
+for each test process. In practice:
 
 - `import testutil` finds `tests/testutil.capa` (sibling of the
   test file; importer-relative resolution).
 - vendored deps and **dev-dependencies** (`vendor/<name>/...`)
   resolve through the project's `capa.toml`, same as `capa --run`.
 - `import mylib` finds `<root>/mylib.capa` (flat layouts).
-- `import mypkg.model` finds `<root>/../mypkg/model.capa`, i.e.
-  the seed-library convention of running tests with
-  `CAPA_PATH=..` works with no environment setup.
+- `import mypkg.model` finds `<root>/model.capa` when `capa.toml`
+  declares `name = "mypkg"`, i.e. the seed-library convention of a
+  repository that *is* the package works with no environment setup.
+
+The directory *containing* the project root is deliberately not a
+search root. An import that no dependency declares fails closed
+with "cannot resolve", rather than being satisfied by a same-named
+sibling directory that was never fetched, verified, locked or
+recorded in the SBOM.
 
 If `capa.toml` declares git dependencies (regular or dev) that are
 not vendored yet, `capa test` refuses up front and tells you to

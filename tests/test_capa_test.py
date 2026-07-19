@@ -316,7 +316,14 @@ class TestCapaTestEndToEnd(_TempProjectMixin, unittest.TestCase):
 
     def test_dev_path_dep_importable_from_test_file(self):
         # A dev-dep's modules resolve for test files just like
-        # regular deps (Part A + Part B integration).
+        # regular deps (Part A + Part B integration). The declared
+        # path is relative to the manifest dir (``<tmp>/proj``), so
+        # ``../kit`` is the helper at ``<tmp>/kit``. It used to read
+        # ``../../kit``, a directory that never existed: the import
+        # resolved anyway because the project root's parent was an
+        # open search root and happened to hold a ``kit/``. With that
+        # fallback gone the declared path has to be right, which is
+        # the point of the test.
         helper = self._tmp / "kit"
         _write(
             helper / "asserts.capa",
@@ -328,7 +335,7 @@ class TestCapaTestEndToEnd(_TempProjectMixin, unittest.TestCase):
             version = "0.1.0"
 
             [dev-dependencies]
-            kit = { path = "../../kit" }
+            kit = { path = "../kit" }
         ''')
         _write(root / "tests" / "test_kit.capa", '''\
             import kit.asserts
@@ -338,6 +345,55 @@ class TestCapaTestEndToEnd(_TempProjectMixin, unittest.TestCase):
         rc, out, err = _run_main(["test"], cwd=root)
         self.assertEqual(rc, 0, err + out)
         self.assertIn("test_kit.capa ... ok", out)
+
+    def test_package_self_reference_resolves_in_test_files(self):
+        # The seed-library shape: the repository IS the package, and a
+        # test file imports the package's own modules by package name.
+        # Served by ``[package].name`` in ``_capa_dependency_roots``,
+        # not by putting the root's parent on the search path.
+        root = self._project('''\
+            [package]
+            name = "proj"
+            version = "0.1.0"
+        ''')
+        _write(
+            root / "model.capa",
+            'pub fun tag() -> String\n    return "own module"\n',
+        )
+        _write(root / "tests" / "test_self.capa", '''\
+            import proj.model
+            fun main(stdio: Stdio)
+                stdio.println(tag())
+        ''')
+        rc, out, err = _run_main(["test"], cwd=root)
+        self.assertEqual(rc, 0, err + out)
+        self.assertIn("test_self.capa ... ok", out)
+
+    def test_sibling_of_project_root_is_not_importable(self):
+        # Supply-chain regression, ``capa test`` edition: the runner
+        # used to inject the project root's PARENT into the child's
+        # CAPA_PATH, so any sibling directory could satisfy an import
+        # that no dependency declared. A test run must fail closed on
+        # such an import instead of linking unverified sources.
+        _write(
+            self._tmp / "sneaky" / "mod.capa",
+            'pub fun tag() -> String\n    return "sibling"\n',
+        )
+        root = self._project()
+        _write(root / "tests" / "test_sneak.capa", '''\
+            import sneaky.mod
+            fun main(stdio: Stdio)
+                stdio.println(tag())
+        ''')
+        rc, out, err = _run_main(["test"], cwd=root)
+        self.assertEqual(rc, 1, err + out)
+        self.assertIn("cannot resolve 'import sneaky.mod'", out)
+
+    def test_child_env_does_not_expose_the_project_parent(self):
+        root = self._project()
+        entries = testrunner._child_env(root)["CAPA_PATH"].split(os.pathsep)
+        self.assertIn(str(root), entries)
+        self.assertNotIn(str(root.parent), entries)
 
 
 @unittest.skipUnless(

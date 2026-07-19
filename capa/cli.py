@@ -187,21 +187,18 @@ def _capa_search_paths() -> list[Path]:
                 if d.is_path and d.path is not None:
                     dep_path = (manifest.manifest_dir / d.path).resolve()
                     _append(dep_path.parent)
-            # A ``capa.toml`` in the cwd marks it as the project root,
-            # so add its parent as a search root. This makes a package
-            # self-reference resolve: a seed library whose repository
-            # directory *is* the package (the dir is named ``capa_csv``
-            # and its modules import one another as ``capa_csv.model``)
-            # needs ``<root>/../capa_csv/model.capa`` to be reachable.
-            # ``capa test`` already injects the same parent into the
-            # child's ``CAPA_PATH`` (see ``testrunner._child_env``);
-            # without this, ``capa --check`` / ``--run`` on those files
-            # failed to resolve imports that ``capa test`` resolved, an
-            # inconsistency between the two build paths. Added AFTER
-            # ./vendor and the path-deps above (and de-duped) so it can
-            # never shadow a verified vendored dep or a declared path
-            # dep with a same-named sibling working copy of the parent.
-            _append(Path.cwd().parent)
+            # NOTE: the parent of the project root is deliberately NOT
+            # a search root. It used to be, to let a seed library whose
+            # repository directory *is* the package resolve its own
+            # ``import capa_csv.model`` lines. But an open search root
+            # also SATISFIES imports that ./vendor cannot: an undeclared
+            # transitive dependency resolved against an arbitrary
+            # sibling directory that was never fetched, never verified,
+            # never locked and never recorded in the SBOM, so the build
+            # silently linked sources the provenance machinery never
+            # saw. The self-reference is now served precisely, by name,
+            # through ``_capa_dependency_roots``; anything else fails
+            # closed with a plain "cannot resolve 'import ...'".
         except VendorVerificationError:
             # Fail-closed: an unverifiable vendor tree is a hard stop,
             # NOT a "broken capa.toml" warning. Re-raise so the CLI
@@ -228,7 +225,7 @@ def _capa_search_paths() -> list[Path]:
 
 def _capa_dependency_roots() -> dict[str, Path]:
     """Map each declared PATH dependency's NAME to its resolved
-    on-disk directory.
+    on-disk directory, plus the project's OWN name to its root.
 
     ``[dependencies.X] path = "vendor/other"`` maps ``X`` to the
     resolved ``<manifest-dir>/vendor/other``. The loader uses this to
@@ -237,6 +234,19 @@ def _capa_dependency_roots() -> dict[str, Path]:
     basename (``other``) differs from the dependency name (``X``).
     Without it the loader only tried ``<search-root>/X/mod.capa`` and
     silently ignored the declared path.
+
+    ``[package].name`` maps to the manifest directory itself, which is
+    what makes a package SELF-REFERENCE resolve: a seed library whose
+    repository directory *is* the package (named ``capa_csv``, its
+    modules importing one another as ``capa_csv.model``) reaches
+    ``<root>/model.capa``. This is deliberately scoped to the one name
+    the manifest declares, replacing the former "parent of the project
+    root is a search root" fallback: that fallback resolved the
+    self-reference, but it also let ANY same-named sibling directory
+    on disk satisfy an import that ./vendor could not, linking sources
+    that were never fetched, verified, locked or listed in the SBOM.
+    A declared dependency of the same name wins, so the self-entry can
+    never shadow a vendored or path-declared dep.
 
     Only path dependencies appear here (regular + dev, matching the
     search-path treatment). Git deps are vendored by name into
@@ -257,6 +267,9 @@ def _capa_dependency_roots() -> dict[str, Path]:
         for d in all_deps:
             if d.is_path and d.path is not None:
                 roots[d.name] = (manifest.manifest_dir / d.path).resolve()
+        declared = {d.name for d in all_deps}
+        if manifest.name and manifest.name not in declared:
+            roots[manifest.name] = manifest.manifest_dir.resolve()
     except Exception:
         # A broken capa.toml is already surfaced (as a one-line
         # warning) by ``_capa_search_paths``; here we degrade to an
