@@ -66,9 +66,10 @@ def _has_wasmtime() -> bool:
 # only fires on pushes touching ``proofs/``, and no test job has an
 # Agda toolchain), and reading a file at test time cannot break
 # collection the way an optional import can.
-_PROOFS_SYNTAX = (
-    pathlib.Path(__file__).resolve().parents[1] / "proofs" / "CapaSyntax.agda"
-)
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+_PROOFS_DIR = _REPO_ROOT / "proofs"
+_PROOFS_SYNTAX = _PROOFS_DIR / "CapaSyntax.agda"
+_AGDA_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "agda.yml"
 
 _CAP_DATATYPE_RE = re.compile(
     r"^data Cap : Set where\n((?:[ \t]+.*\n|\n)*)", re.MULTILINE
@@ -320,6 +321,39 @@ class TestCapabilityRegistry(unittest.TestCase):
             "the catch-all for these capabilities, so their singleton "
             "cap-set is silently empty; add `singletonCS X X = true` "
             f"above the catch-all for: {sorted(undiagonalised)}",
+        )
+
+    def test_every_agda_module_is_typechecked_by_the_agda_workflow(self):
+        # An Agda module nobody runs `agda --safe` over is not a
+        # proof, it is a text file. The `agda` workflow names each
+        # module in an explicit step, so adding `proofs/Foo.agda`
+        # without adding its step leaves the module UNCHECKED while
+        # every job stays green -- exactly the silent-wrongness shape
+        # the `singletonCS` guard above defends against, one level
+        # up. Verified by mutation: deleting the CapaAttenuation step
+        # from .github/workflows/agda.yml fails this test and nothing
+        # else.
+        if not _AGDA_WORKFLOW.is_file():
+            raise AssertionError(
+                f"the Agda CI workflow is missing from {_AGDA_WORKFLOW}; "
+                "if it moved, update _AGDA_WORKFLOW in "
+                "tests/test_cap_handles.py"
+            )
+        workflow = _AGDA_WORKFLOW.read_text(encoding="utf-8")
+        checked = set(re.findall(r"agda --safe (\w+)\.agda", workflow))
+        present = {p.stem for p in _PROOFS_DIR.glob("*.agda")}
+        self.assertEqual(
+            present - checked, set(),
+            "these Agda modules in proofs/ have no `agda --safe` step "
+            "in .github/workflows/agda.yml, so CI never typechecks "
+            "them: "
+            f"{sorted(present - checked)}",
+        )
+        self.assertEqual(
+            checked - present, set(),
+            ".github/workflows/agda.yml typechecks modules that do "
+            "not exist in proofs/: "
+            f"{sorted(checked - present)}",
         )
 
     def test_every_builtin_cap_is_classified_handle_bearing_or_erased(self):
