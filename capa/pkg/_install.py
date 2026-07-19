@@ -46,6 +46,12 @@ When a dep declares ``verify_key`` (a 40-char GPG fingerprint),
      ``verify_provenance``, not by ``verify_key``, so a dep can
      require provenance without also pinning a GPG key. The env
      ``CAPA_REQUIRE_PROVENANCE=1`` raises every dep to ``required``.
+     One precondition is exempt from ``warn``: a dep that declares
+     ``verify_key`` and finds no ``gh`` on PATH is REFUSED, because a
+     missing verifier is a fact about the machine rather than about
+     the dependency, and warning about it once per dep is how a
+     fail-closed check quietly becomes fail-open.
+     ``CAPA_ALLOW_MISSING_GH=1`` is the loud escape.
 
 The implementation shells out to ``git`` so the runtime does
 not pull in a heavyweight git library. ``git`` must be on the
@@ -85,6 +91,12 @@ VENDOR_DIRNAME = "vendor"
 # lowers a dep already configured stricter than the env implies. Same
 # read convention as CAPA_NO_VERIFY / CAPA_REGISTRY_ALLOW_UNSIGNED.
 _REQUIRE_PROVENANCE_ENV = "CAPA_REQUIRE_PROVENANCE"
+
+# The loud escape from the missing-``gh`` refusal below. When set to
+# "1", a dep that declares ``verify_key`` may install with its SLSA
+# provenance unverified because no verifier is available, and says so
+# on stderr for every such dep. See _refuse_or_allow_missing_gh.
+_ALLOW_MISSING_GH_ENV = "CAPA_ALLOW_MISSING_GH"
 
 
 def _effective_provenance_level(dep: Dependency) -> str:
@@ -566,6 +578,11 @@ def _verify_slsa_provenance(
     The pre-existing fail-closed path (tarball present but
     ``gh attestation verify`` returns non-zero) is unchanged and fires
     in all three levels.
+
+    One skip path is no longer a skip at ``"warn"``: no ``gh`` on PATH
+    for a dep that declares ``verify_key``. See
+    ``_refuse_or_allow_missing_gh`` for why that one differs from the
+    others and for the ``CAPA_ALLOW_MISSING_GH=1`` escape.
     """
     level = _effective_provenance_level(dep)
     if level == "off":
@@ -597,6 +614,7 @@ def _verify_slsa_provenance(
     owner, repo = owner_repo
 
     if shutil.which("gh") is None:
+        _refuse_or_allow_missing_gh(dep)
         return _skip("gh not found in PATH")
 
     tarball_name = f"{repo}-{pin}.tar.gz"
@@ -645,6 +663,66 @@ def _verify_slsa_provenance(
             f"was issued by a different identity than {owner}/{repo}. "
             f"Refusing the install."
         )
+
+
+def _refuse_or_allow_missing_gh(dep: Dependency) -> None:
+    """Refuse the install of a ``verify_key`` dep when ``gh`` is absent.
+
+    A dep that declares ``verify_key`` is a dep whose consumer wrote
+    down, in their own manifest, that they intend this package to be
+    verified. Treating a MISSING TOOL as a reason to proceed anyway
+    turns the three-layer supply-chain check into a check that anyone
+    can switch off by not installing something: in a clean room without
+    ``gh`` on PATH, ``capa install`` printed one ``SLSA provenance not
+    verified`` warning per dependency and installed all of them. A
+    warning that appears once per dep on a routine command is a warning
+    nobody reads.
+
+    So this is an ERROR, and it is scoped deliberately:
+
+      * only when the dep declares ``verify_key``. Without one there is
+        no stated intent to verify, and ``verify_provenance`` (default
+        ``"warn"``) keeps governing on its own;
+      * only for the MISSING-TOOL path. The other graceful skips (rev
+        pin, non-GitHub host, offline, no published tarball) are facts
+        about the dependency or the network, not about the consumer's
+        toolbox, and they keep their existing per-level treatment;
+      * ``verify_provenance = "off"`` still short-circuits earlier, so
+        an explicit, reviewable opt-out in ``capa.toml`` is untouched.
+
+    THE ESCAPE, for someone who genuinely must install without ``gh``:
+    ``CAPA_ALLOW_MISSING_GH=1``. It leaves a trace on stderr every time
+    it is used, in the spirit of the path-dependency escape warning
+    above and of ``CAPA_NO_VERIFY`` / ``CAPA_REGISTRY_ALLOW_UNSIGNED``:
+    an escape that is silent is indistinguishable from no gate at all.
+    """
+    if dep.verify_key is None:
+        return
+    if os.environ.get(_ALLOW_MISSING_GH_ENV) == "1":
+        print(
+            f"capa: warning: {_ALLOW_MISSING_GH_ENV}=1: installing "
+            f"{dep.name!r} WITHOUT verifying its SLSA build provenance, "
+            f"because the 'gh' CLI is not on PATH. capa.toml declares a "
+            f"verify_key for this dependency, so provenance verification "
+            f"was asked for and is NOT happening: only the GPG signature "
+            f"layer ran.",
+            file=sys.stderr,
+        )
+        return
+    raise VerificationError(
+        f"cannot verify the SLSA build provenance of {dep.name!r}: the "
+        f"'gh' CLI is not on PATH.\n\n"
+        f"capa.toml declares verify_key for this dependency, which is a "
+        f"statement that it must be verified, so a missing verifier is "
+        f"refused rather than warned about. Install the GitHub CLI "
+        f"(https://cli.github.com) and re-run `capa install`.\n\n"
+        f"If you must proceed without provenance verification, either "
+        f"set verify_provenance = \"off\" for this dependency in "
+        f"capa.toml (an explicit, reviewable decision that lives with "
+        f"the project), or set {_ALLOW_MISSING_GH_ENV}=1 for this run "
+        f"(which prints a warning naming every dependency it lets "
+        f"through)."
+    )
 
 
 def _rmtree_force(path: Path) -> None:

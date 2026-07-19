@@ -9,6 +9,123 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.18.1], 2026-07-19
+
+> **If you installed Capa from a release binary, `capa test` did not
+> work. This release fixes it.** Every test failed, on every platform,
+> with `error: unrecognized arguments: -m <file>`, since the command
+> shipped. Nothing was wrong with your tests or your project. Upgrade
+> and re-run them.
+
+**Fixed.**
+
+- *`capa test` under a released binary (the reason this release
+  exists).* The test runner spawned one child process per test file,
+  built as `[sys.executable, "-m", "capa", "--run", <file>]`. That is
+  correct only while `sys.executable` is a Python interpreter. Inside a
+  PyInstaller bundle it is the `capa` binary itself, which does not
+  accept `-m`, so every child died at argument parsing and every test
+  was reported as failed. Anyone who installed the way the project
+  recommends, through the attested `install.sh`, got a test runner that
+  could not run a test.
+
+  The hazard was already documented in `capa/cli.py`, where `--run`
+  stopped shelling out for exactly this reason, and had simply
+  reappeared in two other places: the test runner and `--watch`. Both
+  now build their child command through one seam, `capa/_selfexec.py`,
+  which asks what `sys.executable` is: the binary takes the compiler's
+  arguments directly, an interpreter gets `-m capa` first.
+
+  Those two callers keep a child process rather than following `--run`
+  in-process, and the distinction is worth stating. What `--run` had to
+  execute was arbitrary transpiled Python, which a frozen binary
+  genuinely cannot do. What these two execute is `capa --run <file>`,
+  which a frozen binary runs natively. Here the separate process is not
+  a workaround, it is the product: isolation between test files (no
+  module state, recursion limit or wasmtime instance carries over), a
+  crash that costs one exit code instead of the whole run, and output
+  captured at the file-descriptor level so a `Proc`-spawned grandchild
+  still lands in the report. In-process execution would have traded all
+  three away to fix an argument list. A child that cannot be started at
+  all is now reported as that one test's failure rather than as an
+  exception through the middle of the report.
+
+- *The binary smoke test now covers what freezing can break.* `capa
+  test` had never been run against a frozen binary. The release smoke
+  test ran `--check`, `--run` and `--manifest`, all of which compile
+  text in memory and prove very little about bundling, which is how a
+  documented hazard reappeared twice and shipped. `deploy/binary_smoke_test.py`
+  replaces those three commands (and the two near-identical
+  platform-gated steps that ran them) with a run over everything whose
+  frozen behaviour can differ from its source-checkout behaviour: `capa
+  test` in both directions (a passing suite must pass AND a failing test
+  must fail, since a runner that spawns nothing usable reports every
+  test as failed), `capa init` followed by compiling what it scaffolded,
+  `capa install`, `capa repl`, `capa --check-capabilities` against both
+  a ceiling that holds and one that does not, and `capa --version`
+  against the tag being released (the spec's own comments warn that a
+  bundle missing capa's dist-info reports a sentinel version). Verified
+  by building both revisions: the new smoke test fails on the `1.18.0`
+  binary with the exact error users saw, and passes on `1.18.1`.
+
+**Security.**
+
+- *A missing `gh` is no longer a reason to install unverified code
+  ([advisory](docs/advisories/2026-07-19-install-fail-open.md)).* In a
+  clean room without the GitHub CLI on PATH, `capa install` printed
+  `warning: SLSA provenance not verified for 'capa_jwt': gh not found in
+  PATH` for all seven dependencies of a project and installed every one
+  of them. A three-layer supply-chain check described as fail-closed
+  opened because a tool was absent.
+
+  `verify_key` in a consumer's manifest is that consumer's written
+  statement that the dependency is meant to be verified, so a missing
+  verifier is now an ERROR for such a dependency rather than a warning.
+  The scope is deliberately narrow: only where `verify_key` is
+  declared, only for the missing-TOOL case, and never over an explicit
+  `verify_provenance = "off"`. A rev pin, a non-GitHub host, an absent
+  tarball or an unreachable network describe the dependency rather than
+  the consumer's machine, and keep their existing per-level treatment.
+  `CAPA_ALLOW_MISSING_GH=1` is the escape, loud by construction: it
+  names every dependency it lets through on stderr, following the
+  pattern of `CAPA_NO_VERIFY` and `CAPA_REGISTRY_ALLOW_UNSIGNED`. This
+  makes a previously-succeeding `capa install` fail, so it ships under
+  the `STABILITY.md` security exception with the advisory that exception
+  requires.
+
+- *The reusable release-guard workflow's copy-paste example handed the
+  guards a signing token.* `.github/workflows/release-guards.yml`'s
+  `HOW TO CALL IT` block omitted `permissions:` on the calling job. A
+  caller who copied it verbatim gave the guards the caller's own
+  workflow-level grant, which in a release workflow includes
+  `id-token: write`: the token that signs Sigstore attestations. The
+  guard jobs inside that file declare `contents: read` and say in a
+  comment that a guard "has no business holding a credential that can
+  sign anything"; the example contradicted them. The corrected example
+  shows `permissions: contents: read` with the reason, and its
+  `consumer-commands` list now checks EVERY entry point rather than one
+  and runs `capa --check-capabilities` alongside `capa --check`, since a
+  clean room that never checks the ceiling verifies the less interesting
+  half of a package whose central claim is a ceiling. The version marker
+  moves to `# v1.18.0`, the first release whose binaries the guard can
+  actually verify. `tests/test_release_workflow.py` now guards these
+  properties of the example, and of the smoke test above.
+
+**Documentation.**
+
+- *Two stale statements corrected.* `release-binaries.yml`'s header
+  claimed the GitHub Release "must already exist; the workflow does not
+  create the release". The upload action creates it when absent, so that
+  comment would have talked a maintainer into `gh release create` and an
+  HTTP 422. And `README.md` told contributors to run `pip install -e
+  '.[test]' && python -m pytest` while CI runs `python -m unittest
+  discover tests`; pointing the contributor path at a different runner
+  is what let eleven supply-chain tests skip silently on a correct
+  install. The README now gives the CI command, keeps pytest for what it
+  is genuinely good at here (selecting a subset while iterating), and
+  says why the `[test]` extra is not optional. `CONTRIBUTING.md` gained
+  the same note.
+
 ## [1.18.0], 2026-07-19
 
 > **The first release whose binaries carry SLSA build provenance.**

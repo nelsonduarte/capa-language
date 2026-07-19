@@ -37,17 +37,44 @@ name: release-guards
 #       # cannot pin is a guard someone else can edit under you. Replace
 #       # the placeholder with the SHA of the revision you audited, and
 #       # keep the trailing version comment so a reader knows what it is.
-#       uses: nelsonduarte/capa-language/.github/workflows/release-guards.yml@REPLACE_WITH_AUDITED_SHA  # v1.17.0
+#       uses: nelsonduarte/capa-language/.github/workflows/release-guards.yml@REPLACE_WITH_AUDITED_SHA  # v1.18.0
+#       # Grant the guards READ and nothing else, explicitly. Without
+#       # this line the called workflow inherits the CALLER's
+#       # workflow-level grant, and in a release workflow that includes
+#       # `id-token: write`, the token that SIGNS attestations. The
+#       # guards generate nothing and publish nothing, so handing them a
+#       # signing credential contradicts the reason the jobs below
+#       # declare `contents: read` on purpose. A permissions block in a
+#       # `uses:` job CAPS what the called workflow can be granted; the
+#       # jobs inside still declare their own.
+#       permissions:
+#         contents: read
 #       with:
 #         consumer-commands: |
 #           gpg --import publisher.asc
 #           capa install
 #           python tools/nest_vendor.py
 #           capa --check main.capa
+#           capa --check cli.capa
+#           capa --check-capabilities main.capa
+#           capa --check-capabilities cli.capa
 #           capa test
 #     release:
 #       needs: guards          # <- the guards gate the publish
 #       ...
+#
+# The command list above is the shape to copy, not a minimum. Two
+# properties of it are easy to get wrong:
+#
+#   * EVERY ENTRY POINT, not just the first. A package with a library
+#     front-end and a CLI front-end compiles two roots; checking one of
+#     them leaves the other unbuilt in the clean room, which is where a
+#     missing declared dependency hides.
+#   * THE CEILING, not only the types. `capa --check` proves the code
+#     compiles against what was actually fetched. For a package whose
+#     central claim is "this is all the authority I can ever hold", a
+#     clean room that never runs `--check-capabilities` verifies the
+#     less interesting half of the release.
 #
 # `needs: guards` is what makes the ordering real. Both guards run
 # BEFORE the caller builds, attests or publishes anything, because a

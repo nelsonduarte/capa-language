@@ -3074,16 +3074,28 @@ def _run_watch_loop(filename: str, program_args: list[str]) -> int:
                 f"--- rerun at {datetime.now().strftime('%H:%M:%S')} ---\n"
             )
             sys.stdout.flush()
+        # A fresh child per rerun, which is what "re-run it" means:
+        # no state survives from the previous iteration, and a program
+        # that crashes hard costs one rerun instead of the watcher.
+        # The command is built by capa._selfexec rather than hard-coded
+        # as ``python -m capa``, which a frozen binary cannot honour
+        # (it is not an interpreter and rejects ``-m``).
+        from capa._selfexec import capa_child_command
+        args = ["--run", str(target)]
+        if program_args:
+            args.append("--")
+            args.extend(program_args)
         try:
-            cmd = [sys.executable, "-m", "capa", "--run", str(target)]
-            if program_args:
-                cmd.append("--")
-                cmd.extend(program_args)
-            subprocess.run(cmd)
+            subprocess.run(capa_child_command(args))
         except KeyboardInterrupt:
             # Ctrl-C during the child's run: re-raise so the
             # watcher exits cleanly.
             raise
+        except OSError as e:
+            # The child could not be started (executable gone, fork
+            # refused). Report it and keep watching: the next change
+            # may well be the one that fixes it.
+            print(f"capa: --watch: cannot run: {e}", file=sys.stderr)
 
     # First run is unconditional.
     try:

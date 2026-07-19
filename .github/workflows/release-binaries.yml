@@ -7,9 +7,15 @@ name: release-binaries
 # installed to run Capa programs.
 #
 # Each matrix job uploads its artefact to the matching GitHub Release
-# (which must already exist; the workflow does not create the release)
 # and generates a SLSA L2 build-provenance attestation for it through
 # Sigstore (keyless OIDC, published to the Rekor transparency log).
+#
+# The release does NOT have to exist first: the upload action creates it
+# from the tag when it is absent. This comment used to claim the
+# opposite, which would have talked a maintainer into running
+# `gh release create` for a release the workflow then tried to create
+# again, for an HTTP 422. Creating it by hand first is still fine (and
+# is how release notes get written); it is simply not a precondition.
 #
 # To verify a downloaded binary or install script on the consumer side:
 #
@@ -110,20 +116,30 @@ jobs:
       - name: Build binary
         run: pyinstaller deploy/capa.spec --distpath dist --workpath build/pyinstaller
 
-      - name: Smoke-test binary (non-Windows)
-        if: matrix.os != 'windows-latest'
-        run: |
-          ./dist/capa${{ matrix.ext }} --check examples/hello.capa
-          ./dist/capa${{ matrix.ext }} --run examples/hello.capa
-          ./dist/capa${{ matrix.ext }} --manifest examples/hello.capa > /dev/null
-
-      - name: Smoke-test binary (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Smoke-test binary
+        # One step for all three platforms (the two it replaced ran the
+        # same three commands through bash and differed only in a
+        # spelling of `matrix.ext`, which is exactly how two copies
+        # drift apart).
+        #
+        # Those three commands were `--check`, `--run` and `--manifest`,
+        # all of which compile text in memory and so prove very little
+        # about FREEZING. `capa test` had never been run against a
+        # frozen binary and was broken in every released one: it spawned
+        # `sys.executable -m capa`, and under PyInstaller
+        # `sys.executable` is the capa binary, which rejects `-m`. The
+        # script covers the commands that can plausibly break the same
+        # way (self-invocation, bundled metadata, disk writes, manifest
+        # reads, the bundled REPL, exit codes) rather than only the one
+        # that did.
+        #
+        # The tag is passed so the binary's own `--version` is checked
+        # against it here, where a mismatch can still stop the release.
         shell: bash
         run: |
-          ./dist/capa.exe --check examples/hello.capa
-          ./dist/capa.exe --run examples/hello.capa
-          ./dist/capa.exe --manifest examples/hello.capa > /dev/null
+          python deploy/binary_smoke_test.py \
+            "dist/capa${{ matrix.ext }}" \
+            "${{ github.event.inputs.tag || github.ref_name }}"
 
       - name: Smoke-test LSP server in binary
         # Prove the bundled `capa lsp` actually serves the language server

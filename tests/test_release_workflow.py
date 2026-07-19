@@ -1,4 +1,4 @@
-"""Supply-chain guards for the release-binaries workflow.
+"""Supply-chain guards for the release workflows.
 
 The compiler's own binaries and install scripts are the artefacts every
 downstream user actually executes, so the release workflow has to hold the
@@ -13,6 +13,20 @@ same properties the ecosystem libraries do:
 
 These are cheap to break by editing YAML and expensive to notice, since
 the failure mode is a release that verifies against nothing.
+
+Two more properties joined them in 1.18.1, from two things that shipped:
+
+  - the binary smoke test must exercise `capa test`, which was broken in
+    every released binary because nothing had ever run it against a
+    frozen build (the smoke test ran `--check` and `--run`, both of
+    which compile in memory and prove nothing about freezing);
+  - the copy-paste example in the reusable `release-guards.yml` must
+    declare `permissions:` on the calling job, because a caller who
+    copies it verbatim otherwise hands the guards the caller's own
+    workflow-level grant, which in a release workflow includes
+    `id-token: write`, the token that signs attestations. That
+    contradicts the comment inside the same file saying a guard must
+    never hold a credential that can sign.
 """
 
 import re
@@ -30,12 +44,11 @@ from pathlib import Path
 # so a missing one is a loud ERROR instead.
 import yaml
 
-WORKFLOW = (
-    Path(__file__).resolve().parent.parent
-    / ".github"
-    / "workflows"
-    / "release-binaries.yml"
+_WORKFLOW_DIR = (
+    Path(__file__).resolve().parent.parent / ".github" / "workflows"
 )
+WORKFLOW = _WORKFLOW_DIR / "release-binaries.yml"
+GUARDS_WORKFLOW = _WORKFLOW_DIR / "release-guards.yml"
 
 ATTEST_ACTION = "actions/attest-build-provenance"
 
@@ -200,6 +213,157 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertTrue(lines)
         for line in lines:
             self.assertRegex(line.strip(), PINNED_USES.pattern.strip())
+
+
+class TestBinarySmokeTest(unittest.TestCase):
+    """The smoke test has to cover what FREEZING can break.
+
+    `capa test` shipped broken in every released binary and the smoke
+    test did not notice, because it only ran `--check` and `--run`: two
+    commands that parse and analyse text in memory and spawn nothing.
+    These cases pin the commands whose frozen behaviour differs from
+    their source-checkout behaviour, so that dropping one is a failing
+    test rather than a discovery made by a user.
+    """
+
+    SCRIPT = (
+        Path(__file__).resolve().parent.parent
+        / "deploy" / "binary_smoke_test.py"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        cls.script = cls.SCRIPT.read_text(encoding="utf-8")
+
+    def test_the_workflow_runs_the_smoke_script(self):
+        runs = [
+            step.get("run", "")
+            for step in self.wf["jobs"]["build"]["steps"]
+        ]
+        self.assertTrue(
+            any("deploy/binary_smoke_test.py" in r for r in runs),
+            "the build job no longer runs the binary smoke test",
+        )
+
+    def test_smoke_test_is_one_step_for_every_platform(self):
+        # It used to be two steps gated on `matrix.os`, running the same
+        # bash commands and differing only in how they spelled the
+        # executable. Two copies of a check drift; one does not.
+        smoke = [
+            step for step in self.wf["jobs"]["build"]["steps"]
+            if "binary_smoke_test.py" in step.get("run", "")
+        ]
+        self.assertEqual(len(smoke), 1)
+        self.assertNotIn("if", smoke[0])
+
+    def test_smoke_test_covers_the_freezing_sensitive_commands(self):
+        # Each of these depends on something beyond in-memory
+        # compilation: spawning itself, bundled metadata, writing a
+        # project, reading capa.toml back, a bundled optional dependency.
+        for command in ('"test"', '"init"', '"install"', '"repl"',
+                        '"--version"', '"--check-capabilities"'):
+            with self.subTest(command=command):
+                self.assertIn(
+                    command, self.script,
+                    f"the binary smoke test no longer exercises {command}",
+                )
+
+    def test_smoke_test_asserts_a_failing_test_still_fails(self):
+        # A `capa test` that spawns nothing usable reports every test as
+        # failed, so "the suite passed" alone would not have caught the
+        # inverse bug. The script must check both directions.
+        self.assertIn("1 test(s): 1 passed, 0 failed", self.script)
+        self.assertIn("2 test(s): 1 passed, 1 failed", self.script)
+
+
+class TestReusableGuardsExample(unittest.TestCase):
+    """The `HOW TO CALL IT` block in the reusable release-guards
+    workflow is documentation that gets COPIED, so its defects are
+    copied with it. Three of them shipped: no `permissions:` on the
+    calling job (which inherits the caller's `id-token: write` in a
+    release workflow, the token that signs attestations), no capability
+    ceiling check, and one entry point where a package with two
+    front-ends needs both.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = GUARDS_WORKFLOW.read_text(encoding="utf-8")
+        # The example lives in the leading comment block, above `on:`.
+        header, _, _ = cls.text.partition("\non:")
+        cls.example = header
+
+    def test_example_caps_the_guards_at_read(self):
+        self.assertIn("permissions:", self.example)
+        self.assertIn("contents: read", self.example)
+
+    def test_example_explains_why_the_permissions_line_is_there(self):
+        # An unexplained permissions block is a block a reader deletes
+        # because it looks redundant. The reason it exists is the whole
+        # point: without it the guards inherit a signing token.
+        self.assertIn("id-token: write", self.example)
+
+    def test_example_never_grants_the_guards_a_signing_token(self):
+        # Compare whole comment LINES, so prose that merely names
+        # `id-token: write` while explaining the hazard does not read as
+        # a grant of it.
+        granted = {
+            line.lstrip("#").strip()
+            for line in self.example.splitlines()
+        }
+        for grant in ("id-token: write", "attestations: write",
+                      "contents: write"):
+            with self.subTest(grant=grant):
+                self.assertNotIn(
+                    grant, granted,
+                    "the example grants the guards a write token",
+                )
+
+    def test_example_checks_the_capability_ceiling(self):
+        # A package whose central claim is a ceiling gets a clean room
+        # verifying the less interesting half without this.
+        self.assertIn("capa --check-capabilities", self.example)
+
+    def test_example_covers_more_than_one_entry_point(self):
+        checks = [
+            line for line in self.example.splitlines()
+            if "capa --check " in line
+        ]
+        self.assertGreaterEqual(
+            len(checks), 2,
+            "the example checks a single entry point; a package with "
+            "two front-ends needs both compiled",
+        )
+        ceilings = [
+            line for line in self.example.splitlines()
+            if "capa --check-capabilities " in line
+        ]
+        self.assertEqual(
+            len(checks), len(ceilings),
+            "every entry point that is compiled must also be "
+            "ceiling-checked",
+        )
+
+    def test_example_still_runs_the_full_consumer_flow(self):
+        for command in ("gpg --import publisher.asc", "capa install",
+                        "python tools/nest_vendor.py", "capa test"):
+            with self.subTest(command=command):
+                self.assertIn(command, self.example)
+
+    def test_version_marker_is_current(self):
+        # The trailing comment on the `uses:` line tells a reader which
+        # release the pinned SHA belongs to. It must not name a version
+        # whose binaries the guard itself cannot verify: the guard
+        # downloads a released compiler and runs `gh attestation
+        # verify`, and v1.17.0 and earlier carry no attestation.
+        import capa
+        marker = f"# v{capa.__version__.rsplit('.', 1)[0]}."
+        self.assertIn(
+            marker, self.example,
+            "the example's version marker no longer matches the "
+            "release series it ships in",
+        )
 
 
 if __name__ == "__main__":

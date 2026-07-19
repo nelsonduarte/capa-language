@@ -29,10 +29,14 @@ Clone and install in editable mode:
 ```bash
 git clone https://github.com/nelsonduarte/capa-language
 cd capa
-pip install -e .
+pip install -e '.[test]'
 ```
 
-Run the test suite (a few minutes, currently ~3,578 tests):
+Install the `[test]` extra, not the bare package: hypothesis and PyYAML
+live there, and without them whole test modules skip instead of failing,
+so the run prints OK while verifying less than you think.
+
+Run the test suite (a few minutes, currently ~4,350 tests):
 
 ```bash
 python -m unittest discover tests
