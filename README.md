@@ -276,7 +276,7 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa ships as **`1.18.0`** (released 2026-07-19), with the full
+Capa ships as **`1.18.1`** (released 2026-07-19), with the full
 security axis (information-flow control, constant-time markers, and
 typestate protocols) and the fully functional Wasm backend (see
 [`CHANGELOG.md`](CHANGELOG.md)). The stability commitment in
@@ -301,10 +301,18 @@ runtime via host-side handle tables.
 Run them:
 
 ```bash
+pip install -e '.[test]'          # hypothesis + PyYAML: without them,
+                                  # whole test modules skip rather than fail
 python -m unittest discover tests
-# or
-pip install -e '.[test]' && python -m pytest
 ```
+
+That is the exact command CI runs, so a green local run means the same
+thing as a green CI run. The `[test]` extra also brings pytest, which is
+useful as a *selector* over the same suite (`python -m pytest -k
+capability`, `-x`, `--lf`) when you are iterating on one area; the
+authoritative full run stays `unittest discover`. The suite must be run
+with the extra installed either way: it was a missing PyYAML that let
+eleven supply-chain tests skip while the run printed OK.
 
 The Tier 1 supply-chain artefacts are **all shipping** today:
 

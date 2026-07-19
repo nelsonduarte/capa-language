@@ -102,6 +102,23 @@ refused on failure.
   dependency below its `capa.toml` level. See `_verify_slsa_provenance`
   in `capa/pkg/_install.py`.
 
+- **A missing `gh` is fail-closed for a `verify_key` dependency
+  (1.18.1).** `verify_key` in a consumer's own manifest is a written
+  statement that this dependency is to be verified, so `capa install`
+  refuses it when the verifier is absent, at every level except an
+  explicit `verify_provenance = "off"`. Previously this printed one
+  warning per dependency and installed anyway: in a clean room without
+  the GitHub CLI, all seven dependencies of a project installed
+  unverified. A supply-chain check that opens because a tool is missing
+  is one that anybody can switch off by not installing something. The
+  escape is `CAPA_ALLOW_MISSING_GH=1`, which installs and names every
+  dependency it let through on stderr. Deliberately narrow: it covers
+  the missing-TOOL case only, since a rev pin, a non-GitHub host, an
+  absent tarball and an unreachable network are facts about the
+  dependency rather than about the consumer's machine, and those stay
+  in tier 2 below. See `_refuse_or_allow_missing_gh` in
+  `capa/pkg/_install.py`.
+
 - **SBOMs are byte-reproducible.** With `SOURCE_DATE_EPOCH` set, the
   CycloneDX / SPDX / VEX / SLSA artefacts are byte-for-byte identical
   across runs and machines, so an auditor can rebuild and diff. See
@@ -121,10 +138,12 @@ trust decision: the unconditional tier above stands underneath them.
   {owner}/{repo}` (an attestation from a different repo under the same
   owner does not satisfy it). The per-dep `verify_provenance` field (M4)
   decides what a *missing precondition* does. At the default level
-  `warn`, the layer is **best-effort but visible**: when `gh` is not on
-  PATH, the release has no matching tarball, the host is not GitHub, the
-  endpoint is unreachable, or the pin is a rev, it prints a clear stderr
-  warning naming the dependency and the reason, then continues. It
+  `warn`, the layer is **best-effort but visible**: when the release has
+  no matching tarball, the host is not GitHub, the endpoint is
+  unreachable, or the pin is a rev, it prints a clear stderr warning
+  naming the dependency and the reason, then continues. (A missing `gh`
+  no longer belongs in that list for a dependency that declares
+  `verify_key`; it moved to tier 1 in 1.18.1.) It
   **always fail-closes** when the tarball IS present and
   `gh attestation verify` returns non-zero. The honest consequence under
   `warn`: an attacker who removes the release tarball, or serves the

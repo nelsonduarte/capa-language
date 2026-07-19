@@ -172,10 +172,13 @@ verify_provenance = "warn"   # off | warn | required
   this dependency.
 - **`warn`** (**default**) every graceful-skip path prints a clear
   stderr warning naming the dependency and the reason
-  (`capa: warning: SLSA provenance not verified for 'mylib': gh
-  not found in PATH`), then continues the install. Best-effort,
-  but no longer invisible: a silent SLSA downgrade now leaves a
-  trace.
+  (`capa: warning: SLSA provenance not verified for 'mylib':
+  release download failed`), then continues the install.
+  Best-effort, but no longer invisible: a silent SLSA downgrade
+  leaves a trace. **One exception, since 1.18.1:** if the
+  dependency declares `verify_key` and the `gh` CLI is not on
+  PATH, the install is **refused** rather than warned about (see
+  below).
 - **`required`** every path that would otherwise skip becomes
   **fail-closed**: the install is refused with a message that
   names the dependency and the reason. Only a build with a valid
@@ -196,16 +199,39 @@ dependency is a manifest error.
 > build whose SLSA provenance cannot be verified, without editing
 > every dependency entry.
 
+> **A missing `gh` is an error for a `verify_key` dependency
+> (1.18.1).** Declaring `verify_key` is a statement, written in
+> your own manifest, that this dependency is meant to be
+> verified. So when `gh` is not on PATH, `capa install` **refuses**
+> such a dependency instead of warning:
+>
+> ```
+> capa install: cannot verify the SLSA build provenance of
+> 'capa_jwt': the 'gh' CLI is not on PATH.
+> ```
+>
+> A clean room without the GitHub CLI used to print one warning per
+> dependency and install all of them, which is a fail-closed check
+> that a missing tool switches off. Two ways forward, both
+> deliberate and both visible: set `verify_provenance = "off"` for
+> that dependency in `capa.toml` (an explicit decision that lives
+> with the project and is reviewable in a diff), or set
+> `CAPA_ALLOW_MISSING_GH=1` for the run, which installs and prints
+> a warning naming every dependency it let through. The refusal is
+> narrow: it applies only to a declared `verify_key` and only to the
+> missing-tool case. A rev pin, a non-GitHub host, an absent tarball
+> or a network failure are facts about the dependency rather than
+> about your machine, and keep their `verify_provenance` treatment.
+
 > **Security posture.** In `warn` (the default) the SLSA layer is
-> **best-effort but visible**: when `gh` is absent, the asset is
-> missing, the host is not GitHub, or the network is down, the
-> install continues but prints a warning. It is `required` (per
-> dep, or globally via `CAPA_REQUIRE_PROVENANCE=1`) that makes the
-> layer **fail-closed**. Do not read the default as a guarantee:
-> only the lockfile-SHA and GPG-fingerprint layers are
-> unconditional in every mode. Under `warn`, treat SLSA
-> verification as a bonus you can *see* the absence of; under
-> `required`, it is load-bearing.
+> **best-effort but visible**: when the asset is missing, the host
+> is not GitHub, or the network is down, the install continues but
+> prints a warning. It is `required` (per dep, or globally via
+> `CAPA_REQUIRE_PROVENANCE=1`) that makes the layer **fail-closed**
+> for all of those. Do not read the default as a guarantee: only
+> the lockfile-SHA and GPG-fingerprint layers are unconditional in
+> every mode. Under `warn`, treat SLSA verification as a bonus you
+> can *see* the absence of; under `required`, it is load-bearing.
 
 The reference seed libraries (capa_cli, capa_datetime,
 capa_log, capa_http) ship attestations from v0.1.2 onwards;

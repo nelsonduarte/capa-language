@@ -88,7 +88,7 @@ Out of scope:
 
 ## Supported versions
 
-Capa is on the `1.x` line (latest `1.18.0`) and is a one-person
+Capa is on the `1.x` line (latest `1.18.1`) and is a one-person
 project. Only the latest tagged release is supported for security fixes.
 I may publish patch releases for the latest minor when a fix is
 significant.
@@ -158,6 +158,18 @@ The 2026-05-25 audit record lives at the repository root in
   now scoped to the package's own name, which narrows the SemVer-covered
   module resolution order, shipped in `1.18.0` under the security
   exception.
+- [`docs/advisories/2026-07-19-install-fail-open.md`](docs/advisories/2026-07-19-install-fail-open.md):
+  `capa install` skipped the SLSA build-provenance layer entirely when
+  the `gh` CLI was not on PATH, printing one warning per dependency and
+  installing all of them, so a fail-closed supply-chain check could be
+  switched off by not installing a tool. A dependency that declares
+  `verify_key` is now refused when no verifier is available, with
+  `CAPA_ALLOW_MISSING_GH=1` as a loud, per-dependency-traced escape.
+  This makes a previously-succeeding install fail, shipped in `1.18.1`
+  under the security exception. The same advisory records that the
+  reusable release-guard workflow's copy-paste example omitted
+  `permissions:` on the calling job, so a verbatim copy handed the
+  guards the caller's `id-token: write`.
 
 ## Public disclosure
 

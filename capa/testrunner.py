@@ -7,10 +7,14 @@ nearest ancestor of the starting directory that contains
 is found.
 
 Each test file is a regular Capa program executed through the same
-pipeline as ``capa --run <file>``: a fresh ``python -m capa``
-subprocess with cwd = project root, so module resolution through
-``capa.toml`` (vendored deps, dev-deps, path deps) works exactly
-as it does for ``capa --run``. On top of that, the runner prepends
+pipeline as ``capa --run <file>``: a fresh ``capa`` subprocess with
+cwd = project root, so module resolution through ``capa.toml``
+(vendored deps, dev-deps, path deps) works exactly as it does for
+``capa --run``. How that child is spawned (``python -m capa`` from a
+source checkout, the binary itself from a released build) is
+:mod:`capa._selfexec`'s job; a hard-coded ``python -m capa`` is what
+made this command fail every test under every released binary. On
+top of that, the runner prepends
 the project root and its parent to ``CAPA_PATH`` for the child, so
 both layouts in the wild resolve with zero configuration:
 
@@ -52,6 +56,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, TextIO
+
+from capa._selfexec import capa_child_command
 
 
 TESTS_DIRNAME = "tests"
@@ -149,19 +155,27 @@ def _run_file(
     test_file: Path, root: Path, *, wasm: bool,
 ) -> tuple[int, str, str]:
     """Run one test program exactly like ``capa --run`` (or ``capa
-    --wasm --run``) would, in a fresh interpreter with cwd = project
-    root. Returns ``(exit_code, stdout, stderr)``."""
-    cmd = [sys.executable, "-m", "capa"]
-    if wasm:
-        cmd.append("--wasm")
-    cmd += ["--run", str(test_file)]
-    r = subprocess.run(
-        cmd,
-        cwd=str(root),
-        env=_child_env(root),
-        capture_output=True, text=True, encoding="utf-8",
-        errors="replace",
-    )
+    --wasm --run``) would, in a fresh ``capa`` process with cwd =
+    project root. Returns ``(exit_code, stdout, stderr)``.
+
+    A child that cannot be STARTED at all (the executable vanished
+    mid-run, a fork that the OS refuses) is reported as that one
+    test's failure, with the OS error as its captured output, rather
+    than as an exception escaping into the middle of the report. One
+    test must never be able to end the run: that is the whole reason
+    each test gets its own process."""
+    args = ["--wasm"] if wasm else []
+    args += ["--run", str(test_file)]
+    try:
+        r = subprocess.run(
+            capa_child_command(args),
+            cwd=str(root),
+            env=_child_env(root),
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as e:
+        return 1, "", f"capa test: could not start the test process: {e}\n"
     return r.returncode, r.stdout or "", r.stderr or ""
 
 

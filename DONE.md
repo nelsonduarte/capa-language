@@ -19,6 +19,53 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.18.1: `capa test` fixed under the released binary, the smoke test widened, the `gh` fail-open closed (2026-07-19)
+
+- **`capa test` was completely broken in every released binary.** It
+  spawned `[sys.executable, "-m", "capa", "--run", <file>]` per test
+  file; under PyInstaller `sys.executable` is the capa binary, which
+  rejects `-m`, so every test failed with `unrecognized arguments: -m`
+  for anyone who installed via the attested `install.sh`. The hazard was
+  documented in `capa/cli.py` (where `--run` went in-process for exactly
+  this reason) and had reappeared in the test runner AND in `--watch`.
+  Both now go through one seam, `capa/_selfexec.py`. They keep a child
+  process on purpose rather than following `--run` in-process: `--run`
+  had to execute arbitrary transpiled Python (impossible in a frozen
+  binary), these execute `capa --run <file>` (native to it), and the
+  separate process buys isolation between test files, survivable
+  crashes, and fd-level capture of `Proc`-spawned grandchildren. An
+  unstartable child now fails its own test instead of the run.
+- **The smoke test that should have caught it.** `capa test` had never
+  been run against a frozen binary; the release smoke test ran
+  `--check` / `--run` / `--manifest`, all in-memory compilation.
+  `deploy/binary_smoke_test.py` replaces them (and the two
+  near-identical platform-gated steps) with the freezing-sensitive
+  surface: `capa test` in both directions, `init` plus compiling what it
+  scaffolded, `install`, `repl`, `--check-capabilities` over a holding
+  and a violated ceiling, and `--version` against the tag. Proven by
+  building both revisions: it fails on the `1.18.0` binary with the
+  user-reported error and passes on `1.18.1`.
+- **The `gh` fail-open in `capa install` closed
+  ([advisory](docs/advisories/2026-07-19-install-fail-open.md)).** A
+  clean room without the GitHub CLI installed all seven of a project's
+  dependencies unverified, one warning each. A dependency declaring
+  `verify_key` is now REFUSED when no verifier is on PATH. Narrow by
+  design (only `verify_key`, only the missing-tool path, never over an
+  explicit `verify_provenance = "off"`), with `CAPA_ALLOW_MISSING_GH=1`
+  as the loud escape. Ships under the STABILITY.md security exception.
+- **The reusable guards' copy-paste example no longer hands the guards
+  a signing token.** It omitted `permissions:` on the calling job, so a
+  verbatim copy inherited the caller's release-workflow grant including
+  `id-token: write`, contradicting the same file's comment that a guard
+  must never hold a credential that can sign. The example now shows
+  `contents: read` with the reason, checks every entry point rather than
+  one, and runs `--check-capabilities` alongside `--check`.
+- **Two stale statements corrected.** `release-binaries.yml` claimed the
+  release must exist beforehand (the upload action creates it; the
+  comment would have produced an HTTP 422), and `README.md` sent
+  contributors to `python -m pytest` while CI runs `unittest discover`,
+  the divergence that let eleven tests skip silently.
+
 ## v1.18.0: attested release binaries, reusable release guards, the resolver fallback narrowed, attenuation mechanised (2026-07-19)
 
 - **SLSA build provenance for the release assets (#84).** The compiler's

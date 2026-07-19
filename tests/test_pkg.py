@@ -1315,10 +1315,14 @@ class TestInstallSlsaProvenance(_TempDirMixin, unittest.TestCase):
             _verify_slsa_provenance(dep, "deadbeef" * 5, "rev")
             mock_run.assert_not_called()
 
-    def test_gh_not_installed_skips_silently(self):
+    def test_gh_not_installed_is_refused_for_a_verify_key_dep(self):
+        # 1.18.1: this used to be a silent skip, then (M4) a warning.
+        # A dep that declares verify_key has asked to be verified, so a
+        # missing verifier is now an error. See TestMissingGhPolicy.
         from unittest.mock import patch
         from capa.pkg._install import _verify_slsa_provenance
         from capa.pkg._manifest import Dependency
+        from capa.pkg import VerificationError
 
         dep = Dependency(
             name="mylib",
@@ -1328,7 +1332,8 @@ class TestInstallSlsaProvenance(_TempDirMixin, unittest.TestCase):
         )
         with patch("capa.pkg._install.shutil.which", return_value=None):
             with patch("capa.pkg._install.subprocess.run") as mock_run:
-                _verify_slsa_provenance(dep, "v0.1", "tag")
+                with self.assertRaises(VerificationError):
+                    _verify_slsa_provenance(dep, "v0.1", "tag")
                 mock_run.assert_not_called()
 
     def test_release_tarball_missing_skips_silently(self):
@@ -1459,7 +1464,14 @@ class TestVerifyProvenanceModes(unittest.TestCase):
                 "rev pin")
 
     def _case_gh_missing(self, level):
-        dep = self._dep(git="https://github.com/foo/bar", level=level)
+        # Deliberately WITHOUT a verify_key. With one, "gh missing" is
+        # no longer a graceful-skip path at all: it is refused outright
+        # (1.18.1), which TestMissingGhPolicy covers on its own. Here
+        # the case still belongs in the generic matrix, as the shape of
+        # a dep that never asked to be verified.
+        dep = self._dep(
+            git="https://github.com/foo/bar", level=level, verify_key=None,
+        )
         return dep, "v0.1", "tag", None, None, "gh not found"
 
     def _case_download_failed(self, level):
@@ -1616,6 +1628,143 @@ class TestVerifyProvenanceModes(unittest.TestCase):
             os.environ.pop("CAPA_REQUIRE_PROVENANCE", None)
             err = self._run(dep, "v0.1", "tag", None, None)
         self.assertEqual(err, "")
+
+
+class TestMissingGhPolicy(unittest.TestCase):
+    """1.18.1: a missing ``gh`` is an ERROR for a dep that declares
+    ``verify_key``, not a warning.
+
+    In a clean room without the GitHub CLI, ``capa install`` printed
+    ``SLSA provenance not verified ... gh not found in PATH`` once per
+    dependency and installed all seven of them. A three-layer
+    supply-chain check that opens because a tool is absent is a check
+    anyone can switch off by not installing something, and a warning
+    repeated once per dep on a routine command is a warning nobody
+    reads.
+
+    The refusal is scoped on purpose, and the scope is what these cases
+    pin: only ``verify_key`` deps, only the missing-TOOL path, never
+    over an explicit ``verify_provenance = "off"``, with one loud,
+    traceable escape.
+    """
+
+    def _dep(self, *, verify_key="A" * 40, level="warn"):
+        from capa.pkg._manifest import Dependency
+        kwargs = dict(
+            name="mylib", git="https://github.com/foo/bar", tag="v0.1",
+            verify_provenance=level,
+        )
+        if verify_key is not None:
+            kwargs["verify_key"] = verify_key
+        return Dependency(**kwargs)
+
+    def _run(self, dep):
+        """Run the verifier with no ``gh`` on PATH; return stderr."""
+        import io
+        from contextlib import redirect_stderr
+        from unittest.mock import patch, MagicMock
+        from capa.pkg._install import _verify_slsa_provenance
+        buf = io.StringIO()
+        with patch("capa.pkg._install.shutil.which", return_value=None), \
+                patch("capa.pkg._install.subprocess.run",
+                      side_effect=lambda *a, **kw: MagicMock(
+                          returncode=0, stderr="", stdout="")), \
+                redirect_stderr(buf):
+            _verify_slsa_provenance(dep, "v0.1", "tag")
+        return buf.getvalue()
+
+    def setUp(self):
+        self._saved = os.environ.get("CAPA_ALLOW_MISSING_GH")
+        os.environ.pop("CAPA_ALLOW_MISSING_GH", None)
+        self._saved_req = os.environ.get("CAPA_REQUIRE_PROVENANCE")
+        os.environ.pop("CAPA_REQUIRE_PROVENANCE", None)
+
+    def tearDown(self):
+        for name, value in (
+            ("CAPA_ALLOW_MISSING_GH", self._saved),
+            ("CAPA_REQUIRE_PROVENANCE", self._saved_req),
+        ):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def test_verify_key_dep_refuses_when_gh_is_absent(self):
+        from capa.pkg import VerificationError
+        with self.assertRaises(VerificationError) as cm:
+            self._run(self._dep())
+        msg = str(cm.exception)
+        self.assertIn("mylib", msg)
+        self.assertIn("'gh' CLI is not on PATH", msg)
+        # The message has to name both ways out, or the refusal is a
+        # dead end for someone who genuinely cannot install gh.
+        self.assertIn("CAPA_ALLOW_MISSING_GH", msg)
+        self.assertIn('verify_provenance = "off"', msg)
+
+    def test_dep_without_verify_key_still_only_warns(self):
+        # No declared key is no stated intent to verify; the
+        # verify_provenance level keeps governing on its own.
+        err = self._run(self._dep(verify_key=None))
+        self.assertIn("SLSA provenance not verified", err)
+        self.assertIn("gh not found", err)
+
+    def test_explicit_off_is_still_honoured(self):
+        # `verify_provenance = "off"` is an explicit, reviewable
+        # decision recorded in capa.toml. The refusal must not
+        # second-guess it, or "off" would mean nothing for exactly the
+        # deps that declare a key.
+        self.assertEqual(self._run(self._dep(level="off")), "")
+
+    def test_escape_hatch_allows_the_install_and_leaves_a_trace(self):
+        os.environ["CAPA_ALLOW_MISSING_GH"] = "1"
+        err = self._run(self._dep())
+        self.assertIn("CAPA_ALLOW_MISSING_GH=1", err)
+        self.assertIn("mylib", err)
+        self.assertIn("WITHOUT verifying", err)
+        # The old warning still follows, so the reason is on the record
+        # next to the escape that allowed it.
+        self.assertIn("SLSA provenance not verified", err)
+
+    def test_escape_hatch_needs_exactly_one(self):
+        # Same read convention as CAPA_NO_VERIFY / CAPA_REQUIRE_PROVENANCE:
+        # only "1" counts, so a stray truthy-looking value does not
+        # quietly open the gate.
+        from capa.pkg import VerificationError
+        for value in ("0", "true", "yes", ""):
+            with self.subTest(value=value):
+                os.environ["CAPA_ALLOW_MISSING_GH"] = value
+                with self.assertRaises(VerificationError):
+                    self._run(self._dep())
+
+    def test_other_skip_paths_are_unaffected(self):
+        # A rev pin and a non-GitHub host are facts about the
+        # DEPENDENCY, not about the consumer's toolbox, so they keep
+        # warning under "warn" even with a verify_key declared.
+        import io
+        from contextlib import redirect_stderr
+        from unittest.mock import patch, MagicMock
+        from capa.pkg._install import _verify_slsa_provenance
+        from capa.pkg._manifest import Dependency
+
+        cases = [
+            (Dependency(name="mylib", git="https://github.com/foo/bar",
+                        rev="deadbeef" * 5, verify_key="A" * 40),
+             "deadbeef" * 5, "rev"),
+            (Dependency(name="mylib", git="file:///tmp/upstream",
+                        tag="v0.1", verify_key="A" * 40),
+             "v0.1", "tag"),
+        ]
+        for dep, pin, kind in cases:
+            with self.subTest(pin_kind=kind, git=dep.git):
+                buf = io.StringIO()
+                with patch("capa.pkg._install.shutil.which",
+                           return_value=None), \
+                        patch("capa.pkg._install.subprocess.run",
+                              side_effect=lambda *a, **kw: MagicMock(
+                                  returncode=0, stderr="", stdout="")), \
+                        redirect_stderr(buf):
+                    _verify_slsa_provenance(dep, pin, kind)
+                self.assertIn("SLSA provenance not verified", buf.getvalue())
 
 
 class TestLoaderIntegration(_TempDirMixin, unittest.TestCase):

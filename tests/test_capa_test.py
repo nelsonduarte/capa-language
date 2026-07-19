@@ -396,6 +396,134 @@ class TestCapaTestEndToEnd(_TempProjectMixin, unittest.TestCase):
         self.assertNotIn(str(root.parent), entries)
 
 
+class TestChildCommandShape(_TempProjectMixin, unittest.TestCase):
+    """How the runner spawns a child ``capa``.
+
+    ``_run_file`` hard-coded ``[sys.executable, "-m", "capa"]``. Under a
+    PyInstaller build ``sys.executable`` IS the capa binary, which
+    rejects ``-m``, so every released binary failed every test with
+    ``error: unrecognized arguments: -m <file>``. These cases pin the
+    two forms, because the broken one passes every test that runs from
+    a source checkout."""
+
+    def _spawned_command(self, *, frozen: bool) -> list:
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("capa._selfexec.is_frozen", return_value=frozen), \
+                mock.patch.object(sys, "executable", "/opt/capa/capa"), \
+                mock.patch.object(testrunner.subprocess, "run", fake_run):
+            testrunner._run_file(
+                Path("tests/test_a.capa"), self._tmp, wasm=False,
+            )
+        return seen["cmd"]
+
+    def test_source_checkout_goes_through_dash_m(self):
+        cmd = self._spawned_command(frozen=False)
+        self.assertEqual(cmd[:4], ["/opt/capa/capa", "-m", "capa", "--run"])
+
+    def test_frozen_binary_takes_the_arguments_directly(self):
+        cmd = self._spawned_command(frozen=True)
+        # The exact regression: no `-m` anywhere, because the frozen
+        # binary is not an interpreter.
+        self.assertNotIn("-m", cmd)
+        self.assertEqual(cmd[:2], ["/opt/capa/capa", "--run"])
+
+    def test_frozen_wasm_run_keeps_the_backend_flag(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("capa._selfexec.is_frozen", return_value=True), \
+                mock.patch.object(sys, "executable", "/opt/capa/capa"), \
+                mock.patch.object(testrunner.subprocess, "run", fake_run):
+            testrunner._run_file(
+                Path("tests/test_a.capa"), self._tmp, wasm=True,
+            )
+        self.assertEqual(seen["cmd"][:2], ["/opt/capa/capa", "--wasm"])
+
+    def test_unstartable_child_fails_only_its_own_test(self):
+        # Process isolation is the reason each test gets its own
+        # process; a child that cannot be started at all must cost one
+        # test, not the whole report.
+        root = self._project()
+        _write(root / "tests" / "test_a.capa", _PASSING)
+        _write(root / "tests" / "test_b.capa", _PASSING)
+        calls = []
+        real_run = testrunner.subprocess.run
+
+        def flaky_run(cmd, **kw):
+            calls.append(cmd)
+            if len(calls) == 1:
+                raise OSError("Too many open files")
+            return real_run(cmd, **kw)
+
+        with mock.patch.object(testrunner.subprocess, "run", flaky_run):
+            out = io.StringIO()
+            rc = testrunner.run_tests(root, out=out, err=out)
+        text = out.getvalue()
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(len(calls), 2, "the second test never ran")
+        self.assertIn("could not start the test process", text)
+        self.assertIn("2 test(s): 1 passed, 1 failed", text)
+
+
+class TestSelfExec(unittest.TestCase):
+    """The shared seam itself (:mod:`capa._selfexec`), used by both
+    ``capa test`` and ``capa --watch``."""
+
+    def test_frozen_detection_reads_sys_frozen(self):
+        from capa import _selfexec
+        self.assertFalse(_selfexec.is_frozen())
+        with mock.patch.object(sys, "frozen", True, create=True):
+            self.assertTrue(_selfexec.is_frozen())
+
+    def test_command_forms(self):
+        from capa._selfexec import capa_child_command
+        with mock.patch.object(sys, "executable", "/usr/bin/python3"):
+            self.assertEqual(
+                capa_child_command(["--run", "x.capa"]),
+                ["/usr/bin/python3", "-m", "capa", "--run", "x.capa"],
+            )
+            with mock.patch.object(sys, "frozen", True, create=True):
+                self.assertEqual(
+                    capa_child_command(["--run", "x.capa"]),
+                    ["/usr/bin/python3", "--run", "x.capa"],
+                )
+
+    def test_watch_uses_the_same_seam(self):
+        # --watch carried its own copy of the broken command, so it is
+        # pinned here too: one seam, both callers.
+        from capa import cli
+        target = self._watch_target()
+        seen = {}
+
+        def fake_run(cmd, *a, **kw):
+            seen["cmd"] = cmd
+            raise KeyboardInterrupt
+
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.object(sys, "executable", "/opt/capa/capa"), \
+                mock.patch.object(cli.subprocess, "run", fake_run), \
+                mock.patch.object(sys, "stdout", io.StringIO()):
+            rc = cli._run_watch_loop(str(target), [])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("-m", seen["cmd"])
+        self.assertEqual(seen["cmd"][:2], ["/opt/capa/capa", "--run"])
+
+    def _watch_target(self) -> Path:
+        tmp = Path(tempfile.mkdtemp(prefix="capa_watch_"))
+        self.addCleanup(shutil.rmtree, str(tmp), True)
+        target = tmp / "prog.capa"
+        target.write_text(_PASSING, encoding="utf-8")
+        return target
+
+
 @unittest.skipUnless(
     _wasm_tooling_available(),
     "wasm-tools + wasmtime not available",
