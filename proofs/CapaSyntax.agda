@@ -46,9 +46,19 @@ infix 4 _==_
 -- Capabilities.
 --
 -- The capability tags are an enumerated set. The constructors
--- match the built-in capabilities Capa ships (capa/runtime/
--- _capabilities.py). User-defined capabilities are handled in
--- the full language but not modelled in lambda_cap.
+-- match the ten built-in capabilities Capa ships, whose single
+-- source of truth is BUILTIN_CAPS in capa/ir/_capa_types.py.
+-- The test TestCapabilityRegistry in tests/test_cap_handles.py
+-- parses this datatype and fails if the two lists drift apart.
+-- User-defined capabilities are handled in the full language but
+-- not modelled in lambda_cap.
+--
+-- Every theorem in CapaSoundness.agda and CapaManifestExact.agda
+-- is parametric in the capability tag: the proofs induct on the
+-- typing or reduction derivation and on the `_∈caps_` witness,
+-- never on WHICH capability a tag is. Adding a constructor here
+-- therefore costs exactly one new diagonal line in `singletonCS`
+-- below and no new proof case anywhere.
 ------------------------------------------------------------------
 
 data Cap : Set where
@@ -58,6 +68,9 @@ data Cap : Set where
   Env     : Cap
   Clock   : Cap
   Random  : Cap
+  Proc    : Cap
+  Db      : Cap
+  Serve   : Cap
   Unsafe  : Cap
 
 ------------------------------------------------------------------
@@ -208,6 +221,9 @@ singletonCS Net    Net    = true
 singletonCS Env    Env    = true
 singletonCS Clock  Clock  = true
 singletonCS Random Random = true
+singletonCS Proc   Proc   = true
+singletonCS Db     Db     = true
+singletonCS Serve  Serve  = true
 singletonCS Unsafe Unsafe = true
 singletonCS _      _      = false
 

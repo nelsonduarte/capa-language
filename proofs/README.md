@@ -32,6 +32,13 @@
 > below). The noninterference modules and the gated variant
 > typecheck under Agda's `--safe` flag, which mechanically forbids
 > postulates, `trustMe`, and unsafe pragmas.
+>
+> **Scope caveat:** λ_cap mechanises the CLASS-LEVEL capability
+> footprint over all ten built-in classes. It does NOT mechanise
+> attenuation: `restrict` carries no restriction set and reduces
+> as the identity, so no narrowing property is proved here. See
+> "λ_cap: attenuation is not mechanised" below and
+> [`docs/semantics.md`](../docs/semantics.md) Section 6.1.
 
 ## What this directory is for
 
@@ -75,8 +82,15 @@ tactics differ.
 
 - `CapaSyntax.agda`: syntax of λ_cap. Types (base, function,
   capability), terms (variables, lambdas, applications,
-  capability uses, attenuation, consume), contexts, typing
-  relation, small-step reduction relation, values.
+  capability uses, `restrict`, consume), contexts, typing
+  relation, small-step reduction relation, values. The `Cap`
+  datatype enumerates all TEN built-in capability classes, one
+  constructor each, matching `BUILTIN_CAPS` in
+  `capa/ir/_capa_types.py`; a guard in `tests/test_cap_handles.py`
+  fails if the two lists drift. Note that `restrict` is a
+  capability-tag operation with no restriction argument and no
+  narrowing content: see "λ_cap: attenuation is not mechanised"
+  below.
 
 - `CapaSoundness.agda`: Progress, Preservation, Capability
   Soundness, and Manifest Completeness for λ_cap, proved by
@@ -269,6 +283,41 @@ noninterference modules pass under `--safe`. The paper can cite
 them as such; the Agda source in this directory is the artefact a
 referee opens. No future-item gap remains in the λ_if
 development.
+
+## λ_cap: attenuation is not mechanised
+
+The λ_cap development covers a strict subset of
+[`docs/semantics.md`](../docs/semantics.md) Sections 2 to 5. The
+boundary is stated exactly in that document's Section 6.1; the
+short form, because this README is what a referee opens first:
+
+- **Mechanised.** Syntax, typing, small-step reduction, parallel
+  substitution, Progress, Preservation, Capability Soundness,
+  multi-step Manifest Completeness (as an upper bound, not an
+  equality), and gated introduction confinement. Every one of
+  these is parametric in the capability tag, so they quantify
+  over all ten built-in classes rather than a modelled sample.
+
+- **NOT mechanised: attenuation.** Section 2 of the semantics
+  specifies an attenuation lattice with
+  `attn(cap[c, ρ], ρ') ≡ cap[c, ρ ∩ ρ']`. The Agda contains none
+  of it. `restrict : Cap -> Tm -> Tm` takes no restriction
+  argument, and `R-Restrict` reduces `restrict c (cap c)` to
+  `cap c`, so attenuation here is the IDENTITY on capability
+  values. Nothing in this directory proves that a restricted
+  capability cannot exceed its restriction. The same holds for
+  the operation-parameterised `invoke(e, op)` and the per-class
+  operation sets `Ops(c)` (the Agda's `use` has no `op`
+  parameter), and for the restriction component of the value form
+  `cap[c, ρ]` (the Agda's `cap` carries only a class tag).
+
+This gap is not specific to any one capability class: it affects
+`Net` host sets and `Fs` path prefixes as much as anything else,
+and it has been present since the first version of the
+mechanisation. It is a scheduled piece of separate work, not an
+oversight. Until it is closed, the theorems below should be read
+as results about the CLASS-LEVEL capability footprint, which is
+the granularity the manifest declares.
 
 ## λ_if: deviations from the Section 9 paper proof
 

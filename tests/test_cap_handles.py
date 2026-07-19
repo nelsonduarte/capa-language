@@ -3,6 +3,8 @@
 landing the foundation alone so the wiring slices (25.2 - 25.8)
 have a stable target."""
 
+import pathlib
+import re
 import unittest
 
 from capa.runtime._cap_handles import (
@@ -47,6 +49,70 @@ def _has_wasmtime() -> bool:
         return True
     except ImportError:
         return False
+
+
+# The Agda mechanisation in ``proofs/`` is a FOURTH copy of the
+# capability set: ``CapaSyntax.agda`` declares one ``Cap``
+# constructor per built-in. It drifted for years unnoticed - the
+# model carried seven capabilities while the compiler carried ten,
+# so Capability Soundness and Manifest Completeness quantified over
+# a subset that silently excluded ``Proc``, ``Db`` and ``Serve``.
+# Nothing could catch that: Agda typechecks the model happily
+# whatever the compiler does, and the compiler never reads the
+# model.
+#
+# These guards parse the Agda source as text. That is deliberate:
+# it keeps the check running on every CI job (the ``agda`` workflow
+# only fires on pushes touching ``proofs/``, and no test job has an
+# Agda toolchain), and reading a file at test time cannot break
+# collection the way an optional import can.
+_PROOFS_SYNTAX = (
+    pathlib.Path(__file__).resolve().parents[1] / "proofs" / "CapaSyntax.agda"
+)
+
+_CAP_DATATYPE_RE = re.compile(
+    r"^data Cap : Set where\n((?:[ \t]+.*\n|\n)*)", re.MULTILINE
+)
+_CAP_CONSTRUCTOR_RE = re.compile(r"^\s+(\w+)\s*:\s*Cap\s*$", re.MULTILINE)
+_SINGLETON_DIAGONAL_RE = re.compile(
+    r"^singletonCS\s+(\w+)\s+(\w+)\s*=\s*true\s*$", re.MULTILINE
+)
+
+
+def _agda_source() -> str:
+    """Reads ``proofs/CapaSyntax.agda``.
+
+    Raises ``AssertionError`` rather than ``OSError`` when the file
+    is gone, so a moved or deleted model shows up as a readable test
+    failure naming the expected path.
+    """
+    if not _PROOFS_SYNTAX.is_file():
+        raise AssertionError(
+            "the Agda capability model is missing from "
+            f"{_PROOFS_SYNTAX}; if the proofs moved, update "
+            "_PROOFS_SYNTAX in tests/test_cap_handles.py"
+        )
+    return _PROOFS_SYNTAX.read_text(encoding="utf-8")
+
+
+def _agda_cap_constructors() -> set[str]:
+    """Constructor names of the Agda ``Cap`` datatype."""
+    block = _CAP_DATATYPE_RE.search(_agda_source())
+    if block is None:
+        raise AssertionError(
+            "could not find `data Cap : Set where` in "
+            f"{_PROOFS_SYNTAX}; the guard's parser needs updating"
+        )
+    return set(_CAP_CONSTRUCTOR_RE.findall(block.group(1)))
+
+
+def _agda_singleton_diagonal() -> set[str]:
+    """Caps ``c`` for which ``singletonCS c c = true`` is written out."""
+    return {
+        lhs
+        for lhs, rhs in _SINGLETON_DIAGONAL_RE.findall(_agda_source())
+        if lhs == rhs
+    }
 
 
 class TestCapHandleTable(unittest.TestCase):
@@ -205,6 +271,55 @@ class TestCapabilityRegistry(unittest.TestCase):
             "checker does not accept (add them to "
             "capa.typesys.CAPABILITY_NAMES): "
             f"{sorted(missing_in_frontend)}",
+        )
+
+    def test_agda_cap_datatype_matches_the_builtin_capability_set(self):
+        # The theorems in proofs/CapaSoundness.agda (Capability
+        # Soundness, Manifest Completeness) quantify over the `Cap`
+        # datatype. If the datatype is a strict subset of the
+        # compiler's capabilities then the proofs are silently about
+        # a smaller language than the one that ships, and the
+        # artefact overclaims. If it is a superset the model names a
+        # capability no program can hold.
+        #
+        # Every theorem is parametric in the capability tag, so
+        # keeping these in step costs one constructor plus one
+        # `singletonCS` diagonal line and no proof case.
+        constructors = _agda_cap_constructors()
+        missing_in_agda = BUILTIN_CAPS - constructors
+        missing_in_compiler = constructors - BUILTIN_CAPS
+        self.assertEqual(
+            missing_in_agda, set(),
+            "the Agda model in proofs/CapaSyntax.agda does not cover "
+            "every built-in capability, so the soundness theorems "
+            "quantify over a subset of the real language; add a "
+            "constructor to `data Cap` (and its `singletonCS` "
+            f"diagonal) for: {sorted(missing_in_agda)}",
+        )
+        self.assertEqual(
+            missing_in_compiler, set(),
+            "proofs/CapaSyntax.agda models capabilities the compiler "
+            "does not have; remove them from `data Cap` or add them "
+            "to capa.ir._capa_types.BUILTIN_CAPS: "
+            f"{sorted(missing_in_compiler)}",
+        )
+
+    def test_agda_singleton_capset_has_a_diagonal_for_every_cap(self):
+        # `singletonCS` ends in a catch-all `singletonCS _ _ = false`,
+        # so a constructor added WITHOUT its diagonal line typechecks
+        # clean under --safe and just quietly denotes the empty set
+        # for that capability. Agda's coverage checker cannot help
+        # here (verified: deleting the `Serve` diagonal still exits
+        # 0), so this guard is the only thing standing between a new
+        # capability and a wrong `caps-of`.
+        constructors = _agda_cap_constructors()
+        undiagonalised = constructors - _agda_singleton_diagonal()
+        self.assertEqual(
+            undiagonalised, set(),
+            "`singletonCS` in proofs/CapaSyntax.agda falls through to "
+            "the catch-all for these capabilities, so their singleton "
+            "cap-set is silently empty; add `singletonCS X X = true` "
+            f"above the catch-all for: {sorted(undiagonalised)}",
         )
 
     def test_every_builtin_cap_is_classified_handle_bearing_or_erased(self):
