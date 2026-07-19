@@ -704,6 +704,30 @@ class WorkflowWiringTests(unittest.TestCase):
     def test_both_jobs_refuse_a_ref_that_is_not_a_version_tag(self):
         self.assertEqual(self.text.count("is not a version tag"), 2)
 
+    def test_no_input_is_interpolated_into_a_shell_body(self):
+        """Inputs must reach the shell through ``env:``, never ``${{ }}``.
+
+        An interpolated expression is pasted into the program text
+        before bash ever sees it, so a value containing shell syntax
+        becomes shell syntax. These guards run inside a release workflow
+        holding an OIDC token, which makes them the last place in the
+        system that should hand an input that power. The first draft of
+        this workflow interpolated eleven of them.
+        """
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+        import re
+        doc = yaml.safe_load(self.text)
+        offenders = []
+        for job_name, job in doc["jobs"].items():
+            for step in job["steps"]:
+                for expr in re.findall(r"\$\{\{[^}]+\}\}", step.get("run", "")):
+                    offenders.append(f"{job_name} / {step.get('name')}: {expr}")
+        self.assertEqual(offenders, [], "interpolated into a run body:\n  " +
+                         "\n  ".join(offenders))
+
     def test_the_workflow_is_valid_yaml(self):
         try:
             import yaml

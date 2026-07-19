@@ -137,9 +137,18 @@ jobs:
     steps:
       - name: Resolve the tag
         id: tag
+        # Inputs reach the shell through `env:`, never by `${{ }}`
+        # interpolation into the script body. An interpolated input is
+        # pasted into the program text before bash sees it, so a value
+        # containing shell syntax becomes shell syntax. These guards run
+        # in a release workflow holding an OIDC token; they are the last
+        # place to hand an input that power.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GUARD_SHA: ${{ github.job_workflow_sha }}
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag }}"
+          TAG="${INPUT_TAG}"
           if [ -z "${TAG}" ]; then
             TAG="${GITHUB_REF_NAME}"
           fi
@@ -161,7 +170,6 @@ jobs:
           # BRANCH. That would be a guard quietly running some revision
           # nobody pinned, which is the failure mode this whole workflow
           # exists to refuse.
-          GUARD_SHA="${{ github.job_workflow_sha }}"
           if [ -z "${GUARD_SHA}" ]; then
             echo "ERROR: job_workflow_sha is empty; cannot prove which guard revision would run" >&2
             exit 1
@@ -186,22 +194,25 @@ jobs:
           path: _release_guards
 
       - name: Confirm the guards are the revision the caller pinned
+        env:
+          EXPECTED: ${{ steps.tag.outputs.guard-sha }}
         run: |
           set -euo pipefail
           ACTUAL="$(git -C _release_guards rev-parse HEAD)"
-          if [ "${ACTUAL}" != "${{ steps.tag.outputs.guard-sha }}" ]; then
-            echo "ERROR: checked out guard revision ${ACTUAL}, expected ${{ steps.tag.outputs.guard-sha }}" >&2
+          if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+            echo "ERROR: checked out guard revision ${ACTUAL}, expected ${EXPECTED}" >&2
             exit 1
           fi
           echo "guards at ${ACTUAL}"
 
       - name: Guard 1
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          MANIFEST: ${{ inputs.manifest }}
+          TABLE: ${{ inputs.manifest-table }}
         run: |
           set -euo pipefail
-          bash _release_guards/tools/check_tag_version.sh \
-            "${{ steps.tag.outputs.tag }}" \
-            "${{ inputs.manifest }}" \
-            "${{ inputs.manifest-table }}"
+          bash _release_guards/tools/check_tag_version.sh "${TAG}" "${MANIFEST}" "${TABLE}"
 
   clean-room:
     name: Guard 2 - the artefact builds from a clean location
@@ -216,9 +227,18 @@ jobs:
     steps:
       - name: Resolve the tag
         id: tag
+        # Inputs reach the shell through `env:`, never by `${{ }}`
+        # interpolation into the script body. An interpolated input is
+        # pasted into the program text before bash sees it, so a value
+        # containing shell syntax becomes shell syntax. These guards run
+        # in a release workflow holding an OIDC token; they are the last
+        # place to hand an input that power.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GUARD_SHA: ${{ github.job_workflow_sha }}
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag }}"
+          TAG="${INPUT_TAG}"
           if [ -z "${TAG}" ]; then
             TAG="${GITHUB_REF_NAME}"
           fi
@@ -234,7 +254,6 @@ jobs:
           # 1: an empty ref makes `actions/checkout` fall back to the
           # default branch, so an unset value here would silently swap
           # the guard revision the caller pinned for whatever is on main.
-          GUARD_SHA="${{ github.job_workflow_sha }}"
           if [ -z "${GUARD_SHA}" ]; then
             echo "ERROR: job_workflow_sha is empty; cannot prove which guard revision would run" >&2
             exit 1
@@ -255,22 +274,27 @@ jobs:
           path: _release_guards
 
       - name: Confirm the guards are the revision the caller pinned
+        env:
+          EXPECTED: ${{ steps.tag.outputs.guard-sha }}
         run: |
           set -euo pipefail
           ACTUAL="$(git -C _release_guards rev-parse HEAD)"
-          if [ "${ACTUAL}" != "${{ steps.tag.outputs.guard-sha }}" ]; then
-            echo "ERROR: checked out guard revision ${ACTUAL}, expected ${{ steps.tag.outputs.guard-sha }}" >&2
+          if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+            echo "ERROR: checked out guard revision ${ACTUAL}, expected ${EXPECTED}" >&2
             exit 1
           fi
           echo "guards at ${ACTUAL}"
 
       - name: Decide which released compiler a consumer would have
         id: capa
+        env:
+          INPUT_VERSION: ${{ inputs.capa-version }}
+          MANIFEST: ${{ inputs.manifest }}
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.capa-version }}"
+          VERSION="${INPUT_VERSION}"
           if [ -z "${VERSION}" ]; then
-            VERSION="$(bash _release_guards/tools/capa_floor.sh "${{ inputs.manifest }}")"
+            VERSION="$(bash _release_guards/tools/capa_floor.sh "${MANIFEST}")"
           fi
           echo "Building the artefact with the released capa ${VERSION}."
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -285,9 +309,9 @@ jobs:
         # toolchain no consumer has.
         env:
           GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.capa.outputs.version }}
         run: |
           set -euo pipefail
-          V="${{ steps.capa.outputs.version }}"
           URL="https://github.com/nelsonduarte/capa-language/releases/download/v${V}/capa-linux-x86_64"
           mkdir -p "$HOME/.capa-guard/bin"
           # -f so a 404 is a failure and not a zero-byte "capa".
@@ -299,11 +323,13 @@ jobs:
           echo "$HOME/.capa-guard/bin" >> "$GITHUB_PATH"
 
       - name: Confirm the compiler runs and is the version we asked for
+        env:
+          V: ${{ steps.capa.outputs.version }}
         run: |
           set -euo pipefail
           capa --version
-          capa --version | grep -qF "${{ steps.capa.outputs.version }}" || {
-            echo "ERROR: capa --version does not report ${{ steps.capa.outputs.version }}" >&2
+          capa --version | grep -qF "${V}" || {
+            echo "ERROR: capa --version does not report ${V}" >&2
             exit 1
           }
 
@@ -333,22 +359,33 @@ jobs:
         # That is the stronger check and the weaker position: it can only
         # run after the thing it guards has already shipped, so it belongs
         # in a post-release re-verification, not in the release gate.
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          TARBALL_URL: ${{ inputs.tarball-url }}
         run: |
           set -euo pipefail
-          NAME="${GITHUB_REPOSITORY##*/}-${{ steps.tag.outputs.tag }}.tar.gz"
-          if [ -n "${{ inputs.tarball-url }}" ]; then
+          PREFIX="${GITHUB_REPOSITORY##*/}-${TAG}"
+          NAME="${PREFIX}.tar.gz"
+          if [ -n "${TARBALL_URL}" ]; then
             echo "Fetching the PUBLISHED artefact."
-            curl --proto '=https' --tlsv1.2 -fsSL "${{ inputs.tarball-url }}" -o "${RUNNER_TEMP}/${NAME}"
+            curl --proto '=https' --tlsv1.2 -fsSL "${TARBALL_URL}" -o "${RUNNER_TEMP}/${NAME}"
           else
-            echo "Reconstructing the artefact from ${{ steps.tag.outputs.tag }} (see the step comment)."
-            git archive --format=tar.gz \
-              --prefix="${GITHUB_REPOSITORY##*/}-${{ steps.tag.outputs.tag }}/" \
-              "${{ steps.tag.outputs.tag }}" > "${RUNNER_TEMP}/${NAME}"
+            echo "Reconstructing the artefact from ${TAG} (see the step comment)."
+            git archive --format=tar.gz --prefix="${PREFIX}/" "${TAG}" > "${RUNNER_TEMP}/${NAME}"
           fi
           echo "path=${RUNNER_TEMP}/${NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Guard 2
         id: cleanroom
+        env:
+          # `consumer-commands` is the one input that IS executed by
+          # design, so passing it through env buys no privilege
+          # separation. It is passed this way anyway, because
+          # interpolating a multi-line value into a script body also
+          # breaks the script's own quoting, and a guard that fails to
+          # parse is a guard that does not run.
+          CONSUMER_COMMANDS: ${{ inputs.consumer-commands }}
+          TARBALL: ${{ steps.artefact.outputs.path }}
         run: |
           set -euo pipefail
 
@@ -363,7 +400,7 @@ jobs:
             [ -z "${line}" ] && continue
             case "${line}" in \#*) continue ;; esac
             ARGS+=(--run "${line}")
-          done <<< "${{ inputs.consumer-commands }}"
+          done <<< "${CONSUMER_COMMANDS}"
 
           if [ "${#ARGS[@]}" -eq 0 ]; then
             echo "ERROR: consumer-commands is empty; the clean room would prove nothing" >&2
@@ -376,7 +413,7 @@ jobs:
           # workspace has the source checkout in it, and the whole point
           # is that the artefact must build with nothing of ours nearby.
           bash _release_guards/tools/clean_room_build.sh \
-            --tarball "${{ steps.artefact.outputs.path }}" \
+            --tarball "${TARBALL}" \
             --room "${RUNNER_TEMP}/clean-room" \
             --sha256-out "${RUNNER_TEMP}/tarball.sha256" \
             "${ARGS[@]}"

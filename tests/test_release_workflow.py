@@ -64,16 +64,61 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertEqual(self.wf["permissions"], {})
 
     def test_attesting_jobs_hold_exactly_the_rights_they_need(self):
+        # Split by what a job DOES rather than assuming every job here
+        # publishes. A guard job was added that only reads the checkout
+        # to compare the tag against pyproject.toml, and holding it to
+        # "must have three write tokens" would have forced exactly the
+        # over-granting the workflow-level `permissions: {}` exists to
+        # prevent. Publishers keep the strict equality; everything else
+        # is held to a STRICTER rule, no write rights at all.
         for name, job in self.wf["jobs"].items():
             with self.subTest(job=name):
-                self.assertEqual(
-                    job["permissions"],
-                    {
-                        "contents": "write",
-                        "id-token": "write",
-                        "attestations": "write",
-                    },
+                if self.publishes(job):
+                    self.assertEqual(
+                        job["permissions"],
+                        {
+                            "contents": "write",
+                            "id-token": "write",
+                            "attestations": "write",
+                        },
+                    )
+                else:
+                    self.assertNotIn(
+                        "write", set(job["permissions"].values()),
+                        f"non-publishing job '{name}' holds a write token",
+                    )
+
+    def test_non_publishing_jobs_gate_the_publishing_ones(self):
+        # A job in this file that neither publishes nor is waited on by
+        # something that does is doing nothing at release time. That is
+        # how a guard quietly stops guarding.
+        jobs = self.wf["jobs"]
+        for name, job in jobs.items():
+            if self.publishes(job):
+                continue
+            with self.subTest(job=name):
+                waiters = [
+                    other for other, o in jobs.items()
+                    if name in self.needs_of(o)
+                ]
+                self.assertTrue(
+                    waiters,
+                    f"job '{name}' publishes nothing and nothing waits for it",
                 )
+
+    @staticmethod
+    def needs_of(job: dict) -> list:
+        needs = job.get("needs")
+        if isinstance(needs, str):
+            return [needs]
+        return list(needs or [])
+
+    @staticmethod
+    def publishes(job: dict) -> bool:
+        return any(
+            step.get("uses", "").startswith("softprops/action-gh-release@")
+            for step in job["steps"]
+        )
 
     # ---------------------------------------------------------
     # Attestation coverage
@@ -90,6 +135,13 @@ class TestReleaseWorkflow(unittest.TestCase):
                     uploaded.update(upload_paths(step))
 
             with self.subTest(job=name):
+                if not self.publishes(job):
+                    # A job that uploads nothing must also attest
+                    # nothing: an attestation over a file that is never
+                    # released describes an intermediate nobody can
+                    # verify against.
+                    self.assertEqual(attested, set())
+                    continue
                 self.assertTrue(attested, "job publishes but attests nothing")
                 # Nothing is attested that is not also released, otherwise
                 # the provenance would describe an intermediate file.
