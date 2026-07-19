@@ -7,7 +7,18 @@ name: release-binaries
 # installed to run Capa programs.
 #
 # Each matrix job uploads its artefact to the matching GitHub Release
-# (which must already exist; the workflow does not create the release).
+# (which must already exist; the workflow does not create the release)
+# and generates a SLSA L2 build-provenance attestation for it through
+# Sigstore (keyless OIDC, published to the Rekor transparency log).
+#
+# To verify a downloaded binary or install script on the consumer side:
+#
+#   gh attestation verify capa-linux-x86_64 --owner nelsonduarte
+#   gh attestation verify install.sh        --owner nelsonduarte
+#
+# That confirms the file was produced by this repository's CI from the
+# commit recorded in the attestation, which a `.sha256` cannot do: the
+# hash only proves the download was not corrupted in transit.
 
 on:
   push:
@@ -20,13 +31,19 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write   # upload assets to the release
+# Deny by default at the workflow level and grant per job, so a job added
+# here later starts with no rights at all rather than silently inheriting
+# release-upload and artefact-signing tokens.
+permissions: {}
 
 jobs:
   build:
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # Sigstore OIDC for keyless signing
+      attestations: write   # publish the SLSA provenance attestation
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +122,18 @@ jobs:
           fi
           cat "dist/${{ matrix.asset }}.sha256"
 
+      - name: Generate SLSA L2 provenance
+        # Runs after the rename, so the attested subject is byte for byte
+        # the file uploaded below rather than the intermediate `dist/capa`.
+        # Each matrix job attests only its own binary: the artefact exists
+        # solely on the runner that built it, and attesting it there is what
+        # ties the provenance to the build that actually produced it.
+        # The `.sha256` sidecar is deliberately not attested; the digest it
+        # contains is already the attestation subject.
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-path: dist/${{ matrix.asset }}
+
       - name: Upload binary to release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
         with:
@@ -117,6 +146,10 @@ jobs:
   installer:
     name: Publish install scripts
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # Sigstore OIDC for keyless signing
+      attestations: write   # publish the SLSA provenance attestation
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -129,6 +162,17 @@ jobs:
           cd deploy
           sha256sum install.sh > install.sh.sha256
           sha256sum install.ps1 > install.ps1.sha256
+
+      - name: Generate SLSA L2 provenance
+        # The install scripts are the highest-value target in this release:
+        # they are what a user pipes straight into a shell. They are uploaded
+        # verbatim from the checkout, so attesting the checked-out paths
+        # attests exactly the bytes that get published.
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-path: |
+            deploy/install.sh
+            deploy/install.ps1
 
       - name: Upload installers to release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
