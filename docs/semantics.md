@@ -10,6 +10,15 @@
 > with no `postulate` remaining; CI typechecks them on every
 > change to [`proofs/`](../proofs/).
 >
+> **The mechanisation covers a strict subset of this document.**
+> Progress, Preservation, Capability Soundness and Manifest
+> Completeness are genuinely machine-checked over all ten
+> capability classes. The attenuation lattice of Section 2, the
+> operation-parameterised `invoke`, and the restriction component
+> of `cap[c, ρ]` are **specified here but absent from the Agda**;
+> attenuation is modelled as the identity. Section 6.1 states the
+> boundary exactly. Read it before citing this document.
+>
 > Audience: reviewers who want a reference-quality account of
 > the discipline plus a mechanised soundness argument they can
 > re-check independently.
@@ -54,8 +63,14 @@ v ::=  λx:T. e                     lambda value
     |  ()                          unit
 ```
 
-Each capability class `c` ranges over a fixed finite set
-`𝒞 = { Stdio, Fs, Net, Env, Clock, Random, Proc, Db, Unsafe }`. A
+Each capability class `c` ranges over a fixed finite set of the
+ten built-in classes
+`𝒞 = { Stdio, Fs, Net, Env, Clock, Random, Proc, Db, Serve,
+Unsafe }`, whose single source of truth in the compiler is
+`BUILTIN_CAPS` in
+[`capa/ir/_capa_types.py`](../capa/ir/_capa_types.py) and which the
+Agda `Cap` datatype enumerates constructor for constructor (a test
+guard fails if the two drift). A
 restriction `ρ ⊆ Σ_c` is a finite subset of the *scope set*
 for class `c` (host names for `Net`, path prefixes for `Fs`,
 key names for `Env`, etc.). `ρ = ⊤` denotes the unattenuated
@@ -282,6 +297,87 @@ property. A reviewer who pushes for it has to accept that "the
 manifest is an upper bound on the dynamic capability surface"
 is the load-bearing claim, not "the manifest is exactly the
 dynamic capability surface".
+
+---
+
+## 6.1 Mechanisation coverage: what the Agda contains
+
+The λ_cap mechanisation covers a **strict subset** of the prose in
+Sections 2 to 5. This subsection says which subset, in the same
+voice as the λ_if deviations D1 to D3 (Section 9.8 and
+[`proofs/README.md`](../proofs/README.md)), so a referee opening
+the artefact knows before reading it which parts of this document
+are backed by a machine and which are specification only.
+
+**Mechanised, under `--safe`, with no `postulate` remaining**
+([`proofs/CapaSyntax.agda`](../proofs/CapaSyntax.agda),
+[`proofs/CapaSoundness.agda`](../proofs/CapaSoundness.agda),
+[`proofs/CapaManifestExact.agda`](../proofs/CapaManifestExact.agda)):
+the term syntax, the typing relation, the small-step reduction
+relation, PLFA-style parallel renaming and substitution, Progress,
+Preservation, Theorem 1 (Capability Soundness) in its single-step
+form, Theorem 2 (Manifest Completeness) in its multi-step form,
+and literal-introduction confinement for the gated variant. All of
+these quantify over the full ten-element `𝒞`: every theorem is
+parametric in the capability tag, so the class set is a genuine
+universal quantifier and not a modelled sample. Theorem 2 is an
+**upper bound**, not an exactness result, and
+[`proofs/CapaSoundness.agda`](../proofs/CapaSoundness.agda)
+explains why the exactness version is false in general (a program
+may declare a capability parameter and never use it).
+
+**Specified above but NOT mechanised.** Three gaps, all of them
+consequences of one modelling decision:
+
+- **M1 (attenuation is modelled as the identity).** Section 2
+  specifies the attenuation lattice `(𝒫(Σ_c), ⊆)` and the
+  greatest-lower-bound equation
+  `attn(cap[c, ρ], ρ') ≡ cap[c, ρ ∩ ρ']`. The Agda has none of
+  it. `restrict : Cap -> Tm -> Tm` takes **no restriction
+  argument at all**, and the rule `R-Restrict` reduces
+  `restrict c (cap c)` to `cap c`. Attenuation in the
+  mechanisation is therefore the identity on capability values,
+  and the development proves nothing whatsoever about narrowing.
+  Nothing in the Agda rules out a "restricted" capability
+  reaching authority its restriction excludes; that property is
+  simply not stated there. This gap is not specific to any one
+  class: it affects `Net` host sets and `Fs` path prefixes
+  exactly as much as anything newer, and it has been present
+  since the first version of the mechanisation.
+
+- **M2 (`invoke` is not operation-parameterised).** Sections 2
+  and 3 give `invoke(e, op)` with a per-class operation set
+  `Ops(c)` and a scope predicate `α_op : Σ_c → Bool` deciding
+  whether an attenuation permits the operation. The Agda's
+  `use : Cap -> Tm -> Tm` carries only the class tag. The
+  mechanisation therefore tracks *which class* a term exercises
+  and never *which operation*, and no scope predicate is
+  evaluated anywhere in it.
+
+- **M3 (capability values carry no restriction).** Section 2's
+  value form is `cap[c, ρ]`. The Agda constructor is
+  `cap : Cap -> Tm`, a bare class tag. This is a corollary of
+  M1 rather than an independent gap, but it is worth stating
+  separately because it means the restriction component has no
+  representation in the model at all, not even an inert one.
+
+**What this costs, stated precisely.** The mechanised theorems are
+about the *class-level* capability footprint: which of the ten
+classes a program can exercise. That is exactly the granularity
+the manifest declares, so Theorems 1 and 2 are meaningful, and
+re-checkable, as stated. What is *not* machine-backed is any claim
+about attenuation: that `restrict_to` narrows authority, that
+narrowing is monotone, or that a restricted handle cannot exceed
+its restriction. Read the attenuation content of this document as
+specification awaiting mechanisation.
+
+**This is a scheduled decision, not an oversight.** Building real
+attenuation semantics into λ_cap (restriction-carrying capability
+values, a lattice-valued `restrict`, and a monotonicity theorem)
+is deliberately held out of the present work and tracked as its
+own project. Note that item 2 of Section 7 below, "attenuation
+completeness", presumes the lattice is already in the model; until
+M1 is closed, that item is a second step rather than the next one.
 
 ---
 
