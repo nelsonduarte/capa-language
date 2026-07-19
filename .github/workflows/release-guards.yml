@@ -220,8 +220,11 @@ jobs:
     if: ${{ inputs.run-clean-room }}
     runs-on: ubuntu-latest
     permissions:
+      # Read only, deliberately. `gh attestation verify` needs an API
+      # read, NOT `id-token: write`: that token is for GENERATING an
+      # attestation, and these guards generate nothing. A guard has no
+      # business holding a credential that can sign anything.
       contents: read
-      id-token: write   # `gh attestation verify` on the compiler binary
     outputs:
       tarball-sha256: ${{ steps.cleanroom.outputs.sha256 }}
     steps:

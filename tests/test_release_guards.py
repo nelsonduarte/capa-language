@@ -660,8 +660,22 @@ class WorkflowWiringTests(unittest.TestCase):
     def test_permissions_are_denied_by_default(self):
         self.assertIn("permissions: {}", self.text)
 
-    def test_guards_never_get_a_write_token_on_contents(self):
-        self.assertNotIn("contents: write", self.text)
+    def test_guards_never_hold_a_write_token_of_any_kind(self):
+        """A guard generates nothing, so it needs no credential to sign with.
+
+        `id-token: write` in particular is for GENERATING an attestation,
+        not for `gh attestation verify`, which only needs an API read.
+        It was granted here on that mistaken reading and removed.
+        """
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+        for name, job in yaml.safe_load(self.text)["jobs"].items():
+            self.assertNotIn(
+                "write", set(job["permissions"].values()),
+                f"guard job '{name}' holds a write token: {job['permissions']}",
+            )
 
     def test_it_is_callable_as_a_reusable_workflow(self):
         self.assertIn("workflow_call:", self.text)
