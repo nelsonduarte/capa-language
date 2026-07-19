@@ -9,6 +9,239 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.18.0], 2026-07-19
+
+> **The first release whose binaries carry SLSA build provenance.**
+> Every asset attached to `v1.18.0` and later can be verified with
+> `gh attestation verify <asset> --owner nelsonduarte`. Assets attached
+> to `v1.17.0` and earlier **cannot**: that command returns HTTP 404 for
+> them, because the attestation workflow merged after `1.17.0` shipped.
+> A 404 on an older binary is history, not tampering. The existing
+> assets were deliberately NOT retro-attested: signing today's
+> attestation over bytes built on another day would assert a build that
+> did not happen, which is precisely the claim this project exists not
+> to make. Verify older downloads with the `.sha256` sidecars, which
+> those releases do carry, and upgrade to `1.18.0` for provenance.
+
+**Added.**
+
+- *SLSA build provenance for the compiler binaries and the install
+  scripts (#84).* The release assets shipped with a `.sha256` and
+  nothing else, while every library in the ecosystem publishes SLSA L2
+  provenance. A hash proves a download was not corrupted in transit; it
+  says nothing about **who** built the file or **from what source**,
+  which is backwards for a project whose thesis is machine-verifiable
+  supply-chain integrity. Each matrix job now attests its own binary,
+  and does so **after** the rename, so the attested subject is the asset
+  a user actually downloads rather than the intermediate `dist/capa`.
+  The installer job attests `install.sh` and `install.ps1`, the two
+  assets users pipe straight into a shell. The `.sha256` sidecars are
+  deliberately not attested: the digest they carry is already the
+  attestation's subject, so attesting them would add a second, weaker
+  statement about the same bytes. Permissions moved from a
+  workflow-wide `contents: write` to per-job grants of
+  `contents` / `id-token` / `attestations`, with `permissions: {}` at
+  the workflow level so a job added later starts with **no** rights
+  instead of silently inheriting release-upload and artefact-signing
+  tokens. `tests/test_release_workflow.py` guards the properties that
+  are cheap to break by editing YAML: every uploaded artefact is
+  attested or is a sidecar of one, the binary is attested after the
+  rename, signing rights stay per job, and every action stays pinned to
+  a full commit SHA.
+
+- *One reusable release-guard workflow, and this repository's own
+  release gated on it (#86).* Three things shipped broken in the week
+  before this release, and they were one bug wearing three hats:
+  verification that ran **where we are**, proving nothing about where
+  the **user** is. A package was published GPG-signed, SLSA-attested
+  and CI-green that did not compile for anyone who downloaded it; a
+  repository export-ignored `tools/`, so its tarball shipped a README
+  telling readers to run a script it did not contain; and a release
+  shipped tagged `v0.2.0` with its manifest still saying `0.1.0`.
+  `.github/workflows/release-guards.yml` is callable via
+  `workflow_call` and answers all three.
+  `tools/check_tag_version.sh` requires the tag to equal the manifest
+  version, and takes the TOML table as an argument, which is what lets
+  one script read `capa.toml`'s `[package]` and this repository's
+  `pyproject.toml` `[project]` instead of being copied and edited per
+  repository. `tools/clean_room_build.sh` extracts the artefact into a
+  directory **with no siblings** and runs the consumer flow there with a
+  **released** compiler, never the working tree.
+  `tools/capa_floor.sh` derives the declared compiler floor.
+  **Reusable, not copy-pasteable**: N copies of a security guard are N
+  copies that drift, and a drifted copy still reports success (this
+  compiler learned that expensively when a capability tuple turned up
+  hand-copied at 21 sites). The workflow fetches its scripts at
+  `github.job_workflow_sha`, so a caller runs exactly the revision it
+  pinned. **Fail closed, everywhere**: an absent manifest, a compiler
+  floor in a form we do not parse, a room that is not empty, a tarball
+  with more than one top-level entry, and above all an **empty command
+  list**, which would be a clean room reporting success for running
+  nothing, are all errors. An empty `job_workflow_sha` is refused
+  *before* the checkout, because `actions/checkout` given an empty ref
+  silently takes the default branch, which would be a guard running a
+  revision nobody pinned. Guard inputs arrive through `env:` rather
+  than `${{ }}` interpolation into shell bodies, because an
+  interpolated expression is pasted into the program text before bash
+  sees it, and these guards run inside a release workflow holding an
+  OIDC token. This repository was exempting itself from all of it, with
+  the identical tag-versus-manifest exposure; a `guard` job now runs
+  first and both publishing jobs `needs:` it. The suite's 34 cases are
+  mostly negative, because a guard is worth what its failures are
+  worth, and it is mutation-tested: replacing each of the three scripts
+  with `exit 0` fails 14, 12 and 14 cases respectively.
+
+- *The Agda model covers all ten capabilities (#87).* The capability
+  count had diverged three ways: `proofs/CapaSyntax.agda` modelled
+  seven, `capa/ir/_capa_types.py` has ten, and `docs/semantics.md`
+  stated a third figure of nine. `Proc`, `Db` and `Serve` join the Agda
+  `Cap` datatype, so Capability Soundness and Manifest Completeness now
+  quantify over the capability set that actually ships. Every theorem
+  turned out to be **parametric in the capability tag**: the proofs
+  induct on the typing or reduction derivation and on the `_∈caps_`
+  witness, never on which capability a tag is, so the whole cost was
+  three constructors, three `singletonCS` diagonal lines, and zero new
+  proof cases. Two tests cross-check the Agda datatype against
+  `BUILTIN_CAPS` by parsing the file as text, so they always run even
+  though no test job has an Agda toolchain. The second guard exists
+  because of a latent hazard found while doing this: `singletonCS` ends
+  in a catch-all, so a constructor added *without* its diagonal line
+  typechecks clean under `--safe` and quietly denotes the **empty**
+  cap-set for that capability. Agda's coverage checker cannot catch
+  that; verified by deleting the `Serve` diagonal, which still exits 0.
+
+- *Real attenuation in λ_cap, proved to only ever narrow (#88).* PR #87
+  disclosed that `docs/semantics.md` specified an attenuation lattice
+  under a header announcing "Status: mechanised" while the Agda
+  contained none of it: `restrict` took no restriction argument and
+  reduced `restrict c (cap c)` to `cap c`, modelling attenuation as the
+  **identity**. That gap predated `Serve` and affected `Net` and `Fs`
+  equally. It is now closed. A capability value is `cap c ρ`, carrying
+  a restriction, modelled as the characteristic function of a subset of
+  an abstract scope set, so `Σ_c` is universally quantified and each
+  class's theory follows by instantiation. `R-Restrict` is `E-Attn`
+  verbatim: `restrict c ρ' (cap c ρ)` reduces to `cap c (ρ ∩R ρ')`.
+  Narrowing is proved in **three widths** in the new
+  `proofs/CapaAttenuation.agda`: for a single attenuation, for a chain
+  of any length (`tower-is-one-meet` shows a chain is equivalent to a
+  single attenuation by the meet of all its links, so grouping and
+  order are irrelevant), and `attenuation-monotonicity` for arbitrary
+  reduction of any well-typed program, where every reachable capability
+  value is bounded by one already present in the source.
+  `authority-bounded` restates that in security vocabulary: if anything
+  reachable permits a request, something in the source already
+  permitted it. Crucially the restriction is **operationally
+  load-bearing**, which is what stops the monotonicity theorem from
+  being vacuously true of an identity `restrict`: `use c x t` reduces
+  to the boolean the receiver's restriction assigns to the request `x`,
+  so a narrowed capability answers observably differently. Part 5
+  exhibits a concrete request permitted before an attenuation and
+  denied after it, and refutes the claim that the two restrictions are
+  equivalent; weakening `R-Restrict` back to the identity stops those
+  witnesses typechecking, which is the intended tripwire. The
+  fail-closed convention is proved too (`denyAll-denies`,
+  `denyAll-is-final`), as is the fact that attenuating by the top
+  element restores nothing, which is why `serve.restrict_to("*:*")` on
+  an already-narrowed capability is not an escape. All six modules
+  typecheck under `--safe` with no `postulate`, on the pinned Agda
+  `2.6.4.3`, and a new guard fails if a module in `proofs/` has no
+  typecheck step in the workflow, so a proof file cannot silently go
+  unchecked. **Not finished**: gap M2 is only *partly* closed (`use`
+  carries the scope argument and the predicate is evaluated at
+  reduction, but the per-class operation enumeration `Ops(c)` is still
+  absent), the two calculi λ_cap and λ_if remain separate developments
+  rather than one unified model, and fidelity between either calculus
+  and the Python implementation is still argued informally. See
+  `docs/semantics.md` Section 6.1 and `proofs/README.md`.
+
+**Changed.**
+
+- *The module resolver's project-root fallback is scoped to the
+  package's own name (#85). This is a **behaviour change** and it can
+  break a build that previously succeeded.* Whenever a `capa.toml`
+  existed in the working directory, the **parent of the project root**
+  was an open module search root, and `capa test` injected the same
+  parent into each test subprocess's `CAPA_PATH`. Two mitigations kept
+  it from *shadowing* a verified dependency (it was appended after
+  `./vendor` and the path dependencies, and de-duplicated), but nothing
+  kept it from *satisfying* an import that `./vendor` could not, and
+  that is the real hazard. An undeclared transitive dependency resolved
+  against whatever same-named sibling directory happened to sit next to
+  the project: never fetched, never verified against `capa.lock`, never
+  GPG-verified, never pinned, and absent from the SBOM. The build
+  linked sources the provenance machinery never saw, and reported
+  success. A missing dependency is supposed to fail loudly and closed;
+  this failed silently and **open**, which for a language whose thesis
+  is machine-verifiable supply chains is the one outcome that cannot be
+  tolerated. It had masked a real defect for months: `capa_authgate`
+  `v0.1.0` shipped without its transitive `capa_hash` and its published
+  tarball does not compile, yet the development tree compiled fine
+  because a `capa_hash` checkout sat beside it. The documented
+  justification for the fallback was always narrower than the fallback
+  itself, namely a package importing **its own name**, as a seed
+  library whose repository directory is the package does, so that is
+  now exactly what is served: `[package].name` maps to the project root
+  in the dependency-root table alongside the declared `path`
+  dependencies, and the parent is no longer a search root in either the
+  CLI or the test runner. A declared dependency of the same name still
+  wins, so the self-entry can never displace a resolved dependency, and
+  keying on the manifest name rather than the directory basename makes
+  the self-reference work in a working copy checked out under a
+  different directory name. `verify_vendored_deps` still fails closed
+  before `./vendor` joins the search path, and `./vendor` and the path
+  dependencies keep their precedence. **If your build breaks**, the
+  `cannot resolve 'import x.y'` you now get is correct: declare the
+  dependency in `capa.toml`, run `capa install` so it is fetched,
+  verified and lockfile-pinned, and re-emit any SBOM you published for
+  the affected release, because it under-reported your dependency set.
+  Module resolution order is a SemVer-covered surface, so this change
+  ships under the `STABILITY.md` **security exception** with a full
+  advisory at
+  [`docs/advisories/2026-07-19-supply-chain.md`](docs/advisories/2026-07-19-supply-chain.md).
+
+**Fixed.**
+
+- *PyYAML was undeclared, so eleven workflow-guard tests skipped on a
+  correct install while the suite printed OK (#86).* CodeQL flagged
+  four `py/uninitialized-local-variable` alerts on the
+  `try: import yaml / except ImportError: self.skipTest(...)` construct.
+  About the runtime the alerts were false positives, since `skipTest`
+  raises and CodeQL does not model it as `NoReturn`. They were not
+  suppressed, because the construct they pointed at was concealing a
+  real defect. PyYAML was declared in **no** extra of `pyproject.toml`,
+  so the skip was not a courtesy for someone who omitted the `[test]`
+  extra: it was what happened on a correct install. Measured by
+  blocking the import, `RAN=42 SKIPPED=11 FAILED=0 ERRORS=0`, reported
+  as OK. The eleven included "every action is pinned to a commit SHA",
+  "workflow-level permissions deny everything", "every uploaded
+  artefact is attested or a sha256 sidecar", "install scripts are
+  attested" and "the binary is attested after the rename". The guards
+  on the compiler's own release supply chain were inert, and printed OK
+  while inert. Seven of the eleven predated this release. PyYAML now
+  joins the `[test]` extra and both modules import it unconditionally,
+  so a missing PyYAML is an **error at import time** under
+  `python -m unittest discover tests` rather than a silent pass. Two
+  new tests keep it that way: one asserts `pyyaml` is still declared,
+  one asserts neither module catches `ImportError` at all, parsing the
+  AST rather than grepping, because both modules now discuss this
+  defect in their own prose and a textual search matched the
+  explanation as readily as the thing explained. Note that before this
+  fix, two of the five workflow mutations the suite is meant to catch
+  were caught *only* by tests that skipped without PyYAML, so on such a
+  machine those mutations passed silently.
+
+- *`docs/semantics.md` no longer overstates the mechanisation (#87,
+  #88).* The document announced "Status: mechanised" over an
+  attenuation lattice the Agda did not contain, and stated a capability
+  count matching neither the model nor the compiler. New Section 6.1
+  states the mechanisation boundary exactly, in the same voice as the
+  existing λ_if D1 / D2 / D3 deviations, and `proofs/README.md` carries
+  the matching short form since that is what a referee opens first.
+  Progress, Preservation, Capability Soundness and Manifest
+  Completeness are not softened: they are genuinely proved with no
+  postulates, and Manifest Completeness remains honestly stated as an
+  **upper bound** rather than an exactness result.
+
 ## [1.17.0], 2026-07-18
 
 **Added.**

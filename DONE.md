@@ -19,6 +19,77 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.18.0: attested release binaries, reusable release guards, the resolver fallback narrowed, attenuation mechanised (2026-07-19)
+
+- **SLSA build provenance for the release assets (#84).** The compiler's
+  own binaries shipped with a `.sha256` and nothing else while every
+  ecosystem library published SLSA L2 provenance. Each matrix job now
+  attests its binary after the rename, so the attested subject is the
+  released asset rather than the intermediate `dist/capa`; the installer
+  job attests `install.sh` and `install.ps1`. Sidecars are not attested
+  (their digest is already the attestation subject). Workflow-level
+  `permissions: {}` with per-job `contents` / `id-token` /
+  `attestations`, so a job added later starts with no rights.
+  `tests/test_release_workflow.py` guards the YAML-editable properties.
+  **`v1.18.0` is the first release whose binaries can be verified with
+  `gh attestation verify`;** `v1.17.0` and earlier return HTTP 404, and
+  were deliberately not retro-attested, because attesting today over
+  bytes built on another day asserts a build that did not happen.
+- **One reusable release-guard workflow (#86).** Three artefacts shipped
+  broken in one week, all from verification that ran where we are rather
+  than where the user is. `tools/check_tag_version.sh` (tag equals
+  manifest version, with the TOML table as an argument so one script
+  reads both `[package]` and `[project]`), `tools/clean_room_build.sh`
+  (extract into a sibling-free directory, run the consumer flow with a
+  released compiler) and `tools/capa_floor.sh`, wired into
+  `release-guards.yml` as a `workflow_call` target that fetches its
+  scripts at `github.job_workflow_sha`. Reusable rather than
+  copy-pasteable, because a drifted copy of a guard still reports
+  success. Fail-closed on every way of not knowing, including an empty
+  command list and an empty `job_workflow_sha` (refused before the
+  checkout, since `actions/checkout` with an empty ref silently takes
+  the default branch). Inputs travel through `env:` rather than `${{ }}`
+  interpolation into shell bodies. This repository stopped exempting
+  itself: a `guard` job gates both publishing jobs. 34 mostly-negative
+  cases, mutation-tested at 14 / 12 / 14.
+- **The module resolver's project-root fallback scoped to the package's
+  own name (#85).** The parent of the project root was an open search
+  root, so an undeclared transitive dependency could be satisfied by a
+  same-named sibling directory that was never fetched, verified, pinned
+  or recorded in the SBOM. It failed silently and open, and had masked
+  `capa_authgate` `v0.1.0`'s missing `capa_hash` for months. Now
+  `[package].name` maps to the project root and the parent is not a
+  search root, in the CLI or the test runner. Behaviour change on a
+  SemVer-covered surface, shipped under the security exception with
+  [`docs/advisories/2026-07-19-supply-chain.md`](docs/advisories/2026-07-19-supply-chain.md).
+- **PyYAML declared, and eleven inert guard tests reactivated (#86).**
+  PyYAML was in no extra, so the workflow-guard suites skipped on a
+  correct install and printed OK while inert (`RAN=42 SKIPPED=11`).
+  Seven of the eleven predated this release, and two of the five
+  workflow mutations the suite exists to catch were passing silently on
+  such a machine. PyYAML joins `[test]`; both modules import it
+  unconditionally, so its absence is now an import-time error.
+- **The Agda model extended to all ten capabilities (#87).** The count
+  had diverged three ways (seven in Agda, ten in the compiler, nine in
+  the docs). Every theorem proved parametric in the capability tag, so
+  the cost was three constructors and zero new proof cases. Two text
+  guards cross-check the datatype against `BUILTIN_CAPS`, one of them
+  because `singletonCS`'s catch-all lets a constructor added without its
+  diagonal line typecheck clean and quietly denote the empty cap-set.
+- **Real attenuation in λ_cap, with monotonicity proved (#88).**
+  `docs/semantics.md` specified an attenuation lattice under a
+  "mechanised" header while the Agda modelled `restrict` as the
+  identity. Now `cap c ρ` carries a restriction, `R-Restrict` is
+  `E-Attn` verbatim, and narrowing is proved in three widths, including
+  `attenuation-monotonicity` over arbitrary reduction of any well-typed
+  program. The restriction is operationally load-bearing (`use c x t`
+  consults it), which is what stops the theorem from being vacuous. Six
+  modules under `--safe`, no postulates, pinned Agda `2.6.4.3`, plus a
+  guard that fails if a module in `proofs/` has no typecheck step.
+  **Still open:** M2 only partly closed (`Ops(c)` not enumerated), λ_cap
+  and λ_if not unified, and calculus-to-implementation fidelity still
+  argued informally.
+
 ## v1.17.0: Serve (inbound capability), the capability registry, Python/Wasm parity fixes (2026-07-18)
 
 - **`Serve`, the tenth built-in capability (#82).** Inbound connections

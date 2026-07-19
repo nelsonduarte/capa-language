@@ -1,6 +1,6 @@
 # Stability policy
 
-Capa ships as `1.17.0` (released 2026-07-18). The
+Capa ships as `1.18.0` (released 2026-07-19). The
 **stability commitment described below is now in effect**: the
 surfaces listed are covered by SemVer from this release on. The
 commitment is the only thing that changed at 1.0; the language
@@ -16,7 +16,7 @@ ship as **minor**; bug fixes ship as **patch**.
 |---------|-----------------|
 | Language grammar | [`docs/reference.md`](docs/reference.md), [`Capa-EBNF.md`](Capa-EBNF.md) |
 | Standard library types and methods | [`docs/stdlib.md`](docs/stdlib.md) |
-| Built-in capability surface (`Fs`, `Net`, `Env`, `Clock`, `Random`, `Stdio`, `Proc`, `Db`, `Unsafe`) | [`docs/stdlib.md`](docs/stdlib.md) |
+| Built-in capability surface (`Fs`, `Net`, `Env`, `Clock`, `Random`, `Stdio`, `Proc`, `Db`, `Serve`, `Unsafe`) | [`docs/stdlib.md`](docs/stdlib.md) |
 | Public CLI subcommands and flags | [`README.md`](README.md), `--help` output |
 | Capability manifest JSON schema | [`capa-language.com/manifest.html`](https://capa-language.com/manifest.html) |
 | CycloneDX / SPDX / VEX / SLSA emitted schemas | the respective external specs the compiler conforms to |
