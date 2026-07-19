@@ -37,8 +37,37 @@ on:
 permissions: {}
 
 jobs:
+  guard:
+    # RELEASE GUARD 1, gating everything below via `needs`. capa_authgate
+    # v0.2.0 shipped tagged v0.2.0 with its manifest still saying 0.1.0,
+    # because nothing in its release workflow had ever compared the two.
+    # This repository has the identical exposure: the tag says v1.17.0
+    # and pyproject.toml says the version independently, and until now
+    # nothing checked that they agreed. A tag cannot be rewritten without
+    # destroying the provenance it anchors, so the check has to happen
+    # BEFORE any binary is built, attested or uploaded.
+    #
+    # It runs the SAME script as the reusable release-guards.yml workflow
+    # that package repositories call, pointed at the [project] table
+    # instead of [package]. One guard, one place to audit it.
+    name: Guard - tag matches pyproject version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Verify tag matches the manifest version
+        run: |
+          bash tools/check_tag_version.sh \
+            "${{ github.event.inputs.tag || github.ref_name }}" \
+            pyproject.toml \
+            project
+
   build:
     name: Build ${{ matrix.label }}
+    needs: guard
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write       # upload assets to the release
@@ -145,6 +174,7 @@ jobs:
 
   installer:
     name: Publish install scripts
+    needs: guard
     runs-on: ubuntu-latest
     permissions:
       contents: write       # upload assets to the release

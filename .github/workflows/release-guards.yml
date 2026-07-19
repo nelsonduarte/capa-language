@@ -1,0 +1,424 @@
+name: release-guards
+
+# THE RELEASE GUARDS, as ONE reusable workflow.
+#
+# Three things shipped broken in one week, and they were the same bug
+# wearing three hats: verification that ran WHERE WE ARE, proving
+# nothing about where the USER is.
+#
+#   1. capa_authgate v0.1.0 was published, signed, SLSA-attested and
+#      CI-green, and did not compile for anyone who downloaded it. Our
+#      ~/Desktop/repos layout, with every library side by side, silently
+#      satisfied an import the manifest never declared.
+#   2. The same repo export-ignored tools/, so the tarball shipped a
+#      README telling readers to run a script it did not contain.
+#   3. v0.2.0 shipped with capa.toml still saying version = "0.1.0".
+#
+# Guard 1 catches the third. Guard 2 catches the first two.
+#
+# WHY REUSABLE AND NOT A SNIPPET TO COPY. N copies of a security guard
+# are N copies that drift, and there is then no single thing to audit.
+# This compiler already learned that lesson expensively: a handle-bearing
+# capability tuple had been hand-copied to 21 sites before it was given
+# one source of truth. A release guard is a worse candidate for copying
+# than that tuple was, because a drifted copy still reports success.
+#
+# WHY THIS REPOSITORY IS ITS HOME. Every Capa package already pins its
+# compiler version to this repository, and the publisher-key policy
+# lives here. Adopting the guards therefore adds no new trust
+# relationship to any consumer: they already trust this repo to compile
+# their code.
+#
+# HOW TO CALL IT (from a package repo's release.yml, on a v* tag):
+#
+#   jobs:
+#     guards:
+#       # Pin by COMMIT SHA, not by tag: a tag is mutable, and a guard you
+#       # cannot pin is a guard someone else can edit under you. Replace
+#       # the placeholder with the SHA of the revision you audited, and
+#       # keep the trailing version comment so a reader knows what it is.
+#       uses: nelsonduarte/capa-language/.github/workflows/release-guards.yml@REPLACE_WITH_AUDITED_SHA  # v1.17.0
+#       with:
+#         consumer-commands: |
+#           gpg --import publisher.asc
+#           capa install
+#           python tools/nest_vendor.py
+#           capa --check main.capa
+#           capa test
+#     release:
+#       needs: guards          # <- the guards gate the publish
+#       ...
+#
+# `needs: guards` is what makes the ordering real. Both guards run
+# BEFORE the caller builds, attests or publishes anything, because a
+# mismatch caught after publication is a mismatch that shipped, and a
+# tag is not rewritable without destroying the provenance it anchors.
+#
+# THEY FAIL CLOSED, everywhere, on purpose. Every way of not knowing is
+# an error: an unresolvable tag, an absent manifest, a compiler floor in
+# a form we do not parse, a download that 404s, an attestation that does
+# not verify, a clean room that is not empty, a tarball with more than
+# one top-level entry, and above all an EMPTY consumer-commands, which
+# would otherwise be a guard reporting success for running nothing. A
+# guard that passes when it cannot do its job manufactures false
+# confidence, which is worse than having no guard at all.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag under release. Defaults to the caller''s ref name.'
+        required: false
+        type: string
+        default: ''
+      manifest:
+        description: 'Manifest holding the authoritative version.'
+        required: false
+        type: string
+        default: 'capa.toml'
+      manifest-table:
+        description: 'TOML table holding the version (capa.toml uses package, pyproject.toml uses project).'
+        required: false
+        type: string
+        default: 'package'
+      consumer-commands:
+        description: |
+          The consumer flow, one command per line, run inside the extracted
+          artefact in the clean room. Blank lines and # comments are ignored.
+          These are the commands your README tells a downloader to run.
+          Required unless run-clean-room is false.
+        required: false
+        type: string
+        default: ''
+      capa-version:
+        description: |
+          Released compiler version to build with, without the leading v.
+          Empty (the default) derives it from the manifest's own
+          `capa = ">=X.Y.Z"` floor, which is the honest choice: it is the
+          oldest compiler a consumer could obey the manifest with.
+        required: false
+        type: string
+        default: ''
+      tarball-url:
+        description: |
+          URL of the already-published artefact. Empty (the default)
+          reconstructs it from the tag with the same `git archive` the
+          publisher uses. See "THE ONE HONEST LIMITATION" below.
+        required: false
+        type: string
+        default: ''
+      run-clean-room:
+        description: |
+          Set false ONLY for a repository that is not a Capa package and so
+          has no consumer build (this compiler itself, for instance). It is
+          an explicit, reviewable declaration in your workflow, never a
+          silent skip.
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      tarball-sha256:
+        description: |
+          SHA-256 of the exact bytes guard 2 built. Assert your published
+          artefact matches this; see "THE ONE HONEST LIMITATION".
+        value: ${{ jobs.clean-room.outputs.tarball-sha256 }}
+
+# Deny by default at the workflow level and grant per job, so a job added
+# here later starts with no rights at all. These guards read; they never
+# write a release, and they must never be able to.
+permissions: {}
+
+jobs:
+  tag-version:
+    name: Guard 1 - tag matches the manifest version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve the tag
+        id: tag
+        # Inputs reach the shell through `env:`, never by `${{ }}`
+        # interpolation into the script body. An interpolated input is
+        # pasted into the program text before bash sees it, so a value
+        # containing shell syntax becomes shell syntax. These guards run
+        # in a release workflow holding an OIDC token; they are the last
+        # place to hand an input that power.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GUARD_SHA: ${{ github.job_workflow_sha }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG}"
+          if [ -z "${TAG}" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          # A guard invoked off a branch cannot compare a tag to anything.
+          # Say so rather than comparing the branch name to a version.
+          case "${TAG}" in
+            v*) ;;
+            *)
+              echo "ERROR: '${TAG}' is not a version tag; the release guards must run on a v* tag" >&2
+              exit 1 ;;
+          esac
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          # `job_workflow_sha` is the commit of THIS file, i.e. exactly
+          # the revision the caller pinned in its `uses:` line, and it is
+          # how the guard scripts get fetched below. It is checked HERE,
+          # before the checkout, because `actions/checkout` given an
+          # empty `ref` silently falls back to the repository's DEFAULT
+          # BRANCH. That would be a guard quietly running some revision
+          # nobody pinned, which is the failure mode this whole workflow
+          # exists to refuse.
+          if [ -z "${GUARD_SHA}" ]; then
+            echo "ERROR: job_workflow_sha is empty; cannot prove which guard revision would run" >&2
+            exit 1
+          fi
+          echo "guard-sha=${GUARD_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the caller at the tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Check out the guards
+        # A reusable workflow's `actions/checkout` fetches the CALLER's
+        # repository, so the guard scripts have to be fetched explicitly.
+        # Fetching them by `job_workflow_sha` is what makes "one guard to
+        # audit" true: the caller cannot end up running some other
+        # revision of the scripts than the one it asked for.
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          repository: nelsonduarte/capa-language
+          ref: ${{ steps.tag.outputs.guard-sha }}
+          path: _release_guards
+
+      - name: Confirm the guards are the revision the caller pinned
+        env:
+          EXPECTED: ${{ steps.tag.outputs.guard-sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git -C _release_guards rev-parse HEAD)"
+          if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+            echo "ERROR: checked out guard revision ${ACTUAL}, expected ${EXPECTED}" >&2
+            exit 1
+          fi
+          echo "guards at ${ACTUAL}"
+
+      - name: Guard 1
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          MANIFEST: ${{ inputs.manifest }}
+          TABLE: ${{ inputs.manifest-table }}
+        run: |
+          set -euo pipefail
+          bash _release_guards/tools/check_tag_version.sh "${TAG}" "${MANIFEST}" "${TABLE}"
+
+  clean-room:
+    name: Guard 2 - the artefact builds from a clean location
+    needs: tag-version
+    if: ${{ inputs.run-clean-room }}
+    runs-on: ubuntu-latest
+    permissions:
+      # Read only, deliberately. `gh attestation verify` needs an API
+      # read, NOT `id-token: write`: that token is for GENERATING an
+      # attestation, and these guards generate nothing. A guard has no
+      # business holding a credential that can sign anything.
+      contents: read
+    outputs:
+      tarball-sha256: ${{ steps.cleanroom.outputs.sha256 }}
+    steps:
+      - name: Resolve the tag
+        id: tag
+        # Inputs reach the shell through `env:`, never by `${{ }}`
+        # interpolation into the script body. An interpolated input is
+        # pasted into the program text before bash sees it, so a value
+        # containing shell syntax becomes shell syntax. These guards run
+        # in a release workflow holding an OIDC token; they are the last
+        # place to hand an input that power.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GUARD_SHA: ${{ github.job_workflow_sha }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG}"
+          if [ -z "${TAG}" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          case "${TAG}" in
+            v*) ;;
+            *)
+              echo "ERROR: '${TAG}' is not a version tag; the release guards must run on a v* tag" >&2
+              exit 1 ;;
+          esac
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          # Checked before the checkout, for the same reason as in guard
+          # 1: an empty ref makes `actions/checkout` fall back to the
+          # default branch, so an unset value here would silently swap
+          # the guard revision the caller pinned for whatever is on main.
+          if [ -z "${GUARD_SHA}" ]; then
+            echo "ERROR: job_workflow_sha is empty; cannot prove which guard revision would run" >&2
+            exit 1
+          fi
+          echo "guard-sha=${GUARD_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the caller at the tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Check out the guards
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          repository: nelsonduarte/capa-language
+          ref: ${{ steps.tag.outputs.guard-sha }}
+          path: _release_guards
+
+      - name: Confirm the guards are the revision the caller pinned
+        env:
+          EXPECTED: ${{ steps.tag.outputs.guard-sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git -C _release_guards rev-parse HEAD)"
+          if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+            echo "ERROR: checked out guard revision ${ACTUAL}, expected ${EXPECTED}" >&2
+            exit 1
+          fi
+          echo "guards at ${ACTUAL}"
+
+      - name: Decide which released compiler a consumer would have
+        id: capa
+        env:
+          INPUT_VERSION: ${{ inputs.capa-version }}
+          MANIFEST: ${{ inputs.manifest }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION}"
+          if [ -z "${VERSION}" ]; then
+            VERSION="$(bash _release_guards/tools/capa_floor.sh "${MANIFEST}")"
+          fi
+          echo "Building the artefact with the released capa ${VERSION}."
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Install that released compiler the way a user does
+        # Deliberately NOT `pip install capa`: the name `capa` on PyPI
+        # belongs to an unrelated project, so that command installs
+        # someone else's software. A user installs the release binary,
+        # which is what deploy/install.sh downloads, so that is what the
+        # guard downloads. And never the working tree: a guard that
+        # builds the artefact with an unreleased compiler tests a
+        # toolchain no consumer has.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.capa.outputs.version }}
+        run: |
+          set -euo pipefail
+          URL="https://github.com/nelsonduarte/capa-language/releases/download/v${V}/capa-linux-x86_64"
+          mkdir -p "$HOME/.capa-guard/bin"
+          # -f so a 404 is a failure and not a zero-byte "capa".
+          curl --proto '=https' --tlsv1.2 -fsSL "$URL" -o "$HOME/.capa-guard/bin/capa"
+          chmod +x "$HOME/.capa-guard/bin/capa"
+          # The compiler is the most privileged input to this guard, so
+          # verify its SLSA provenance rather than trusting the download.
+          gh attestation verify "$HOME/.capa-guard/bin/capa" --owner nelsonduarte
+          echo "$HOME/.capa-guard/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm the compiler runs and is the version we asked for
+        env:
+          V: ${{ steps.capa.outputs.version }}
+        run: |
+          set -euo pipefail
+          capa --version
+          capa --version | grep -qF "${V}" || {
+            echo "ERROR: capa --version does not report ${V}" >&2
+            exit 1
+          }
+
+      - name: Obtain the artefact
+        id: artefact
+        # THE ONE HONEST LIMITATION, stated plainly rather than papered
+        # over. A guard must run BEFORE publication to be worth anything,
+        # and before publication there is no published tarball to fetch.
+        # So by default this rebuilds the artefact from the tag with the
+        # same `git archive` invocation the publisher uses, and verifies
+        # THOSE bytes.
+        #
+        # What that does verify: the tarball's CONTENTS, including
+        # everything .gitattributes export-ignore removes, which is
+        # exactly how the missing tools/ shipped.
+        #
+        # What it does NOT verify: that the bytes the release actually
+        # serves are these bytes. If the publish job builds its tarball
+        # differently, or corrupts it, this guard will not have seen the
+        # difference. That gap is closed by the caller, not here: this
+        # workflow outputs `tarball-sha256`, and the publish job should
+        # refuse to upload anything whose digest differs. It is the
+        # caller's job because only the caller holds the artefact it is
+        # about to publish.
+        #
+        # Pass `tarball-url` to verify genuinely published bytes instead.
+        # That is the stronger check and the weaker position: it can only
+        # run after the thing it guards has already shipped, so it belongs
+        # in a post-release re-verification, not in the release gate.
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          TARBALL_URL: ${{ inputs.tarball-url }}
+        run: |
+          set -euo pipefail
+          PREFIX="${GITHUB_REPOSITORY##*/}-${TAG}"
+          NAME="${PREFIX}.tar.gz"
+          if [ -n "${TARBALL_URL}" ]; then
+            echo "Fetching the PUBLISHED artefact."
+            curl --proto '=https' --tlsv1.2 -fsSL "${TARBALL_URL}" -o "${RUNNER_TEMP}/${NAME}"
+          else
+            echo "Reconstructing the artefact from ${TAG} (see the step comment)."
+            git archive --format=tar.gz --prefix="${PREFIX}/" "${TAG}" > "${RUNNER_TEMP}/${NAME}"
+          fi
+          echo "path=${RUNNER_TEMP}/${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Guard 2
+        id: cleanroom
+        env:
+          # `consumer-commands` is the one input that IS executed by
+          # design, so passing it through env buys no privilege
+          # separation. It is passed this way anyway, because
+          # interpolating a multi-line value into a script body also
+          # breaks the script's own quoting, and a guard that fails to
+          # parse is a guard that does not run.
+          CONSUMER_COMMANDS: ${{ inputs.consumer-commands }}
+          TARBALL: ${{ steps.artefact.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          # One --run per non-blank, non-comment line. An empty list is
+          # NOT tolerated here or in the script: a clean room that runs
+          # nothing would report success having proved nothing, which is
+          # the precise failure this guard exists to prevent.
+          ARGS=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [ -z "${line}" ] && continue
+            case "${line}" in \#*) continue ;; esac
+            ARGS+=(--run "${line}")
+          done <<< "${CONSUMER_COMMANDS}"
+
+          if [ "${#ARGS[@]}" -eq 0 ]; then
+            echo "ERROR: consumer-commands is empty; the clean room would prove nothing" >&2
+            echo "       list the commands your README tells a downloader to run," >&2
+            echo "       or set run-clean-room: false and say why in your workflow" >&2
+            exit 1
+          fi
+
+          # The room lives under RUNNER_TEMP, not in the workspace: the
+          # workspace has the source checkout in it, and the whole point
+          # is that the artefact must build with nothing of ours nearby.
+          bash _release_guards/tools/clean_room_build.sh \
+            --tarball "${TARBALL}" \
+            --room "${RUNNER_TEMP}/clean-room" \
+            --sha256-out "${RUNNER_TEMP}/tarball.sha256" \
+            "${ARGS[@]}"
+
+          echo "sha256=$(cat "${RUNNER_TEMP}/tarball.sha256")" >> "$GITHUB_OUTPUT"
