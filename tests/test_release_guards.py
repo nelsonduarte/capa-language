@@ -43,6 +43,7 @@ TOOLS = REPO_ROOT / "tools"
 CHECK_TAG_VERSION = TOOLS / "check_tag_version.sh"
 CAPA_FLOOR = TOOLS / "capa_floor.sh"
 CLEAN_ROOM_BUILD = TOOLS / "clean_room_build.sh"
+VERIFY_GUARD_DIGESTS = TOOLS / "verify_guard_digests.sh"
 
 BASH = shutil.which("bash")
 
@@ -530,6 +531,157 @@ class CleanRoomBuildTests(unittest.TestCase):
 MUTANT = "#!/usr/bin/env bash\n# MUTANT: an unconditional pass.\nexit 0\n"
 
 
+class VerifyGuardDigestsTests(unittest.TestCase):
+    """``tools/verify_guard_digests.sh``: the independent anchor.
+
+    It exists because the step it accompanies used to be called "Confirm
+    the guards are the revision the caller pinned" and did no such
+    thing: it compared the checked-out SHA against the value it had just
+    used as the checkout ref, so both sides came from one variable and
+    it agreed with itself. Handed the wrong revision it reported OK.
+
+    This is deliberately NOT a claim to have fixed that in general. A
+    workflow cannot establish its own identity from the inside; a
+    substituted workflow substitutes this check too. What the digests
+    add is an anchor written in the ADOPTER's repository rather than
+    ours, which is the only thing that would notice the guard scripts
+    changing under an adopter who pinned a moving ref.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if BASH is None:
+            raise unittest.SkipTest("bash is not available on this host")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self.tmp / "guards"
+        (self.root / "tools").mkdir(parents=True)
+        self.script = self.root / "tools" / "check_tag_version.sh"
+        self.script.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+        import hashlib
+        self.digest = hashlib.sha256(self.script.read_bytes()).hexdigest()
+
+    def write_digests(self, body: str) -> Path:
+        path = self.tmp / "digests.txt"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def guard(self, digests_body):
+        return run_guard(
+            VERIFY_GUARD_DIGESTS,
+            bash_path(self.root),
+            bash_path(self.write_digests(digests_body)),
+        )
+
+    def test_a_matching_digest_passes(self):
+        code, out = self.guard(f"{self.digest}  tools/check_tag_version.sh\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("1 guard file(s) match", out)
+
+    def test_sha256sum_binary_mode_marker_is_accepted(self):
+        code, out = self.guard(f"{self.digest} *tools/check_tag_version.sh\n")
+        self.assertEqual(code, 0, out)
+
+    def test_uppercase_digest_is_accepted(self):
+        code, out = self.guard(f"{self.digest.upper()}  tools/check_tag_version.sh\n")
+        self.assertEqual(code, 0, out)
+
+    def test_comments_and_blank_lines_are_ignored(self):
+        code, out = self.guard(
+            f"# the guards I audited on 2026-07-19\n\n"
+            f"{self.digest}  tools/check_tag_version.sh\n\n"
+        )
+        self.assertEqual(code, 0, out)
+
+    # -- the failures, which are the point ------------------------------
+
+    def test_a_changed_script_is_caught(self):
+        """The scenario the anchor exists for: the guards moved."""
+        self.script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        code, out = self.guard(f"{self.digest}  tools/check_tag_version.sh\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("does not match the digest you pinned", out)
+        self.assertIn("re-audit and re-pin", out)
+
+    def test_a_pinned_file_that_is_absent_is_caught(self):
+        code, out = self.guard(f"{self.digest}  tools/gone.sh\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("is not present in the fetched guards", out)
+
+    def test_an_empty_digests_file_is_refused(self):
+        """'Verified nothing' must never render as 'verified'."""
+        code, out = self.guard("\n# only a comment\n\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("lists no files", out)
+
+    def test_a_malformed_line_is_refused(self):
+        code, out = self.guard("not-a-digest  tools/check_tag_version.sh\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("malformed digest line", out)
+
+    def test_a_truncated_digest_is_refused(self):
+        code, out = self.guard(f"{self.digest[:32]}  tools/check_tag_version.sh\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("malformed digest line", out)
+
+    def test_a_line_with_no_path_is_refused(self):
+        code, out = self.guard(f"{self.digest}\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("names no path", out)
+
+    def test_a_path_escaping_the_guard_tree_is_refused(self):
+        """`..` would let the digests file aim the check at other bytes."""
+        code, out = self.guard(f"{self.digest}  ../outside.sh\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("inside the guard tree", out)
+
+    def test_an_absolute_path_is_refused(self):
+        code, out = self.guard(f"{self.digest}  /etc/passwd\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("inside the guard tree", out)
+
+    def test_a_missing_digests_file_is_refused(self):
+        code, out = run_guard(
+            VERIFY_GUARD_DIGESTS,
+            bash_path(self.root),
+            bash_path(self.tmp / "absent.txt"),
+        )
+        self.assertEqual(code, 1, out)
+        self.assertIn("not found", out)
+
+    def test_a_missing_guard_root_is_refused(self):
+        code, out = run_guard(
+            VERIFY_GUARD_DIGESTS,
+            bash_path(self.tmp / "absent-root"),
+            bash_path(self.write_digests(f"{self.digest}  tools/x.sh\n")),
+        )
+        self.assertEqual(code, 1, out)
+        self.assertIn("is not a directory", out)
+
+    def test_no_arguments_is_refused(self):
+        code, out = run_guard(VERIFY_GUARD_DIGESTS)
+        self.assertEqual(code, 1, out)
+        self.assertIn("usage", out)
+
+    def test_it_can_pin_itself(self):
+        """The self-reference, included so its limit is on the record.
+
+        Listing this script in its own digests file works, and proves
+        nothing against an adversary who controls the repository: such
+        an adversary edits the comparison as readily as the file. It is
+        useful against accident, not against attack, and the workflow
+        comment says so where an adopter will read it.
+        """
+        import hashlib, shutil as _shutil
+        _shutil.copy(VERIFY_GUARD_DIGESTS, self.root / "tools" / "verify_guard_digests.sh")
+        own = hashlib.sha256(VERIFY_GUARD_DIGESTS.read_bytes()).hexdigest()
+        code, out = self.guard(f"{own}  tools/verify_guard_digests.sh\n")
+        self.assertEqual(code, 0, out)
+
+
 class MutationTests(unittest.TestCase):
     """Neuter each guard and prove the cases above catch it.
 
@@ -692,22 +844,65 @@ class WorkflowWiringTests(unittest.TestCase):
             self.assertIn(f"tools/{script.name}", self.text,
                           f"{script.name} is not invoked by the workflow")
 
-    def test_it_pins_the_guard_scripts_to_its_own_revision(self):
-        """The caller must run the guard revision it pinned, not another."""
-        self.assertIn("github.job_workflow_sha", self.text)
+    def test_the_guard_revision_comes_from_the_job_context(self):
+        """The defect that broke the first real adopter's release.
+
+        It was written ``github.job_workflow_sha``. There is no such
+        property on the ``github`` context; it is an OIDC token claim.
+        Unknown context properties evaluate to the EMPTY STRING rather
+        than erroring, so it produced nothing, with no syntax error, and
+        the failure surfaced only on a live signed tag.
+
+        The documented property is ``job.workflow_sha``. Both wrong
+        spellings are asserted absent by name, because the second one,
+        ``github.workflow_sha``, DOES exist and is the trap next door:
+        it is the CALLER's workflow file, not the reusable one, so it
+        would resolve to a plausible SHA and fetch the wrong scripts.
+        """
+        import re
+        uses = set(re.findall(r"\$\{\{\s*(?:github|job)\.[\w.]+\s*\}\}", self.text))
+        self.assertIn("${{ job.workflow_sha }}", self.text)
+        self.assertEqual(
+            self.text.count("${{ job.workflow_sha }}"), 2,
+            "each job must resolve the guard revision itself",
+        )
+        for wrong in ("github.job_workflow_sha", "github.workflow_sha"):
+            offenders = [u for u in uses if wrong in u]
+            self.assertEqual(
+                offenders, [],
+                f"{wrong} is not the reusable workflow's own commit: {offenders}",
+            )
+
+    def test_the_guard_repository_comes_from_the_job_context(self):
+        """Fetching a hardcoded owner/repo would pair a fork's workflow
+        with upstream's scripts, silently."""
+        self.assertEqual(self.text.count("${{ job.workflow_repository }}"), 2)
+        wiring = [
+            line for line in self.text.splitlines()
+            if "repository:" in line and not line.strip().startswith("#")
+        ]
+        for line in wiring:
+            self.assertIn(
+                "steps.tag.outputs.guard-repo", line,
+                f"guard checkout uses a hardcoded repository: {line.strip()}",
+            )
 
     def test_an_empty_guard_revision_is_refused_before_the_checkout(self):
         """``actions/checkout`` with an empty ``ref`` takes the default branch.
 
-        So an unset ``job_workflow_sha`` would not fail, it would
-        silently run whatever is on main instead of the revision the
-        caller pinned. Both jobs must therefore refuse an empty value
-        BEFORE their checkout step, not after it.
+        So an unset ``job.workflow_sha`` would not fail, it would
+        silently run whatever is on the default branch. Both jobs must
+        therefore refuse an empty value BEFORE their checkout step.
+
+        This stays load-bearing after the spelling fix for a second
+        reason: ``job.workflow_sha`` and its companions are not
+        available on GitHub Enterprise Server, where empty is the
+        legitimate value.
         """
         lines = self.text.splitlines()
         refusals = [
             i for i, line in enumerate(lines)
-            if "job_workflow_sha is empty" in line
+            if "job.workflow_sha is empty" in line
         ]
         checkouts = [
             i for i, line in enumerate(lines)
@@ -720,6 +915,137 @@ class WorkflowWiringTests(unittest.TestCase):
                 refusal, checkout,
                 "the emptiness check must precede the checkout it protects",
             )
+
+    def test_an_empty_guard_repository_is_refused_before_the_checkout(self):
+        lines = self.text.splitlines()
+        refusals = [
+            i for i, line in enumerate(lines)
+            if "job.workflow_repository is empty" in line
+        ]
+        checkouts = [
+            i for i, line in enumerate(lines)
+            if "Check out the guards" in line and not line.strip().startswith("#")
+        ]
+        self.assertEqual(len(refusals), 2, "expected one refusal per job")
+        for refusal, checkout in zip(refusals, checkouts):
+            self.assertLess(refusal, checkout)
+
+    def test_no_step_claims_to_confirm_the_pinned_revision(self):
+        """The renamed step must not get its old name back.
+
+        "Confirm the guards are the revision the caller pinned" compared
+        a value against itself. The name was the problem as much as the
+        code was: it asserted provenance to every reader of the log
+        while establishing only that the checkout honoured a ref. A
+        workflow cannot establish its own identity from the inside, so
+        no step here may say that it does.
+        """
+        names = [
+            step.get("name", "")
+            for job in yaml.safe_load(self.text)["jobs"].values()
+            for step in job["steps"]
+        ]
+        for name in names:
+            lowered = name.lower()
+            self.assertNotIn(
+                "revision the caller pinned", lowered,
+                f"step '{name}' claims a guarantee it cannot provide",
+            )
+        self.assertEqual(
+            sum("honoured the ref" in n for n in names), 2,
+            "each job should name that step for what it actually checks",
+        )
+
+    def test_the_renamed_step_fails_for_the_reason_it_names(self):
+        """Run the step's REAL body against a real checkout that disagrees.
+
+        The old step could not fail for the reason it named: both sides
+        of its comparison came from one variable, so it agreed with
+        itself. The renamed step claims something narrower, that
+        ``actions/checkout`` resolved the ref to the commit we asked
+        for, and that claim is falsifiable. Here it is falsified.
+
+        The body is extracted from the workflow rather than retyped, so
+        this cannot drift away from the step it is testing.
+        """
+        if BASH is None:
+            self.skipTest("bash is not available on this host")
+        if shutil.which("git") is None:
+            self.skipTest("git is not available on this host")
+
+        steps = [
+            s for job in yaml.safe_load(self.text)["jobs"].values()
+            for s in job["steps"]
+            if "honoured the ref" in s.get("name", "")
+        ]
+        self.assertEqual(len(steps), 2)
+        body = steps[0]["run"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "_release_guards"
+            repo.mkdir()
+
+            def git(*args):
+                subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    check=True, capture_output=True, text=True,
+                )
+
+            git("init", "-q")
+            git("config", "user.email", "guard@example.invalid")
+            git("config", "user.name", "guard")
+            (repo / "f.txt").write_text("a\n", encoding="utf-8")
+            git("add", "f.txt")
+            git("commit", "-qm", "a")
+            first = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            (repo / "f.txt").write_text("b\n", encoding="utf-8")
+            git("commit", "-qam", "b")
+            second = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            self.assertNotEqual(first, second)
+
+            def run_step(expected):
+                return subprocess.run(
+                    [BASH, "-c", body],
+                    cwd=tmp, capture_output=True, text=True,
+                    env=dict(os.environ, EXPECTED=expected),
+                )
+
+            # HEAD is `second`. Asking for `first` is a checkout that did
+            # not honour its ref, and the step must say exactly that.
+            bad = run_step(first)
+            self.assertEqual(bad.returncode, 1, bad.stdout + bad.stderr)
+            self.assertIn("asked for", bad.stdout + bad.stderr)
+            self.assertIn(first, bad.stdout + bad.stderr)
+
+            # And it passes when the checkout did honour the ref, so the
+            # failure above is discrimination and not a broken step.
+            good = run_step(second)
+            self.assertEqual(good.returncode, 0, good.stdout + good.stderr)
+            self.assertIn("checkout honoured the ref", good.stdout)
+
+    def test_the_digest_anchor_is_wired_and_optional(self):
+        self.assertIn("guard-digests:", self.text)
+        self.assertIn("tools/verify_guard_digests.sh", self.text)
+        self.assertEqual(
+            self.text.count("no guard-digests supplied"), 2,
+            "each job must say plainly when it has no independent anchor",
+        )
+
+    def test_guard_two_can_reach_the_api_for_provenance(self):
+        """Without GH_TOKEN, `capa install` in the clean room degrades to
+        the GPG layer and warns instead of verifying provenance, while
+        the room still goes green."""
+        steps = yaml.safe_load(self.text)["jobs"]["clean-room"]["steps"]
+        guard2 = [s for s in steps if s.get("name") == "Guard 2"]
+        self.assertEqual(len(guard2), 1)
+        self.assertIn("GH_TOKEN", guard2[0].get("env", {}))
 
     def test_both_jobs_refuse_a_ref_that_is_not_a_version_tag(self):
         self.assertEqual(self.text.count("is not a version tag"), 2)

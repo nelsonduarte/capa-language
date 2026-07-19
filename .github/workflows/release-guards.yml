@@ -37,7 +37,7 @@ name: release-guards
 #       # cannot pin is a guard someone else can edit under you. Replace
 #       # the placeholder with the SHA of the revision you audited, and
 #       # keep the trailing version comment so a reader knows what it is.
-#       uses: nelsonduarte/capa-language/.github/workflows/release-guards.yml@REPLACE_WITH_AUDITED_SHA  # v1.18.0
+#       uses: nelsonduarte/capa-language/.github/workflows/release-guards.yml@REPLACE_WITH_AUDITED_SHA  # v1.18.1
 #       # Grant the guards READ and nothing else, explicitly. Without
 #       # this line the called workflow inherits the CALLER's
 #       # workflow-level grant, and in a release workflow that includes
@@ -50,6 +50,21 @@ name: release-guards
 #       permissions:
 #         contents: read
 #       with:
+#         # OPTIONAL, and only worth adding if you understand what it is.
+#         # Produce it in a checkout of the guards at the revision you
+#         # audited:
+#         #
+#         #   sha256sum tools/check_tag_version.sh tools/clean_room_build.sh \
+#         #             tools/capa_floor.sh tools/verify_guard_digests.sh
+#         #
+#         # If you pinned `uses:` to a commit SHA above, this adds little,
+#         # because that pin is already immutable. If you pinned a tag or
+#         # a branch, this is the ONLY thing that would notice the guards
+#         # changing under you. It does not prove the guards' identity;
+#         # nothing running inside them can. See the input's description.
+#         guard-digests: |
+#           <sha256>  tools/check_tag_version.sh
+#           <sha256>  tools/clean_room_build.sh
 #         consumer-commands: |
 #           gpg --import publisher.asc
 #           capa install
@@ -117,6 +132,26 @@ on:
         required: false
         type: string
         default: ''
+      guard-digests:
+        description: |
+          `sha256sum` output, one line per guard script, pinning the bytes
+          you audited:
+
+            5f3c...  tools/check_tag_version.sh
+            9a01...  tools/clean_room_build.sh
+
+          Optional, and honest about what it is. It does NOT prove the
+          guards' identity: a substituted workflow substitutes the step
+          that checks them, so identity is irreducibly the platform's
+          guarantee via your `uses:` pin. What it does is give the check
+          an anchor written in YOUR repository rather than ours, which
+          matters most if you pinned a moving ref (@main, @v1.2.3): the
+          platform gives such a pin no immutability, and this is then the
+          only thing that would notice the guards changing under you.
+          Supplied and not matching is a hard failure.
+        required: false
+        type: string
+        default: ''
       capa-version:
         description: |
           Released compiler version to build with, without the leading v.
@@ -172,7 +207,8 @@ jobs:
         # place to hand an input that power.
         env:
           INPUT_TAG: ${{ inputs.tag }}
-          GUARD_SHA: ${{ github.job_workflow_sha }}
+          GUARD_SHA: ${{ job.workflow_sha }}
+          GUARD_REPO: ${{ job.workflow_repository }}
         run: |
           set -euo pipefail
           TAG="${INPUT_TAG}"
@@ -189,19 +225,44 @@ jobs:
           esac
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-          # `job_workflow_sha` is the commit of THIS file, i.e. exactly
-          # the revision the caller pinned in its `uses:` line, and it is
-          # how the guard scripts get fetched below. It is checked HERE,
-          # before the checkout, because `actions/checkout` given an
-          # empty `ref` silently falls back to the repository's DEFAULT
-          # BRANCH. That would be a guard quietly running some revision
-          # nobody pinned, which is the failure mode this whole workflow
-          # exists to refuse.
+          # `job.workflow_sha` is the JOB context's "commit SHA of the
+          # workflow file that defines the current job", which for a
+          # reusable workflow is this file. It is how the guard scripts
+          # get fetched below.
+          #
+          # It was written `github.job_workflow_sha` and that is not a
+          # property of the `github` context at all; it is an OIDC token
+          # claim. Unknown context properties evaluate to the EMPTY
+          # STRING rather than erroring, so it produced nothing, silently
+          # and with no syntax error, and the first real adopter's
+          # release failed here. Beware `github.workflow_sha`, which does
+          # exist and is the trap next door: it is the CALLER's workflow
+          # file, not this one.
+          #
+          # The emptiness check stays, and is load-bearing for a second
+          # reason beyond that typo: `job.workflow_sha` and its three
+          # companions are not available on GitHub Enterprise Server, so
+          # on GHES this is empty legitimately. Checked HERE, before the
+          # checkout, because `actions/checkout` given an empty `ref`
+          # silently falls back to the repository's DEFAULT BRANCH. That
+          # would be a guard quietly running some revision nobody asked
+          # for, which is the failure mode this workflow exists to refuse.
           if [ -z "${GUARD_SHA}" ]; then
-            echo "ERROR: job_workflow_sha is empty; cannot prove which guard revision would run" >&2
+            echo "ERROR: job.workflow_sha is empty; cannot tell which guard revision would run" >&2
             exit 1
           fi
           echo "guard-sha=${GUARD_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Same context, same availability, so the same refusal. An
+          # empty repository would make `actions/checkout` fetch the
+          # CALLER's repository instead, and the caller does not contain
+          # tools/, so the guards would fail confusingly rather than
+          # clearly. Name the real reason instead.
+          if [ -z "${GUARD_REPO}" ]; then
+            echo "ERROR: job.workflow_repository is empty; cannot tell where to fetch the guards" >&2
+            exit 1
+          fi
+          echo "guard-repo=${GUARD_REPO}" >> "$GITHUB_OUTPUT"
 
       - name: Check out the caller at the tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -211,26 +272,61 @@ jobs:
       - name: Check out the guards
         # A reusable workflow's `actions/checkout` fetches the CALLER's
         # repository, so the guard scripts have to be fetched explicitly.
-        # Fetching them by `job_workflow_sha` is what makes "one guard to
-        # audit" true: the caller cannot end up running some other
-        # revision of the scripts than the one it asked for.
+        # `job.workflow_repository` is this workflow file's own
+        # repository, used in place of a hardcoded owner/repo so that a
+        # FORK of these guards runs its own scripts. Hardcoding would
+        # pair a fork's workflow with upstream's scripts, which is a
+        # mismatch nobody would notice and which quietly defeats the
+        # point of forking a security control in order to change it.
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          repository: nelsonduarte/capa-language
+          repository: ${{ steps.tag.outputs.guard-repo }}
           ref: ${{ steps.tag.outputs.guard-sha }}
           path: _release_guards
 
-      - name: Confirm the guards are the revision the caller pinned
+      - name: Confirm actions/checkout honoured the ref it was given
+        # RENAMED, and the rename is the point. This was called "Confirm
+        # the guards are the revision the caller pinned", which it never
+        # did: `EXPECTED` and the checkout `ref` are the same value, so
+        # both sides came from one source and it agreed with itself.
+        # Handed the wrong revision it would have reported OK.
+        #
+        # What it actually establishes is narrow and worth keeping:
+        # `actions/checkout` resolved the ref we handed it to that exact
+        # commit, rather than to a default branch or to some other
+        # resolution of a non-SHA ref. It is a check on the CHECKOUT, not
+        # on provenance, and it is now named for that.
         env:
           EXPECTED: ${{ steps.tag.outputs.guard-sha }}
         run: |
           set -euo pipefail
           ACTUAL="$(git -C _release_guards rev-parse HEAD)"
           if [ "${ACTUAL}" != "${EXPECTED}" ]; then
-            echo "ERROR: checked out guard revision ${ACTUAL}, expected ${EXPECTED}" >&2
+            echo "ERROR: checked out guard revision ${ACTUAL}, asked for ${EXPECTED}" >&2
             exit 1
           fi
-          echo "guards at ${ACTUAL}"
+          echo "checkout honoured the ref: guards at ${ACTUAL}"
+
+      - name: Verify the guard scripts against the digests you pinned
+        # The one input here that does not come from us. See
+        # tools/verify_guard_digests.sh for what this buys and what it
+        # cannot: a workflow cannot establish its own identity from the
+        # inside, because a substituted workflow substitutes this step
+        # too. Optional, and when absent this says so rather than
+        # implying an anchor it does not have.
+        env:
+          DIGESTS: ${{ inputs.guard-digests }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DIGESTS//[[:space:]]/}" ]; then
+            echo "NOTE: no guard-digests supplied, so the guard scripts rest on"
+            echo "      the platform's resolution of your uses: pin alone. If you"
+            echo "      pinned a moving ref (@main, @v1.2.3) rather than a commit"
+            echo "      SHA, nothing here would notice the guards changing."
+            exit 0
+          fi
+          echo "${DIGESTS}" > "${RUNNER_TEMP}/guard-digests.txt"
+          bash _release_guards/tools/verify_guard_digests.sh _release_guards "${RUNNER_TEMP}/guard-digests.txt"
 
       - name: Guard 1
         env:
@@ -265,7 +361,8 @@ jobs:
         # place to hand an input that power.
         env:
           INPUT_TAG: ${{ inputs.tag }}
-          GUARD_SHA: ${{ github.job_workflow_sha }}
+          GUARD_SHA: ${{ job.workflow_sha }}
+          GUARD_REPO: ${{ job.workflow_repository }}
         run: |
           set -euo pipefail
           TAG="${INPUT_TAG}"
@@ -285,10 +382,21 @@ jobs:
           # default branch, so an unset value here would silently swap
           # the guard revision the caller pinned for whatever is on main.
           if [ -z "${GUARD_SHA}" ]; then
-            echo "ERROR: job_workflow_sha is empty; cannot prove which guard revision would run" >&2
+            echo "ERROR: job.workflow_sha is empty; cannot tell which guard revision would run" >&2
             exit 1
           fi
           echo "guard-sha=${GUARD_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Same context, same availability, so the same refusal. An
+          # empty repository would make `actions/checkout` fetch the
+          # CALLER's repository instead, and the caller does not contain
+          # tools/, so the guards would fail confusingly rather than
+          # clearly. Name the real reason instead.
+          if [ -z "${GUARD_REPO}" ]; then
+            echo "ERROR: job.workflow_repository is empty; cannot tell where to fetch the guards" >&2
+            exit 1
+          fi
+          echo "guard-repo=${GUARD_REPO}" >> "$GITHUB_OUTPUT"
 
       - name: Check out the caller at the tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -297,23 +405,63 @@ jobs:
           fetch-depth: 0
 
       - name: Check out the guards
+        # A reusable workflow's `actions/checkout` fetches the CALLER's
+        # repository, so the guard scripts have to be fetched explicitly.
+        # `job.workflow_repository` is this workflow file's own
+        # repository, used in place of a hardcoded owner/repo so that a
+        # FORK of these guards runs its own scripts. Hardcoding would
+        # pair a fork's workflow with upstream's scripts, which is a
+        # mismatch nobody would notice and which quietly defeats the
+        # point of forking a security control in order to change it.
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          repository: nelsonduarte/capa-language
+          repository: ${{ steps.tag.outputs.guard-repo }}
           ref: ${{ steps.tag.outputs.guard-sha }}
           path: _release_guards
 
-      - name: Confirm the guards are the revision the caller pinned
+      - name: Confirm actions/checkout honoured the ref it was given
+        # RENAMED, and the rename is the point. This was called "Confirm
+        # the guards are the revision the caller pinned", which it never
+        # did: `EXPECTED` and the checkout `ref` are the same value, so
+        # both sides came from one source and it agreed with itself.
+        # Handed the wrong revision it would have reported OK.
+        #
+        # What it actually establishes is narrow and worth keeping:
+        # `actions/checkout` resolved the ref we handed it to that exact
+        # commit, rather than to a default branch or to some other
+        # resolution of a non-SHA ref. It is a check on the CHECKOUT, not
+        # on provenance, and it is now named for that.
         env:
           EXPECTED: ${{ steps.tag.outputs.guard-sha }}
         run: |
           set -euo pipefail
           ACTUAL="$(git -C _release_guards rev-parse HEAD)"
           if [ "${ACTUAL}" != "${EXPECTED}" ]; then
-            echo "ERROR: checked out guard revision ${ACTUAL}, expected ${EXPECTED}" >&2
+            echo "ERROR: checked out guard revision ${ACTUAL}, asked for ${EXPECTED}" >&2
             exit 1
           fi
-          echo "guards at ${ACTUAL}"
+          echo "checkout honoured the ref: guards at ${ACTUAL}"
+
+      - name: Verify the guard scripts against the digests you pinned
+        # The one input here that does not come from us. See
+        # tools/verify_guard_digests.sh for what this buys and what it
+        # cannot: a workflow cannot establish its own identity from the
+        # inside, because a substituted workflow substitutes this step
+        # too. Optional, and when absent this says so rather than
+        # implying an anchor it does not have.
+        env:
+          DIGESTS: ${{ inputs.guard-digests }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DIGESTS//[[:space:]]/}" ]; then
+            echo "NOTE: no guard-digests supplied, so the guard scripts rest on"
+            echo "      the platform's resolution of your uses: pin alone. If you"
+            echo "      pinned a moving ref (@main, @v1.2.3) rather than a commit"
+            echo "      SHA, nothing here would notice the guards changing."
+            exit 0
+          fi
+          echo "${DIGESTS}" > "${RUNNER_TEMP}/guard-digests.txt"
+          bash _release_guards/tools/verify_guard_digests.sh _release_guards "${RUNNER_TEMP}/guard-digests.txt"
 
       - name: Decide which released compiler a consumer would have
         id: capa
@@ -408,6 +556,15 @@ jobs:
       - name: Guard 2
         id: cleanroom
         env:
+          # `capa install` inside the clean room verifies each dependency's
+          # SLSA provenance through `gh`, and `gh` needs a token to reach
+          # the API. Without one it degrades to the GPG layer and emits
+          # "SLSA provenance not verified" warnings while the room still
+          # goes green. That is not a regression and it does not fail a
+          # release, but it would make "the guard verified the provenance
+          # of every dependency" a false sentence, and the whole point of
+          # this branch is not saying things like that.
+          GH_TOKEN: ${{ github.token }}
           # `consumer-commands` is the one input that IS executed by
           # design, so passing it through env buys no privilege
           # separation. It is passed this way anyway, because
