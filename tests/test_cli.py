@@ -933,12 +933,11 @@ class TestCliInProcess(unittest.TestCase):
     def test_capa_toml_enables_package_self_reference(self):
         # Regression: a seed library whose repository directory *is*
         # the package resolves its own ``import <pkg>.<module>`` lines
-        # under ``capa --check`` / ``--run``, the same way ``capa
-        # test`` already does (testrunner injects the project root's
-        # parent into CAPA_PATH). The layout: ``<tmp>/mypkg/`` holds
-        # the manifest and two modules; ``model.capa`` is imported by
-        # ``entry.capa`` as ``mypkg.model``, which only resolves if
-        # the parent of the cwd (``<tmp>``) is on the search path.
+        # under ``capa --check`` / ``--run``. The layout:
+        # ``<tmp>/mypkg/`` holds the manifest and two modules;
+        # ``model.capa`` is imported by ``entry.capa`` as
+        # ``mypkg.model``, which resolves because ``[package].name``
+        # maps to the project root in ``_capa_dependency_roots``.
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             pkg = td_path / "mypkg"
@@ -964,6 +963,120 @@ class TestCliInProcess(unittest.TestCase):
             rc, out, err = _run_main(["--run", str(entry)], cwd=pkg)
             self.assertEqual(rc, 0, err)
             self.assertIn("3", out)
+
+    def test_self_reference_honours_package_name_over_directory_name(self):
+        # The self-reference is keyed on ``[package].name``, not on the
+        # directory's basename, so a working copy checked out under a
+        # different directory name still resolves its own modules.
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            pkg = td_path / "mypkg-checkout"
+            pkg.mkdir()
+            (pkg / "capa.toml").write_text(
+                '[package]\n'
+                'name = "mypkg"\n'
+                'version = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            _write_capa(
+                pkg, "model.capa",
+                "pub fun bump(n: Int) -> Int\n    return n + 1\n",
+            )
+            entry = _write_capa(
+                pkg, "entry.capa",
+                "import mypkg.model\n"
+                "fun main(stdio: Stdio)\n"
+                '    stdio.println("${bump(2)}")\n',
+            )
+            rc, out, err = _run_main(["--run", str(entry)], cwd=pkg)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("3", out)
+
+    def test_sibling_directory_cannot_satisfy_undeclared_import(self):
+        # Supply-chain regression. An import that ./vendor and the
+        # declared path deps cannot satisfy must fail CLOSED, never be
+        # resolved from an unrelated sibling directory next to the
+        # project root: such a directory was never fetched, never
+        # verified against capa.lock, and never appears in the SBOM.
+        #
+        # Layout: ``<tmp>/app`` is the project, with a path dep
+        # ``mylib`` whose module imports ``capa_hash.hash``, which is
+        # declared NOWHERE. ``<tmp>/capa_hash/hash.capa`` sits beside
+        # the project and would satisfy it if the parent of the root
+        # were a search root. This is exactly what masked a real
+        # library's missing transitive dependency: it compiled in the
+        # development tree and failed everywhere else.
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            _write_capa(
+                td_path / "capa_hash", "hash.capa",
+                "pub fun digest(s: String) -> Int\n    return 42\n",
+            )
+            app = td_path / "app"
+            app.mkdir()
+            (app / "capa.toml").write_text(
+                '[package]\n'
+                'name = "app"\n'
+                'version = "0.1.0"\n'
+                '\n'
+                '[dependencies.mylib]\n'
+                'path = "vendor/mylib"\n',
+                encoding="utf-8",
+            )
+            _write_capa(
+                app / "vendor" / "mylib", "api.capa",
+                "import capa_hash.hash\n"
+                "pub fun token(s: String) -> Int\n"
+                "    return digest(s) + 1\n",
+            )
+            main = _write_capa(
+                app, "main.capa",
+                "import mylib.api\n"
+                "fun main(stdio: Stdio)\n"
+                '    stdio.println("${token("x")}")\n',
+            )
+            rc, out, err = _run_main(["--run", str(main)], cwd=app)
+            self.assertNotEqual(rc, 0, out)
+            self.assertIn("cannot resolve 'import capa_hash.hash'", err)
+            # And the escape route is not merely unused: the sibling
+            # must not appear among the paths the loader tried.
+            self.assertNotIn(str(td_path / "capa_hash" / "hash.capa"), err)
+
+    def test_self_reference_does_not_shadow_declared_dependency(self):
+        # Degenerate but decidable: a project whose own name is also a
+        # declared path dependency. The DECLARED dep wins, so the
+        # self-entry can never quietly displace a resolved dependency.
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            pkg = td_path / "mypkg"
+            pkg.mkdir()
+            (pkg / "capa.toml").write_text(
+                '[package]\n'
+                'name = "mypkg"\n'
+                'version = "0.1.0"\n'
+                '\n'
+                '[dependencies.mypkg]\n'
+                'path = "vendor/real"\n',
+                encoding="utf-8",
+            )
+            # Same module name in both places, different answers.
+            _write_capa(
+                pkg, "model.capa",
+                "pub fun bump(n: Int) -> Int\n    return n + 1\n",
+            )
+            _write_capa(
+                pkg / "vendor" / "real", "model.capa",
+                "pub fun bump(n: Int) -> Int\n    return n + 100\n",
+            )
+            entry = _write_capa(
+                pkg, "entry.capa",
+                "import mypkg.model\n"
+                "fun main(stdio: Stdio)\n"
+                '    stdio.println("${bump(2)}")\n',
+            )
+            rc, out, err = _run_main(["--run", str(entry)], cwd=pkg)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("102", out)
 
     def test_broken_capa_toml_emits_warning_but_keeps_running(self):
         with tempfile.TemporaryDirectory() as td:

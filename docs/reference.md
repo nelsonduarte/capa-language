@@ -740,19 +740,26 @@ you need its constructors.
 When the loader resolves `import x.y`, it tries each of the
 following search paths in order, and uses the first hit:
 
-1. The directory of the importing `.capa` file
+1. The directory a `capa.toml` binds to the leading name: the
+   directory of a `path = "..."` dependency called `x`, or the
+   project root itself when `[package].name` is `x` (so a
+   repository that *is* the package resolves its own modules).
+2. The directory of the importing `.capa` file
    (sibling and nested-subdir imports work without any setup).
-2. Every directory in the `CAPA_PATH` environment variable.
-3. `./vendor/` when `capa.toml` declares at least one git
+3. Every directory in the `CAPA_PATH` environment variable.
+4. `./vendor/` when `capa.toml` declares at least one git
    dependency (populated by `capa install`).
-4. The parent of every `path = "..."` entry in `capa.toml`.
-5. `./libraries/` - conventional fallback for projects that
+5. The parent of every `path = "..."` entry in `capa.toml`.
+6. `./libraries/` - conventional fallback for projects that
    vendor by hand.
-6. The directory of the root file passed to `capa --run`.
+7. The directory of the root file passed to `capa --run`.
 
 Each entry is deduplicated; a missing directory is silently
-skipped. See [`packages.md`](packages.md) for the package
-manager's role in resolution.
+skipped. The directory containing the project root is **not** a
+search path: an import no dependency declares fails closed rather
+than resolving against an unverified sibling checkout. See
+[`packages.md`](packages.md) for the package manager's role in
+resolution.
 
 ### 7.3. Visibility
 

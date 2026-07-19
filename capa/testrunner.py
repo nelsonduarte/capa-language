@@ -123,12 +123,21 @@ def missing_vendored_deps(root: Path) -> list[str]:
 
 def _child_env(root: Path) -> dict:
     """Environment for a test subprocess: ``CAPA_PATH`` gains the
-    project root (flat ``import mylib`` layouts) and its parent
-    (package-style ``import mypkg.module``, the seed-library
-    ``CAPA_PATH=..`` convention). Existing entries keep priority
-    losses minimal: ours are prepended, the user's follow."""
+    project root (flat ``import mylib`` layouts). Existing entries
+    keep priority losses minimal: ours are prepended, the user's
+    follow.
+
+    The project root's PARENT is deliberately not added. It used to
+    be, for package-style ``import mypkg.module`` inside a repository
+    that IS the package, but as an open search root it also let any
+    same-named sibling directory satisfy an import that ./vendor
+    could not, with no fetch, no verification, no lockfile entry and
+    no SBOM record. The child runs with cwd = ``root``, so it derives
+    the self-reference by name from ``capa.toml`` itself (see
+    ``cli._capa_dependency_roots``) and package-style self-imports
+    still resolve."""
     env = dict(os.environ)
-    parts = [str(root), str(root.parent)]
+    parts = [str(root)]
     existing = env.get("CAPA_PATH", "")
     if existing:
         parts.append(existing)
