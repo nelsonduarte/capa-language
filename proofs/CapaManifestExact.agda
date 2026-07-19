@@ -85,7 +85,7 @@ open import CapaSoundness
 --                 and conclusion.
 ------------------------------------------------------------------
 
-data _|-[_]_!_ : Ctx -> Bool -> Tm -> Ty -> Set where
+data _|-[_]_!_ {Req : Set} : Ctx -> Bool -> Tm Req -> Ty -> Set where
 
   G-Var : forall {G b v A}
         -> G >> v ! A
@@ -103,19 +103,22 @@ data _|-[_]_!_ : Ctx -> Bool -> Tm -> Ty -> Set where
   G-Int : forall {G b n}
         -> G |-[ b ] i n ! TyInt
 
+  G-Bool : forall {G b v}
+         -> G |-[ b ] bool v ! TyBool
+
   G-Unit : forall {G b}
          -> G |-[ b ] unit ! TyUnit
 
-  G-Cap : forall {G c}
-        -> G |-[ true ] cap c ! TyCap c
+  G-Cap : forall {G c res}
+        -> G |-[ true ] cap c res ! TyCap c
 
-  G-Use : forall {G b c t}
+  G-Use : forall {G b c x t}
         -> G |-[ b ] t ! TyCap c
-        -> G |-[ b ] use c t ! TyUnit
+        -> G |-[ b ] use c x t ! TyBool
 
-  G-Restrict : forall {G b c t}
+  G-Restrict : forall {G b c res t}
              -> G |-[ b ] t ! TyCap c
-             -> G |-[ b ] restrict c t ! TyCap c
+             -> G |-[ b ] restrict c res t ! TyCap c
 
   G-Consume : forall {G b t A}
             -> G |-[ b ] t ! A
@@ -146,13 +149,14 @@ infix 4 _|-[_]_!_
 -- verbatim; only the conclusion gate flips from false to true.
 ------------------------------------------------------------------
 
-weaken-top : forall {G t A}
+weaken-top : forall {Req} {G} {t : Tm Req} {A}
            -> G |-[ false ] t ! A
            -> G |-[ true ]  t ! A
 weaken-top (G-Var x)      = G-Var x
 weaken-top (G-Lam d)      = G-Lam d
 weaken-top (G-App d1 d2)  = G-App (weaken-top d1) (weaken-top d2)
 weaken-top G-Int          = G-Int
+weaken-top G-Bool         = G-Bool
 weaken-top G-Unit         = G-Unit
 weaken-top (G-Use d)      = G-Use (weaken-top d)
 weaken-top (G-Restrict d) = G-Restrict (weaken-top d)
@@ -172,13 +176,14 @@ weaken-top (G-Consume d)  = G-Consume (weaken-top d)
 -- existing metatheory carries over unchanged.
 ------------------------------------------------------------------
 
-forget-flag : forall {G b t A}
+forget-flag : forall {Req} {G b} {t : Tm Req} {A}
             -> G |-[ b ] t ! A
             -> G |- t ! A
 forget-flag (G-Var x)      = T-Var x
 forget-flag (G-Lam d)      = T-Lam (forget-flag d)
 forget-flag (G-App d1 d2)  = T-App (forget-flag d1) (forget-flag d2)
 forget-flag G-Int          = T-Int
+forget-flag G-Bool         = T-Bool
 forget-flag G-Unit         = T-Unit
 forget-flag G-Cap          = T-Cap
 forget-flag (G-Use d)      = T-Use (forget-flag d)
@@ -213,20 +218,22 @@ data Empty : Set where
 
 -- Non-vacuity: a real top-level main, capability used as a bound
 -- variable inside the (gate-false) body.
-positive : empty |-[ true ] lam (TyCap Net) (use Net (var vzero)) ! (TyCap Net => TyUnit)
+positive : empty |-[ true ] lam (TyCap Net) (use Net zero (var vzero))
+                             ! (TyCap Net => TyBool)
 positive = G-Lam (G-Use (G-Var here))
 
 -- A gate-true program: (\ (n : Net) -> \ (_ : Unit) -> use Net n) applied
 -- to the capability LITERAL `cap Net`.
-prog : Tm
-prog = app (lam (TyCap Net) (lam TyUnit (use Net (var (vsuc vzero))))) (cap Net)
+prog : Tm Nat
+prog = app (lam (TyCap Net) (lam TyUnit (use Net zero (var (vsuc vzero)))))
+           (cap Net unrestricted)
 
-prog-typed : empty |-[ true ] prog ! (TyUnit => TyUnit)
+prog-typed : empty |-[ true ] prog ! (TyUnit => TyBool)
 prog-typed = G-App (G-Lam (G-Lam (G-Use (G-Var (there here))))) G-Cap
 
 -- One beta step substitutes the literal `cap Net` for the outer
 -- binder, producing a lambda whose body now contains a cap LITERAL.
-prog-step : prog ==> lam TyUnit (use Net (cap Net))
+prog-step : prog ==> lam TyUnit (use Net zero (cap Net unrestricted))
 prog-step = R-Beta V-Cap
 
 -- The reduct is untypable at EVERY gate: inverting G-Lam then G-Use
@@ -235,7 +242,8 @@ prog-step = R-Beta V-Cap
 -- could, and it pins gate true, which cannot unify with false). The
 -- `()` therefore lands on that cap-at-false premise.
 reduct-untypable : forall {b}
-                 -> empty |-[ b ] lam TyUnit (use Net (cap Net)) ! (TyUnit => TyUnit)
+                 -> empty |-[ b ] lam TyUnit (use Net zero (cap Net unrestricted))
+                                  ! (TyUnit => TyBool)
                  -> Empty
 reduct-untypable (G-Lam (G-Use ()))
 
@@ -260,14 +268,14 @@ reduct-untypable (G-Lam (G-Use ()))
 -- it has NO tag "here" cases and NO cases at var / i / unit.
 ------------------------------------------------------------------
 
-data _∈lit_ : Cap -> Tm -> Set where
-  lit-here     : forall {c}       -> c ∈lit (cap c)
-  lit-lam      : forall {c A t}   -> c ∈lit t  -> c ∈lit (lam A t)
-  lit-app-l    : forall {c t1 t2} -> c ∈lit t1 -> c ∈lit (app t1 t2)
-  lit-app-r    : forall {c t1 t2} -> c ∈lit t2 -> c ∈lit (app t1 t2)
-  lit-use      : forall {c c' t}  -> c ∈lit t  -> c ∈lit (use c' t)
-  lit-restrict : forall {c c' t}  -> c ∈lit t  -> c ∈lit (restrict c' t)
-  lit-consume  : forall {c t}     -> c ∈lit t  -> c ∈lit (consume t)
+data _∈lit_ {Req : Set} : Cap -> Tm Req -> Set where
+  lit-here     : forall {c res}      -> c ∈lit (cap c res)
+  lit-lam      : forall {c A t}      -> c ∈lit t  -> c ∈lit (lam A t)
+  lit-app-l    : forall {c t1 t2}    -> c ∈lit t1 -> c ∈lit (app t1 t2)
+  lit-app-r    : forall {c t1 t2}    -> c ∈lit t2 -> c ∈lit (app t1 t2)
+  lit-use      : forall {c c' x t}   -> c ∈lit t  -> c ∈lit (use c' x t)
+  lit-restrict : forall {c c' res t} -> c ∈lit t  -> c ∈lit (restrict c' res t)
+  lit-consume  : forall {c t}        -> c ∈lit t  -> c ∈lit (consume t)
 
 infix 4 _∈lit_
 
@@ -286,7 +294,7 @@ infix 4 _∈lit_
 -- or only descends into an already-false sub-derivation (recurse).
 ------------------------------------------------------------------
 
-no-cap-literal-under-false : forall {G t A c}
+no-cap-literal-under-false : forall {Req} {G} {t : Tm Req} {A c}
                            -> G |-[ false ] t ! A
                            -> c ∈lit t
                            -> Empty
@@ -295,6 +303,7 @@ no-cap-literal-under-false (G-Lam d)      (lit-lam h)      = no-cap-literal-unde
 no-cap-literal-under-false (G-App d1 d2)  (lit-app-l h)    = no-cap-literal-under-false d1 h
 no-cap-literal-under-false (G-App d1 d2)  (lit-app-r h)    = no-cap-literal-under-false d2 h
 no-cap-literal-under-false G-Int          ()
+no-cap-literal-under-false G-Bool         ()
 no-cap-literal-under-false G-Unit         ()
 no-cap-literal-under-false (G-Use d)      (lit-use h)      = no-cap-literal-under-false d h
 no-cap-literal-under-false (G-Restrict d) (lit-restrict h) = no-cap-literal-under-false d h
@@ -325,12 +334,14 @@ prog-has-lit = lit-app-r lit-here
 -- omission of a `lam` constructor is the whole point.
 ------------------------------------------------------------------
 
-data _spine-lit_ : Cap -> Tm -> Set where
-  spine-here     : forall {c}       -> c spine-lit (cap c)
+data _spine-lit_ {Req : Set} : Cap -> Tm Req -> Set where
+  spine-here     : forall {c res}   -> c spine-lit (cap c res)
   spine-app-l    : forall {c t1 t2} -> c spine-lit t1 -> c spine-lit (app t1 t2)
   spine-app-r    : forall {c t1 t2} -> c spine-lit t2 -> c spine-lit (app t1 t2)
-  spine-use      : forall {c c' t}  -> c spine-lit t  -> c spine-lit (use c' t)
-  spine-restrict : forall {c c' t}  -> c spine-lit t  -> c spine-lit (restrict c' t)
+  spine-use      : forall {c c' x t}
+                 -> c spine-lit t  -> c spine-lit (use c' x t)
+  spine-restrict : forall {c c' res t}
+                 -> c spine-lit t  -> c spine-lit (restrict c' res t)
   spine-consume  : forall {c t}     -> c spine-lit t  -> c spine-lit (consume t)
 
 infix 4 _spine-lit_
@@ -354,7 +365,7 @@ Empty-elim ()
 -- unit cases have an empty `_∈lit_` and are discharged by `()`.
 ------------------------------------------------------------------
 
-confine : forall {G e A c}
+confine : forall {Req} {G} {e : Tm Req} {A c}
         -> G |-[ true ] e ! A
         -> c ∈lit e
         -> c spine-lit e
@@ -363,6 +374,7 @@ confine (G-Lam d)      (lit-lam h)      = Empty-elim (no-cap-literal-under-false
 confine (G-App d1 d2)  (lit-app-l h)    = spine-app-l (confine d1 h)
 confine (G-App d1 d2)  (lit-app-r h)    = spine-app-r (confine d2 h)
 confine G-Int          ()
+confine G-Bool         ()
 confine G-Unit         ()
 confine G-Cap          lit-here         = spine-here
 confine (G-Use d)      (lit-use h)      = spine-use (confine d h)
@@ -382,7 +394,7 @@ confine (G-Consume d)  (lit-consume h)  = spine-consume (confine d h)
 -- argument; we let Agda infer it via `_`.)
 ------------------------------------------------------------------
 
-gated-runtime-bound : forall {e e' A c}
+gated-runtime-bound : forall {Req} {e e' : Tm Req} {A c}
                     -> empty |-[ true ] e ! A
                     -> e ==>* e'
                     -> c ∈caps e'
@@ -421,16 +433,19 @@ prog-runtime-bound = gated-runtime-bound prog-typed (step* prog-step done*) (ins
 ------------------------------------------------------------------
 
 -- ∈lit holds: the literal cap Net occurs, but under a lambda binder.
-witness-lit : Net ∈lit (lam TyUnit (cap Net))
+witness-lit : Net ∈lit (lam TyUnit (cap Net (unrestricted {Nat})))
 witness-lit = lit-lam lit-here
 
 -- spine-lit FAILS on the same term: no spine-lit constructor targets a lam.
-witness-not-spine : Net spine-lit (lam TyUnit (cap Net)) -> Empty
+witness-not-spine : Net spine-lit (lam TyUnit (cap Net (unrestricted {Nat})))
+                  -> Empty
 witness-not-spine ()
 
 -- The gate hypothesis is load-bearing: this term is not gate-typable
 -- at any gate (its body would need `cap Net` typed at gate false).
-witness-untypable : forall {b A} -> empty |-[ b ] lam TyUnit (cap Net) ! A -> Empty
+witness-untypable : forall {b A}
+                  -> empty |-[ b ] lam TyUnit (cap Net (unrestricted {Nat})) ! A
+                  -> Empty
 witness-untypable (G-Lam ())
 
 ------------------------------------------------------------------

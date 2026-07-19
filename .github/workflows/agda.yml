@@ -31,6 +31,9 @@ jobs:
       - name: Typecheck CapaSoundness
         working-directory: proofs
         run: agda --safe CapaSoundness.agda
+      - name: Typecheck CapaAttenuation
+        working-directory: proofs
+        run: agda --safe CapaAttenuation.agda
       - name: Typecheck CapaIF
         working-directory: proofs
         run: agda --safe CapaIF.agda

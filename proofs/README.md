@@ -2,14 +2,16 @@
 
 [![agda](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/agda.yml)
 
-> **Status (2026-07-13): all four capability soundness theorems
+> **Status (2026-07-19): all four capability soundness theorems
 > proved, PLUS Lemma 1, Lemma 2, the declassify-free
 > noninterference theorem (Theorem 3) AND the delimited-release
 > theorem (Theorem 4) for λ_if; PLUS a gated λ_cap variant that
 > mechanizes literal-INTRODUCTION CONFINEMENT (in a gate-true
 > program every capability literal occurs outside all lambda
-> binders); all mechanically typechecked in CI under `--safe`; no
-> postulates remain.** This directory holds three formalisations in
+> binders); PLUS the λ_cap ATTENUATION metatheory (the lattice of
+> Section 2, and monotonicity of attenuation over arbitrary
+> reduction); all mechanically typechecked in CI under `--safe`;
+> no postulates remain.** This directory holds three formalisations in
 > Agda. (1) The λ_cap capability calculus: syntax, typing,
 > reduction, PLFA-style parallel substitution, the inductive
 > `_∈caps_` relation, and the reflexive-transitive closure
@@ -33,11 +35,15 @@
 > typecheck under Agda's `--safe` flag, which mechanically forbids
 > postulates, `trustMe`, and unsafe pragmas.
 >
-> **Scope caveat:** λ_cap mechanises the CLASS-LEVEL capability
-> footprint over all ten built-in classes. It does NOT mechanise
-> attenuation: `restrict` carries no restriction set and reduces
-> as the identity, so no narrowing property is proved here. See
-> "λ_cap: attenuation is not mechanised" below and
+> **Attenuation (2026-07-19):** λ_cap now mechanises the
+> attenuation lattice of Section 2 as well as the class-level
+> footprint. Capability values carry a restriction, `restrict`
+> reduces to the MEET of the old and the requested restriction,
+> and `CapaAttenuation.agda` proves that reduction can never widen
+> a capability's authority, together with machine-checked
+> witnesses that attenuation is not the identity. What remains
+> unmechanised is the per-class operation enumeration `Ops(c)`.
+> See "λ_cap: what attenuation is and is not mechanised" below and
 > [`docs/semantics.md`](../docs/semantics.md) Section 6.1.
 
 ## What this directory is for
@@ -87,16 +93,36 @@ tactics differ.
   datatype enumerates all TEN built-in capability classes, one
   constructor each, matching `BUILTIN_CAPS` in
   `capa/ir/_capa_types.py`; a guard in `tests/test_cap_handles.py`
-  fails if the two lists drift. Note that `restrict` is a
-  capability-tag operation with no restriction argument and no
-  narrowing content: see "λ_cap: attenuation is not mechanised"
-  below.
+  fails if the two lists drift. A capability value `cap c res`
+  carries a RESTRICTION: the characteristic function of a subset
+  of an abstract scope set `Req`, which is the `Sigma_c` of the
+  semantics document left abstract so every theorem quantifies
+  over it. `restrict c res' (cap c res)` reduces to
+  `cap c (res ∩R res')`, and `use c x t` reduces to the BOOLEAN
+  the receiver's restriction assigns to the request `x`, which is
+  what stops a restriction from being an inert decoration.
 
 - `CapaSoundness.agda`: Progress, Preservation, Capability
   Soundness, and Manifest Completeness for λ_cap, proved by
   induction on the typing / reduction derivations in the
   Wright-Felleisen style (same shape as PLFA chapter
-  "Properties"). No postulates remain.
+  "Properties"). No postulates remain. These four are blind to
+  restrictions by design: they bound WHICH CLASSES a program can
+  exercise, which is the granularity a manifest declares.
+
+- `CapaAttenuation.agda`: the attenuation metatheory. The lattice
+  laws (`_∩R_` is the greatest lower bound, `unrestricted` the
+  top, `denyAll` the bottom); `attn-is-meet` and
+  `attn-use-never-widens` for a single attenuation;
+  `attn-tower` / `tower-narrows` / `tower-is-one-meet` for chains
+  of them; and the whole-calculus results
+  `attenuation-soundness` (one step) and
+  `attenuation-monotonicity` (any number of steps): every
+  capability value reachable from a well-typed program is bounded
+  by a capability value already in its source. Part 5 of the file
+  refutes the degenerate reading with concrete witnesses that the
+  SAME request is permitted before an attenuation and denied
+  after it. No postulates.
 
 - `CapaIF.agda`: the λ_if information-flow calculus
   ([`docs/semantics.md`](../docs/semantics.md) Section 9). Syntax
@@ -170,13 +196,17 @@ sudo apt install agda
 # Typecheck (from this directory):
 agda CapaSyntax.agda
 agda CapaSoundness.agda
+agda CapaAttenuation.agda       # attenuation metatheory
 agda CapaIF.agda
 agda CapaNoninterference.agda   # checks under --safe too
 agda CapaManifestExact.agda     # gated variant; checks under --safe too
 ```
 
-CI typechecks all five files on every push that touches
-`proofs/` (see `.github/workflows/agda.yml`).
+CI typechecks all six files on every push that touches
+`proofs/` (see `.github/workflows/agda.yml`). A guard in
+`tests/test_cap_handles.py` fails if a module in `proofs/` has no
+typecheck step in that workflow, so a proof file cannot silently
+go unchecked.
 
 ## Mechanisation stages (all landed)
 
@@ -274,6 +304,8 @@ Honest tracking:
 | λ_if Theorem 3: declassify-free noninterference | landed |
 | λ_if Theorem 4: delimited release | landed (machine-checked, `--safe`) |
 | λ_cap gated variant: literal-introduction confinement (introduction dimension only) | landed (machine-checked, `--safe`) |
+| λ_cap attenuation: lattice, E-Attn, monotonicity over arbitrary reduction | landed (machine-checked, `--safe`) |
+| λ_cap `Ops(c)`: per-class operation enumeration | open (scope argument modelled, operation set not) |
 
 The four capability soundness theorems and BOTH λ_if
 noninterference theorems (Theorem 3 for the declassify-free
@@ -284,9 +316,9 @@ them as such; the Agda source in this directory is the artefact a
 referee opens. No future-item gap remains in the λ_if
 development.
 
-## λ_cap: attenuation is not mechanised
+## λ_cap: what attenuation is and is not mechanised
 
-The λ_cap development covers a strict subset of
+The λ_cap development covers most of
 [`docs/semantics.md`](../docs/semantics.md) Sections 2 to 5. The
 boundary is stated exactly in that document's Section 6.1; the
 short form, because this README is what a referee opens first:
@@ -298,26 +330,47 @@ short form, because this README is what a referee opens first:
   these is parametric in the capability tag, so they quantify
   over all ten built-in classes rather than a modelled sample.
 
-- **NOT mechanised: attenuation.** Section 2 of the semantics
-  specifies an attenuation lattice with
-  `attn(cap[c, ρ], ρ') ≡ cap[c, ρ ∩ ρ']`. The Agda contains none
-  of it. `restrict : Cap -> Tm -> Tm` takes no restriction
-  argument, and `R-Restrict` reduces `restrict c (cap c)` to
-  `cap c`, so attenuation here is the IDENTITY on capability
-  values. Nothing in this directory proves that a restricted
-  capability cannot exceed its restriction. The same holds for
-  the operation-parameterised `invoke(e, op)` and the per-class
-  operation sets `Ops(c)` (the Agda's `use` has no `op`
-  parameter), and for the restriction component of the value form
-  `cap[c, ρ]` (the Agda's `cap` carries only a class tag).
+- **Mechanised: attenuation.** Section 2's lattice is
+  `CapaAttenuation.agda` Part 1: `_∩R_` is proved to be the
+  greatest lower bound of `_⊑R_`, with `unrestricted` the top and
+  `denyAll` the bottom. Section 5's `E-Attn` is `R-Restrict`
+  verbatim, reducing `restrict c res' (cap c res)` to
+  `cap c (res ∩R res')`. The narrowing guarantee is proved in
+  three widths: for one attenuation
+  (`attn-narrows`, `attn-use-never-widens`), for a chain of any
+  length (`tower-narrows`, plus `tower-is-one-meet`, which shows a
+  chain equals a single attenuation by the meet of all its links),
+  and for arbitrary reduction of any well-typed program
+  (`attenuation-monotonicity`). Restrictions are load-bearing
+  rather than decorative because `use c x t` reduces to the
+  boolean the receiver's restriction assigns to `x`, so a
+  narrower capability is observably different; and the
+  strict-narrowing witnesses in Part 5 prove attenuation is not
+  the identity, which is what stops the monotonicity theorem from
+  being vacuous.
 
-This gap is not specific to any one capability class: it affects
-`Net` host sets and `Fs` path prefixes as much as anything else,
-and it has been present since the first version of the
-mechanisation. It is a scheduled piece of separate work, not an
-oversight. Until it is closed, the theorems below should be read
-as results about the CLASS-LEVEL capability footprint, which is
-the granularity the manifest declares.
+- **Partly mechanised: `invoke`.** The prose has `invoke(e, op)`
+  with a per-class operation set `Ops(c)` and a scope predicate
+  `α_op : Σ_c → Bool`. The Agda's `use c x t` carries the SCOPE
+  ARGUMENT `x` and evaluates the restriction at it, so the scope
+  predicate is modelled and consulted operationally. What is NOT
+  modelled is the finite enumeration `Ops(c)` and per-operation
+  variation of the predicate: every invocation is gated by the
+  restriction itself, which is exactly the prose's own
+  instantiation for the scoped operations (`α_get(host(url)) ⇔
+  host(url) ∈ ρ`) but flattens the unscoped ones
+  (`Stdio.print`).
+
+- **A modelling choice, stated plainly.** The scope set `Sigma_c`
+  is modelled as ONE abstract type `Req` shared by every class,
+  not as a family `Cap -> Set`. The family was tried first and
+  abandoned on inference grounds: recovering `Req` from `Req c`
+  is higher-order unification, which leaves the domain an
+  unsolved metavariable at every constructor application. Because
+  every theorem is universally quantified over `Req`, each class's
+  own theory is obtained by instantiation; what is given up is
+  only the ability to state a theorem RELATING two classes'
+  restrictions, and there is none to state.
 
 ## λ_if: deviations from the Section 9 paper proof
 

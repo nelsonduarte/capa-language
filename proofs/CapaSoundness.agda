@@ -21,6 +21,13 @@
 --      inductive relation `_∈caps_` (Stage 3, done)
 --   4. manifest completeness is iterated capability-soundness
 --      over the reflexive-transitive closure ==>* (Stage 4, done)
+--
+-- These four theorems are about the CLASS-level footprint: which
+-- of the ten capability classes a program can exercise. They say
+-- nothing about how far a capability's authority has been
+-- narrowed; that is the subject of CapaAttenuation.agda, and the
+-- two developments are independent (nothing here inspects a
+-- restriction, and nothing there weakens anything here).
 ------------------------------------------------------------------
 
 module CapaSoundness where
@@ -37,43 +44,53 @@ open import CapaSyntax
 -- reduction rule needs to see a specific value shape.
 ------------------------------------------------------------------
 
-data Progress (t : Tm) : Set where
+data Progress {Req : Set} (t : Tm Req) : Set where
   step : forall {t'} -> t ==> t' -> Progress t
   done : Value t                 -> Progress t
 
 -- Canonical Forms: at a function type, the only value shape is
--- a lambda; at a capability type, the only value shape is the
--- cap constant. Each absurd case below pattern-matches on the
--- typing derivation: the value form forces a specific term
--- shape, and no constructor of _|-_!_ types that shape at the
--- expected return type.
+-- a lambda; at a capability type, the only value shape is a cap
+-- constant carrying SOME restriction. Each absurd case below
+-- pattern-matches on the typing derivation: the value form forces
+-- a specific term shape, and no constructor of _|-_!_ types that
+-- shape at the expected return type.
+--
+-- `CapForm` replaces what used to be an equation `t == cap c`.
+-- Now that a capability value carries a restriction, the canonical
+-- form is existential in that restriction, so it is packaged as a
+-- one-constructor datatype in the same style as `LamForm`.
 
-data LamForm : Tm -> Set where
-  isLam : (A : Ty) (t : Tm) -> LamForm (lam A t)
+data LamForm {Req : Set} : Tm Req -> Set where
+  isLam : (A : Ty) (t : Tm Req) -> LamForm (lam A t)
 
-canonical-Lam : forall {t A B}
+data CapForm {Req : Set} (c : Cap) : Tm Req -> Set where
+  isCap : (res : Restriction Req) -> CapForm c (cap c res)
+
+canonical-Lam : forall {Req} {t : Tm Req} {A B}
               -> Value t
               -> empty |- t ! (A => B)
               -> LamForm t
 canonical-Lam V-Lam  (T-Lam _) = isLam _ _
 canonical-Lam V-Int  ()
+canonical-Lam V-Bool ()
 canonical-Lam V-Unit ()
 canonical-Lam V-Cap  ()
 
-canonical-Cap : forall {t c}
+canonical-Cap : forall {Req} {t : Tm Req} {c}
               -> Value t
               -> empty |- t ! TyCap c
-              -> t == cap c
-canonical-Cap V-Cap  T-Cap = refl
+              -> CapForm c t
+canonical-Cap V-Cap  T-Cap = isCap _
 canonical-Cap V-Lam  ()
 canonical-Cap V-Int  ()
+canonical-Cap V-Bool ()
 canonical-Cap V-Unit ()
 
 -- Stage 1: Progress.
 --
 -- Pattern-match on the typing derivation. T-Var is vacuous in
--- the empty context; the four "atomic" rules (T-Lam, T-Int,
--- T-Unit, T-Cap) yield values directly; T-App, T-Use,
+-- the empty context; the five "atomic" rules (T-Lam, T-Int,
+-- T-Bool, T-Unit, T-Cap) yield values directly; T-App, T-Use,
 -- T-Restrict, T-Consume recurse via the induction hypothesis
 -- on their subderivations and use canonical forms where the
 -- step rule needs to see a specific value shape.
@@ -81,10 +98,11 @@ canonical-Cap V-Unit ()
 -- Every recursive call is on a strict structural subderivation;
 -- the termination checker accepts without an explicit measure.
 
-progress : forall {t A} -> empty |- t ! A -> Progress t
+progress : forall {Req} {t : Tm Req} {A} -> empty |- t ! A -> Progress t
 progress (T-Var ())
 progress (T-Lam _)             = done V-Lam
 progress T-Int                 = done V-Int
+progress T-Bool                = done V-Bool
 progress T-Unit                = done V-Unit
 progress T-Cap                 = done V-Cap
 progress (T-App d1 d2) with progress d1
@@ -96,11 +114,11 @@ progress (T-App d1 d2) with progress d1
 progress (T-Use d) with progress d
 ... | step s                   = step (R-UseStep s)
 ... | done v with canonical-Cap v d
-...          | refl            = step R-Use
+...          | isCap _         = step R-Use
 progress (T-Restrict d) with progress d
 ... | step s                   = step (R-RestrictStep s)
 ... | done v with canonical-Cap v d
-...          | refl            = step R-Restrict
+...          | isCap _         = step R-Restrict
 progress (T-Consume d) with progress d
 ... | step s                   = step (R-ConsumeStep s)
 ... | done v                   = step (R-Consume v)
@@ -122,7 +140,7 @@ ext-pres : forall {G G' B} {rho : Var -> Var}
 ext-pres rho-ok here      = here
 ext-pres rho-ok (there d) = there (rho-ok d)
 
-rename-pres : forall {G G' t A} {rho : Var -> Var}
+rename-pres : forall {Req} {G G'} {t : Tm Req} {A} {rho : Var -> Var}
             -> (forall {x B} -> G >> x ! B -> G' >> rho x ! B)
             -> G  |- t ! A
             -> G' |- rename rho t ! A
@@ -130,6 +148,7 @@ rename-pres rho-ok (T-Var x)      = T-Var (rho-ok x)
 rename-pres rho-ok (T-Lam d)      = T-Lam (rename-pres (ext-pres rho-ok) d)
 rename-pres rho-ok (T-App d1 d2)  = T-App (rename-pres rho-ok d1) (rename-pres rho-ok d2)
 rename-pres rho-ok T-Int          = T-Int
+rename-pres rho-ok T-Bool         = T-Bool
 rename-pres rho-ok T-Unit         = T-Unit
 rename-pres rho-ok T-Cap          = T-Cap
 rename-pres rho-ok (T-Use d)      = T-Use (rename-pres rho-ok d)
@@ -147,13 +166,13 @@ rename-pres rho-ok (T-Consume d)  = T-Consume (rename-pres rho-ok d)
 -- the `there` renaming on the IH for the original index.
 ------------------------------------------------------------------
 
-exts-pres : forall {G G' B} {sigma : Var -> Tm}
+exts-pres : forall {Req} {G G' B} {sigma : Var -> Tm Req}
           -> (forall {x A} -> G >> x ! A -> G' |- sigma x ! A)
           -> (forall {x A} -> (G , B) >> x ! A -> (G' , B) |- exts sigma x ! A)
 exts-pres sigma-ok here      = T-Var here
 exts-pres sigma-ok (there d) = rename-pres there (sigma-ok d)
 
-subst-pres : forall {G G' t A} {sigma : Var -> Tm}
+subst-pres : forall {Req} {G G'} {t : Tm Req} {A} {sigma : Var -> Tm Req}
            -> (forall {x B} -> G >> x ! B -> G' |- sigma x ! B)
            -> G  |- t ! A
            -> G' |- subst sigma t ! A
@@ -161,6 +180,7 @@ subst-pres sigma-ok (T-Var x)      = sigma-ok x
 subst-pres sigma-ok (T-Lam d)      = T-Lam (subst-pres (exts-pres sigma-ok) d)
 subst-pres sigma-ok (T-App d1 d2)  = T-App (subst-pres sigma-ok d1) (subst-pres sigma-ok d2)
 subst-pres sigma-ok T-Int          = T-Int
+subst-pres sigma-ok T-Bool         = T-Bool
 subst-pres sigma-ok T-Unit         = T-Unit
 subst-pres sigma-ok T-Cap          = T-Cap
 subst-pres sigma-ok (T-Use d)      = T-Use (subst-pres sigma-ok d)
@@ -173,13 +193,13 @@ subst-pres sigma-ok (T-Consume d)  = T-Consume (subst-pres sigma-ok d)
 -- form needed at the R-Beta case of preservation.
 ------------------------------------------------------------------
 
-sub-zero-pres : forall {G v A}
+sub-zero-pres : forall {Req} {G} {v : Tm Req} {A}
               -> G |- v ! A
               -> (forall {x B} -> (G , A) >> x ! B -> G |- sub-zero v x ! B)
 sub-zero-pres dv here      = dv
 sub-zero-pres dv (there d) = T-Var d
 
-subst-zero : forall {G v t A B}
+subst-zero : forall {Req} {G} {v t : Tm Req} {A B}
            -> (G , A) |- t ! B
            -> G       |- v ! A
            -> G       |- t [ v ] ! B
@@ -193,12 +213,13 @@ subst-zero dt dv = subst-pres (sub-zero-pres dv) dt
 -- subderivation; R-Beta uses subst-zero (the lambda body's
 -- typing in the extended context combines with the argument's
 -- typing in the outer context to yield the substituted body's
--- typing); R-Use and R-Restrict return T-Unit / T-Cap directly;
--- R-Consume returns the inner derivation unchanged because
--- consume is a no-op at the type level.
+-- typing); R-Use returns T-Bool (the reduct is the boolean the
+-- receiver's restriction assigns to the request) and R-Restrict
+-- returns T-Cap; R-Consume returns the inner derivation unchanged
+-- because consume is a no-op at the type level.
 ------------------------------------------------------------------
 
-preservation : forall {G t t' A}
+preservation : forall {Req} {G} {t t' : Tm Req} {A}
              -> G |- t ! A
              -> t ==> t'
              -> G |- t' ! A
@@ -206,7 +227,7 @@ preservation (T-App d1 d2)         (R-AppLeft s1)     = T-App (preservation d1 s
 preservation (T-App d1 d2)         (R-AppRight _ s2)  = T-App d1 (preservation d2 s2)
 preservation (T-App (T-Lam db) dv) (R-Beta _)         = subst-zero db dv
 preservation (T-Use d)             (R-UseStep s)      = T-Use (preservation d s)
-preservation (T-Use _)             R-Use              = T-Unit
+preservation (T-Use _)             R-Use              = T-Bool
 preservation (T-Restrict d)        (R-RestrictStep s) = T-Restrict (preservation d s)
 preservation (T-Restrict _)        R-Restrict         = T-Cap
 preservation (T-Consume d)         (R-ConsumeStep s)  = T-Consume (preservation d s)
@@ -236,18 +257,24 @@ preservation (T-Consume d)         (R-Consume _)      = d
 -- pointwise) and the README narrative still have a concrete
 -- "set of capabilities appearing in t" reference. The theorem
 -- proper consumes `_∈caps_` and never inspects caps-of.
+--
+-- Both are blind to restrictions: the footprint is a set of
+-- CLASSES, which is exactly what a manifest declares. How narrow
+-- each of those classes' authority is, is CapaAttenuation.agda's
+-- subject.
 ------------------------------------------------------------------
 
-caps-of : Tm -> CapSet
-caps-of (var _)        = emptyCS
-caps-of (lam _ t)      = caps-of t
-caps-of (app t1 t2)    = caps-of t1 ∪ caps-of t2
-caps-of (i _)          = emptyCS
-caps-of unit           = emptyCS
-caps-of (cap c)        = singletonCS c
-caps-of (use c t)      = singletonCS c ∪ caps-of t
-caps-of (restrict c t) = singletonCS c ∪ caps-of t
-caps-of (consume t)    = caps-of t
+caps-of : forall {Req} -> Tm Req -> CapSet
+caps-of (var _)          = emptyCS
+caps-of (lam _ t)        = caps-of t
+caps-of (app t1 t2)      = caps-of t1 ∪ caps-of t2
+caps-of (i _)            = emptyCS
+caps-of (bool _)         = emptyCS
+caps-of unit             = emptyCS
+caps-of (cap c _)        = singletonCS c
+caps-of (use c _ t)      = singletonCS c ∪ caps-of t
+caps-of (restrict c _ t) = singletonCS c ∪ caps-of t
+caps-of (consume t)      = caps-of t
 
 ------------------------------------------------------------------
 -- Disjunction (sum type), used by the substitution-caps lemma.
@@ -268,16 +295,16 @@ infixr 1 _⊎_
 -- actually introduced.
 ------------------------------------------------------------------
 
-data _∈caps_ : Cap -> Tm -> Set where
-  here-cap          : forall {c}       -> c ∈caps (cap c)
-  here-use-tag      : forall {c t}     -> c ∈caps (use c t)
-  here-restrict-tag : forall {c t}     -> c ∈caps (restrict c t)
-  inside-lam        : forall {c A t}   -> c ∈caps t  -> c ∈caps (lam A t)
-  inside-app-l      : forall {c t1 t2} -> c ∈caps t1 -> c ∈caps (app t1 t2)
-  inside-app-r      : forall {c t1 t2} -> c ∈caps t2 -> c ∈caps (app t1 t2)
-  inside-use        : forall {c c' t}  -> c ∈caps t  -> c ∈caps (use c' t)
-  inside-restrict   : forall {c c' t}  -> c ∈caps t  -> c ∈caps (restrict c' t)
-  inside-consume    : forall {c t}     -> c ∈caps t  -> c ∈caps (consume t)
+data _∈caps_ {Req : Set} : Cap -> Tm Req -> Set where
+  here-cap          : forall {c res}       -> c ∈caps (cap c res)
+  here-use-tag      : forall {c x t}       -> c ∈caps (use c x t)
+  here-restrict-tag : forall {c res t}     -> c ∈caps (restrict c res t)
+  inside-lam        : forall {c A t}       -> c ∈caps t  -> c ∈caps (lam A t)
+  inside-app-l      : forall {c t1 t2}     -> c ∈caps t1 -> c ∈caps (app t1 t2)
+  inside-app-r      : forall {c t1 t2}     -> c ∈caps t2 -> c ∈caps (app t1 t2)
+  inside-use        : forall {c c' x t}    -> c ∈caps t  -> c ∈caps (use c' x t)
+  inside-restrict   : forall {c c' res t}  -> c ∈caps t  -> c ∈caps (restrict c' res t)
+  inside-consume    : forall {c t}         -> c ∈caps t  -> c ∈caps (consume t)
 
 infix 4 _∈caps_
 
@@ -290,21 +317,22 @@ infix 4 _∈caps_
 -- constructor becomes available for pattern matching.
 ------------------------------------------------------------------
 
-rename-∈caps : forall {c rho} (t : Tm)
+rename-∈caps : forall {Req} {c rho} (t : Tm Req)
              -> c ∈caps (rename rho t)
              -> c ∈caps t
-rename-∈caps (var _)        ()
-rename-∈caps (lam _ t)      (inside-lam h)      = inside-lam (rename-∈caps t h)
-rename-∈caps (app t1 t2)    (inside-app-l h)    = inside-app-l (rename-∈caps t1 h)
-rename-∈caps (app t1 t2)    (inside-app-r h)    = inside-app-r (rename-∈caps t2 h)
-rename-∈caps (i _)          ()
-rename-∈caps unit           ()
-rename-∈caps (cap _)        here-cap            = here-cap
-rename-∈caps (use _ _)      here-use-tag        = here-use-tag
-rename-∈caps (use _ t)      (inside-use h)      = inside-use (rename-∈caps t h)
-rename-∈caps (restrict _ _) here-restrict-tag   = here-restrict-tag
-rename-∈caps (restrict _ t) (inside-restrict h) = inside-restrict (rename-∈caps t h)
-rename-∈caps (consume t)    (inside-consume h)  = inside-consume (rename-∈caps t h)
+rename-∈caps (var _)          ()
+rename-∈caps (lam _ t)        (inside-lam h)      = inside-lam (rename-∈caps t h)
+rename-∈caps (app t1 t2)      (inside-app-l h)    = inside-app-l (rename-∈caps t1 h)
+rename-∈caps (app t1 t2)      (inside-app-r h)    = inside-app-r (rename-∈caps t2 h)
+rename-∈caps (i _)            ()
+rename-∈caps (bool _)         ()
+rename-∈caps unit             ()
+rename-∈caps (cap _ _)        here-cap            = here-cap
+rename-∈caps (use _ _ _)      here-use-tag        = here-use-tag
+rename-∈caps (use _ _ t)      (inside-use h)      = inside-use (rename-∈caps t h)
+rename-∈caps (restrict _ _ _) here-restrict-tag   = here-restrict-tag
+rename-∈caps (restrict _ _ t) (inside-restrict h) = inside-restrict (rename-∈caps t h)
+rename-∈caps (consume t)      (inside-consume h)  = inside-consume (rename-∈caps t h)
 
 ------------------------------------------------------------------
 -- Substitution-caps lemma: if every term in the image of sigma
@@ -314,17 +342,17 @@ rename-∈caps (consume t)    (inside-consume h)  = inside-consume (rename-∈ca
 -- rename-∈caps lemma applied at exts sigma.
 ------------------------------------------------------------------
 
-sigma-∈bounded : (Var -> Tm) -> (Cap -> Set) -> Set
+sigma-∈bounded : forall {Req} -> (Var -> Tm Req) -> (Cap -> Set) -> Set
 sigma-∈bounded sigma P = (x : Var) (c : Cap)
                        -> c ∈caps (sigma x) -> P c
 
-exts-∈bounded : forall {P} (sigma : Var -> Tm)
+exts-∈bounded : forall {Req} {P} (sigma : Var -> Tm Req)
               -> sigma-∈bounded sigma P
               -> sigma-∈bounded (exts sigma) P
 exts-∈bounded sigma sb vzero    c ()
 exts-∈bounded sigma sb (vsuc x) c h = sb x c (rename-∈caps (sigma x) h)
 
-subst-∈caps-bounded : forall {P} (sigma : Var -> Tm) (t : Tm) (c : Cap)
+subst-∈caps-bounded : forall {Req} {P} (sigma : Var -> Tm Req) (t : Tm Req) (c : Cap)
                     -> sigma-∈bounded sigma P
                     -> c ∈caps (subst sigma t)
                     -> c ∈caps t ⊎ P c
@@ -341,16 +369,17 @@ subst-∈caps-bounded sigma (app t1 t2) c sb (inside-app-r h)
   with subst-∈caps-bounded sigma t2 c sb h
 ... | inl ht = inl (inside-app-r ht)
 ... | inr p  = inr p
-subst-∈caps-bounded sigma (i _)   c sb ()
-subst-∈caps-bounded sigma unit    c sb ()
-subst-∈caps-bounded sigma (cap _) c sb here-cap = inl here-cap
-subst-∈caps-bounded sigma (use _ _) c sb here-use-tag = inl here-use-tag
-subst-∈caps-bounded sigma (use _ t) c sb (inside-use h)
+subst-∈caps-bounded sigma (i _)    c sb ()
+subst-∈caps-bounded sigma (bool _) c sb ()
+subst-∈caps-bounded sigma unit     c sb ()
+subst-∈caps-bounded sigma (cap _ _) c sb here-cap = inl here-cap
+subst-∈caps-bounded sigma (use _ _ _) c sb here-use-tag = inl here-use-tag
+subst-∈caps-bounded sigma (use _ _ t) c sb (inside-use h)
   with subst-∈caps-bounded sigma t c sb h
 ... | inl ht = inl (inside-use ht)
 ... | inr p  = inr p
-subst-∈caps-bounded sigma (restrict _ _) c sb here-restrict-tag = inl here-restrict-tag
-subst-∈caps-bounded sigma (restrict _ t) c sb (inside-restrict h)
+subst-∈caps-bounded sigma (restrict _ _ _) c sb here-restrict-tag = inl here-restrict-tag
+subst-∈caps-bounded sigma (restrict _ _ t) c sb (inside-restrict h)
   with subst-∈caps-bounded sigma t c sb h
 ... | inl ht = inl (inside-restrict ht)
 ... | inr p  = inr p
@@ -359,12 +388,12 @@ subst-∈caps-bounded sigma (consume t) c sb (inside-consume h)
 ... | inl ht = inl (inside-consume ht)
 ... | inr p  = inr p
 
-sub-zero-∈bounded : forall (v : Tm)
+sub-zero-∈bounded : forall {Req} (v : Tm Req)
                   -> sigma-∈bounded (sub-zero v) (\ c -> c ∈caps v)
 sub-zero-∈bounded v vzero    c h = h
 sub-zero-∈bounded v (vsuc _) c ()
 
-subst-zero-∈caps : forall (t : Tm) {v : Tm} (c : Cap)
+subst-zero-∈caps : forall {Req} (t : Tm Req) {v : Tm Req} (c : Cap)
                  -> c ∈caps (t [ v ])
                  -> c ∈caps t ⊎ c ∈caps v
 subst-zero-∈caps t {v} c h
@@ -380,14 +409,15 @@ subst-zero-∈caps t {v} c h
 -- decomposes via subst-zero-∈caps into "cap was in body" or
 -- "cap was in v"; in the source `app (lam A body) v` these map
 -- to inside-app-l (inside-lam _) and inside-app-r _ respectively.
--- R-Use's reduct is `unit` whose ∈caps relation is empty; the
--- hypothesis is absurd. R-Restrict's reduct `cap c0` is
--- inhabited only by here-cap, and the source `restrict c0 (...)`
--- has the matching here-restrict-tag witness.
+-- R-Use's reduct is a boolean literal whose ∈caps relation is
+-- empty; the hypothesis is absurd. R-Restrict's reduct
+-- `cap c0 (res ∩R res')` is inhabited only by here-cap, and the
+-- source `restrict c0 res' (...)` has the matching
+-- here-restrict-tag witness.
 ------------------------------------------------------------------
 
 capability-soundness
-  : forall {t t' A}
+  : forall {Req} {t t' : Tm Req} {A}
   -> empty |- t ! A
   -> t ==> t'
   -> (c : Cap)
@@ -445,7 +475,7 @@ capability-soundness (T-Consume _) (R-Consume _) c h = inside-consume h
 -- by the program is a sound upper bound on the run-time trace.
 ------------------------------------------------------------------
 
-manifest-completeness : forall {t t' A}
+manifest-completeness : forall {Req} {t t' : Tm Req} {A}
                       -> empty |- t ! A
                       -> t ==>* t'
                       -> (c : Cap)

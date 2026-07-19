@@ -10,14 +10,16 @@
 > with no `postulate` remaining; CI typechecks them on every
 > change to [`proofs/`](../proofs/).
 >
-> **The mechanisation covers a strict subset of this document.**
+> **The mechanisation covers most, not all, of this document.**
 > Progress, Preservation, Capability Soundness and Manifest
 > Completeness are genuinely machine-checked over all ten
-> capability classes. The attenuation lattice of Section 2, the
-> operation-parameterised `invoke`, and the restriction component
-> of `cap[c, ρ]` are **specified here but absent from the Agda**;
-> attenuation is modelled as the identity. Section 6.1 states the
-> boundary exactly. Read it before citing this document.
+> capability classes, and since 2026-07-19 so are the attenuation
+> lattice of Section 2, the rule `E-Attn` of Section 5, and the
+> guarantee that attenuation can only ever narrow authority
+> ([`proofs/CapaAttenuation.agda`](../proofs/CapaAttenuation.agda)).
+> What is still specification only is the per-class operation
+> enumeration `Ops(c)`. Section 6.1 states the boundary exactly.
+> Read it before citing this document.
 >
 > Audience: reviewers who want a reference-quality account of
 > the discipline plus a mechanised soundness argument they can
@@ -312,6 +314,7 @@ are backed by a machine and which are specification only.
 **Mechanised, under `--safe`, with no `postulate` remaining**
 ([`proofs/CapaSyntax.agda`](../proofs/CapaSyntax.agda),
 [`proofs/CapaSoundness.agda`](../proofs/CapaSoundness.agda),
+[`proofs/CapaAttenuation.agda`](../proofs/CapaAttenuation.agda),
 [`proofs/CapaManifestExact.agda`](../proofs/CapaManifestExact.agda)):
 the term syntax, the typing relation, the small-step reduction
 relation, PLFA-style parallel renaming and substitution, Progress,
@@ -326,58 +329,85 @@ universal quantifier and not a modelled sample. Theorem 2 is an
 explains why the exactness version is false in general (a program
 may declare a capability parameter and never use it).
 
-**Specified above but NOT mechanised.** Three gaps, all of them
-consequences of one modelling decision:
+**Mechanised as of 2026-07-19: attenuation (former gaps M1 and
+M3).** Section 2's lattice and Section 5's `E-Attn` are now in the
+model, and the narrowing guarantee is proved rather than assumed:
 
-- **M1 (attenuation is modelled as the identity).** Section 2
-  specifies the attenuation lattice `(𝒫(Σ_c), ⊆)` and the
-  greatest-lower-bound equation
-  `attn(cap[c, ρ], ρ') ≡ cap[c, ρ ∩ ρ']`. The Agda has none of
-  it. `restrict : Cap -> Tm -> Tm` takes **no restriction
-  argument at all**, and the rule `R-Restrict` reduces
-  `restrict c (cap c)` to `cap c`. Attenuation in the
-  mechanisation is therefore the identity on capability values,
-  and the development proves nothing whatsoever about narrowing.
-  Nothing in the Agda rules out a "restricted" capability
-  reaching authority its restriction excludes; that property is
-  simply not stated there. This gap is not specific to any one
-  class: it affects `Net` host sets and `Fs` path prefixes
-  exactly as much as anything newer, and it has been present
-  since the first version of the mechanisation.
+- A capability value is `cap c res`, carrying a restriction. A
+  restriction is the characteristic function of a subset of an
+  abstract scope set, so `Σ_c` is modelled and left universally
+  quantified; the lattice operations `_∩R_` (meet), `_⊑R_`
+  (order), `unrestricted` (top `⊤`) and `denyAll` (bottom) are
+  defined on it, and `∩R-lower-l` / `∩R-lower-r` /
+  `∩R-greatest` prove `_∩R_` really is the greatest lower bound
+  that Section 2 claims. **M3 is closed.**
+- `R-Restrict` is `E-Attn` verbatim: `restrict c ρ' (cap c ρ)`
+  reduces to `cap c (ρ ∩R ρ')`, not to `cap c ρ`. **M1 is
+  closed**, in three widths: `attn-use-never-widens` for one
+  attenuation, `tower-narrows` and `tower-is-one-meet` for a
+  chain of any length (a chain is equivalent to a single
+  attenuation by the meet of all its links, so order and grouping
+  are irrelevant), and `attenuation-monotonicity` for arbitrary
+  reduction of any well-typed program: every capability value
+  reachable by any reduction sequence is bounded by a capability
+  value already in the source. `authority-bounded` restates that
+  in security vocabulary: if anything reachable permits a
+  request, something in the source already permitted it.
+- The restriction is **operationally load-bearing**, which is
+  what stops the above from being vacuously true of an identity
+  `restrict`: `use c x t` reduces to the boolean the receiver's
+  restriction assigns to the request `x`, so a narrowed
+  capability gives an observably different answer. Part 5 of
+  `CapaAttenuation.agda` exhibits a concrete request permitted
+  before an attenuation and denied after it, and refutes the
+  claim that the two restrictions are equivalent. Weakening
+  `R-Restrict` back to the identity stops those witnesses
+  typechecking.
+- The fail-closed convention is proved too: a capability carrying
+  `denyAll` denies every request (`denyAll-denies`), and no later
+  attenuation can recover from it (`denyAll-is-final`). That is
+  the model of the runtime's `_SERVE_DENY_ALL_RULE`, the rule a
+  malformed restriction spec parses to. Symmetrically,
+  attenuating by the top element restores nothing
+  (`∩R-unrestricted-r`), which is why
+  `serve.restrict_to("*:*")` on an already-narrowed capability is
+  not an escape.
 
-- **M2 (`invoke` is not operation-parameterised).** Sections 2
-  and 3 give `invoke(e, op)` with a per-class operation set
-  `Ops(c)` and a scope predicate `α_op : Σ_c → Bool` deciding
-  whether an attenuation permits the operation. The Agda's
-  `use : Cap -> Tm -> Tm` carries only the class tag. The
-  mechanisation therefore tracks *which class* a term exercises
-  and never *which operation*, and no scope predicate is
-  evaluated anywhere in it.
+**Still specified above but NOT mechanised.**
 
-- **M3 (capability values carry no restriction).** Section 2's
-  value form is `cap[c, ρ]`. The Agda constructor is
-  `cap : Cap -> Tm`, a bare class tag. This is a corollary of
-  M1 rather than an independent gap, but it is worth stating
-  separately because it means the restriction component has no
-  representation in the model at all, not even an inert one.
+- **M2 (partly closed: `invoke` carries a scope argument, but
+  `Ops(c)` is not enumerated).** Sections 2 and 3 give
+  `invoke(e, op)` with a per-class operation set `Ops(c)` and a
+  scope predicate `α_op : Σ_c → Bool`. The Agda's
+  `use : Cap -> Req -> Tm -> Tm` now carries the scope argument
+  and evaluates the receiver's restriction at it, so the scope
+  predicate *is* modelled and *is* consulted at reduction. What
+  is not modelled is the finite set `Ops(c)` and any variation of
+  `α` between operations of the same class: in the model every
+  invocation is gated by the restriction itself. That matches the
+  prose's own instantiation for the scoped operations
+  (`α_get(host(url)) ⇔ host(url) ∈ ρ`) and flattens the unscoped
+  ones such as `Stdio.print`, which are gated by holding the
+  class at all.
 
-**What this costs, stated precisely.** The mechanised theorems are
-about the *class-level* capability footprint: which of the ten
-classes a program can exercise. That is exactly the granularity
-the manifest declares, so Theorems 1 and 2 are meaningful, and
-re-checkable, as stated. What is *not* machine-backed is any claim
-about attenuation: that `restrict_to` narrows authority, that
-narrowing is monotone, or that a restricted handle cannot exceed
-its restriction. Read the attenuation content of this document as
-specification awaiting mechanisation.
+- **One modelling choice worth naming.** `Σ_c` is a single
+  abstract type shared by every class rather than a family
+  indexed by the class. The family was implemented first and
+  abandoned for an inference reason, not a modelling one:
+  recovering the family from an application `Req c` is
+  higher-order unification, which Agda leaves as an unsolved
+  metavariable at every constructor application. Since every
+  theorem is universally quantified over the scope set, each
+  class's theory follows by instantiation; the only thing given
+  up is the ability to state a theorem relating two different
+  classes' restrictions, and this document states none.
 
-**This is a scheduled decision, not an oversight.** Building real
-attenuation semantics into λ_cap (restriction-carrying capability
-values, a lattice-valued `restrict`, and a monotonicity theorem)
-is deliberately held out of the present work and tracked as its
-own project. Note that item 2 of Section 7 below, "attenuation
-completeness", presumes the lattice is already in the model; until
-M1 is closed, that item is a second step rather than the next one.
+**What this costs, stated precisely.** The mechanised theorems now
+cover both axes: *which* of the ten classes a program can exercise
+(Theorems 1 and 2, at the granularity the manifest declares) and
+*how much* of a class's scope set any capability it holds can
+reach (the attenuation results). What is still not machine-backed
+is per-operation granularity within a class.
 
 ---
 
@@ -401,7 +431,15 @@ deliberately leaves four things for the full writeup:
    completeness result for attenuation says "given any sound
    attenuation chain that produces `cap[c, ρ]`, the same `ρ`
    is computed by `attn`". This is closer to a property of
-   the lattice than a property of the calculus.
+   the lattice than a property of the calculus, and its lattice
+   half is now proved: `tower-is-one-meet` in
+   [`proofs/CapaAttenuation.agda`](../proofs/CapaAttenuation.agda)
+   shows any chain of attenuations is equivalent to the single
+   attenuation by the meet of all its links, so the `ρ` a chain
+   computes is independent of how the chain is grouped or
+   ordered. What remains is the correspondence to the compiler's
+   own attenuation-chain analysis, which is a statement about
+   the implementation rather than about λ_cap.
 
 3. **The `Unsafe` boundary**. `py_import` and `py_invoke`
    cross out of λ_cap's reasoning by construction. The clean
