@@ -88,15 +88,15 @@ Out of scope:
 
 ## Supported versions
 
-Capa is on the `1.x` line (latest `1.17.0`) and is a one-person
+Capa is on the `1.x` line (latest `1.18.0`) and is a one-person
 project. Only the latest tagged release is supported for security fixes.
 I may publish patch releases for the latest minor when a fix is
 significant.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.15.x (latest) | yes |
-| < 1.15  | no, please upgrade |
+| 1.18.x (latest) | yes |
+| < 1.18  | no, please upgrade |
 
 ## Published advisories
 
@@ -148,6 +148,16 @@ The 2026-05-25 audit record lives at the repository root in
   provenance-integrity fix (the stamped `capa_version` was a stale
   hard-coded literal, now single-sourced from `pyproject.toml`), shipped
   in `1.15.0` under the security exception.
+- [`docs/advisories/2026-07-19-supply-chain.md`](docs/advisories/2026-07-19-supply-chain.md):
+  the module loader's project-root fallback made the parent of the
+  project root an open search root, so an undeclared transitive
+  dependency could be satisfied by a same-named sibling directory that
+  was never fetched, never verified against `capa.lock`, never pinned
+  and absent from every emitted SBOM. The build linked sources the
+  provenance machinery never saw and reported success. The fallback is
+  now scoped to the package's own name, which narrows the SemVer-covered
+  module resolution order, shipped in `1.18.0` under the security
+  exception.
 
 ## Public disclosure
 
