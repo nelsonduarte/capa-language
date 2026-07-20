@@ -1,0 +1,43 @@
+# THE CANONICAL SHARED-REGION DIGESTS.
+#
+# fleet/templates/tests/test_release_wiring.sh and
+# fleet/templates/tests/test_wiring_mutations.sh are COPIED, in full,
+# into every repository that adopts the shared release guards. Copies
+# drift, and a drifted copy still reports success. The fleet has been
+# bitten by exactly this twice: a capability tuple hand-copied at 21
+# sites in this repository that had already drifted before anyone
+# looked, and capa_authgate's check_tag_version.sh becoming a second
+# copy whose two versions immediately printed different messages.
+#
+# Each of those files is split by two marker lines into a CONFIG region,
+# which is repo-specific by design, and everything else, which is meant
+# to be byte-identical everywhere. This file records the SHA-256 of
+# everything OUTSIDE the config region, markers included, for each
+# template as it stands here.
+#
+# The paths are the paths an ADOPTER sees. The canonical file is the
+# same path under fleet/templates/, which is the mapping the adopter
+# check applies to fetch it.
+#
+# WHO READS THIS:
+#
+#   * tests/test_fleet_templates.py, offline, which runs the real
+#     adopter-side check against these templates and refuses any
+#     disagreement with the numbers below;
+#   * every adopter's .github/shared-regions.sha256, which copies these
+#     numbers and adds a `revision` line naming the commit they were
+#     copied from. That revision is INDEPENDENT of the guard pin in
+#     .github/guard-pins.sha256, on purpose: one shared revision would
+#     make every guard bump force a wiring re-audit and every wiring
+#     bump force a guard re-audit, and that friction is the likeliest
+#     reason for the whole exercise to be skipped.
+#
+# TO REGENERATE AFTER A DELIBERATE CHANGE TO A TEMPLATE:
+#
+#   bash fleet/shared_region_digest.sh
+#
+# Then bump each adopter's record, revision line included, which is what
+# makes the change an adoption rather than a drift.
+
+16364eedf7bb6380c6d4156139acceec80dad0ae6f5cae5bfae3f67b3dbeee85  tests/test_release_wiring.sh
+f703c855c94cd5cec4e6502258c307cc5f3f0747b8b12ca906c6890727c2a745  tests/test_wiring_mutations.sh

@@ -1,0 +1,50 @@
+# THE SHARED WIRING-TEST REVISION THIS REPOSITORY ADOPTED, BY CONTENT.
+#
+# tests/test_release_wiring.sh and tests/test_wiring_mutations.sh are
+# not this repository's work. They are ~1000 lines COPIED from the
+# compiler repository's fleet/templates/, of which everything outside
+# the CONFIG markers is meant to be byte-identical across every adopter.
+# Nothing noticed when a copy diverged, which has already happened twice
+# in this fleet: a capability tuple hand-copied at 21 sites that had
+# already drifted, and check_tag_version.sh becoming a second copy whose
+# two versions immediately printed different messages.
+#
+# So this file records the SHA-256 of each file's shared region, and
+# tests/test_shared_regions.sh checks it two ways:
+#
+#   1. OFFLINE, by digesting the local files and comparing. This never
+#      skips, and it catches the ordinary case, an edit below the line.
+#   2. ONLINE, by fetching the canonical template at the revision named
+#      below and digesting THAT with the same code. Layer 1 compares a
+#      file in this repository against a number in this repository, so
+#      anyone who edits the body can regenerate the number and go green.
+#      Layer 2 is what makes the number honest. It reports SKIP without
+#      `gh`, matching tests/test_release_wiring.sh.
+#
+# THE `revision` LINE BELOW IS NOT THE GUARD PIN. .github/guard-pins.sha256
+# has its own, and the two are deliberately independent: a single shared
+# revision would make every guard bump force a wiring re-audit and every
+# wiring bump force a guard re-audit, and that friction is the likeliest
+# reason for either audit to be skipped altogether.
+#
+# TO ADOPT: replace the placeholder revision with the compiler commit you
+# copied the templates from, and the digests with that commit's
+# fleet/shared-regions.sha256. Then run
+#
+#   bash tests/test_shared_regions.sh
+#
+# and expect it green with layer 2 confirming the numbers, not skipping.
+#
+# TO RE-ADOPT AFTER A TEMPLATE CHANGE: read the diff between the two
+# revisions, re-copy both files, keep your CONFIG blocks, then update
+# the revision and the digests together. Updating the digests without
+# re-copying is how a local edit becomes a permanent fork with a green
+# test over it.
+
+# A placeholder that deliberately is NOT 40 hex characters, so that an
+# unedited copy of this file reddens OFFLINE, on the first run, rather
+# than waiting for a network fetch to fail.
+revision REPLACE-ME-WITH-THE-CANONICAL-COMMIT-SHA
+
+16364eedf7bb6380c6d4156139acceec80dad0ae6f5cae5bfae3f67b3dbeee85  tests/test_release_wiring.sh
+f703c855c94cd5cec4e6502258c307cc5f3f0747b8b12ca906c6890727c2a745  tests/test_wiring_mutations.sh

@@ -1,0 +1,8 @@
+# The fleet templates are copied verbatim into adopter repositories, and
+# their CONFIG marker lines are matched by whole-line equality. On a
+# Linux runner nothing strips a trailing CR, so a template checked out
+# with CRLF would seed every adopter with a file whose boundary cannot be
+# found, and the drift check would report a malformed region on bytes
+# that are byte-for-byte canonical. `core.autocrlf=true` is the default
+# on Windows and would do exactly that, so these are pinned to LF.
+fleet/** text eol=lf
