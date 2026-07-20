@@ -30,6 +30,12 @@ Public surface:
   not produce -- the canonical "upstream tag was moved"
   signal.
 - ``InstallError`` / ``LockMismatchError``: error variants.
+- ``enforce_root_floor(project_dir)``: honour the root manifest's
+  ``[package].capa`` floor. Raises ``CapaFloorError`` when the running
+  compiler is older than the declared floor. A missing ``capa`` key is
+  unconstrained. ``CAPA_IGNORE_CAPA_FLOOR=1`` downgrades the refusal to
+  a loud warning. Dependency floors WARN instead, via
+  ``warn_dependency_floor``. See ``capa/pkg/_floor.py``.
 - ``verify_vendored_deps(project_dir, manifest)``: re-verify the
   vendored git deps against ``capa.lock`` on the read/build path.
   Fail-closed; raises ``VendorVerificationError`` on a missing
@@ -52,6 +58,13 @@ from ._manifest import (
     LOCK_FILENAME,
     MANIFEST_FILENAME,
 )
+from ._floor import (
+    CapaFloorError,
+    IGNORE_ENV as CAPA_FLOOR_IGNORE_ENV,
+    check_root_floor,
+    enforce_root_floor,
+    warn_dependency_floor,
+)
 from ._install import InstallError, LockMismatchError, VerificationError, install
 from ._verify import VendorVerificationError, verify_vendored_deps
 from ._add import add_dependency
@@ -64,6 +77,11 @@ from ._registry import (
 
 __all__ = [
     "CapabilityCeiling",
+    "CapaFloorError",
+    "CAPA_FLOOR_IGNORE_ENV",
+    "check_root_floor",
+    "enforce_root_floor",
+    "warn_dependency_floor",
     "Dependency",
     "Manifest",
     "ManifestError",

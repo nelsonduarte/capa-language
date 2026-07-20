@@ -29,7 +29,7 @@ from capa.manifest import (
     resolve_build_timestamp, SourceDateEpochError,
 )
 from capa._artifact_io import emit_artifact
-from capa.pkg import VendorVerificationError
+from capa.pkg import CapaFloorError, VendorVerificationError, enforce_root_floor
 from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
 from capa.init_project import init_project
@@ -163,12 +163,20 @@ def _capa_search_paths() -> list[Path]:
     manifest_path = Path.cwd() / "capa.toml"
     if manifest_path.exists():
         try:
-            from capa.pkg import read_manifest, verify_vendored_deps
+            from capa.pkg import (
+                check_root_floor, read_manifest, verify_vendored_deps,
+            )
             manifest = read_manifest(manifest_path)
             # Dev-dependencies resolve exactly like regular deps:
             # ``capa install`` vendors them into the same ./vendor
             # dir, so test files in the invocation root import them
             # with no extra configuration.
+            # Honour the manifest's declared compiler floor at the
+            # point the root manifest is actually consumed. The
+            # subcommand gate in ``_main_dispatch`` normally gets here
+            # first; this call is what keeps the invariant true for any
+            # caller that reaches module resolution another way.
+            check_root_floor(manifest.capa_requirement, manifest_path)
             all_deps = manifest.dependencies + manifest.dev_dependencies
             has_git = any(d.is_git for d in all_deps)
             if has_git:
@@ -205,6 +213,18 @@ def _capa_search_paths() -> list[Path]:
             # surfaces a clear error and refuses the build, rather than
             # silently dropping ./vendor from the search path (which
             # would degrade to a confusing "module not found").
+            raise
+        except CapaFloorError:
+            # Fail-closed, and NOT redundant with the ``except
+            # Exception`` arm below: that arm catches everything,
+            # including this, and would turn a refusal to build below
+            # the declared compiler floor into a one-line "ignoring
+            # capa.toml" warning followed by the build proceeding with
+            # ./vendor dropped from the search path. That is strictly
+            # worse than not checking at all. DO NOT DELETE THIS ARM.
+            # (``CapaFloorError`` also deliberately does not subclass
+            # ``ManifestError``; see its docstring for the separate
+            # reason, which is about ``manifest/_compose.py``.)
             raise
         except Exception as e:
             # A broken capa.toml should produce a clear warning but
@@ -942,12 +962,66 @@ def main() -> int:
     """CLI entry point. Wraps the dispatch in a fail-closed guard for
     ``VendorVerificationError`` (PKG-1): an unverifiable ./vendor tree
     is a clean, named error + exit 1 on any read/build path, never a
+    traceback. ``CapaFloorError`` (the ``[package].capa`` compiler floor)
+    gets the same treatment: a named error and exit 1, never a
     traceback."""
     try:
         return _main_dispatch()
     except VendorVerificationError as e:
         print(f"capa: {e}", file=sys.stderr)
         return 1
+    except CapaFloorError as e:
+        # The message already carries the ``capa: <path>:`` prefix and
+        # the full remediation menu; print it verbatim.
+        print(str(e), file=sys.stderr)
+        return 1
+
+
+# Subcommands that must run even when the root manifest's declared
+# compiler floor is violated, and the reason each one is here. This is
+# not a convenience list; every entry is a case where hard-erroring
+# would take away the user's route out of the error.
+#
+#   search  queries the registry and needs no local manifest at all.
+#   add     WRITES capa.toml. Blocking it would stop the user repairing
+#           the very file that is blocking them.
+#   init    scaffolds a NEW project, in a directory that is not the one
+#           whose manifest is at fault.
+#   lsp     speaks LSP on stdout. A hard error there makes an editor
+#           silently lose language support, with the reason in a stderr
+#           the editor discards.
+#
+# ``--help`` and ``--version`` are handled separately below, because
+# neither is positional.
+_FLOOR_EXEMPT_COMMANDS = frozenset({"search", "add", "init", "lsp"})
+
+
+def _floor_check_exempt(argv: list[str]) -> bool:
+    """Should the compiler-floor gate be skipped for this invocation?
+
+    ``argv`` is the argument list WITHOUT the program name.
+
+    Three exemptions beyond the command list:
+
+      * **no arguments at all.** Bare ``capa`` prints usage; there is
+        nothing to build and nothing to refuse.
+      * **``--help`` / ``-h`` ANYWHERE in argv.** Not just at argv[0]:
+        ``capa build --help`` puts ``build`` first, so a naive
+        ``argv[0] in _FLOOR_EXEMPT_COMMANDS`` test would gate the help
+        of every subcommand.
+      * **``--version``.** This is an argparse ``action="version"``,
+        handled inside ``_main_dispatch`` well after this gate. Without
+        the exemption, a floor violation would brick the one command the
+        error message tells the user to run in order to see which
+        compiler they actually have. There is no ``-V`` short form on
+        this parser, so none is exempted; adding one here that does not
+        exist would only mislead the next reader.
+    """
+    if not argv:
+        return True
+    if any(a in ("--help", "-h", "--version") for a in argv):
+        return True
+    return argv[0] in _FLOOR_EXEMPT_COMMANDS
 
 
 def _main_dispatch() -> int:
@@ -965,6 +1039,14 @@ def _main_dispatch() -> int:
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
+
+    # The manifest's declared compiler floor, enforced before anything
+    # else runs. Placed here rather than after argparse so a violation
+    # is reported once, from one place, for every subcommand and every
+    # flag-based invocation alike. ``_floor_check_exempt`` documents
+    # which invocations bypass it and why.
+    if not _floor_check_exempt(sys.argv[1:]):
+        enforce_root_floor(Path.cwd())
 
     # Subcommand dispatch happens before argparse so the rest of
     # the CLI can stay flag-based without complicating help output.

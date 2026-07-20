@@ -305,7 +305,7 @@ def build_package_dag(
     the product). Returns the node map (keyed by resolved manifest dir)
     and the root node. Cycles are handled by memoising on the resolved
     directory."""
-    from ..pkg import read_manifest
+    from ..pkg import read_manifest, warn_dependency_floor
 
     root_dir = root_dir.resolve()
     nodes: dict[Path, PackageNode] = {}
@@ -314,7 +314,19 @@ def build_package_dag(
         pkg_dir = pkg_dir.resolve()
         if pkg_dir in nodes:
             return nodes[pkg_dir]
-        manifest = read_manifest(pkg_dir / "capa.toml")
+        manifest_path = pkg_dir / "capa.toml"
+        manifest = read_manifest(manifest_path)
+        if pkg_dir != root_dir:
+            # A DEPENDENCY's ``[package].capa`` floor warns; only the
+            # root's is a hard error. The floor is the dependency
+            # author's declaration about a machine that is not theirs,
+            # and the consumer cannot satisfy it by editing their own
+            # manifest, so refusing here is the case most likely to be a
+            # false stop. Memoisation on ``pkg_dir`` above means each
+            # offending package is named exactly once per build.
+            warn_dependency_floor(
+                manifest.capa_requirement, manifest.name, manifest_path,
+            )
         node = PackageNode(
             name=manifest.name,
             version=manifest.version,

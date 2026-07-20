@@ -556,6 +556,68 @@ names exactly which symbol came from which dependency.
   fine for public OSS, fine for private repos behind your
   shell's ssh agent. A centralised registry is out of scope
   for v1.
-- **No version ranges in `capa = ".."`.** The field is read
-  and stored but not yet checked against the running Capa
-  version. Treat it as documentation for now.
+- **No version ranges in `capa = ".."`.** Only `">=X.Y.Z"` and
+  the bare `"X.Y.Z"` are accepted, and both mean a **floor**, not
+  a pin. Carets, wildcards and comma-separated ranges are
+  refused rather than approximated. The field IS enforced since
+  1.19.0; see below.
+
+## The compiler floor: `capa = ">=X.Y.Z"`
+
+```toml
+[package]
+name = "mylib"
+version = "0.3.0"
+capa = ">=1.19.0"
+```
+
+This is the package's declaration of the **oldest compiler it
+can be built with**. Since **1.19.0** it is enforced, in two
+different strengths:
+
+| Whose floor | What happens |
+| --- | --- |
+| The **root** manifest (the project you are building) | **Hard error.** The build stops. |
+| A **dependency**'s manifest | **Warning**, once per offending package, naming it. |
+
+The split is by root-versus-transitive. The root floor is your
+own declaration about the machine doing the build: it is
+maximally evidenced and you can act on it, either by upgrading
+the compiler or by editing a floor you own. A dependency's
+floor is someone else's declaration that you cannot fix by
+editing your own manifest, so a hard stop there is the case
+most likely to be a false stop.
+
+**A missing `capa` key is unconstrained.** Absence is not a
+violation and is never reported. Note that this is the
+**opposite** policy from
+[`tools/capa_floor.sh`](../tools/capa_floor.sh), the release
+guard, which fails **closed** when a manifest declares no floor.
+The divergence is deliberate: the guard is asking "which
+released compiler must I build this artefact with?", and there
+is no honest answer when nothing is declared, so it refuses
+rather than guessing. The compiler is asking "does the running
+version violate a *stated* requirement?", and an unstated
+requirement is violated by nothing.
+
+**Escape hatch: `CAPA_IGNORE_CAPA_FLOOR=1`.** Read as exactly
+`1`. It downgrades the hard error to a warning that prints the
+refusal it overrode in full, in the same loud-by-construction
+spirit as `CAPA_NO_VERIFY` and `CAPA_ALLOW_MISSING_GH`. Use it
+to get unblocked, not to stay unblocked: the build it produces
+was analysed by a compiler the package itself says is too old,
+so its SBOM and capability claims carry that compiler's gaps.
+
+**Exempt commands.** `capa search`, `capa add`, `capa init`,
+`capa lsp`, any `--help`, `--version`, and bare `capa` all run
+regardless of the floor. `add` writes `capa.toml`, so blocking
+it would stop you repairing the file that is blocking you;
+`--version` is what the error message tells you to run;
+`search` needs no local manifest; and an `lsp` that hard-errors
+makes an editor silently lose language support.
+
+Why this is an error rather than a warning: building below the
+floor does not fail loudly. It **succeeds**, and emits an SBOM,
+a provenance record and capability claims derived by a compiler
+missing whatever fix the floor was raised for. See
+[`docs/advisories/2026-07-20-capa-floor.md`](advisories/2026-07-20-capa-floor.md).

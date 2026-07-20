@@ -170,6 +170,17 @@ The 2026-05-25 audit record lives at the repository root in
   reusable release-guard workflow's copy-paste example omitted
   `permissions:` on the calling job, so a verbatim copy handed the
   guards the caller's `id-token: write`.
+- [`docs/advisories/2026-07-20-capa-floor.md`](docs/advisories/2026-07-20-capa-floor.md):
+  the `capa = ">=X.Y.Z"` manifest field, a package's declaration of the
+  oldest compiler it can be built with, was parsed and never read back,
+  so a package declaring `>=1.18.1` built silently on `1.2.0`. Building
+  below the floor does not fail loudly: it succeeds and emits an SBOM,
+  provenance and capability claims derived by a compiler lacking the fix
+  the floor existed to require (the advisory names the `1.4.0`
+  `provably_excluded_capabilities` false-exclusion fix as the instance).
+  The root manifest's floor is now a hard error and a dependency's a
+  warning, with `CAPA_IGNORE_CAPA_FLOOR=1` as a loud escape, shipped in
+  `1.19.0` under the security exception.
 
 ## Public disclosure
 

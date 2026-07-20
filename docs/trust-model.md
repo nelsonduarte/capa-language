@@ -119,6 +119,20 @@ refused on failure.
   in tier 2 below. See `_refuse_or_allow_missing_gh` in
   `capa/pkg/_install.py`.
 
+- **The declared compiler floor is enforced (1.19.0).**
+  `capa = ">=X.Y.Z"` in `[package]` is the package's statement of the
+  oldest compiler it can be built with. It used to be parsed and never
+  read back, so a package declaring `>=1.18.1` built silently on 1.2.0.
+  Building below the floor does not fail loudly: it succeeds and emits
+  an SBOM, provenance and capability claims derived by a compiler
+  missing the fix the floor existed to require. The **root** manifest's
+  floor is now a hard error; a **dependency**'s warns, once, naming the
+  package, because the consumer cannot fix someone else's floor by
+  editing their own manifest. A missing `capa` key is unconstrained.
+  The escape is `CAPA_IGNORE_CAPA_FLOOR=1`, which builds anyway and
+  prints the refusal it overrode in full. See `capa/pkg/_floor.py` and
+  [advisory 2026-07-20](advisories/2026-07-20-capa-floor.md).
+
 - **SBOMs are byte-reproducible.** With `SOURCE_DATE_EPOCH` set, the
   CycloneDX / SPDX / VEX / SLSA artefacts are byte-for-byte identical
   across runs and machines, so an auditor can rebuild and diff. See

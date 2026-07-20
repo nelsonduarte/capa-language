@@ -28,6 +28,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from .pkg._floor import parse_version
+
 
 _MAIN_TEMPLATE = """\
 /// {name}, scaffolded by `capa init`.
@@ -157,13 +159,37 @@ def init_project(
 ) -> int:
     """Scaffold a new Capa project at ``target``.
 
-    ``capa_version`` is written verbatim to ``.capa-version``.
+    ``capa_version`` is written verbatim to ``.capa-version`` and as
+    the enforced ``capa = ">=..."`` floor in ``capa.toml``. It must be
+    an ``X.Y.Z`` release; a build reporting the ``0+unknown`` sentinel
+    is refused before anything is written (see below).
     ``force`` is not currently used: an existing non-empty
     directory is always rejected (better to error out loudly than
     overwrite a real project). The parameter is kept for forward
     compatibility with a future ``--force`` flag.
     """
     del force  # reserved
+
+    # The scaffold stamps ``capa = ">={capa_version}"`` into capa.toml,
+    # and since 1.19.0 that floor is ENFORCED. On a build that cannot
+    # report its own version, ``capa_version`` is the ``0+unknown``
+    # sentinel, and the manifest we would write is one the compiler that
+    # wrote it could not then parse: every subsequent `capa --check` in
+    # the new project would refuse it as an unreadable requirement.
+    # Refuse up front rather than leaving that file on disk. Nothing has
+    # been created at this point, so there is nothing to clean up.
+    if parse_version(capa_version) is None:
+        print(
+            f"capa init: refusing to scaffold: this build reports its "
+            f"version as {capa_version!r}, not an X.Y.Z release, so the "
+            f"`capa = \">={capa_version}\"` floor it would write into "
+            f"capa.toml is one this same compiler cannot read. An "
+            f"official Capa build never reports this; reinstall the "
+            f"compiler (`pip install --force-reinstall capa-lang`) or "
+            f"run from a source checkout with its pyproject.toml intact.",
+            file=sys.stderr,
+        )
+        return 2
 
     ok, msg = _is_safe_target(target)
     if not ok:
@@ -195,6 +221,12 @@ def init_project(
     # Friendly confirmation pointing the user at the next command.
     rel = target if not target.is_absolute() else target.resolve()
     print(f"Created Capa project at {rel}", file=sys.stderr)
+    print(
+        f"capa.toml declares capa = \">={capa_version}\" (the compiler "
+        f"that scaffolded it). This floor is enforced: building the "
+        f"project with an older Capa is an error.",
+        file=sys.stderr,
+    )
     if str(rel) == ".":
         next_step = "capa --run main.capa"
     else:
