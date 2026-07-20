@@ -74,11 +74,43 @@ and malformed TOML, the behaviour was identical: `--check`, `--run` and
 two already had the right behaviour and the right wording; the fix is to
 make the rest of the CLI match them rather than the other way round.
 
-**Since `1.19.0`** every root-manifest read goes through one seam,
-`capa.pkg.read_root_manifest`, which raises `BrokenRootManifestError`.
-The CLI prints `capa: broken capa.toml: <path>: <reason>` and exits
-**2** (this CLI's code for a configuration problem, which is what
-`capa test` already returned for exactly this input).
+**Since `1.19.0`** every root-manifest read *on the build path* goes
+through one seam, [`capa.pkg.read_root_manifest`](../../capa/pkg/_manifest.py),
+which raises `BrokenRootManifestError`. The CLI prints
+`capa: broken capa.toml: <path>: <reason>` and exits **2** (this CLI's
+code for a configuration problem, which is what `capa test` already
+returned for exactly this input).
+
+Three root-manifest reads stay outside that seam and keep their own
+refusal: [`capa/pkg/_add.py`](../../capa/pkg/_add.py),
+[`capa/pkg/_install.py`](../../capa/pkg/_install.py) and
+[`capa/testrunner.py`](../../capa/testrunner.py). Each calls
+`read_manifest` and handles `ManifestError` itself, so each still exits
+**2** on a malformed manifest; only the prefix differs
+(`capa install: <path>: <reason>`, `capa add: ...`,
+`capa test: broken capa.toml: ...`). None of the three compiles Capa
+source: `capa test` reads the manifest only to check that declared git
+deps are vendored, and the compiling happens in per-test subprocesses
+that go through the gate like any other build.
+
+So the honest statement of the invariant is about the outcome, not the
+structure: **no path builds with a root manifest it could not parse**,
+and every path that reads one refuses with exit 2. What is *not* true
+is that a single seam enforces this. The seam enforces it for the
+build path; three package-management reads enforce it themselves, each
+by its own local `except ManifestError`. That is the residual
+fragility in this fix, and it is stated rather than papered over: a
+future read added without a handler, or a handler widened back toward
+the `except Exception` this advisory is about, would not be caught by
+the seam.
+
+The floor gate is skipped entirely for `search`, `add`, `init`, `lsp`,
+`--help`, `--version` and a bare `capa`
+([`_FLOOR_EXEMPT_COMMANDS`](../../capa/cli.py)). None of them can
+produce a substituted build: `search` and `init` do not read the
+project's manifest, `lsp` resolves imports from `CAPA_PATH` only and
+emits no artefact, and `add` refuses on its own read as described
+above.
 
 ### There is no escape hatch for a malformed manifest, deliberately
 
@@ -92,9 +124,15 @@ would restore the source substitution along with it, so it does not
 exist.
 
 The one legitimate flow the old comment named, `capa --check` on a file
-outside the project, is not lost: it is refused only when the *cwd*
-holds a broken `capa.toml`, which is a defect the user owns and can fix,
-and the existing test suite never actually exercised that flow.
+outside the project, is not lost: it is refused only when the *cwd or
+any ancestor of it* holds a broken `capa.toml`, which is a defect the
+user owns and can fix, and the existing test suite never actually
+exercised that flow. The ancestor walk is not incidental: the gate
+resolves the root with `find_package_root` (see [the gate
+section](#the-gate-must-answer-for-the-root-the-command-acts-on)
+below), so `capa --check main.capa` from two directories below a broken
+manifest, with no `capa.toml` in the cwd at all, refuses and names the
+ancestor's file.
 
 ## Instance 2: the compiler floor was never enforced
 
@@ -313,8 +351,12 @@ every command.
 
 `capa test` was never a bypass: each test runs in a subprocess whose cwd
 is the project root, so it failed closed already. Under
-`CAPA_IGNORE_CAPA_FLOOR=1` it prints one warning per subprocess plus one
-for the parent, since each subprocess is a separate build.
+`CAPA_IGNORE_CAPA_FLOOR=1` the parent prints the warning once. Each
+subprocess is a separate build and prints its own copy, but the runner
+captures subprocess stderr and echoes it only for a **failing** test, so
+a passing run shows exactly one warning, and a failing run shows the
+child's copy inside that test's captured-stderr block, where verbatim
+child output is what the block is for.
 
 ## Credit
 
