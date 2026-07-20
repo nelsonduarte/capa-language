@@ -126,8 +126,15 @@ refused on failure.
   directory and fell through to whatever same-named directory was on
   the module search path: a **different source file compiled and ran**,
   exit 0. One lowercase letter in the unrelated `[capabilities]` table
-  was enough to trigger it. Every command now exits non-zero with
-  `capa: broken capa.toml: <path>: <reason>`. There is **no escape
+  was enough to trigger it. Every file-based invocation now exits
+  non-zero with `capa: broken capa.toml: <path>: <reason>`, as do
+  `test`, `build`, `install`, `migrate` and `repl`. Six invocations are
+  exempt by design, none of which can produce a build: `--help`,
+  `--version`, a bare `capa`, `search`, `init` and `lsp`. `capa add` is
+  exempt from that gate too, so it stays available to repair the file,
+  but it refuses on its own read with the different prefix
+  `capa add: <path>: <reason>`, also at exit 2 and without writing to
+  `capa.toml`. There is **no escape
   hatch**, because the remediation (fix the file) is always available to
   whoever hit it, and an env var restoring "ignore it and build anyway"
   would restore the source substitution with it. See
@@ -141,7 +148,8 @@ refused on failure.
   Building below the floor does not fail loudly: it succeeds and emits
   an SBOM, provenance and capability claims derived by a compiler
   missing the fix the floor existed to require. The **root** manifest's
-  floor is now a hard error; a **dependency**'s warns, once, naming the
+  floor is now a hard error, under the same six exemptions as the bullet
+  above plus `capa add`; a **dependency**'s warns, once, naming the
   package, because the consumer cannot fix someone else's floor by
   editing their own manifest. A missing `capa` key is unconstrained.
   The escape is `CAPA_IGNORE_CAPA_FLOOR=1`, which builds anyway and

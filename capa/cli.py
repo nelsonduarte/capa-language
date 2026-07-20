@@ -996,13 +996,37 @@ def main() -> int:
 _FLOOR_EXEMPT_COMMANDS = frozenset({"search", "add", "init", "lsp"})
 
 
-def _enforce_floor_for_file_root(
-    root_dir: Path, gated_root: "Path | None",
-) -> None:
-    """Enforce the root floor for a project root the cwd gate did not see.
+def _compiler_owned_args(argv: list[str]) -> list[str]:
+    """The prefix of ``argv`` the COMPILER owns, i.e. everything before
+    the first ``--``.
 
-    ``--compose-sbom``, ``--check-capabilities``, ``--check-policies``
-    and ``--conformance-report`` resolve their project root by walking up
+    ``--`` is the boundary between the compiler's arguments and the
+    transpiled program's: ``_main_dispatch`` forwards the tail to the
+    program through ``sys.argv``, where ``env.args()`` reads it. Both
+    the split in ``_main_dispatch`` and the floor / broken-manifest
+    exemption in :func:`_floor_check_exempt` go through this one
+    function ON PURPOSE. They used to compute the boundary separately,
+    the exemption not computing it at all, and a ``--help`` meant for
+    the program then switched the compiler's own gate off.
+
+    When there is no separator the whole list is compiler-owned, so
+    behaviour is unchanged for every invocation that does not use one.
+    """
+    if "--" in argv:
+        return argv[:argv.index("--")]
+    return argv
+
+
+def _enforce_floor_for_file_root(
+    root_dir: Path, gated_roots: set[Path],
+) -> None:
+    """Enforce the root floor for the project root a FILE resolves to.
+
+    Two jobs, and they are the same check for different reasons.
+
+    The first is correctness of scope. ``--compose-sbom``,
+    ``--check-capabilities``, ``--check-policies`` and
+    ``--conformance-report`` resolve their project root by walking up
     from the FILE they were given, not from the cwd. When the file lives
     outside the cwd's project tree those two roots differ, and the gate
     in ``_main_dispatch`` will have enforced the wrong one (or none).
@@ -1010,14 +1034,26 @@ def _enforce_floor_for_file_root(
     ceiling verdicts for a whole project, the floor has to hold for the
     root they actually act on.
 
-    ``gated_root`` is what the cwd gate already enforced. Comparing
-    against it keeps the ``CAPA_IGNORE_CAPA_FLOOR`` warning printing
-    exactly ONCE in the ordinary case where both roots are the same
-    directory. Both sides come from ``find_package_root``, which resolves
-    before walking, so plain equality is the right comparison.
+    The second is DEPTH. Every file-based invocation re-checks here, not
+    just the four artefact-emitting ones, so the floor does not rest on
+    a single predicate. It used to have a second layer inside
+    ``_capa_search_paths``; that one was scoped to ``Path.cwd()``, so it
+    saw nothing from a subdirectory, and it never ran for a command that
+    does not resolve modules (``--parse``). This seam is scoped to the
+    root the command actually acts on and runs for every file, which is
+    why it replaces that one rather than reinstating it. It is what kept
+    the four artefact commands refusing while the ``--`` bypass was open.
+
+    ``gated_roots`` is every root already enforced during this
+    invocation, starting with the cwd gate's. Recording them keeps the
+    ``CAPA_IGNORE_CAPA_FLOOR`` warning printing exactly ONCE per root in
+    the ordinary case where all of them are the same directory. Every
+    entry comes from ``find_package_root``, which resolves before
+    walking, so plain set membership is the right comparison.
     """
-    if gated_root is not None and root_dir == gated_root:
+    if root_dir in gated_roots:
         return
+    gated_roots.add(root_dir)
     enforce_root_floor(root_dir)
 
 
@@ -1026,14 +1062,38 @@ def _floor_check_exempt(argv: list[str]) -> bool:
 
     ``argv`` is the argument list WITHOUT the program name.
 
+    **Everything at or after a ``--`` separator is discarded first, and
+    that is load-bearing rather than tidy.** ``--`` is where the CLI
+    stops owning the arguments: ``_main_dispatch`` splits on it and
+    forwards the tail to the transpiled program through ``env.args()``.
+    Computing this predicate over RAW argv let the PROGRAM's arguments
+    decide whether the COMPILER enforced its own gate, which is a
+    bypass and not a nicety:
+
+    .. code-block:: text
+
+        project declares capa = ">=99.0.0", compiler is 1.19.0
+
+        capa app.capa --run              -> EXIT=1, floor refused
+        capa app.capa --run -- --help    -> EXIT=0, built and ran, silently
+
+    A Capa program that takes ``--help`` is ordinary, so that was an
+    accident waiting to be tripped over rather than an attack. The same
+    shape defeated the broken-manifest refusal, which shares this gate.
+    The invariant to preserve when editing: **this function must never
+    read an argument the compiler does not own.**
+
     Three exemptions beyond the command list:
 
-      * **no arguments at all.** Bare ``capa`` prints usage; there is
-        nothing to build and nothing to refuse.
-      * **``--help`` / ``-h`` ANYWHERE in argv.** Not just at argv[0]:
-        ``capa build --help`` puts ``build`` first, so a naive
-        ``argv[0] in _FLOOR_EXEMPT_COMMANDS`` test would gate the help
-        of every subcommand.
+      * **no compiler arguments at all.** Bare ``capa`` prints usage;
+        there is nothing to build and nothing to refuse. ``capa --
+        <anything>`` lands here too, and for the same reason rather than
+        by accident: argparse is then handed no file and no ``--stdin``,
+        so no source is compiled and no artefact is emitted.
+      * **``--help`` / ``-h`` ANYWHERE in the compiler's argv.** Not
+        just at argv[0]: ``capa build --help`` puts ``build`` first, so
+        a naive ``argv[0] in _FLOOR_EXEMPT_COMMANDS`` test would gate
+        the help of every subcommand.
       * **``--version``.** This is an argparse ``action="version"``,
         handled inside ``_main_dispatch`` well after this gate. Without
         the exemption, a floor violation would brick the one command the
@@ -1042,6 +1102,7 @@ def _floor_check_exempt(argv: list[str]) -> bool:
         this parser, so none is exempted; adding one here that does not
         exist would only mislead the next reader.
     """
+    argv = _compiler_owned_args(argv)
     if not argv:
         return True
     if any(a in ("--help", "-h", "--version") for a in argv):
@@ -1083,12 +1144,34 @@ def _main_dispatch() -> int:
     # found no manifest and enforced nothing. Composing that SBOM is the
     # exact artefact the floor exists to protect, so the gate has to
     # answer for the same root the rest of the CLI acts on.
+    #
+    # This gate is the FIRST layer. ``_enforce_floor_for_file_root`` is
+    # the second, and every file-based invocation goes through it below,
+    # so a regression in the exemption predicate alone cannot reopen the
+    # floor of the project THE FILE BELONGS TO.
+    #
+    # That is the whole of the second layer's reach, and it is narrower
+    # than it sounds. It keys on the root resolved from the FILE, so
+    # when the file sits outside this cwd's project, or inside a
+    # different one, the cwd project's floor rests on this gate alone.
+    # Measured with the predicate forced to always-exempt: from a
+    # floor-violating cwd, ``--check`` on a file outside any project and
+    # on a file in a different, satisfied project both proceeded at exit
+    # 0, while that project's own file was still refused. The cwd
+    # project is not a bystander in those two runs: ``_capa_search_paths``
+    # reads ``Path.cwd() / "capa.toml"``, so it supplies module
+    # resolution for the build and materially shapes the artefact while
+    # its own floor goes unenforced. Not a live bypass, because the
+    # predicate is correct as shipped. It is the reason to keep BOTH
+    # layers, rather than concluding that either one makes the other
+    # redundant.
     from capa.manifest import find_package_root
-    _gated_root: Path | None = None
+    _gated_roots: set[Path] = set()
     if not _floor_check_exempt(sys.argv[1:]):
-        _gated_root = find_package_root(Path.cwd())
-        if _gated_root is not None:
-            enforce_root_floor(_gated_root)
+        _cwd_root = find_package_root(Path.cwd())
+        if _cwd_root is not None:
+            _gated_roots.add(_cwd_root)
+            enforce_root_floor(_cwd_root)
 
     # Subcommand dispatch happens before argparse so the rest of
     # the CLI can stay flag-based without complicating help output.
@@ -1121,12 +1204,17 @@ def _main_dispatch() -> int:
     # to interpret the program's own flags. When the separator is
     # absent, ``program_args`` stays empty and behaviour is
     # unchanged.
-    program_args: list[str] = []
-    cli_argv = sys.argv[1:]
-    if "--" in cli_argv:
-        sep = cli_argv.index("--")
-        program_args = cli_argv[sep + 1:]
-        cli_argv = cli_argv[:sep]
+    #
+    # The compiler's half comes from ``_compiler_owned_args``, the same
+    # function the floor gate above uses to decide what it is allowed to
+    # read. One definition of the boundary, because two definitions is
+    # how a ``--help`` meant for the program came to switch the gate off.
+    raw_argv = sys.argv[1:]
+    cli_argv = _compiler_owned_args(raw_argv)
+    # Everything the compiler does not own, minus the separator itself.
+    # With no separator ``cli_argv`` IS ``raw_argv``, so the slice starts
+    # one past the end and yields ``[]`` without a special case.
+    program_args = raw_argv[len(cli_argv) + 1:]
 
     parser = argparse.ArgumentParser(
         description="Lexer, parser and analyzer for the Capa language",
@@ -1658,6 +1746,17 @@ def _main_dispatch() -> int:
             )
             return 2
         filename = str(path)
+        # Second layer, for every file-based command rather than only the
+        # four that emit a project-wide artefact. The first layer is the
+        # cwd gate at the top of this function; this one re-derives the
+        # root from the FILE, so it holds even when the cwd is elsewhere
+        # and it does not depend on ``_floor_check_exempt`` having got
+        # the compiler / program argument boundary right. It is a no-op
+        # whenever both layers resolve the same root, which is the
+        # ordinary case.
+        _file_root = find_package_root(path)
+        if _file_root is not None:
+            _enforce_floor_for_file_root(_file_root, _gated_roots)
     else:
         parser.print_usage(sys.stderr)
         return 2
@@ -1914,7 +2013,7 @@ def _main_dispatch() -> int:
                 else:
                     print(msg, file=sys.stderr)
                 return 1
-            _enforce_floor_for_file_root(root_dir, _gated_root)
+            _enforce_floor_for_file_root(root_dir, _gated_roots)
             manifest = build_manifest(
                 module, filename=filename,
                 expr_labels=result.expr_labels,
@@ -1965,7 +2064,7 @@ def _main_dispatch() -> int:
                     f"root (none found at or above {filename})."
                 )
                 return 1
-            _enforce_floor_for_file_root(root_dir, _gated_root)
+            _enforce_floor_for_file_root(root_dir, _gated_roots)
             manifest = build_manifest(
                 module, filename=filename,
                 expr_labels=result.expr_labels,
@@ -2033,7 +2132,7 @@ def _main_dispatch() -> int:
                     f"(none found at or above {filename})."
                 )
                 return 1
-            _enforce_floor_for_file_root(root_dir, _gated_root)
+            _enforce_floor_for_file_root(root_dir, _gated_roots)
             policy_path = find_policy_file(root_dir)
             manifest = build_manifest(
                 module, filename=filename,

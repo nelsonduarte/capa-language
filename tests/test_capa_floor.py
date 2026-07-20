@@ -960,6 +960,147 @@ class ExemptPredicateTests(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertFalse(_floor_check_exempt(argv))
 
+    def test_the_predicate_ignores_everything_after_the_separator(self):
+        """The predicate must be blind to the PROGRAM's arguments.
+
+        Computed over raw argv, it read a ``--help`` meant for the
+        transpiled program as the compiler's own and switched the gate
+        off. Asserted here as an equality between the answer for a
+        compiler argv and the answer for that same argv with a tail
+        appended, rather than as a list of known-bad tails: the property
+        is "nothing after ``--`` can influence this", and enumerating
+        the three tokens that happen to exempt today would not catch a
+        fourth being added.
+        """
+        from capa.cli import _floor_check_exempt
+
+        heads = (
+            ["--check", "x.capa"], ["--run", "x.capa"],
+            ["--transpile", "x.capa"], ["--parse", "x.capa"],
+            ["--compose-sbom", "x.capa"], ["build", "x.capa"],
+            ["search", "json"], ["init", "p"], ["lsp"],
+            ["--check", "x.capa", "--help"],
+        )
+        tails = (
+            ["--help"], ["-h"], ["--version"], [],
+            ["--help", "-h", "--version"], ["serve", "--help"],
+        )
+        for head in heads:
+            expected = _floor_check_exempt(head)
+            for tail in tails:
+                with self.subTest(head=head, tail=tail):
+                    self.assertEqual(
+                        _floor_check_exempt(head + ["--"] + tail), expected,
+                        "an argument after `--` changed whether the "
+                        "compiler enforces its own gate",
+                    )
+
+
+class ProgramArgumentsCannotDisableTheGateTests(unittest.TestCase):
+    """The regression tests for the ``--`` bypass, as real invocations.
+
+    ``--`` is where the CLI stops owning the arguments: the tail is
+    forwarded to the transpiled program, where ``env.args()`` reads it.
+    The exemption predicate was computed over RAW argv, BEFORE that
+    split, so a ``--help`` intended for the program disabled the
+    compiler's own gate:
+
+    .. code-block:: text
+
+        project declares capa = ">=99.0.0", compiler is 1.19.0
+
+        capa app.capa --run              -> EXIT=1, floor refused
+        capa app.capa --run -- --help    -> EXIT=0, built and ran
+
+    Nothing was printed on the bypassing path, not even the
+    ``CAPA_IGNORE_CAPA_FLOOR`` warning, so the build was silent. This is
+    an ordinary invocation rather than an adversarial one: a Capa CLI
+    that accepts ``--help`` is the normal case.
+
+    The same shape defeated the broken-manifest refusal, which shares
+    the gate; that half is
+    :class:`SeparatorDoesNotDisableTheBrokenManifestRefusalTests` below.
+    """
+
+    _PROGRAM = 'fun main(stdio: Stdio)\n    stdio.println("hi")\n'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.tmp / "capa.toml").write_text(
+            _VIOLATING_MANIFEST, encoding="utf-8",
+        )
+        (self.tmp / "app.capa").write_text(self._PROGRAM, encoding="utf-8")
+
+    def test_every_exempting_token_after_the_separator_is_still_gated(self):
+        for flag in ("--check", "--run", "--transpile", "--parse"):
+            for tail in ("--help", "-h", "--version"):
+                with self.subTest(flag=flag, tail=tail):
+                    rc, out, err = _run_main(
+                        [flag, "app.capa", "--", tail], cwd=self.tmp,
+                    )
+                    self.assertEqual(
+                        rc, 1,
+                        f"`capa {flag} app.capa -- {tail}` was not gated; "
+                        f"out={out[:200]!r} err={err[:200]!r}",
+                    )
+                    self.assertIn(_FLOOR_MARKER, err)
+
+    def test_the_bypass_was_silent_which_is_why_it_needs_a_test(self):
+        """The bypassing build printed NOTHING: not the refusal, not the
+        escape warning. A reviewer reading the output of the old
+        invocation had no signal at all that a gate had been skipped, so
+        the regression can only be caught by asserting the exit code and
+        the refusal text together."""
+        rc, out, err = _run_main(
+            ["--run", "app.capa", "--", "--help"], cwd=self.tmp,
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("this project declares", err)
+        # And the program must not have run.
+        self.assertNotIn("hi", out)
+
+    def test_the_control_without_a_separator_behaves_identically(self):
+        """The pair the bypass turned into a disagreement. Both halves
+        must now give the same verdict."""
+        with_sep = _run_main(
+            ["--run", "app.capa", "--", "--help"], cwd=self.tmp,
+        )
+        without = _run_main(["--run", "app.capa"], cwd=self.tmp)
+        self.assertEqual(with_sep[0], without[0])
+        self.assertEqual(with_sep[0], 1)
+
+    def test_program_arguments_are_still_forwarded(self):
+        """The fix must not cost the feature ``--`` exists for. Without
+        a violating floor, a ``--help`` after the separator still reaches
+        the program's ``env.args()`` rather than the compiler."""
+        (self.tmp / "capa.toml").write_text(
+            '[package]\nname = "proj"\nversion = "0.1.0"\n', encoding="utf-8",
+        )
+        (self.tmp / "args.capa").write_text(
+            "fun main(stdio: Stdio, env: Env)\n"
+            "    for a in env.args()\n"
+            "        stdio.println(a)\n",
+            encoding="utf-8",
+        )
+        rc, out, err = _run_main(
+            ["--run", "args.capa", "--", "--help", "x"], cwd=self.tmp,
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out.split(), ["--help", "x"])
+
+    def test_a_bare_separator_compiles_nothing(self):
+        """``capa -- <anything>`` leaves argparse no file and no
+        ``--stdin``, so it is exempt for the same reason bare ``capa``
+        is: nothing is compiled and no artefact is emitted. Asserted so
+        the exemption rests on a checked fact rather than on a comment.
+        """
+        rc, out, err = _run_main(["--", "--run", "app.capa"], cwd=self.tmp)
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("hi", out)
+        self.assertNotIn(_FLOOR_MARKER, err)
+
 
 # ---------------------------------------------------------------------------
 # 6. The broken-root-manifest half of the advisory.
@@ -1091,6 +1232,64 @@ class BrokenManifestDisablesTheFloorTests(unittest.TestCase):
         self.assertNotIn("built", out)
 
 
+class SeparatorDoesNotDisableTheBrokenManifestRefusalTests(unittest.TestCase):
+    """The broken-manifest half of the same bypass.
+
+    From a SUBDIRECTORY, with a broken manifest in the parent:
+
+    .. code-block:: text
+
+        from sub/, capa --run              -> EXIT=2, broken capa.toml
+        from sub/, capa --run -- --help    -> EXIT=0, built
+
+    When the cwd IS the project root, ``_capa_search_paths`` reads
+    ``Path.cwd() / "capa.toml"`` and refuses on its own, so the bypass
+    was invisible there. From a subdirectory that second layer sees
+    nothing, because it is cwd-scoped while the gate walks up with
+    ``find_package_root``. Both positions are asserted here so the
+    coverage does not depend on which one a future reader happens to
+    try.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.tmp / "capa.toml").write_text(
+            '[package]\nname = "proj"\nversion = "0.1.0"\n' + _CAPS_TYPO,
+            encoding="utf-8",
+        )
+        (self.tmp / "sub").mkdir()
+        (self.tmp / "sub" / "app.capa").write_text(
+            'fun main(stdio: Stdio)\n    stdio.println("hi")\n',
+            encoding="utf-8",
+        )
+
+    def _assert_refused(self, rc, out, err):
+        self.assertEqual(rc, 2, f"out={out[:200]!r} err={err[:200]!r}")
+        self.assertNotIn("hi", out)
+        self.assertIn("broken capa.toml", err)
+        self.assertEqual(
+            canonical(path_named_in(err, "broken capa.toml: ")),
+            canonical(self.tmp / "capa.toml"),
+        )
+
+    def test_from_a_subdirectory_the_separator_does_not_disable_it(self):
+        self._assert_refused(*_run_main(
+            ["--run", "app.capa", "--", "--help"], cwd=self.tmp / "sub",
+        ))
+
+    def test_from_the_project_root_too(self):
+        self._assert_refused(*_run_main(
+            ["--run", "sub/app.capa", "--", "--help"], cwd=self.tmp,
+        ))
+
+    def test_the_control_without_a_separator(self):
+        self._assert_refused(*_run_main(
+            ["--run", "app.capa"], cwd=self.tmp / "sub",
+        ))
+
+
 class SubdirectoryGateTests(unittest.TestCase):
     """The gate must answer for the root the command acts on.
 
@@ -1173,15 +1372,52 @@ class SubdirectoryGateTests(unittest.TestCase):
                 self.assertEqual(rc, 1, err)
                 self.assertIn(_FLOOR_MARKER, err)
 
+    def test_every_file_based_command_is_gated_from_outside_the_tree(self):
+        """The SECOND layer, isolated so it cannot be deleted silently.
+
+        From a cwd with no ``capa.toml``, the first layer (the cwd gate)
+        resolves no root and enforces nothing at all. Anything refused
+        here was refused by ``_enforce_floor_for_file_root``, which
+        re-derives the root from the FILE. So this is the test that
+        reddens if that layer is removed, and it is the reason the layer
+        exists: the floor must not rest on one predicate over argv.
+
+        The previous second layer, inside ``_capa_search_paths``, could
+        not have passed this: it read ``Path.cwd() / "capa.toml"``, which
+        does not exist here, and ``--parse`` never reaches module
+        resolution at all.
+        """
+        outside = self.tmp.parent / (self.tmp.name + "-elsewhere")
+        outside.mkdir()
+        self.addCleanup(outside.rmdir)
+        self.assertFalse((outside / "capa.toml").exists())
+        target = str(self.tmp / "sub" / "main.capa")
+        for flag in ("--check", "--run", "--transpile", "--parse"):
+            with self.subTest(flag=flag):
+                rc, out, err = _run_main([flag, target], cwd=outside)
+                self.assertEqual(rc, 1, f"out={out[:200]!r}")
+                self.assertIn(_FLOOR_MARKER, err)
+                self.assertNotIn("hi", out)
+
     def test_the_escape_warning_prints_exactly_once(self):
-        """The second ``check_root_floor`` call site inside
-        ``_capa_search_paths`` printed the escape warning twice for
-        ``--check``. It was never load-bearing (every command that
-        reaches module resolution was already stopped by the gate, and
-        every exempt command never gets there), so it is gone."""
+        """The floor is checked in two places; the user hears about it once.
+
+        The old second call site, inside ``_capa_search_paths``, printed
+        the escape warning twice for ``--check``. It was removed on the
+        stated grounds that it was ALSO never reached, and that half was
+        wrong: instrumented over twelve commands none of which used
+        ``--``, it measured zero, but ``capa --check x.capa -- --help``
+        reached it with the floor unenforced. The depth it provided is
+        back at a better seam (``_enforce_floor_for_file_root``, scoped
+        to the root the command acts on rather than to ``Path.cwd()``),
+        and the double print does not come back with it: roots already
+        enforced this invocation are recorded and skipped.
+        """
         for argv in (
             ["--check", "sub/main.capa"],
             ["--run", "sub/main.capa"],
+            ["--parse", "sub/main.capa"],
+            ["--transpile", "sub/main.capa"],
             ["--compose-sbom", "sub/main.capa"],
         ):
             with self.subTest(argv=argv):
