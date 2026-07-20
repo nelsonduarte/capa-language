@@ -29,7 +29,10 @@ from capa.manifest import (
     resolve_build_timestamp, SourceDateEpochError,
 )
 from capa._artifact_io import emit_artifact
-from capa.pkg import CapaFloorError, VendorVerificationError, enforce_root_floor
+from capa.pkg import (
+    BrokenRootManifestError, CapaFloorError, VendorVerificationError,
+    enforce_root_floor,
+)
 from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
 from capa.init_project import init_project
@@ -133,10 +136,15 @@ def _capa_search_paths() -> list[Path]:
        convention and supports projects that vendor by hand.
 
     Entries are de-duplicated so an explicit ``CAPA_PATH=libraries``
-    does not appear twice. A typo in ``CAPA_PATH`` is silently
-    skipped so it does not turn into a noisy error on every run; a
-    broken ``capa.toml`` emits a one-line warning to stderr but does
-    not abort the CLI.
+    does not appear twice. A typo in ``CAPA_PATH`` is silently skipped
+    so it does not turn into a noisy error on every run. A broken
+    ``capa.toml`` in the cwd, by contrast, ABORTS with
+    :class:`BrokenRootManifestError`: it used to warn and continue, and
+    continuing meant dropping the declared dependency ``path`` mapping,
+    at which point a same-named directory on the search path shadowed
+    the audited source. The gate in ``_main_dispatch`` normally refuses
+    first; this is the second line, for any caller that reaches module
+    resolution another way.
     """
     out: list[Path] = []
     seen: set[Path] = set()
@@ -162,78 +170,51 @@ def _capa_search_paths() -> list[Path]:
 
     manifest_path = Path.cwd() / "capa.toml"
     if manifest_path.exists():
-        try:
-            from capa.pkg import (
-                check_root_floor, read_manifest, verify_vendored_deps,
-            )
-            manifest = read_manifest(manifest_path)
-            # Dev-dependencies resolve exactly like regular deps:
-            # ``capa install`` vendors them into the same ./vendor
-            # dir, so test files in the invocation root import them
-            # with no extra configuration.
-            # Honour the manifest's declared compiler floor at the
-            # point the root manifest is actually consumed. The
-            # subcommand gate in ``_main_dispatch`` normally gets here
-            # first; this call is what keeps the invariant true for any
-            # caller that reaches module resolution another way.
-            check_root_floor(manifest.capa_requirement, manifest_path)
-            all_deps = manifest.dependencies + manifest.dev_dependencies
-            has_git = any(d.is_git for d in all_deps)
-            if has_git:
-                # PKG-1: re-verify the vendored git deps against
-                # capa.lock BEFORE the loader is allowed to read
-                # ./vendor. Fail-closed (raises VendorVerificationError)
-                # on a missing lock, a missing / non-git vendor dir, a
-                # SHA mismatch, or a declared git dep absent from the
-                # lock. The check is the only re-validation of vendor/
-                # on the build path; ``capa install`` / ``capa add``
-                # never hit this function (they call install() directly)
-                # so they are not subject to the circular pre-check.
-                verify_vendored_deps(Path.cwd(), manifest)
-                _append(Path.cwd() / "vendor")
-            for d in all_deps:
-                if d.is_path and d.path is not None:
-                    dep_path = (manifest.manifest_dir / d.path).resolve()
-                    _append(dep_path.parent)
-            # NOTE: the parent of the project root is deliberately NOT
-            # a search root. It used to be, to let a seed library whose
-            # repository directory *is* the package resolve its own
-            # ``import capa_csv.model`` lines. But an open search root
-            # also SATISFIES imports that ./vendor cannot: an undeclared
-            # transitive dependency resolved against an arbitrary
-            # sibling directory that was never fetched, never verified,
-            # never locked and never recorded in the SBOM, so the build
-            # silently linked sources the provenance machinery never
-            # saw. The self-reference is now served precisely, by name,
-            # through ``_capa_dependency_roots``; anything else fails
-            # closed with a plain "cannot resolve 'import ...'".
-        except VendorVerificationError:
-            # Fail-closed: an unverifiable vendor tree is a hard stop,
-            # NOT a "broken capa.toml" warning. Re-raise so the CLI
-            # surfaces a clear error and refuses the build, rather than
-            # silently dropping ./vendor from the search path (which
-            # would degrade to a confusing "module not found").
-            raise
-        except CapaFloorError:
-            # Fail-closed, and NOT redundant with the ``except
-            # Exception`` arm below: that arm catches everything,
-            # including this, and would turn a refusal to build below
-            # the declared compiler floor into a one-line "ignoring
-            # capa.toml" warning followed by the build proceeding with
-            # ./vendor dropped from the search path. That is strictly
-            # worse than not checking at all. DO NOT DELETE THIS ARM.
-            # (``CapaFloorError`` also deliberately does not subclass
-            # ``ManifestError``; see its docstring for the separate
-            # reason, which is about ``manifest/_compose.py``.)
-            raise
-        except Exception as e:
-            # A broken capa.toml should produce a clear warning but
-            # not block unrelated operations (e.g. `capa --check` on
-            # a file outside the project).
-            print(
-                f"capa: warning: ignoring capa.toml ({e})",
-                file=sys.stderr,
-            )
+        from capa.pkg import read_root_manifest, verify_vendored_deps
+        # Fail-closed. There is no ``except`` around this any more:
+        # ``read_root_manifest`` raises ``BrokenRootManifestError`` on
+        # every parse / read failure and ``verify_vendored_deps`` raises
+        # ``VendorVerificationError`` on an unverifiable vendor tree.
+        # Both propagate to ``main``, which names the file and refuses
+        # (exit 2 for the manifest, 1 for the vendor tree).
+        # The floor is NOT re-checked here: the gate in
+        # ``_main_dispatch`` is the enforcing one, and a second call
+        # printed the ``CAPA_IGNORE_CAPA_FLOOR`` warning twice.
+        manifest = read_root_manifest(manifest_path)
+        # Dev-dependencies resolve exactly like regular deps:
+        # ``capa install`` vendors them into the same ./vendor
+        # dir, so test files in the invocation root import them
+        # with no extra configuration.
+        all_deps = manifest.dependencies + manifest.dev_dependencies
+        has_git = any(d.is_git for d in all_deps)
+        if has_git:
+            # PKG-1: re-verify the vendored git deps against
+            # capa.lock BEFORE the loader is allowed to read
+            # ./vendor. Fail-closed (raises VendorVerificationError)
+            # on a missing lock, a missing / non-git vendor dir, a
+            # SHA mismatch, or a declared git dep absent from the
+            # lock. The check is the only re-validation of vendor/
+            # on the build path; ``capa install`` / ``capa add``
+            # never hit this function (they call install() directly)
+            # so they are not subject to the circular pre-check.
+            verify_vendored_deps(Path.cwd(), manifest)
+            _append(Path.cwd() / "vendor")
+        for d in all_deps:
+            if d.is_path and d.path is not None:
+                dep_path = (manifest.manifest_dir / d.path).resolve()
+                _append(dep_path.parent)
+        # NOTE: the parent of the project root is deliberately NOT
+        # a search root. It used to be, to let a seed library whose
+        # repository directory *is* the package resolve its own
+        # ``import capa_csv.model`` lines. But an open search root
+        # also SATISFIES imports that ./vendor cannot: an undeclared
+        # transitive dependency resolved against an arbitrary
+        # sibling directory that was never fetched, never verified,
+        # never locked and never recorded in the SBOM, so the build
+        # silently linked sources the provenance machinery never
+        # saw. The self-reference is now served precisely, by name,
+        # through ``_capa_dependency_roots``; anything else fails
+        # closed with a plain "cannot resolve 'import ...'".
 
     # Conventional fallback. Cheap probe: only the cwd is consulted,
     # so this never escalates I/O for a project that does not use
@@ -272,29 +253,32 @@ def _capa_dependency_roots() -> dict[str, Path]:
     search-path treatment). Git deps are vendored by name into
     ``./vendor`` and resolved through the search path, so they are
     intentionally excluded; no git verification runs on this cheap
-    path (it never reads ``./vendor``). A missing or broken
-    ``capa.toml`` yields an empty map so the search-path fallback in
-    ``_capa_search_paths`` still applies and the CLI never aborts.
+    path (it never reads ``./vendor``). A MISSING ``capa.toml`` yields an
+    empty map, so a project that declares nothing still resolves through
+    the search-path fallback.
+
+    A BROKEN ``capa.toml`` aborts. It used to yield an empty map, on the
+    reasoning that ``_capa_search_paths`` had already warned about it.
+    An empty map is precisely the dangerous value: it deletes the
+    name-to-directory mapping that makes the declared ``path``
+    authoritative, so ``import mylib.util`` stops resolving to the
+    declared ``vendor/real/util.capa`` and falls through to whatever
+    ``./mylib/`` happens to contain. That is a source substitution
+    triggered by a typo, so it is refused.
     """
     roots: dict[str, Path] = {}
     manifest_path = Path.cwd() / "capa.toml"
     if not manifest_path.exists():
         return roots
-    try:
-        from capa.pkg import read_manifest
-        manifest = read_manifest(manifest_path)
-        all_deps = manifest.dependencies + manifest.dev_dependencies
-        for d in all_deps:
-            if d.is_path and d.path is not None:
-                roots[d.name] = (manifest.manifest_dir / d.path).resolve()
-        declared = {d.name for d in all_deps}
-        if manifest.name and manifest.name not in declared:
-            roots[manifest.name] = manifest.manifest_dir.resolve()
-    except Exception:
-        # A broken capa.toml is already surfaced (as a one-line
-        # warning) by ``_capa_search_paths``; here we degrade to an
-        # empty map rather than emit a second warning or abort.
-        return {}
+    from capa.pkg import read_root_manifest
+    manifest = read_root_manifest(manifest_path)
+    all_deps = manifest.dependencies + manifest.dev_dependencies
+    for d in all_deps:
+        if d.is_path and d.path is not None:
+            roots[d.name] = (manifest.manifest_dir / d.path).resolve()
+    declared = {d.name for d in all_deps}
+    if manifest.name and manifest.name not in declared:
+        roots[manifest.name] = manifest.manifest_dir.resolve()
     return roots
 
 
@@ -959,17 +943,33 @@ def _dispatch_capability_diff(
 
 
 def main() -> int:
-    """CLI entry point. Wraps the dispatch in a fail-closed guard for
-    ``VendorVerificationError`` (PKG-1): an unverifiable ./vendor tree
-    is a clean, named error + exit 1 on any read/build path, never a
-    traceback. ``CapaFloorError`` (the ``[package].capa`` compiler floor)
-    gets the same treatment: a named error and exit 1, never a
-    traceback."""
+    """CLI entry point. Wraps the dispatch in fail-closed guards, each
+    of which is a clean, named error and a non-zero exit on any
+    read/build path rather than a traceback:
+
+      * ``VendorVerificationError`` (PKG-1), an unverifiable ./vendor;
+      * ``CapaFloorError``, the ``[package].capa`` compiler floor;
+      * ``BrokenRootManifestError``, a root ``capa.toml`` that cannot be
+        parsed. The wording and the exit code match what ``capa test``
+        and ``capa install`` already used, because those two already had
+        the right behaviour and this brings the rest of the CLI into
+        line with them rather than the other way round.
+
+    ``BrokenRootManifestError`` exits 2 and not 1: 2 is this CLI's code
+    for a CONFIGURATION problem (``capa test`` already returns it for
+    exactly this input), while 1 is the code for a policy refusal about
+    a program that was otherwise fine to build. A broken manifest is the
+    former; a violated floor is the latter.
+    """
     try:
         return _main_dispatch()
     except VendorVerificationError as e:
         print(f"capa: {e}", file=sys.stderr)
         return 1
+    except BrokenRootManifestError as e:
+        # ``<path>: <reason>``, guaranteed by ``read_root_manifest``.
+        print(f"capa: broken capa.toml: {e}", file=sys.stderr)
+        return 2
     except CapaFloorError as e:
         # The message already carries the ``capa: <path>:`` prefix and
         # the full remediation menu; print it verbatim.
@@ -994,6 +994,31 @@ def main() -> int:
 # ``--help`` and ``--version`` are handled separately below, because
 # neither is positional.
 _FLOOR_EXEMPT_COMMANDS = frozenset({"search", "add", "init", "lsp"})
+
+
+def _enforce_floor_for_file_root(
+    root_dir: Path, gated_root: "Path | None",
+) -> None:
+    """Enforce the root floor for a project root the cwd gate did not see.
+
+    ``--compose-sbom``, ``--check-capabilities``, ``--check-policies``
+    and ``--conformance-report`` resolve their project root by walking up
+    from the FILE they were given, not from the cwd. When the file lives
+    outside the cwd's project tree those two roots differ, and the gate
+    in ``_main_dispatch`` will have enforced the wrong one (or none).
+    Since these are precisely the commands that emit composed SBOMs and
+    ceiling verdicts for a whole project, the floor has to hold for the
+    root they actually act on.
+
+    ``gated_root`` is what the cwd gate already enforced. Comparing
+    against it keeps the ``CAPA_IGNORE_CAPA_FLOOR`` warning printing
+    exactly ONCE in the ordinary case where both roots are the same
+    directory. Both sides come from ``find_package_root``, which resolves
+    before walking, so plain equality is the right comparison.
+    """
+    if gated_root is not None and root_dir == gated_root:
+        return
+    enforce_root_floor(root_dir)
 
 
 def _floor_check_exempt(argv: list[str]) -> bool:
@@ -1040,13 +1065,30 @@ def _main_dispatch() -> int:
         except (AttributeError, ValueError):
             pass
 
-    # The manifest's declared compiler floor, enforced before anything
-    # else runs. Placed here rather than after argparse so a violation
-    # is reported once, from one place, for every subcommand and every
-    # flag-based invocation alike. ``_floor_check_exempt`` documents
-    # which invocations bypass it and why.
+    # The root manifest, enforced before anything else runs: its
+    # declared compiler floor, and its parseability. Placed here rather
+    # than after argparse so a violation is reported once, from one
+    # place, for every subcommand and every flag-based invocation alike.
+    # ``_floor_check_exempt`` documents which invocations bypass it and
+    # why.
+    #
+    # The project root is resolved by ancestor walk, the same way
+    # ``--compose-sbom`` / ``--check-capabilities`` /
+    # ``--check-policies`` already resolve it (``find_package_root``),
+    # and NOT as ``Path.cwd()``. With ``Path.cwd()`` the two disagreed
+    # whenever the cwd was a subdirectory of the project: ``capa
+    # --compose-sbom main.capa`` from ``sub/`` found the parent's
+    # manifest, applied the parent's ceiling and emitted a real composed
+    # SBOM for the parent project, while the gate looked at ``sub/``,
+    # found no manifest and enforced nothing. Composing that SBOM is the
+    # exact artefact the floor exists to protect, so the gate has to
+    # answer for the same root the rest of the CLI acts on.
+    from capa.manifest import find_package_root
+    _gated_root: Path | None = None
     if not _floor_check_exempt(sys.argv[1:]):
-        enforce_root_floor(Path.cwd())
+        _gated_root = find_package_root(Path.cwd())
+        if _gated_root is not None:
+            enforce_root_floor(_gated_root)
 
     # Subcommand dispatch happens before argparse so the rest of
     # the CLI can stay flag-based without complicating help output.
@@ -1872,6 +1914,7 @@ def _main_dispatch() -> int:
                 else:
                     print(msg, file=sys.stderr)
                 return 1
+            _enforce_floor_for_file_root(root_dir, _gated_root)
             manifest = build_manifest(
                 module, filename=filename,
                 expr_labels=result.expr_labels,
@@ -1922,6 +1965,7 @@ def _main_dispatch() -> int:
                     f"root (none found at or above {filename})."
                 )
                 return 1
+            _enforce_floor_for_file_root(root_dir, _gated_root)
             manifest = build_manifest(
                 module, filename=filename,
                 expr_labels=result.expr_labels,
@@ -1989,6 +2033,7 @@ def _main_dispatch() -> int:
                     f"(none found at or above {filename})."
                 )
                 return 1
+            _enforce_floor_for_file_root(root_dir, _gated_root)
             policy_path = find_policy_file(root_dir)
             manifest = build_manifest(
                 module, filename=filename,

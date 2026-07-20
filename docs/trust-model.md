@@ -119,6 +119,21 @@ refused on failure.
   in tier 2 below. See `_refuse_or_allow_missing_gh` in
   `capa/pkg/_install.py`.
 
+- **A malformed root `capa.toml` is refused (1.19.0).** It used to be
+  degraded to `warning: ignoring capa.toml` and the build continued.
+  Ignoring the manifest discards the declared dependency `path`
+  mapping, so `import mylib.util` stopped resolving to the declared
+  directory and fell through to whatever same-named directory was on
+  the module search path: a **different source file compiled and ran**,
+  exit 0. One lowercase letter in the unrelated `[capabilities]` table
+  was enough to trigger it. Every command now exits non-zero with
+  `capa: broken capa.toml: <path>: <reason>`. There is **no escape
+  hatch**, because the remediation (fix the file) is always available to
+  whoever hit it, and an env var restoring "ignore it and build anyway"
+  would restore the source substitution with it. See
+  `capa/pkg/_manifest.py`'s `read_root_manifest` and
+  [advisory 2026-07-20](advisories/2026-07-20-capa-floor.md).
+
 - **The declared compiler floor is enforced (1.19.0).**
   `capa = ">=X.Y.Z"` in `[package]` is the package's statement of the
   oldest compiler it can be built with. It used to be parsed and never

@@ -21,6 +21,12 @@ Public surface:
 
 - ``Manifest`` + ``Dependency``: in-memory parsed shape.
 - ``read_manifest(path)``: load + validate a ``capa.toml``.
+- ``read_root_manifest(path)``: the same, for the project's OWN
+  manifest, converting every read/parse failure into
+  ``BrokenRootManifestError``. A root manifest that cannot be read is
+  refused, never ignored: ignoring it drops the declared dependency
+  ``path`` mapping and lets a same-named directory shadow the audited
+  source. No escape hatch; fixing the file is always available.
 - ``read_lock(path)``: load a ``capa.lock`` if present.
 - ``install(project_dir, *, write_lock=True,
   allow_lock_update=False)``: run a full resolve + fetch pass
@@ -49,11 +55,13 @@ The CLI entry point ``capa install`` calls into this module.
 from __future__ import annotations
 
 from ._manifest import (
+    BrokenRootManifestError,
     CapabilityCeiling,
     Dependency,
     Manifest,
     ManifestError,
     read_manifest,
+    read_root_manifest,
     read_lock,
     LOCK_FILENAME,
     MANIFEST_FILENAME,
@@ -76,6 +84,7 @@ from ._registry import (
 )
 
 __all__ = [
+    "BrokenRootManifestError",
     "CapabilityCeiling",
     "CapaFloorError",
     "CAPA_FLOOR_IGNORE_ENV",
@@ -90,6 +99,7 @@ __all__ = [
     "VerificationError",
     "VendorVerificationError",
     "read_manifest",
+    "read_root_manifest",
     "read_lock",
     "install",
     "verify_vendored_deps",

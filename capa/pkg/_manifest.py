@@ -108,6 +108,32 @@ class ManifestError(Exception):
     """Raised on invalid ``capa.toml`` or ``capa.lock`` contents."""
 
 
+class BrokenRootManifestError(Exception):
+    """The ROOT ``capa.toml`` could not be read, so the build is refused.
+
+    Distinct from :class:`ManifestError`, which is the diagnosis. This is
+    the POLICY built on top of it: a root manifest that cannot be parsed
+    is a security-relevant input that has gone missing, not a detail to
+    warn about and carry on past.
+
+    The behaviour it replaces was a one-line ``warning: ignoring
+    capa.toml`` followed by a successful build. Ignoring the manifest
+    discards the declared dependency ``path`` mapping, and the loader
+    then falls back to the module search path, where a directory whose
+    name happens to match the dependency SHADOWS the audited one. A
+    single lowercase letter in the unrelated ``[capabilities]`` table was
+    enough to swap which source file got compiled, with exit 0 and an
+    "ok" on stdout. See ``docs/advisories/2026-07-20-capa-floor.md``.
+
+    DELIBERATELY NOT A SUBCLASS OF ``ManifestError``, for the same reason
+    :class:`capa.pkg.CapaFloorError` is not: ``manifest/_compose.py``
+    catches ``(ManifestError, OSError, ValueError)`` around each
+    DEPENDENCY's ``read_manifest`` and reports the result as
+    authority-unknown. A refusal about the ROOT manifest must never be
+    absorbed into a claim about a dependency's authority.
+    """
+
+
 @dataclass(frozen=True)
 class Dependency:
     """One declared dependency.
@@ -219,6 +245,31 @@ class LockedDependency:
     # ``--no-dev`` install mode can skip them without re-reading
     # the manifest.
     dev: bool = False
+
+
+def read_root_manifest(path: Path) -> Manifest:
+    """Load the ROOT ``capa.toml``, refusing when it cannot be read.
+
+    The single seam every command goes through for the project's own
+    manifest. :func:`read_manifest`'s failures (and the I/O failures
+    around it) are converted to :class:`BrokenRootManifestError`, whose
+    message is always ``<path>: <reason>`` so the caller can print
+    ``capa: broken capa.toml: <path>: <reason>`` and stop.
+
+    There is no escape hatch, and that is the point. The remediation for
+    a broken manifest is always available to whoever hit it (fix the
+    file), which is exactly what is NOT true of the compiler floor, and
+    why the floor has ``CAPA_IGNORE_CAPA_FLOOR`` and this does not. An
+    env var that restores "ignore the manifest and build anyway" would
+    restore the source-substitution behaviour along with it.
+    """
+    try:
+        return read_manifest(path)
+    except ManifestError as e:
+        # ``ManifestError`` messages are already ``<path>: <reason>``.
+        raise BrokenRootManifestError(str(e)) from e
+    except (OSError, ValueError) as e:
+        raise BrokenRootManifestError(f"{path}: {e}") from e
 
 
 def read_manifest(path: Path) -> Manifest:

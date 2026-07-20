@@ -1078,7 +1078,16 @@ class TestCliInProcess(unittest.TestCase):
             self.assertEqual(rc, 0, err)
             self.assertIn("102", out)
 
-    def test_broken_capa_toml_emits_warning_but_keeps_running(self):
+    def test_broken_capa_toml_refuses_the_build(self):
+        """A root capa.toml that cannot be parsed is a hard stop.
+
+        Until 1.19.0 this printed ``warning: ignoring capa.toml`` and
+        exited 0. Ignoring it discards the declared dependency ``path``
+        mapping, and the loader then resolves ``import mylib.util``
+        against whatever ``./mylib/`` happens to hold instead of the
+        declared directory. See
+        ``tests/test_capa_floor.py::SourceSubstitutionTests``.
+        """
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             (td_path / "capa.toml").write_text(
@@ -1088,8 +1097,11 @@ class TestCliInProcess(unittest.TestCase):
             rc, _out, err = _run_main(
                 ["--check", str(p)], cwd=td_path,
             )
-            self.assertEqual(rc, 0)
-            self.assertIn("ignoring capa.toml", err)
+            self.assertEqual(rc, 2)
+            self.assertIn("broken capa.toml", err)
+            self.assertIn(str(td_path / "capa.toml"), err)
+            # The wording it replaced must not come back.
+            self.assertNotIn("ignoring capa.toml", err)
 
     # --- --wasm --component --run ----------------------------------
 

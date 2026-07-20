@@ -84,22 +84,23 @@ IGNORE_ENV = "CAPA_IGNORE_CAPA_FLOOR"
 class CapaFloorError(Exception):
     """The running compiler is older than the root manifest's declared floor.
 
-    DELIBERATELY NOT A SUBCLASS OF ``ManifestError``, and the reason is
-    not the one it looks like. ``capa/cli.py`` catches bare ``Exception``
-    around the root-manifest read and degrades it to a warning, but that
-    catch swallows everything, so subclassing changes nothing there; what
-    saves this error is the explicit ``except CapaFloorError: raise`` arm
-    placed BEFORE it, mirroring the ``except VendorVerificationError:
-    raise`` arm next to it. DO NOT DELETE THAT ARM AS REDUNDANT.
+    DELIBERATELY NOT A SUBCLASS OF ``ManifestError``. The reason is
+    FORWARD-LOOKING and not a live path today, which is worth stating
+    plainly so the next reader does not go hunting for the repro:
+    ``capa/manifest/_compose.py`` catches ``(ManifestError, OSError,
+    ValueError)`` around each DEPENDENCY's ``read_manifest``, and no
+    ``CapaFloorError`` can reach that catch today, because dependency
+    floors WARN (``warn_dependency_floor``) and never raise.
 
-    The actual reason to stay outside the ``ManifestError`` hierarchy is
-    ``capa/manifest/_compose.py``'s ``except (ManifestError, OSError,
-    ValueError)`` around each dependency's ``read_manifest``. A subclass
-    would be caught there and reported as "capa.toml is unreadable or
-    invalid", turning a POLICY decision into a claim about file
+    The hazard it guards is what happens if that ever changes. A
+    subclass caught there would be reported as "capa.toml is unreadable
+    or invalid", turning a POLICY decision into a claim about file
     integrity: the composed SBOM would mark the dependency
     authority-UNKNOWN for a reason that has nothing to do with its
-    authority. ``tests/test_capa_floor.py`` asserts the non-subclassing
+    authority. The same reasoning keeps
+    :class:`capa.pkg.BrokenRootManifestError` out of the hierarchy, and
+    there the hazard is live: it IS raised while reading a manifest.
+    ``tests/test_capa_floor.py`` asserts both non-subclassings
     structurally, since the invariant is otherwise invisible.
     """
 
@@ -287,21 +288,30 @@ def enforce_root_floor(
 ) -> None:
     """Read ``<project_dir>/capa.toml`` and enforce its floor.
 
-    A missing, unreadable or invalid manifest is NOT this function's
-    business and is passed over in silence: the CLI already reports a
-    broken ``capa.toml`` once, from ``_capa_search_paths``, and a second
-    diagnostic from a policy gate would only obscure it. Only
-    :class:`CapaFloorError` escapes.
+    A MISSING manifest is unconstrained: there is no project to state a
+    floor, so there is nothing to enforce.
+
+    An UNREADABLE or INVALID manifest is refused, with
+    :class:`BrokenRootManifestError`. This function used to swallow that
+    case and return, on the reasoning that the CLI reported a broken
+    ``capa.toml`` once already. It did report it, as a WARNING, and then
+    built anyway. The consequence was that a one-letter typo anywhere in
+    the manifest turned this gate off: a project declaring
+    ``capa = ">=99.0.0"`` was refused, and the same project with
+    ``max = ["stdio"]`` added to ``[capabilities]`` built and ran. A
+    floor that a typo elsewhere in the file can disable is not a floor.
+
+    So the two refusals travel together, and the ordering is the honest
+    one: a manifest that cannot be PARSED cannot be shown to satisfy its
+    floor, so it is refused before the floor is consulted rather than
+    treated as declaring nothing.
     """
-    from ._manifest import MANIFEST_FILENAME, ManifestError, read_manifest
+    from ._manifest import MANIFEST_FILENAME, read_root_manifest
 
     manifest_path = project_dir / MANIFEST_FILENAME
     if not manifest_path.is_file():
         return
-    try:
-        manifest = read_manifest(manifest_path)
-    except (ManifestError, OSError, ValueError):
-        return
+    manifest = read_root_manifest(manifest_path)
     check_root_floor(
         manifest.capa_requirement, manifest_path,
         running=running, stream=stream,

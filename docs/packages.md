@@ -621,3 +621,29 @@ floor does not fail loudly. It **succeeds**, and emits an SBOM,
 a provenance record and capability claims derived by a compiler
 missing whatever fix the floor was raised for. See
 [`docs/advisories/2026-07-20-capa-floor.md`](advisories/2026-07-20-capa-floor.md).
+
+## A `capa.toml` that does not parse is refused
+
+Since **1.19.0**, a root `capa.toml` the compiler cannot read
+stops the build:
+
+```
+capa: broken capa.toml: /path/to/capa.toml: [capabilities].max names
+unknown capability(ies): ['stdio']; allowed: ['Clock', 'Db', ...]
+```
+
+Exit code `2`, the same code `capa test` and `capa install`
+already used for this input. It previously printed
+`warning: ignoring capa.toml` and carried on, and "ignoring" it
+meant discarding the `path` dependency mapping below, at which
+point `import mylib.util` resolved against whatever `./mylib/`
+happened to hold instead of the declared `vendor/real/`. A
+one-letter typo in an unrelated table changed which source file
+was compiled, and the compiler reported success.
+
+**There is no `CAPA_IGNORE_*` escape for this one**, unlike the
+floor above. The asymmetry is deliberate: a floor violation can
+be genuinely unfixable by the person who hits it ("upgrade the
+compiler" is not always available), while a broken manifest is
+always fixable by editing the file. An escape here would restore
+the source substitution along with the convenience.

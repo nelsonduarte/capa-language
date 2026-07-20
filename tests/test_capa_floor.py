@@ -12,9 +12,16 @@ than a nicety:
    split;
 4. the exemptions, each exercised as a real CLI invocation with a
    violating root ``capa.toml`` on disk;
-5. the structural invariants that are otherwise invisible: that
-   ``CapaFloorError`` does not subclass ``ManifestError``, and that
-   ``capa/cli.py``'s ``except Exception`` arm does not swallow it.
+5. the structural invariants that are otherwise invisible: that neither
+   ``CapaFloorError`` nor ``BrokenRootManifestError`` subclasses
+   ``ManifestError``, and that ``capa/cli.py`` no longer has an
+   ``except Exception`` arm around the root-manifest read to swallow
+   either of them.
+
+Since 1.19.0 a sixth thing is under test alongside them: that a root
+``capa.toml`` which cannot be PARSED is refused. It shipped as one
+defect class with the floor because it disabled the floor. See
+``docs/advisories/2026-07-20-capa-floor.md``.
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from capa.pkg import ManifestError, read_manifest
+from capa.pkg import BrokenRootManifestError, ManifestError, read_manifest
 from capa.pkg._floor import (
     IGNORE_ENV,
     UNKNOWN_VERSION,
@@ -415,15 +422,37 @@ class RootPolicyTests(unittest.TestCase):
         enforce_root_floor(self.tmp, running="1.19.0", stream=self.err)
         self.assertEqual(self.err.getvalue(), "")
 
-    def test_enforce_root_floor_ignores_a_broken_manifest(self):
-        """A broken capa.toml is not the floor gate's business.
+    def test_enforce_root_floor_refuses_a_broken_manifest(self):
+        """A broken root capa.toml is refused, not passed over.
 
-        The CLI already reports it once, from ``_capa_search_paths``; a
-        second diagnostic from a policy gate would only obscure it.
+        It used to return silently, on the reasoning that the CLI had
+        already warned once. It had only WARNED, and then built. The
+        practical effect was that any typo in the manifest switched this
+        gate off; ``BrokenManifestDisablesTheFloorTests`` below is the
+        end-to-end proof of that.
         """
         _manifest(self.tmp, "this is not [ valid toml")
-        enforce_root_floor(self.tmp, running="1.19.0", stream=self.err)
+        with self.assertRaises(BrokenRootManifestError) as ctx:
+            enforce_root_floor(self.tmp, running="1.19.0", stream=self.err)
+        # ``<path>: <reason>``, so the caller's "capa: broken capa.toml:"
+        # prefix names the file.
+        self.assertIn(str(self.tmp / "capa.toml"), str(ctx.exception))
         self.assertEqual(self.err.getvalue(), "")
+
+    def test_a_broken_manifest_is_refused_even_under_the_escape_hatch(self):
+        """``CAPA_IGNORE_CAPA_FLOOR`` covers the FLOOR, not the manifest.
+
+        The two refusals answer different questions and have different
+        remediations. A floor violation may be unfixable by the person
+        who hit it (they cannot always upgrade the compiler), which is
+        what the escape exists for. A broken manifest is always fixable
+        by editing the file, and an escape restoring "ignore the manifest
+        and build anyway" restores the source substitution with it.
+        """
+        _manifest(self.tmp, "this is not [ valid toml")
+        with mock.patch.dict(os.environ, {IGNORE_ENV: "1"}, clear=False):
+            with self.assertRaises(BrokenRootManifestError):
+                enforce_root_floor(self.tmp, running="1.19.0", stream=self.err)
 
 
 class EscapeHatchTests(unittest.TestCase):
@@ -611,6 +640,19 @@ class StructuralTests(unittest.TestCase):
         self.assertFalse(issubclass(CapaFloorError, ManifestError))
         self.assertTrue(issubclass(CapaFloorError, Exception))
 
+    def test_broken_root_manifest_error_is_not_a_manifest_error(self):
+        """Same absence, for the same reason, and here it is LIVE.
+
+        ``BrokenRootManifestError`` is raised while READING a manifest,
+        so it is one hierarchy edge away from being swallowed by
+        ``_compose.py``'s ``except (ManifestError, OSError, ValueError)``
+        and reported as a dependency being authority-unknown. A refusal
+        about the ROOT manifest must never be absorbed into a claim about
+        a dependency's authority.
+        """
+        self.assertFalse(issubclass(BrokenRootManifestError, ManifestError))
+        self.assertTrue(issubclass(BrokenRootManifestError, Exception))
+
     def test_the_floor_reads_the_single_version_source(self):
         """``_floor`` must resolve the running version through
         ``capa.__version__`` and never through
@@ -645,21 +687,61 @@ class StructuralTests(unittest.TestCase):
 
         self.assertEqual(_running_version(), capa.__version__)
 
-    def test_the_cli_re_raise_arm_is_present(self):
+    def test_the_cli_does_not_swallow_the_root_manifest_read(self):
+        """No ``except Exception`` around the root-manifest read.
+
+        This replaces an assertion that an ``except CapaFloorError:
+        raise`` arm was PRESENT. That arm existed to survive an
+        ``except Exception`` arm sitting below it, which degraded a
+        broken ``capa.toml`` to ``warning: ignoring capa.toml`` and
+        carried on. The catch-all is gone, so the re-raise arm has
+        nothing left to defend against and the stronger invariant is
+        that the catch-all does not come back: ``ignoring capa.toml``
+        must not appear in ``capa/cli.py`` at all.
+
+        Checked textually because the invariant is an ABSENCE. The
+        behavioural counterparts are
+        ``SearchPathFailClosedTests`` and the end-to-end
+        ``BrokenManifestDisablesTheFloorTests``.
+        """
+        import ast
+
         source = (REPO_ROOT / "capa" / "cli.py").read_text(encoding="utf-8")
-        self.assertIn("except CapaFloorError:", source)
+        self.assertNotIn("ignoring capa.toml", source)
+
+        tree = ast.parse(source)
+        for name in ("_capa_search_paths", "_capa_dependency_roots"):
+            fn = next(
+                n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == name
+            )
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.ExceptHandler):
+                    continue
+                caught = node.type
+                self.assertIsNotNone(
+                    caught,
+                    f"{name}: bare `except:` around the root-manifest read",
+                )
+                self.assertNotIn(
+                    "Exception",
+                    ast.unparse(caught),
+                    f"{name}: `except Exception` is what let a broken "
+                    f"capa.toml through as a warning; it must not return",
+                )
 
 
-class SearchPathReRaiseTests(unittest.TestCase):
-    """``cli._capa_search_paths`` must not swallow the floor error.
+class SearchPathFailClosedTests(unittest.TestCase):
+    """``cli``'s two module-resolution helpers must fail closed.
 
-    Its ``except Exception`` arm degrades a broken ``capa.toml`` to a
-    warning and then continues with ``./vendor`` dropped from the search
-    path. Applied to a floor violation that is strictly worse than not
-    checking at all: the user is told their manifest was "ignored" and
-    the build proceeds anyway. The explicit ``except CapaFloorError:
-    raise`` arm placed before it is what prevents that, and deleting it
-    as redundant is exactly what this test exists to catch.
+    Both used to sit behind an ``except Exception`` arm that degraded a
+    broken ``capa.toml`` to a warning and continued: ``_capa_search_paths``
+    dropped ``./vendor``, and ``_capa_dependency_roots`` returned an empty
+    map. The empty map is the dangerous one. It deletes the
+    name-to-directory mapping that makes a declared ``path`` dependency
+    authoritative, so ``import mylib.util`` stops resolving to the
+    declared ``vendor/real/util.capa`` and falls through to whatever
+    ``./mylib/`` contains, silently.
     """
 
     def setUp(self):
@@ -667,27 +749,33 @@ class SearchPathReRaiseTests(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
-    def test_floor_error_propagates_out_of_capa_search_paths(self):
-        from capa import cli
-
-        (self.tmp / "capa.toml").write_text(
-            '[package]\nname = "x"\nversion = "0.1.0"\ncapa = ">=99.0.0"\n'
-            '\n[dependencies.dep]\ngit = "https://example.com/dep"\n'
-            'tag = "v0.1.0"\n',
-            encoding="utf-8",
-        )
+    def _in_tmp(self, fn):
         err = io.StringIO()
         original = os.getcwd()
         os.chdir(self.tmp)
         try:
             with mock.patch.object(sys, "stderr", err):
-                with self.assertRaises(CapaFloorError):
-                    cli._capa_search_paths()
+                return fn(), err.getvalue()
         finally:
             os.chdir(original)
-        # And it did NOT come out as the generic "ignoring capa.toml"
-        # warning that the ``except Exception`` arm would have produced.
-        self.assertNotIn("ignoring capa.toml", err.getvalue())
+
+    def test_broken_manifest_refused_by_capa_search_paths(self):
+        from capa import cli
+
+        (self.tmp / "capa.toml").write_text(
+            "this is not [ valid toml", encoding="utf-8",
+        )
+        with self.assertRaises(BrokenRootManifestError):
+            self._in_tmp(cli._capa_search_paths)
+
+    def test_broken_manifest_refused_by_capa_dependency_roots(self):
+        from capa import cli
+
+        (self.tmp / "capa.toml").write_text(
+            "this is not [ valid toml", encoding="utf-8",
+        )
+        with self.assertRaises(BrokenRootManifestError):
+            self._in_tmp(cli._capa_dependency_roots)
 
 
 # ---------------------------------------------------------------------------
@@ -866,6 +954,267 @@ class ExemptPredicateTests(unittest.TestCase):
         ):
             with self.subTest(argv=argv):
                 self.assertFalse(_floor_check_exempt(argv))
+
+
+# ---------------------------------------------------------------------------
+# 6. The broken-root-manifest half of the advisory.
+# ---------------------------------------------------------------------------
+
+# One lowercase letter, in a table with nothing to do with dependencies.
+_CAPS_GOOD = '\n[capabilities]\nmax = ["Stdio"]\n'
+_CAPS_TYPO = '\n[capabilities]\nmax = ["stdio"]\n'
+
+
+class SourceSubstitutionTests(unittest.TestCase):
+    """The repro that made the broken-manifest half a CRITICAL.
+
+    Layout: ``[dependencies.mylib] path = "vendor/real"`` maps the
+    dependency NAME to a directory that CONTAINS the modules, so
+    ``import mylib.util`` resolves to ``vendor/real/util.capa``. A decoy
+    ``./mylib/`` sits next to it holding a same-named module.
+
+    With the manifest intact the declared path wins. With the manifest
+    BROKEN, the old CLI printed ``warning: ignoring capa.toml``, dropped
+    the name-to-directory mapping, and the loader fell through to the
+    decoy: a different source file compiled and RAN, exit 0. A typo in
+    the capabilities table changed which code executed, and the compiler
+    reported success.
+    """
+
+    _MAIN = (
+        "import mylib.util\n"
+        "\n"
+        "fun main(stdio: Stdio)\n"
+        "    stdio.println(tag())\n"
+    )
+    _BASE = (
+        '[package]\nname = "demo"\nversion = "0.1.0"\n'
+        '\n[dependencies.mylib]\npath = "vendor/real"\n'
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.tmp / "vendor" / "real").mkdir(parents=True)
+        (self.tmp / "mylib").mkdir()
+        (self.tmp / "vendor" / "real" / "util.capa").write_text(
+            'pub fun tag() -> String\n    return "INTENDED"\n',
+            encoding="utf-8",
+        )
+        (self.tmp / "mylib" / "util.capa").write_text(
+            'pub fun tag() -> String\n    return "DECOY"\n', encoding="utf-8",
+        )
+        (self.tmp / "main.capa").write_text(self._MAIN, encoding="utf-8")
+
+    def _write_manifest(self, caps: str) -> None:
+        (self.tmp / "capa.toml").write_text(
+            self._BASE + caps, encoding="utf-8",
+        )
+
+    def test_intact_manifest_compiles_the_declared_source(self):
+        self._write_manifest(_CAPS_GOOD)
+        rc, out, err = _run_main(["--run", "main.capa"], cwd=self.tmp)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("INTENDED", out)
+        self.assertNotIn("DECOY", out)
+
+    def test_broken_manifest_never_reaches_the_decoy(self):
+        """The bar for the fix: the decoy must not win, and the build
+        must not succeed either. Refusing is the only safe answer,
+        because the compiler cannot know which of the two directories
+        the user meant once the declaration is unreadable."""
+        self._write_manifest(_CAPS_TYPO)
+        rc, out, err = _run_main(["--run", "main.capa"], cwd=self.tmp)
+        self.assertEqual(rc, 2, f"out={out!r} err={err!r}")
+        self.assertNotIn("DECOY", out)
+        self.assertIn("broken capa.toml", err)
+        self.assertIn(str(self.tmp / "capa.toml"), err)
+
+    def test_broken_manifest_does_not_report_check_ok(self):
+        """``capa --check`` said ``main.capa: ok`` about a file whose
+        imports it had just resolved to unaudited sources."""
+        self._write_manifest(_CAPS_TYPO)
+        rc, out, err = _run_main(["--check", "main.capa"], cwd=self.tmp)
+        self.assertEqual(rc, 2)
+        self.assertNotIn("ok", out)
+
+
+class BrokenManifestDisablesTheFloorTests(unittest.TestCase):
+    """Why the two halves ship together rather than separately.
+
+    A project declaring ``capa = ">=99.0.0"`` was refused. The same
+    project with one lowercase letter in ``[capabilities]`` built and
+    ran: the CLI degraded the manifest to a warning, and
+    ``enforce_root_floor`` then found nothing to enforce. Reverting the
+    broken-manifest half alone would silently reopen the floor bypass,
+    which is why they are one defect class.
+    """
+
+    _FLOOR = (
+        '[package]\nname = "proj"\nversion = "0.1.0"\ncapa = ">=99.0.0"\n'
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.tmp / "main.capa").write_text(
+            'fun main(stdio: Stdio)\n    stdio.println("built")\n',
+            encoding="utf-8",
+        )
+
+    def test_floor_alone_refuses(self):
+        (self.tmp / "capa.toml").write_text(self._FLOOR, encoding="utf-8")
+        rc, out, err = _run_main(["--run", "main.capa"], cwd=self.tmp)
+        self.assertEqual(rc, 1)
+        self.assertIn("99.0.0", err)
+        self.assertNotIn("built", out)
+
+    def test_a_typo_elsewhere_cannot_switch_the_floor_off(self):
+        (self.tmp / "capa.toml").write_text(
+            self._FLOOR + _CAPS_TYPO, encoding="utf-8",
+        )
+        rc, out, err = _run_main(["--run", "main.capa"], cwd=self.tmp)
+        self.assertNotEqual(rc, 0, f"out={out!r} err={err!r}")
+        self.assertNotIn("built", out)
+
+
+class SubdirectoryGateTests(unittest.TestCase):
+    """The gate must answer for the root the command acts on.
+
+    ``--compose-sbom`` resolves its project root by walking up from the
+    FILE (``find_package_root``), while the gate used to look only at
+    ``Path.cwd()``. Run from a subdirectory the two disagreed: compose
+    found the parent's manifest, applied the parent's ceiling and emitted
+    a real composed SBOM for the parent project, while the gate found no
+    manifest in the subdirectory and enforced nothing. That SBOM is
+    exactly the artefact the floor exists to protect.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.tmp / "capa.toml").write_text(
+            _VIOLATING_MANIFEST, encoding="utf-8",
+        )
+        (self.tmp / "sub").mkdir()
+        (self.tmp / "sub" / "main.capa").write_text(
+            'fun main(stdio: Stdio)\n    stdio.println("hi")\n',
+            encoding="utf-8",
+        )
+
+    def test_compose_sbom_from_the_project_root_is_gated(self):
+        rc, out, err = _run_main(
+            ["--compose-sbom", "sub/main.capa"], cwd=self.tmp,
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn(_FLOOR_MARKER, err)
+
+    def test_compose_sbom_from_a_subdirectory_is_gated(self):
+        rc, out, err = _run_main(
+            ["--compose-sbom", "main.capa"], cwd=self.tmp / "sub",
+        )
+        self.assertEqual(rc, 1, f"out={out[:200]!r}")
+        self.assertIn(_FLOOR_MARKER, err)
+        self.assertNotIn("composed", out)
+
+    def test_compose_sbom_from_outside_the_project_tree_is_gated(self):
+        """The residual of the same defect, closed at the same time.
+
+        The gate walks up from the CWD; ``--compose-sbom`` walks up from
+        the FILE. Those are the same root whenever the file is inside the
+        cwd's project, and different when it is not: from an unrelated
+        directory, ``capa --compose-sbom /proj/sub/main.capa`` composes
+        an SBOM for ``/proj`` under a floor ``/proj`` declares and the
+        gate never saw. ``_enforce_floor_for_file_root`` is what closes
+        it, and this is the invocation that needs it.
+        """
+        outside = self.tmp.parent / (self.tmp.name + "-outside")
+        outside.mkdir()
+        self.addCleanup(outside.rmdir)
+        self.assertFalse((outside / "capa.toml").exists())
+        rc, out, err = _run_main(
+            ["--compose-sbom", str(self.tmp / "sub" / "main.capa")],
+            cwd=outside,
+        )
+        self.assertEqual(rc, 1, f"out={out[:200]!r}")
+        self.assertIn(_FLOOR_MARKER, err)
+
+    def test_check_capabilities_from_a_subdirectory_is_gated(self):
+        rc, out, err = _run_main(
+            ["--check-capabilities", "main.capa"], cwd=self.tmp / "sub",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn(_FLOOR_MARKER, err)
+
+    def test_check_and_run_from_a_subdirectory_are_gated(self):
+        """``--check`` / ``--run`` never consulted the manifest from a
+        subdirectory at all, which was internally consistent rather than
+        a bypass. They are gated now anyway, because the gate resolves
+        the project root the same way for every command."""
+        for flag in ("--check", "--run"):
+            with self.subTest(flag=flag):
+                rc, out, err = _run_main(
+                    [flag, "main.capa"], cwd=self.tmp / "sub",
+                )
+                self.assertEqual(rc, 1, err)
+                self.assertIn(_FLOOR_MARKER, err)
+
+    def test_the_escape_warning_prints_exactly_once(self):
+        """The second ``check_root_floor`` call site inside
+        ``_capa_search_paths`` printed the escape warning twice for
+        ``--check``. It was never load-bearing (every command that
+        reaches module resolution was already stopped by the gate, and
+        every exempt command never gets there), so it is gone."""
+        for argv in (
+            ["--check", "sub/main.capa"],
+            ["--run", "sub/main.capa"],
+            ["--compose-sbom", "sub/main.capa"],
+        ):
+            with self.subTest(argv=argv):
+                rc, out, err = _run_main(
+                    argv, cwd=self.tmp, env={IGNORE_ENV: "1"},
+                )
+                self.assertEqual(
+                    err.count(f"{IGNORE_ENV}=1: building anyway"), 1, err,
+                )
+
+
+class DuplicateTriedPathTests(unittest.TestCase):
+    """``cannot resolve`` listed the same candidate twice.
+
+    When a path dependency's directory basename equals its name, the
+    declared-dependency candidate and the importer-relative candidate are
+    the same file. ``_candidate_paths`` de-duplicates, order-preserving,
+    which cannot change what ``_resolve`` returns (it takes the FIRST
+    existing candidate).
+    """
+
+    def test_each_tried_path_is_listed_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            (tmp / "mylib").mkdir()
+            (tmp / "capa.toml").write_text(
+                '[package]\nname = "demo"\nversion = "0.1.0"\n'
+                '\n[dependencies.mylib]\npath = "mylib"\n',
+                encoding="utf-8",
+            )
+            (tmp / "main.capa").write_text(
+                "import mylib.missing\n\n"
+                'fun main(stdio: Stdio)\n    stdio.println("x")\n',
+                encoding="utf-8",
+            )
+            rc, _out, err = _run_main(["--check", "main.capa"], cwd=tmp)
+            self.assertNotEqual(rc, 0)
+            self.assertIn("cannot resolve", err)
+            tried = err.split("tried", 1)[1]
+            paths = [p.strip() for p in tried.split(";") if p.strip()]
+            self.assertEqual(
+                len(paths), len(set(paths)),
+                f"a candidate path is listed more than once: {paths}",
+            )
 
 
 # ---------------------------------------------------------------------------

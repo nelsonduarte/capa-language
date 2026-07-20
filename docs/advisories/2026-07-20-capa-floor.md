@@ -1,14 +1,22 @@
-# Capa security advisory, 2026-07-20: the declared compiler floor was never enforced
+# Capa security advisory, 2026-07-20: the root `capa.toml` was advisory, not authoritative
 
-> **Status.** Published with the `1.19.0` release. The `capa = ">=X.Y.Z"`
-> field of `capa.toml` is now enforced at build time. A project whose
-> root manifest declares a floor above the running compiler previously
-> built without a word of complaint and now fails; that is an observable
-> behaviour change, and it is claimed here under the
-> [`STABILITY.md`](../../STABILITY.md) **security exception** (the same
-> carve-out Rust and Python use for soundness fixes), and therefore
-> shipped as a **MINOR** bump, not a MAJOR one. The argument is made
-> below rather than asserted.
+> **Status.** Published with the `1.19.0` release. Two behaviour changes,
+> one defect class: **the root manifest is a security-relevant input that
+> was being discarded rather than enforced.**
+>
+> 1. A **malformed root `capa.toml`** now exits non-zero everywhere. It
+>    previously printed `warning: ignoring capa.toml` and built anyway,
+>    and "ignoring" it meant compiling a **different source file**.
+> 2. A **violated root compiler floor** (`capa = ">=X.Y.Z"`) now exits
+>    non-zero. It previously built without a word of complaint.
+>    `CAPA_IGNORE_CAPA_FLOOR=1` downgrades this one, and only this one,
+>    to a warning that prints the refusal it overrode in full.
+>
+> Both are observable behaviour changes, and both are claimed under the
+> single [`STABILITY.md`](../../STABILITY.md) **security exception** (the
+> same carve-out Rust and Python use for soundness fixes) invoked once
+> below, and therefore shipped as a **MINOR** bump, not a MAJOR one. The
+> argument is made rather than asserted.
 
 This advisory satisfies the `STABILITY.md` requirement that a fix
 changing observable behaviour without a major bump "ships with a
@@ -20,9 +28,75 @@ Affected versions: `1.18.1` and earlier on the `1.x` line, and the whole
 Fixed in: `1.19.0`.
 Reporter / process: internal audit of the release-guard surface, after
 `tools/capa_floor.sh` was written for release guard 2 and the guard's own
-header had to disclose that nothing enforced the field it read.
+header had to disclose that nothing enforced the field it read. The
+malformed-manifest instance was found while reviewing that fix, by
+noticing that the fix's own gate could be switched off by a typo.
 Channel: this advisory; cross-referenced from
 [`SECURITY.md`](../../SECURITY.md) and the `1.19.0` `CHANGELOG.md` entry.
+
+## Instance 1: a malformed root manifest silently swapped the source file
+
+This is the more serious of the two, and it fits the security exception
+more squarely than the floor does: the previous behaviour is a confirmed
+"the security control disappears" repro, not a missing check.
+
+`capa/cli.py`'s root-manifest read caught bare `Exception` and degraded
+**any** parse failure to `warning: ignoring capa.toml`, then continued.
+Ignoring the manifest discards `_capa_dependency_roots`'s
+name-to-directory mapping, which is what makes a declared
+`path` dependency authoritative. Without it the loader falls back to the
+module search path, where a directory whose **name** matches the
+dependency shadows the declared directory.
+
+The repro, reproduced on the released `1.18.1` binary. A project declares
+`[dependencies.mylib] path = "vendor/real"` (the `path` maps the
+dependency NAME to a directory that CONTAINS the modules, so `import
+mylib.util` resolves to `vendor/real/util.capa`). A decoy `./mylib/`
+holds a same-named module:
+
+```
+GOOD manifest    -> INTENDED: vendor/real (audited)   EXIT=0
+BROKEN manifest  -> DECOY: ./mylib (unaudited)        EXIT=0
+capa --check     -> main.capa: ok                     EXIT=0
+```
+
+**The BROKEN manifest differs by exactly one lowercase letter**:
+`max = ["stdio"]` instead of `["Stdio"]`, in the `[capabilities]` table,
+which has nothing to do with dependencies. A typo silently changed which
+code ran, and the compiler reported success. For a language whose whole
+claim is provenance, that is the thesis inverted.
+
+The failure surface was one seam, not four. Measured across a bad
+capability name, an unknown `[package]` key, a non-string `capa` value
+and malformed TOML, the behaviour was identical: `--check`, `--run` and
+`--manifest` exited 0 (fail-open), while `--check-capabilities`,
+`--compose-sbom`, `capa test` and `capa install` failed closed. The last
+two already had the right behaviour and the right wording; the fix is to
+make the rest of the CLI match them rather than the other way round.
+
+**Since `1.19.0`** every root-manifest read goes through one seam,
+`capa.pkg.read_root_manifest`, which raises `BrokenRootManifestError`.
+The CLI prints `capa: broken capa.toml: <path>: <reason>` and exits
+**2** (this CLI's code for a configuration problem, which is what
+`capa test` already returned for exactly this input).
+
+### There is no escape hatch for a malformed manifest, deliberately
+
+The floor has `CAPA_IGNORE_CAPA_FLOOR=1`; this does not, and the
+asymmetry is the point. A floor violation may be genuinely unfixable by
+whoever hits it, because "upgrade the compiler" is not always available
+to them, and an escape is the difference between a gate and a wall. A
+malformed manifest is always fixable by the person who hit it, by editing
+the file. An env var restoring "ignore the manifest and build anyway"
+would restore the source substitution along with it, so it does not
+exist.
+
+The one legitimate flow the old comment named, `capa --check` on a file
+outside the project, is not lost: it is refused only when the *cwd*
+holds a broken `capa.toml`, which is a defect the user owns and can fix,
+and the existing test suite never actually exercised that flow.
+
+## Instance 2: the compiler floor was never enforced
 
 ## What changed
 
@@ -47,11 +121,34 @@ passes release guard 2 can never be one the compiler refuses. Both sides
 were tightened in the same change to reject `1.17`, `1.2.3.4` and
 `1..2`, which the guard's old `[0-9][0-9.]*[0-9]` pattern accepted.
 
+## Why the two instances ship together
+
+They were originally scoped apart, so that the larger fail-open could be
+reverted independently of the floor. That was wrong, and the reason is
+mechanical rather than editorial: **instance 1 disables instance 2's
+fix.**
+
+```
+[package] capa=">=99.0.0"                    -> EXIT=1, refused
+same + [capabilities] max = ["stdio"]        -> EXIT=0, builds and runs
+```
+
+The floor gate read the manifest, the read failed, the failure was
+swallowed, and the gate found nothing to enforce. So the same one-letter
+typo that swapped the source file also switched the new floor off.
+Reverting instance 1 alone would silently reopen the floor bypass, which
+makes them one defect class and not two: the root manifest is a
+security-relevant input that was being discarded rather than enforced.
+`tests/test_capa_floor.py::BrokenManifestDisablesTheFloorTests` is the
+end-to-end proof, so the coupling cannot regress unnoticed.
+
 ## Why this is a security fix and not a breaking change
 
 The argument has four steps. It is spelled out because the third step is
 the one a reviewer should push on, and it is answered with a named
-instance rather than a category.
+instance rather than a category. It is made once and covers both
+instances; instance 1 needs less of it, since its previous behaviour is a
+demonstrated source substitution rather than an absent check.
 
 ### 1. The field is a distributed integrity claim, not documentation
 
@@ -159,7 +256,8 @@ remediation is one command.
 
 ## Fail-open branches, stated explicitly
 
-Two, and both are announced whenever they fire:
+Two remain, both about the floor (a malformed manifest has none), and
+both are announced whenever they fire:
 
 1. **A missing `capa` key.** Unconstrained, silently. Absence is not a
    violation. This is the opposite of `tools/capa_floor.sh`, which fails
@@ -183,14 +281,40 @@ Two, and both are announced whenever they fire:
    than writing a `capa = ">=0+unknown"` manifest that the compiler
    which wrote it could not then parse.
 
-## Not fixed here
+## The gate must answer for the root the command acts on
 
-`capa/cli.py`'s root-manifest read degrades **any** broken `capa.toml`
-to a one-line warning and then continues with `./vendor` dropped from
-the module search path. That is a larger fail-open than this one, and it
-is deliberately not bundled into this change so it can be reverted
-independently. The floor error is routed around it by an explicit
-re-raise arm.
+A third defect in the same family, fixed here. The gate resolved the
+project root as `Path.cwd()`, while `--compose-sbom`,
+`--check-capabilities`, `--check-policies` and `--conformance-report`
+resolve theirs by walking up from the **file** (`find_package_root`).
+From a subdirectory the two disagreed:
+
+```
+from project root:  capa --compose-sbom sub/main.capa  -> EXIT=1, floor enforced
+from sub/:          capa --compose-sbom main.capa      -> EXIT=0, floor NOT enforced
+```
+
+The subdirectory run was not a no-op. It emitted a real composed SBOM
+for the parent project and applied the parent's capability ceiling,
+which is precisely the artefact the floor exists to protect.
+`--manifest` was a lesser version of the same.
+
+The gate now walks up from the cwd the same way, and the four
+file-rooted commands re-check the root they actually resolved, which
+also closes the residual case of a file **outside** the cwd's project
+tree. The re-check is skipped when the two roots are the same directory,
+so `CAPA_IGNORE_CAPA_FLOOR` still prints exactly once per invocation.
+
+One consequence is worth stating plainly: `--check` and `--run` from a
+subdirectory previously did not consult the manifest at all. That was
+internally consistent rather than a bypass, but they are gated now
+anyway, because the gate resolves the project root the same way for
+every command.
+
+`capa test` was never a bypass: each test runs in a subprocess whose cwd
+is the project root, so it failed closed already. Under
+`CAPA_IGNORE_CAPA_FLOOR=1` it prints one warning per subprocess plus one
+for the parent, since each subprocess is a separate build.
 
 ## Credit
 
