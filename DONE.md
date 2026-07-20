@@ -19,6 +19,73 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.19.0: the root `capa.toml` made authoritative, the compiler floor enforced (2026-07-20)
+
+- **A malformed root manifest silently swapped which source file was
+  compiled ([advisory](docs/advisories/2026-07-20-capa-floor.md)).**
+  `capa/cli.py` caught bare `Exception` around the root-manifest read
+  and degraded any parse failure to `warning: ignoring capa.toml`.
+  Ignoring the manifest discards the name-to-directory mapping that
+  makes a declared dependency `path` authoritative, so the loader fell
+  back to the search path and a decoy directory sharing the
+  dependency's NAME shadowed the audited one: `--check` printed `ok`
+  and exited 0 having compiled unaudited source. The two manifests in
+  the repro differ by one lowercase letter, `max = ["stdio"]` instead
+  of `["Stdio"]`, in a table unrelated to dependencies. Reproduced on
+  the released `1.18.1` binary. Every root-manifest read on the build
+  path now goes through `capa.pkg.read_root_manifest`, which raises
+  `BrokenRootManifestError`; the CLI exits 2 with
+  `capa: broken capa.toml: <path>: <reason>`. `capa add`, `capa
+  install` and `capa test` keep their own `except ManifestError` and
+  also exit 2, so the invariant is the outcome (no path builds with a
+  manifest it could not parse) rather than a single seam, and the
+  advisory says so.
+- **`capa = ">=X.Y.Z"` enforced for the first time.** The field was
+  parsed into `Manifest.capa_requirement` and never read back, so a
+  package declaring `>=1.18.1` built silently on `1.2.0` and published
+  an SBOM, provenance and capability claims derived by a compiler
+  missing the fix the floor existed to require. Root floor = hard
+  error, dependency floor = warning once per package naming it, missing
+  key = unconstrained, `CAPA_IGNORE_CAPA_FLOOR=1` = a warning that
+  reprints the refusal in full. The grammar matches
+  `tools/capa_floor.sh` exactly; both sides were tightened together to
+  reject `1.17`, `1.2.3.4` and `1..2`, with a differential test over
+  one shared corpus. The comparator is stdlib-only, built oracle-first
+  against `packaging.version` over a golden table plus a 14400-pair
+  grid.
+- **The two ship as one defect class.** The broken-manifest swallow
+  switched the new floor off: `capa = ">=99.0.0"` was refused, and the
+  same project plus `max = ["stdio"]` built and ran. Reverting the
+  manifest half alone would have reopened the floor bypass.
+  `BrokenManifestDisablesTheFloorTests` holds the coupling.
+- **The gate now answers for the root the command acts on.** It
+  resolved the project root as `Path.cwd()` while `--compose-sbom`,
+  `--check-capabilities`, `--check-policies` and `--conformance-report`
+  ancestor-walk from the file, so from a subdirectory the floor was not
+  enforced while a real composed SBOM was still emitted for the parent
+  project under the parent's ceiling. The gate walks up from the cwd
+  now, and the four file-rooted commands re-check the root they
+  resolved; the re-check is skipped when the roots match, so the escape
+  warning prints exactly once.
+- **Cleanups in the same family.** The unreachable second
+  `check_root_floor` call in `_capa_search_paths` is gone (instrumented
+  across twelve commands: reached zero times, and it double-printed the
+  escape warning), along with its `except CapaFloorError` re-raise arm;
+  a structural test asserts the `except Exception` cannot come back.
+  `capa init` refuses a non-release version instead of writing
+  `capa = ">=0+unknown"`. The loader de-duplicates candidate paths so
+  `cannot resolve` no longer lists the same path twice.
+- **Windows 8.3 short names in the new tests.** Three CI jobs failed on
+  path comparisons where `tempfile` handed the test
+  `C:\Users\RUNNER~1\...` and the compiler, reaching the same directory
+  through `Path.cwd()`, printed `C:\Users\runneradmin\...`. The
+  assertions are now stricter, not looser: the diagnostic's path is
+  extracted and compared for EQUALITY in canonical form. The rest of
+  the suite was swept for the pattern, and the one negative assertion
+  that would have failed vacuously under the divergence (the
+  sibling-shadowing guard from the 2026-07-19 advisory) was hardened
+  too.
+
 ## v1.18.1: `capa test` fixed under the released binary, the smoke test widened, the `gh` fail-open closed (2026-07-19)
 
 - **`capa test` was completely broken in every released binary.** It

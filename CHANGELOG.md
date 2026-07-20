@@ -9,6 +9,164 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.19.0], 2026-07-20
+
+> **A typo in your `capa.toml` could silently change which source file
+> the compiler built, and report success.** One lowercase letter in a
+> table with nothing to do with dependencies (`max = ["stdio"]` instead
+> of `["Stdio"]`) made the compiler discard the whole root manifest,
+> compile an unaudited directory that merely shared the dependency's
+> NAME instead of the declared `path`, print `ok` and exit 0. That is
+> fixed here, together with the compiler floor the same typo switched
+> off. Read the
+> [advisory](docs/advisories/2026-07-20-capa-floor.md) before upgrading:
+> **two previously-succeeding builds now fail**, on purpose.
+
+**Security.**
+
+- *A malformed root `capa.toml` no longer means "ignore it and build"
+  ([advisory](docs/advisories/2026-07-20-capa-floor.md)).* `capa/cli.py`
+  caught bare `Exception` around the root-manifest read and degraded
+  ANY parse failure to `warning: ignoring capa.toml`, then carried on.
+  Ignoring the manifest discards the name-to-directory mapping that
+  makes a declared `[dependencies.mylib] path = "vendor/real"`
+  authoritative, so the loader fell back to the module search path,
+  where a decoy `./mylib/` shadowed the audited directory. Reproduced
+  on the released `1.18.1` binary:
+
+  ```
+  GOOD manifest    -> INTENDED: vendor/real (audited)   EXIT=0
+  BROKEN manifest  -> DECOY: ./mylib (unaudited)        EXIT=0
+  capa --check     -> main.capa: ok                     EXIT=0
+  ```
+
+  The failure surface was one seam rather than four: a bad capability
+  name, an unknown `[package]` key, a non-string `capa` value and
+  malformed TOML all behaved identically, with `--check`, `--run` and
+  `--manifest` exiting 0 while `capa test`, `capa install`,
+  `--check-capabilities` and `--compose-sbom` already failed closed.
+  The fix makes the rest of the CLI match the ones that were right.
+
+  Every root-manifest read on the build path now goes through
+  `capa.pkg.read_root_manifest`, which raises `BrokenRootManifestError`;
+  the CLI prints `capa: broken capa.toml: <path>: <reason>` and exits
+  **2**, the code and wording `capa test` already used for this input.
+  Three package-management reads (`capa add`, `capa install`, `capa
+  test`) stay outside that seam and refuse on their own
+  `except ManifestError`, also with exit 2. So the guarantee is the
+  outcome, not the structure: **no path builds with a root manifest it
+  could not parse.** The advisory names the residual fragility that
+  phrasing implies.
+
+- *The `capa = ">=X.Y.Z"` compiler floor is enforced for the first time
+  ([advisory](docs/advisories/2026-07-20-capa-floor.md)).* The field was
+  parsed into `Manifest.capa_requirement` and no code read it back, so a
+  package declaring `>=1.18.1` compiled, ran and emitted a manifest,
+  SBOM and provenance record on `1.2.0` without a word. Building below a
+  floor does not fail loudly, which is the whole problem: it SUCCEEDS,
+  and publishes capability claims derived by a compiler missing the fix
+  the floor was raised for. The advisory names the `1.4.0`
+  `provably_excluded_capabilities` false-exclusion fix (advisory
+  `2026-06-17-security.md`, finding D1) as the concrete instance, where
+  the resulting SBOM asserts that a reachable capability is provably
+  excluded.
+
+  The policy splits by **root versus transitive**, not by time:
+
+  - the **root** manifest's floor is a hard error (exit 1);
+  - a **dependency**'s floor warns, once per offending package, naming
+    it, because a consumer cannot satisfy it by editing a manifest they
+    own;
+  - a **missing** `capa` key stays unconstrained; absence is not a
+    violation;
+  - `CAPA_IGNORE_CAPA_FLOOR=1` downgrades the refusal to a warning that
+    reprints, in full, the refusal it overrode.
+
+  The grammar the compiler accepts is identical to
+  `tools/capa_floor.sh`'s, whitespace included, so a manifest that
+  passes release guard 2 can never be one the compiler refuses. Both
+  sides were tightened together to reject `1.17`, `1.2.3.4` and `1..2`,
+  which the guard's old `[0-9][0-9.]*[0-9]` pattern accepted, and a
+  differential test feeds one corpus to both. The comparator is
+  stdlib-only and was built against `packaging.version` over a golden
+  table plus a 14400-pair grid.
+
+  The two fixes ship together because the first disables the second: the
+  floor gate reads the manifest, the read failed, the failure was
+  swallowed, and the gate found nothing to enforce. The same one-letter
+  typo that swapped the source file also turned the new floor off.
+
+- *The floor gate now answers for the project root the command acts
+  on.* The gate resolved the root as `Path.cwd()` while
+  `--compose-sbom`, `--check-capabilities`, `--check-policies` and
+  `--conformance-report` walk up from the FILE. From a subdirectory the
+  two disagreed, and the subdirectory run was not a no-op: it emitted a
+  real composed SBOM for the parent project under the parent's
+  capability ceiling, which is precisely the artefact the floor exists
+  to protect. The gate now walks up from the cwd, and the four
+  file-rooted commands re-check the root they resolved, which also
+  covers a file outside the cwd's project tree. The re-check is skipped
+  when both roots are the same directory, so the
+  `CAPA_IGNORE_CAPA_FLOOR` warning still prints exactly once per
+  invocation.
+
+**Changed (upgrade notes).**
+
+- *A project whose `capa.toml` has any parse error now fails where it
+  used to build.* The remediation is to fix the manifest; the
+  diagnostic names the file and the reason. There is deliberately **no
+  escape hatch** for this half, and the asymmetry with the floor's
+  `CAPA_IGNORE_CAPA_FLOOR=1` is the point. A floor violation can be
+  genuinely unfixable by whoever hits it, since "upgrade the compiler"
+  is not always available to them. A malformed manifest is always
+  fixable by the person who hit it, by editing the file, and an env var
+  restoring "ignore the manifest and build anyway" would restore the
+  source substitution along with the convenience.
+
+  The refusal and the floor share one gate, and that gate is **skipped**
+  for `search`, `add`, `init`, `lsp`, `--help` anywhere in the
+  arguments, `--version`, and a bare `capa` (`_FLOOR_EXEMPT_COMMANDS` in
+  `capa/cli.py`), each of which is a case where hard-erroring would
+  remove the user's route out of the error. None of them can produce a
+  substituted build: `search` and `init` do not read the project's
+  manifest, `lsp` resolves imports from `CAPA_PATH` only and emits no
+  artefact, and `add` refuses a broken manifest anyway on its own
+  separate read.
+
+- *Every declared floor in the ecosystem becomes load-bearing at this
+  release.* `[package].capa` has been parsed and ignored since
+  2026-05-19, so no floor anywhere has ever been tested against a
+  running compiler. Fleet floors currently span `>=0.8.4` to
+  `>=1.18.1` and are all three-component, so nothing breaks on syntax.
+  But a package whose declared floor is above the compiler someone is
+  running now refuses where it used to build, and at least one published
+  floor is known to be wrong in the other direction (`capa_hex` shipped
+  `>=1.1.0`, and `1.1.0` cannot compile `capa_hex`'s own example). If a
+  build stops here, check whether the floor or the compiler is the thing
+  that is out of date before reaching for `CAPA_IGNORE_CAPA_FLOOR=1`.
+
+- *`capa init` refuses to scaffold from a non-release compiler.* It used
+  to be able to write `capa = ">=0+unknown"`, a manifest the compiler
+  that wrote it could not then parse. It now refuses on the sentinel
+  version and prints the floor it stamped when it succeeds.
+
+- *Both changes ship as MINOR, not MAJOR*, under the single
+  [`STABILITY.md`](STABILITY.md) security exception, invoked once and
+  argued rather than asserted in the advisory.
+
+**Fixed.**
+
+- *The loader no longer lists the same tried path twice.* Candidate
+  paths are de-duplicated, so a `cannot resolve` diagnostic reports each
+  location once.
+
+- *The redundant second floor call site is gone.* Instrumented across
+  twelve commands with a violating manifest, the `_capa_search_paths`
+  call was reached zero times and double-printed the escape warning.
+  Its `except CapaFloorError` re-raise arm went with it, since the
+  `except Exception` it defended against no longer exists, and a
+  structural test now asserts that catch-all does not come back.
+
 ## [1.18.1], 2026-07-19
 
 > **If you installed Capa from a release binary, `capa test` did not
