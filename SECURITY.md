@@ -170,6 +170,28 @@ The 2026-05-25 audit record lives at the repository root in
   reusable release-guard workflow's copy-paste example omitted
   `permissions:` on the calling job, so a verbatim copy handed the
   guards the caller's `id-token: write`.
+- [`docs/advisories/2026-07-20-capa-floor.md`](docs/advisories/2026-07-20-capa-floor.md):
+  the root `capa.toml` was advisory rather than authoritative, in two
+  ways that turned out to be one defect. A **malformed** root manifest
+  was degraded to `warning: ignoring capa.toml` and the build continued;
+  ignoring it discards the declared dependency `path` mapping, so a
+  same-named directory shadowed the audited source and a **different
+  source file was compiled**, exit 0. One lowercase letter in the
+  unrelated `[capabilities]` table was enough. Separately, the
+  `capa = ">=X.Y.Z"` field, a package's declaration of the oldest
+  compiler it can be built with, was parsed and never read back, so a
+  package declaring `>=1.18.1` built silently on `1.2.0`; building below
+  the floor does not fail loudly, it succeeds and emits an SBOM,
+  provenance and capability claims derived by a compiler lacking the fix
+  the floor existed to require (the advisory names the `1.4.0`
+  `provably_excluded_capabilities` false-exclusion fix as the instance).
+  The first defect disabled the fix for the second, which is why they
+  ship together. A malformed root manifest is now a hard error
+  everywhere, with no escape hatch; the root manifest's floor is now a
+  hard error and a dependency's a warning, with
+  `CAPA_IGNORE_CAPA_FLOOR=1` as a loud escape for the floor only. Both
+  shipped in `1.19.0` under a single invocation of the security
+  exception.
 
 ## Public disclosure
 

@@ -50,6 +50,64 @@ class _EnvKeyRemoval:
             os.environ.pop(self._key, None)
 
 
+def canonical(p) -> Path:
+    """A path in the one form both sides of an assertion can agree on.
+
+    NEVER compare a path a test constructed against a path the compiler
+    printed as raw strings. On Windows the two can name the same file in
+    different forms, because of 8.3 short names: ``tempfile`` hands the
+    test ``C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\tmpqq_irmmz`` while
+    the compiler, which reaches the same directory through ``Path.cwd()``
+    or ``Path.resolve()``, prints ``C:\\Users\\runneradmin\\...``. The
+    strings differ; the file is identical.
+
+    This is invisible on a machine whose username is eight characters or
+    fewer, because Windows then generates no short name at all and the
+    two forms coincide. It cost three CI jobs on PR #96, on two tests
+    that had passed locally: the failure only appears where the username
+    is longer, which is the CI runner and a good share of real users.
+
+    A POSITIVE assertion fails loudly under the divergence, which is how
+    it was found. A NEGATIVE one (``assertNotIn`` on a path) passes
+    vacuously instead, which is why the sweep for this pattern looked
+    hardest at those.
+
+    ``resolve()`` canonicalises both directions (short to long, plus
+    symlinks, ``..`` and case on case-insensitive filesystems), so
+    comparing canonical forms tests the identity of the FILE rather than
+    the spelling of the path.
+    """
+    return Path(p).resolve()
+
+
+def path_named_in(text: str, marker: str = "") -> str:
+    """The filesystem path a ``<path>: <reason>`` diagnostic names.
+
+    ``marker`` is the substring the path follows (``"broken capa.toml: "``
+    for the CLI's wording); the default takes the path from the start of
+    the text, which is the shape of a bare ``ManifestError`` message.
+
+    Splitting the reason off at ``": "`` cannot cut a Windows path in
+    half: a drive letter is ``C:\\``, colon-BACKSLASH, never
+    colon-space.
+
+    Returned as a string for the caller to wrap in :func:`canonical`.
+    Extracting the path rather than substring-searching for it is what
+    makes the assertion strict: the caller asserts EQUALITY against the
+    one path the diagnostic named, so naming a different file fails, and
+    so does naming the right file only incidentally.
+    """
+    if marker:
+        line = next((ln for ln in text.splitlines() if marker in ln), None)
+        assert line is not None, (
+            f"no {marker!r} diagnostic in:\n{text}"
+        )
+        rest = line.split(marker, 1)[1]
+    else:
+        rest = text.splitlines()[0]
+    return rest.split(": ", 1)[0]
+
+
 def _run_main(argv, stdin=None, cwd=None, env=None):
     """Drive ``main()`` in-process. Returns ``(rc, stdout, stderr)``.
 
@@ -1040,7 +1098,33 @@ class TestCliInProcess(unittest.TestCase):
             self.assertIn("cannot resolve 'import capa_hash.hash'", err)
             # And the escape route is not merely unused: the sibling
             # must not appear among the paths the loader tried.
-            self.assertNotIn(str(td_path / "capa_hash" / "hash.capa"), err)
+            #
+            # Compared CANONICALLY. The tried paths reach stderr through
+            # search roots derived from ``Path.cwd()``, already resolved,
+            # while ``td_path`` comes from ``tempfile`` unresolved. Where
+            # the two spellings differ (a Windows username over eight
+            # characters, see ``canonical``), the old raw-string
+            # ``assertNotIn`` could not have matched even if the sibling
+            # WERE among the tried paths, so it would have passed
+            # vacuously.
+            #
+            # Stated precisely, because it was measured rather than
+            # assumed: that vacuous pass was never load-bearing. Restore
+            # the parent-as-search-root behaviour this test guards
+            # against and the run is caught two assertions earlier, at
+            # ``assertNotEqual(rc, 0)``, which compares an exit code and
+            # cannot care how a path is spelled. So this is a latent
+            # weakness removed, not a live hole closed. It is still worth
+            # removing: the day someone reorders or relaxes the earlier
+            # assertions, this one has to be the one that holds.
+            tried = {
+                canonical(p.strip())
+                for p in err.split("tried", 1)[1].split(";") if p.strip()
+            }
+            self.assertNotIn(
+                canonical(td_path / "capa_hash" / "hash.capa"), tried,
+            )
+            self.assertTrue(tried, "no candidate paths were reported")
 
     def test_self_reference_does_not_shadow_declared_dependency(self):
         # Degenerate but decidable: a project whose own name is also a
@@ -1078,7 +1162,16 @@ class TestCliInProcess(unittest.TestCase):
             self.assertEqual(rc, 0, err)
             self.assertIn("102", out)
 
-    def test_broken_capa_toml_emits_warning_but_keeps_running(self):
+    def test_broken_capa_toml_refuses_the_build(self):
+        """A root capa.toml that cannot be parsed is a hard stop.
+
+        Until 1.19.0 this printed ``warning: ignoring capa.toml`` and
+        exited 0. Ignoring it discards the declared dependency ``path``
+        mapping, and the loader then resolves ``import mylib.util``
+        against whatever ``./mylib/`` happens to hold instead of the
+        declared directory. See
+        ``tests/test_capa_floor.py::SourceSubstitutionTests``.
+        """
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             (td_path / "capa.toml").write_text(
@@ -1088,8 +1181,18 @@ class TestCliInProcess(unittest.TestCase):
             rc, _out, err = _run_main(
                 ["--check", str(p)], cwd=td_path,
             )
-            self.assertEqual(rc, 0)
-            self.assertIn("ignoring capa.toml", err)
+            self.assertEqual(rc, 2)
+            self.assertIn("broken capa.toml", err)
+            # EQUALITY against the one path the diagnostic named, in
+            # canonical form: naming a different manifest fails, and so
+            # does an 8.3 short-name mismatch that a raw string compare
+            # would have reported as a product defect.
+            self.assertEqual(
+                canonical(path_named_in(err, "broken capa.toml: ")),
+                canonical(td_path / "capa.toml"),
+            )
+            # The wording it replaced must not come back.
+            self.assertNotIn("ignoring capa.toml", err)
 
     # --- --wasm --component --run ----------------------------------
 

@@ -16,12 +16,13 @@
 # second place is the same defect as the tag/manifest drift that guard 1
 # now catches.
 #
-# Worth knowing, and reported alongside this work: nothing in the
-# compiler ENFORCES this field today. `capa/pkg/_manifest.py` parses it
-# into `Manifest.capa_requirement` and no code reads it back, so a
-# package declaring `capa = ">=1.17.0"` installs and builds without
-# complaint on 1.2.0. Until that changes, this guard is the only thing
-# that tests the claim.
+# Since compiler 1.19.0 the field is also ENFORCED at build time by
+# `capa/pkg/_floor.py`: a root manifest whose floor the running compiler
+# is below is a hard error. The grammar here and the grammar there are
+# deliberately IDENTICAL, whitespace included, so that a manifest which
+# passes this guard cannot be one the compiler refuses. If you change
+# either regex, change both, and extend the differential corpus in
+# `tests/test_capa_floor.py` that feeds one case list to both.
 #
 # IT FAILS CLOSED. No manifest, no [package] table, no `capa` key, more
 # than one, or a constraint in a form this script does not recognise are
@@ -69,7 +70,13 @@ fi
 # Accept only an exact version or a `>=` floor, both of which name one
 # unambiguous release. Ranges, carets and wildcards do not, so they are
 # refused rather than approximated.
-FLOOR="$(printf '%s\n' "${RAW}" | sed -n 's/^[[:space:]]*\(>=[[:space:]]*\)\{0,1\}\([0-9][0-9.]*[0-9]\)[[:space:]]*$/\2/p')"
+#
+# Exactly three numeric components. The previous `[0-9][0-9.]*[0-9]`
+# also matched `1.17`, `1.2.3.4` and `1..2`, none of which is a release
+# this project has ever published; it would have handed guard 2 a
+# version string that resolves to no tag, and it disagreed with the
+# compiler-side parser, which is the one divergence that must not exist.
+FLOOR="$(printf '%s\n' "${RAW}" | sed -n 's/^[[:space:]]*\(>=[[:space:]]*\)\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)[[:space:]]*$/\2/p')"
 
 if [ -z "${FLOOR}" ]; then
   echo "ERROR: cannot read a single release out of capa = \"${RAW}\" in ${MANIFEST}" >&2

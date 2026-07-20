@@ -85,9 +85,23 @@ class TestInitProject(unittest.TestCase):
     def test_capa_version_file_pins_version(self):
         root = self._tmpdir()
         target = root / "p"
-        init_project(target, capa_version="1.2.3-alpha")
+        init_project(target, capa_version="1.2.3")
         v = (target / ".capa-version").read_text(encoding="utf-8")
-        self.assertEqual(v.strip(), "1.2.3-alpha")
+        self.assertEqual(v.strip(), "1.2.3")
+
+    def test_a_non_release_version_is_refused(self):
+        """The scaffold writes ``capa = ">={version}"`` into capa.toml,
+        and that floor is enforced since 1.19.0. A version that is not
+        an ``X.Y.Z`` release (``1.2.3-alpha``, or the ``0+unknown``
+        sentinel of a build with no metadata) would produce a manifest
+        the compiler that wrote it cannot parse, so init refuses rather
+        than leaving that file on disk. Fuller coverage lives in
+        ``tests/test_capa_floor.py``."""
+        root = self._tmpdir()
+        target = root / "p"
+        rc = init_project(target, capa_version="1.2.3-alpha")
+        self.assertEqual(rc, 2)
+        self.assertFalse(target.exists())
 
     def test_empty_existing_dir_is_accepted(self):
         root = self._tmpdir()

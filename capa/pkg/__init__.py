@@ -21,6 +21,12 @@ Public surface:
 
 - ``Manifest`` + ``Dependency``: in-memory parsed shape.
 - ``read_manifest(path)``: load + validate a ``capa.toml``.
+- ``read_root_manifest(path)``: the same, for the project's OWN
+  manifest, converting every read/parse failure into
+  ``BrokenRootManifestError``. A root manifest that cannot be read is
+  refused, never ignored: ignoring it drops the declared dependency
+  ``path`` mapping and lets a same-named directory shadow the audited
+  source. No escape hatch; fixing the file is always available.
 - ``read_lock(path)``: load a ``capa.lock`` if present.
 - ``install(project_dir, *, write_lock=True,
   allow_lock_update=False)``: run a full resolve + fetch pass
@@ -30,6 +36,12 @@ Public surface:
   not produce -- the canonical "upstream tag was moved"
   signal.
 - ``InstallError`` / ``LockMismatchError``: error variants.
+- ``enforce_root_floor(project_dir)``: honour the root manifest's
+  ``[package].capa`` floor. Raises ``CapaFloorError`` when the running
+  compiler is older than the declared floor. A missing ``capa`` key is
+  unconstrained. ``CAPA_IGNORE_CAPA_FLOOR=1`` downgrades the refusal to
+  a loud warning. Dependency floors WARN instead, via
+  ``warn_dependency_floor``. See ``capa/pkg/_floor.py``.
 - ``verify_vendored_deps(project_dir, manifest)``: re-verify the
   vendored git deps against ``capa.lock`` on the read/build path.
   Fail-closed; raises ``VendorVerificationError`` on a missing
@@ -43,14 +55,23 @@ The CLI entry point ``capa install`` calls into this module.
 from __future__ import annotations
 
 from ._manifest import (
+    BrokenRootManifestError,
     CapabilityCeiling,
     Dependency,
     Manifest,
     ManifestError,
     read_manifest,
+    read_root_manifest,
     read_lock,
     LOCK_FILENAME,
     MANIFEST_FILENAME,
+)
+from ._floor import (
+    CapaFloorError,
+    IGNORE_ENV as CAPA_FLOOR_IGNORE_ENV,
+    check_root_floor,
+    enforce_root_floor,
+    warn_dependency_floor,
 )
 from ._install import InstallError, LockMismatchError, VerificationError, install
 from ._verify import VendorVerificationError, verify_vendored_deps
@@ -63,7 +84,13 @@ from ._registry import (
 )
 
 __all__ = [
+    "BrokenRootManifestError",
     "CapabilityCeiling",
+    "CapaFloorError",
+    "CAPA_FLOOR_IGNORE_ENV",
+    "check_root_floor",
+    "enforce_root_floor",
+    "warn_dependency_floor",
     "Dependency",
     "Manifest",
     "ManifestError",
@@ -72,6 +99,7 @@ __all__ = [
     "VerificationError",
     "VendorVerificationError",
     "read_manifest",
+    "read_root_manifest",
     "read_lock",
     "install",
     "verify_vendored_deps",

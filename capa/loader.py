@@ -269,6 +269,14 @@ class ModuleLoader:
 
         Importer-relative comes next so a project-local module shadows
         one of the same name on the search path.
+
+        The result is de-duplicated, order-preserving. The three sources
+        overlap routinely: when a path dependency's directory basename
+        equals its name, ``<dep-dir>/mod.capa`` and ``<search-root>/
+        <name>/mod.capa`` are the same file, and the "tried ..."
+        diagnostic listed it twice. Dropping a later repeat of an earlier
+        entry cannot change what ``_resolve`` returns, since it returns
+        the FIRST existing candidate.
         """
         rel = Path(*path_parts).with_suffix(".capa")
         candidates: list[Path] = []
@@ -285,7 +293,14 @@ class ModuleLoader:
                 candidates.append(dep_dir / rest)
         candidates.append(from_dir / rel)
         candidates.extend(root / rel for root in self._search_paths)
-        return candidates
+        deduped: list[Path] = []
+        seen: set[Path] = set()
+        for c in candidates:
+            if c in seen:
+                continue
+            seen.add(c)
+            deduped.append(c)
+        return deduped
 
     def _resolve(self, path_parts: list[str], from_dir: Path) -> Optional[Path]:
         """Return the first existing candidate path, or ``None``."""
