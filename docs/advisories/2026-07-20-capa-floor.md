@@ -4,11 +4,17 @@
 > one defect class: **the root manifest is a security-relevant input that
 > was being discarded rather than enforced.**
 >
-> 1. A **malformed root `capa.toml`** now exits non-zero everywhere. It
->    previously printed `warning: ignoring capa.toml` and built anyway,
->    and "ignoring" it meant compiling a **different source file**.
+> 1. A **malformed root `capa.toml`** now exits non-zero on every path
+>    that builds. It previously printed `warning: ignoring capa.toml`
+>    and built anyway, and "ignoring" it meant compiling a **different
+>    source file**. Six invocations stay exempt by design, none of which
+>    can produce a build: `--help`, `--version`, a bare `capa`,
+>    `search`, `init` and `lsp`. They are named again, with the reason
+>    for each, [below](#instance-1-a-malformed-root-manifest-silently-swapped-the-source-file).
 > 2. A **violated root compiler floor** (`capa = ">=X.Y.Z"`) now exits
->    non-zero. It previously built without a word of complaint.
+>    non-zero, with those same six exemptions plus `capa add`, which
+>    must stay usable to repair the manifest that declared the floor. It
+>    previously built without a word of complaint.
 >    `CAPA_IGNORE_CAPA_FLOOR=1` downgrades this one, and only this one,
 >    to a warning that prints the refusal it overrode in full.
 >
@@ -86,9 +92,16 @@ refusal: [`capa/pkg/_add.py`](../../capa/pkg/_add.py),
 [`capa/pkg/_install.py`](../../capa/pkg/_install.py) and
 [`capa/testrunner.py`](../../capa/testrunner.py). Each calls
 `read_manifest` and handles `ManifestError` itself, so each still exits
-**2** on a malformed manifest; only the prefix differs
-(`capa install: <path>: <reason>`, `capa add: ...`,
-`capa test: broken capa.toml: ...`). None of the three compiles Capa
+**2** on a malformed manifest. Which prefix a user actually sees depends
+on whether the gate got there first, and usually it did. `capa add` is
+gate-exempt, so it always shows its own `capa add: <path>: <reason>`.
+`capa install <dir>` shows `capa install: <path>: <reason>` only when
+the project is named by argument from outside it; run from inside, the
+gate refuses first with `capa: broken capa.toml: ...`. `capa test`
+resolves its root from the cwd exactly as the gate does, so its own
+`capa test: broken capa.toml: ...` was shadowed in every invocation
+measured. The three handlers are what make the outcome true, not what
+the user reads. None of the three compiles Capa
 source: `capa test` reads the manifest only to check that declared git
 deps are vendored, and the compiling happens in per-test subprocesses
 that go through the gate like any other build.
@@ -105,7 +118,9 @@ the `except Exception` this advisory is about, would not be caught by
 the seam.
 
 The floor gate is skipped entirely for `search`, `add`, `init`, `lsp`,
-`--help`, `--version` and a bare `capa`
+`--help` (anywhere in the compiler's own arguments, so `build --help`
+and `migrate --help` are exempt while a bare `migrate` is not),
+`--version` and a bare `capa`
 ([`_FLOOR_EXEMPT_COMMANDS`](../../capa/cli.py)). None of them can
 produce a substituted build: `search` and `init` do not read the
 project's manifest, `lsp` resolves imports from `CAPA_PATH` only and
@@ -347,7 +362,7 @@ One consequence is worth stating plainly: `--check` and `--run` from a
 subdirectory previously did not consult the manifest at all. That was
 internally consistent rather than a bypass, but they are gated now
 anyway, because the gate resolves the project root the same way for
-every command.
+every command it runs for.
 
 `capa test` was never a bypass: each test runs in a subprocess whose cwd
 is the project root, so it failed closed already. Under
