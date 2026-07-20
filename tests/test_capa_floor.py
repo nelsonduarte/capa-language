@@ -48,7 +48,7 @@ from capa.pkg._floor import (
     satisfies,
     warn_dependency_floor,
 )
-from tests.test_cli import _run_main
+from tests.test_cli import _run_main, canonical, path_named_in
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CAPA_FLOOR_SH = REPO_ROOT / "tools" / "capa_floor.sh"
@@ -435,8 +435,15 @@ class RootPolicyTests(unittest.TestCase):
         with self.assertRaises(BrokenRootManifestError) as ctx:
             enforce_root_floor(self.tmp, running="1.19.0", stream=self.err)
         # ``<path>: <reason>``, so the caller's "capa: broken capa.toml:"
-        # prefix names the file.
-        self.assertIn(str(self.tmp / "capa.toml"), str(ctx.exception))
+        # prefix names the file. Compared canonically for the reason
+        # ``canonical`` documents; this call site passes ``self.tmp``
+        # straight through with no OS round trip, so the two forms agree
+        # today, but nothing in the code guarantees that and the next
+        # caller need not be so direct.
+        self.assertEqual(
+            canonical(path_named_in(str(ctx.exception))),
+            canonical(self.tmp / "capa.toml"),
+        )
         self.assertEqual(self.err.getvalue(), "")
 
     def test_a_broken_manifest_is_refused_even_under_the_escape_hatch(self):
@@ -904,8 +911,6 @@ class ExemptionTests(unittest.TestCase):
     def test_lsp_is_exempt(self):
         """A hard error in ``lsp`` makes an editor silently lose
         language support, with the reason in a stderr it discards."""
-        from capa import cli
-
         with mock.patch("capa.lsp_server.serve", return_value=0) as serve:
             rc, out, err = _run_main(["lsp"], cwd=self.tmp)
         self.assertTrue(serve.called, err)
@@ -1029,7 +1034,13 @@ class SourceSubstitutionTests(unittest.TestCase):
         self.assertEqual(rc, 2, f"out={out!r} err={err!r}")
         self.assertNotIn("DECOY", out)
         self.assertIn("broken capa.toml", err)
-        self.assertIn(str(self.tmp / "capa.toml"), err)
+        # EQUALITY against the one path named, canonically: the user has
+        # to learn WHICH manifest is broken, so naming a different file
+        # must fail. See ``canonical`` for why the raw strings differ.
+        self.assertEqual(
+            canonical(path_named_in(err, "broken capa.toml: ")),
+            canonical(self.tmp / "capa.toml"),
+        )
 
     def test_broken_manifest_does_not_report_check_ok(self):
         """``capa --check`` said ``main.capa: ok`` about a file whose
