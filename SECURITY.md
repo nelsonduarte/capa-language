@@ -186,10 +186,21 @@ The 2026-05-25 audit record lives at the repository root in
   the floor existed to require (the advisory names the `1.4.0`
   `provably_excluded_capabilities` false-exclusion fix as the instance).
   The first defect disabled the fix for the second, which is why they
-  ship together. A malformed root manifest is now a hard error
-  everywhere, with no escape hatch; the root manifest's floor is now a
-  hard error and a dependency's a warning, with
-  `CAPA_IGNORE_CAPA_FLOOR=1` as a loud escape for the floor only. Both
+  ship together. A malformed root manifest is now a hard error on every
+  path that builds, with no escape hatch; the root manifest's floor is
+  now a hard error and a dependency's a warning, with
+  `CAPA_IGNORE_CAPA_FLOOR=1` as a loud escape for the floor only.
+  Neither check is universal across the CLI, deliberately, and the
+  exempt set is small enough to state here: `--help` (anywhere in the
+  compiler's arguments), `--version`, a bare `capa`, `search`, `init`
+  and `lsp` skip both, each for a reason recorded beside
+  `_FLOOR_EXEMPT_COMMANDS` in [`capa/cli.py`](capa/cli.py); `capa add`
+  additionally skips the floor, so that a floor you cannot satisfy
+  never blocks you from editing the manifest that declared it. `capa add`
+  still refuses a malformed manifest, on its own read, with
+  `capa add: <path>: <reason>` at exit 2 and without writing to
+  `capa.toml`. Everything else refuses, including `test`, `build`,
+  `install`, `migrate`, `repl` and every file-based invocation. Both
   shipped in `1.19.0` under a single invocation of the security
   exception.
 

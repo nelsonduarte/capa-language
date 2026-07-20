@@ -1148,7 +1148,23 @@ def _main_dispatch() -> int:
     # This gate is the FIRST layer. ``_enforce_floor_for_file_root`` is
     # the second, and every file-based invocation goes through it below,
     # so a regression in the exemption predicate alone cannot reopen the
-    # floor for a command that was given a file.
+    # floor of the project THE FILE BELONGS TO.
+    #
+    # That is the whole of the second layer's reach, and it is narrower
+    # than it sounds. It keys on the root resolved from the FILE, so
+    # when the file sits outside this cwd's project, or inside a
+    # different one, the cwd project's floor rests on this gate alone.
+    # Measured with the predicate forced to always-exempt: from a
+    # floor-violating cwd, ``--check`` on a file outside any project and
+    # on a file in a different, satisfied project both proceeded at exit
+    # 0, while that project's own file was still refused. The cwd
+    # project is not a bystander in those two runs: ``_capa_search_paths``
+    # reads ``Path.cwd() / "capa.toml"``, so it supplies module
+    # resolution for the build and materially shapes the artefact while
+    # its own floor goes unenforced. Not a live bypass, because the
+    # predicate is correct as shipped. It is the reason to keep BOTH
+    # layers, rather than concluding that either one makes the other
+    # redundant.
     from capa.manifest import find_package_root
     _gated_roots: set[Path] = set()
     if not _floor_check_exempt(sys.argv[1:]):
