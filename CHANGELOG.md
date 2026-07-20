@@ -160,12 +160,50 @@ breaking changes and the discipline is still being shaped.
   paths are de-duplicated, so a `cannot resolve` diagnostic reports each
   location once.
 
-- *The redundant second floor call site is gone.* Instrumented across
-  twelve commands with a violating manifest, the `_capa_search_paths`
-  call was reached zero times and double-printed the escape warning.
-  Its `except CapaFloorError` re-raise arm went with it, since the
-  `except Exception` it defended against no longer exists, and a
-  structural test now asserts that catch-all does not come back.
+- *Arguments meant for the compiled program could switch the compiler's
+  own gate off.* `--` is where the CLI stops owning the arguments: the
+  tail is forwarded to the program, where `env.args()` reads it. The
+  floor / broken-manifest exemption was computed over raw argv, BEFORE
+  that split, so a `--help`, `-h` or `--version` intended for the
+  program was read as the compiler's own:
+
+  ```
+  project declares capa = ">=99.0.0", compiler is 1.19.0
+
+  capa app.capa --run              -> exit 1, floor refused
+  capa app.capa --run -- --help    -> exit 0, built and ran, in silence
+  ```
+
+  `--check`, `--run`, `--transpile` and `--parse` all went from exit 1
+  to exit 0, printing nothing at all, not even the
+  `CAPA_IGNORE_CAPA_FLOOR` warning. The same shape defeated the
+  malformed-manifest refusal from a subdirectory. This needed no
+  adversary: `--` exists precisely to forward arguments, and a Capa CLI
+  that accepts `--help` is the ordinary case. The exemption and the
+  dispatch split now derive the boundary from one function
+  (`_compiler_owned_args`); they used to compute it separately, with the
+  exemption not computing it at all, which is how they diverged.
+
+- *The floor no longer rests on a single predicate over argv.* Every
+  file-based invocation re-checks the floor for the root the FILE
+  resolves to, not just the four commands that emit a project-wide
+  artefact. That second layer is what kept `--compose-sbom` and friends
+  refusing while the bypass above was open.
+
+  The previous second layer, a `check_root_floor` call inside
+  `_capa_search_paths`, is still gone, but the reason given for removing
+  it was wrong and is corrected here: it was reported as reached zero
+  times, and the instrumentation that measured that covered twelve
+  commands none of which used `--`. It was in fact reached, with the
+  floor unenforced, by exactly the invocation above. It is not
+  reinstated because it was scoped to `Path.cwd()`, so it saw nothing
+  from a subdirectory and never ran for a command that does not resolve
+  modules (`--parse`); the replacement is scoped to the root the command
+  acts on and runs for every file. Its `except CapaFloorError` re-raise
+  arm stays gone, since the `except Exception` it defended against no
+  longer exists, and a structural test asserts that catch-all does not
+  come back. Roots already enforced during an invocation are recorded
+  and skipped, so the escape warning still prints exactly once.
 
 ## [1.18.1], 2026-07-19
 

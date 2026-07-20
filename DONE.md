@@ -67,11 +67,23 @@ pending item in [`TODO.md`](TODO.md).
   now, and the four file-rooted commands re-check the root they
   resolved; the re-check is skipped when the roots match, so the escape
   warning prints exactly once.
-- **Cleanups in the same family.** The unreachable second
-  `check_root_floor` call in `_capa_search_paths` is gone (instrumented
-  across twelve commands: reached zero times, and it double-printed the
-  escape warning), along with its `except CapaFloorError` re-raise arm;
-  a structural test asserts the `except Exception` cannot come back.
+- **Program arguments could switch the compiler's gate off.** The
+  exemption was computed over raw argv, before the `--` split that
+  forwards the tail to the compiled program, so `capa app.capa --run --
+  --help` built and ran a project whose declared floor refused it, in
+  silence. The exemption and the dispatch split now share one boundary
+  function; `ProgramArgumentsCannotDisableTheGateTests` and
+  `SeparatorDoesNotDisableTheBrokenManifestRefusalTests` hold both
+  halves, and every one of them reddens against the pre-fix code.
+- **Cleanups in the same family.** The second `check_root_floor` call in
+  `_capa_search_paths` is gone, along with its `except CapaFloorError`
+  re-raise arm; a structural test asserts the `except Exception` cannot
+  come back. The claim that it was *unreachable* was false, measured by
+  instrumentation over twelve commands none of which used `--`, and the
+  depth it was providing now lives at
+  `_enforce_floor_for_file_root`, which every file-based command reaches
+  and which is scoped to the root the command acts on rather than to
+  `Path.cwd()`.
   `capa init` refuses a non-release version instead of writing
   `capa = ">=0+unknown"`. The loader de-duplicates candidate paths so
   `cannot resolve` no longer lists the same path twice.

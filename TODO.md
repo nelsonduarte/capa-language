@@ -128,6 +128,22 @@ code.
   future read added without a handler would not be caught by the seam.
   The cure is to route the three through the seam, or to assert
   structurally that every root-manifest read has a handler.
+- **The loader's manifest read is cwd-scoped while the floor gate is
+  root-scoped.** `_capa_search_paths` and `_capa_dependency_roots` in
+  `capa/cli.py` both read `Path.cwd() / "capa.toml"`, so the root
+  manifest is authoritative for module resolution only when the build
+  runs FROM the project root. The floor / broken-manifest gate resolves
+  its root with `find_package_root`, an ancestor walk, precisely because
+  `Path.cwd()` was wrong there (v1.19.0). Building from a subdirectory
+  therefore still resolves imports with no declared `path` mapping and
+  no `./vendor` root, which is the same defect class the
+  [advisory](docs/advisories/2026-07-20-capa-floor.md) is named for: a
+  declared dependency stops being authoritative and a same-named
+  directory on the search path can satisfy the import instead.
+  Pre-existing rather than a v1.19.0 regression, and not a floor bypass
+  (the floor is enforced from a subdirectory, verified). The cure is to
+  give both functions the same ancestor walk the gate uses, which also
+  removes the last disagreement about what "the project root" means.
 - **Fs hardlink `st_nlink`.** A hard link created in-prefix to an
   out-of-prefix file passes the checks.
 - **Db post-open TOCTOU.** Narrow residual window; `sqlite3` does not
