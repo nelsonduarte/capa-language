@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# DRIFT CHECK FOR THE SHARED REGIONS OF THE FLEET'S WIRING TESTS.
+# DRIFT CHECK FOR THE FLEET'S COPIED TEST FILES.
 #
 # WHY THIS EXISTS. tests/test_release_wiring.sh and
-# tests/test_wiring_mutations.sh are ~770 lines of security-checking
+# tests/test_wiring_mutations.sh are ~1300 lines of security-checking
 # logic that is COPIED into every repository that adopts the shared
 # release guards. Copies drift, and a drifted copy still reports
 # success. That is not a hypothetical: a capability tuple hand-copied at
@@ -12,16 +12,48 @@
 # versions immediately printed different messages while looking
 # interchangeable.
 #
-# So each of those files is split by two marker lines into a CONFIG
-# region, which is repo-specific by design, and everything else, which
-# is meant to be byte-identical across the fleet. This test digests
-# everything OUTSIDE the config region and compares that digest to the
-# canonical template's, recorded in .github/shared-regions.sha256.
+# TWO KINDS OF ENTRY, because the fleet's copied files are of two kinds.
 #
-# THE MARKERS ARE INSIDE THE DIGESTED REGION. That is deliberate. If
-# they were outside it, the marker text itself could be edited to move
-# the boundary and enlarge the un-digested region, which is the same
-# defect one level up.
+#   REGION. tests/test_release_wiring.sh and
+#   tests/test_wiring_mutations.sh must say repo-specific things, so
+#   each is split by two marker lines into a CONFIG region, which is
+#   repo-specific by design, and everything else, which is meant to be
+#   byte-identical across the fleet. Only the part outside the markers
+#   is digested, and the config region is checked separately by grammar.
+#
+#   WHOLE. tests/test_shared_regions.sh (this file) and
+#   tests/test_guard_pins.sh have NO repo-specific content at all, so
+#   the whole file is digested and there is no config region, no
+#   markers, no marker-shape failure modes, no grammar and no allowlist.
+#
+# THE SECOND KIND IS NOT A CONVENIENCE. The config region is the only
+# part of a shared file that nothing digests, which makes it the
+# un-digested attack surface (see the grammar note below for what one
+# line placed there can do). A file that has no config region has none
+# of that surface. Giving one to a zero-config file, to carry some
+# future flag used in one repository out of twenty-two, would
+# manufacture exactly the bypass class the grammar below exists to
+# police. Zero-config files stay whole-file entries.
+#
+# THIS FILE IS ITSELF A WHOLE-FILE ENTRY, which is the point. Before it
+# was, it policed the other files and nothing policed it: deleting one
+# row from the SHARED_FILES table below removed a file from the check
+# entirely, and both this check and the wiring test then reported
+# success with the release gate gone. Measured on a scratch copy of a
+# real adopter, before the change:
+#
+#   delete the wiring-test row, then neutralise the wiring test
+#     drift check : exit=0   FAILs=0
+#     wiring test : exit=0
+#
+# A self-digesting check would not have closed that, since whoever
+# edits the table can regenerate the number. Layer 2 does close it,
+# because the number it compares against is UPSTREAM's.
+#
+# THE MARKERS ARE INSIDE THE DIGESTED REGION, for region entries. That
+# is deliberate. If they were outside it, the marker text itself could
+# be edited to move the boundary and enlarge the un-digested region,
+# which is the same defect one level up.
 #
 # WHY THE CONFIG REGION IS ALSO GRAMMAR-CHECKED, which is the part that
 # is easy to leave out and is the reason this file was rewritten. A
@@ -38,21 +70,40 @@
 # drift because the shared region did not change. So the config region
 # is required to consist of nothing but blank lines, comments, and one
 # single-line assignment to each of an ALLOWLIST of names. Anything else
-# is refused, including a second statement on an assignment's line.
+# is refused, including a trailing comment on an assignment's line.
+#
+# WHY A TRAILING COMMENT IS REFUSED, stated accurately because the wrong
+# reason was recorded here once. It is NOT that recognising one would
+# need quote-state tracking; it would not, since every value alternative
+# below is self-delimiting and a `#` after one is unambiguous. It is
+# that the value of this grammar is that it is small enough to read in
+# one sitting and argue about exhaustively. A comment suffix adds a
+# second lexical context to every alternative for no gain: no template
+# uses one, and an adopter who wants to explain a value has the whole
+# rest of the region to do it in.
+#
+# AND EACH FILE MUST BE NAMED BY A WORKFLOW. A drift check that nothing
+# executes reports nothing. All four of these files once appeared in
+# both adopters' YAML only inside comments, so they ran zero times per
+# push across a fleet of seventeen repositories, and would have gone on
+# doing so until someone ran them by hand. That is checked here rather
+# than by adding the CI workflow to the record, because workflows
+# genuinely differ per repository and demanding byte-identity there
+# would force forks; being NAMED is the part that must hold everywhere.
 #
 # TWO LAYERS, because layer 1 alone is self-certifying:
 #
-#   1. OFFLINE. The shared region is digested and compared to the digest
-#      recorded in .github/shared-regions.sha256. This layer NEVER
-#      skips. It catches the ordinary case, an edit below the line.
-#   2. ONLINE. The canonical template is fetched from the compiler
-#      repository at the revision the audit record pins, its shared
-#      region extracted by THIS SAME CODE, and its digest compared to
-#      the recorded one. This is what stops someone who edits the body
-#      from simply regenerating the number. It reports SKIP without
-#      `gh`, matching tests/test_release_wiring.sh: an offline machine
-#      cannot answer the question and a test that guesses is the
-#      failure mode this whole file is about.
+#   1. OFFLINE. Each file's digest is compared to the digest recorded in
+#      .github/shared-regions.sha256. This layer NEVER skips. It catches
+#      the ordinary case, an edit below the line.
+#   2. ONLINE. The canonical file is fetched from the compiler
+#      repository at the revision the audit record pins, digested by
+#      THIS SAME CODE, and compared to the recorded one. This is what
+#      stops someone who edits a body from simply regenerating the
+#      number. It reports SKIP without `gh`, matching
+#      tests/test_release_wiring.sh: an offline machine cannot answer
+#      the question and a test that guesses is the failure mode this
+#      whole file is about.
 #
 # Run it directly:
 #
@@ -66,31 +117,48 @@
 # proves nothing about the mutations under it. The variable cannot
 # weaken layer 1, which has no network path and no skip branch.
 #
-# THIS FILE HAS NO REPO-SPECIFIC CONFIGURATION and is intended to be
-# byte-identical across every adopter. The one table it carries, of
-# files and the config names each may declare, describes the SHARED
-# templates and is therefore the same everywhere.
+# THIS FILE HAS NO REPO-SPECIFIC CONFIGURATION. It is copied verbatim
+# into every adopter and the fleet's own record covers it, so that
+# claim is checked rather than asserted.
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RECORD="${REPO_ROOT}/.github/shared-regions.sha256"
+WORKFLOW_DIR="${REPO_ROOT}/.github/workflows"
 
 CANON_REPO="nelsonduarte/capa-language"
 
-# The canonical templates are stored as COMPLETE files, not as headerless
+# The canonical files are stored as COMPLETE files, not as headerless
 # fragments, so the extraction below is the identical code on both sides
 # of the comparison. A fragment would need its own assembly rules, and
 # two implementations of a boundary is how the boundary moves.
 CANON_PREFIX="fleet/templates/"
 
-# The files to check, and the config names each one's config region may
-# declare. Every name listed must appear exactly once; any name not
-# listed is refused.
+# The files to check, as `<kind>:<path>:<config names>`.
+#
+#   region  digest everything outside the CONFIG markers, and hold the
+#           region between them to the grammar. The names listed are the
+#           only assignments its config region may make; every one must
+#           appear exactly once and anything else is refused.
+#   whole   digest the entire file. No markers, no config, no names.
+#
+# This table describes the SHARED files and is therefore the same in
+# every adopter. It is inside a whole-file entry, so shrinking it is a
+# change to bytes that layer 2 compares against upstream.
 SHARED_FILES=(
-  "tests/test_release_wiring.sh:ENTRY_POINTS CEILING_ENTRIES NEGATIVE_CEILING_ENTRIES COMPILER_REJECTS UNCHECKED_MODULES NEEDS_NEST_VENDOR"
-  "tests/test_wiring_mutations.sh:PRIMARY_MODULE SECOND_MODULE CEILING_LINE_WIDE CEILING_NAME"
+  "region:tests/test_release_wiring.sh:ENTRY_POINTS CEILING_ENTRIES NEGATIVE_CEILING_ENTRIES COMPILER_REJECTS UNCHECKED_MODULES NEEDS_NEST_VENDOR"
+  "region:tests/test_wiring_mutations.sh:PRIMARY_MODULE SECOND_MODULE CEILING_LINE_WIDE CEILING_NAME"
+  "whole:tests/test_shared_regions.sh:"
+  "whole:tests/test_guard_pins.sh:"
 )
+
+# How many files the table above must yield a verdict for. A count is
+# not a substitute for layer 2 and is not offered as one; it is what
+# makes a shrunk table loud on a machine where layer 2 skipped, instead
+# of silent. It is cross-checked against the record's own entry count
+# below as well, so the table and the record cannot quietly disagree.
+EXPECTED_SHARED_FILES=4
 
 BEGIN_MARK='# ================== CONFIG: the only repo-specific part =================='
 END_MARK='# ======================= END CONFIG; shared body ========================='
@@ -106,7 +174,13 @@ _DQ='"[][A-Za-z0-9._/=+@%^!?~#*:,'"'"' -]*"'
 _SQ="'[][A-Za-z0-9._/=+@%^!?~#*:,\" -]*'"
 _ITEM="(${_BARE}|${_DQ})"
 _ARRAY="\\((${_ITEM}( ${_ITEM})*)?\\)"
-CONFIG_VALUE="(${_BARE}|${_SQ}|${_ARRAY})"
+# A bare double-quoted scalar is accepted as well as a single-quoted
+# one. It was refused until now purely because `_DQ` was reachable only
+# as an array item, which is an accident of how the grammar was built
+# rather than a decision: `NAME="a b"` is the most natural thing a new
+# adopter writes, and the class inside `_DQ` admits no expansion, no
+# second statement and no redirection, so admitting it widens nothing.
+CONFIG_VALUE="(${_BARE}|${_SQ}|${_DQ}|${_ARRAY})"
 
 PASS=0
 FAIL=0
@@ -131,11 +205,11 @@ trap 'rm -rf "${WORK}"' EXIT
 # whole file, because a file with no markers would then produce a stable
 # digest that says nothing about any boundary.
 #
-# `\r` IS STRIPPED, EXPLICITLY, on both sides of every comparison. Do
-# not remove this on the evidence that a CRLF fixture behaves locally:
-# MSYS gawk strips `\r` on its own and MSYS grep is CR-tolerant, so a
-# CRLF copy digests identically HERE and would not on a Linux runner,
-# where the markers would not match at all.
+# `\r` IS STRIPPED, EXPLICITLY, everywhere a line of one of these files
+# or of the record is compared. Do not remove this on the evidence that
+# a CRLF fixture behaves locally: MSYS gawk strips `\r` on its own and
+# MSYS grep is CR-tolerant, so a CRLF copy digests identically HERE and
+# would not on a Linux runner, where the markers would not match at all.
 # ---------------------------------------------------------------------
 extract_shared_region() {
   awk -v b="${BEGIN_MARK}" -v e="${END_MARK}" '
@@ -161,6 +235,14 @@ extract_shared_region() {
   ' "$1"
 }
 
+# The whole file, `\r` stripped, for a whole-file entry. Written as an
+# awk pass rather than `cat` so that a CRLF checkout digests identically
+# to an LF one, exactly as it does for a region entry, and so that both
+# kinds go through one normalisation rather than two.
+whole_file() {
+  awk '{ sub(/\r$/, ""); print }' "$1"
+}
+
 # The config region, exclusive of both markers, one line per line as
 # `<file line number>:<text>`. Marker validity is established by
 # extract_shared_region before this is ever called.
@@ -181,28 +263,86 @@ config_lines() {
   ' "$1"
 }
 
-# Digest of a file's shared region, or empty with a diagnostic on
-# stderr. Written through a temporary file rather than a pipeline so
-# that extraction's exit status is not swallowed by `sha256sum`.
-# The digest the record holds for one path, or empty.
+# ---------------------------------------------------------------------
+# The record parser.
+#
+# A record line is EXACTLY a 64-character lowercase hex digest, one or
+# more spaces or tabs, and a path: nothing before it, nothing after it.
+# The regex below is deliberately the same shape
+# tests/test_fleet_templates.py enforces in Python
+# (`^([0-9a-f]{64})[ \t]+([^ \t]+)$`), because the stated value of
+# running two implementations is that they AGREE. They did not: this one
+# used to accept trailing junk, leading indentation and trailing
+# whitespace that Python rejected, so a malformed record could be read
+# two ways by the two halves of one check. Written without an interval
+# expression, which not every awk supports, so the 64 is asserted with
+# `length` instead.
 #
 # The first field must BE a digest. Matching on the path alone is not
 # enough and was a real defect here: the record's own header contains
 # the line `# tests/test_release_wiring.sh and`, whose second field is
 # the path, so a path-only lookup returned `#` and reported drift
 # against a comment.
+#
+# `\r` is stripped here too. Without it a CRLF record fails closed with
+# "the audit record has no digest for it", which sends a reader looking
+# for a missing entry when the entry is present and the line ending is
+# the defect. Both current adopters happen to carry `* text eol=lf` in
+# .gitattributes; a new one may not, and a diagnostic that names the
+# wrong cause is worse than a slower one that names the right one.
+# ---------------------------------------------------------------------
+# The shape is written out literally in both functions rather than
+# passed through `awk -v`, for the reason config_lines gives: awk
+# processes escape sequences in a `-v` assignment, so a regex handed
+# over that way is not the regex that was written.
 recorded_digest() {
   awk -v p="$1" '
-    $2 == p && length($1) == 64 && $1 ~ /^[0-9a-f]+$/ { print $1; exit }
+    { sub(/\r$/, "") }
+    /^[0-9a-f]+[ \t]+[^ \t]+$/ && length($1) == 64 && $2 == p { print $1; exit }
   ' "${RECORD}"
 }
 
-shared_digest() {
+recorded_entry_count() {
+  awk '
+    { sub(/\r$/, "") }
+    /^[0-9a-f]+[ \t]+[^ \t]+$/ && length($1) == 64 { n++ }
+    END { print n + 0 }
+  ' "${RECORD}"
+}
+
+# Digest of a file's shared region, or empty with a diagnostic on
+# stderr. Written through a temporary file rather than a pipeline so
+# that extraction's exit status is not swallowed by `sha256sum`:
+# `awk | sha256sum` yields the digest of the EMPTY STRING when awk bails
+# out, which is a perfectly well-formed 64-character answer to a
+# question that failed.
+region_digest() {
   local src="$1" out="$2"
   if ! extract_shared_region "${src}" > "${out}.region" 2> "${out}.err"; then
     return 1
   fi
   sha256sum < "${out}.region" | cut -d' ' -f1
+}
+
+whole_digest() {
+  local src="$1" out="$2"
+  if ! whole_file "${src}" > "${out}.region" 2> "${out}.err"; then
+    return 1
+  fi
+  sha256sum < "${out}.region" | cut -d' ' -f1
+}
+
+# Dispatch on the entry kind. An unknown kind is an error rather than a
+# default, because defaulting to `whole` would digest a region file's
+# config block and defaulting to `region` would demand markers of a file
+# that has none; either way a typo in the table would change what is
+# checked instead of saying so.
+digest_for_kind() {
+  case "$1" in
+    region) region_digest "$2" "$3" ;;
+    whole)  whole_digest  "$2" "$3" ;;
+    *)      printf 'unknown entry kind %s\n' "$1" > "$3.err"; return 1 ;;
+  esac
 }
 
 # ---------------------------------------------------------------------
@@ -220,7 +360,7 @@ ok "the shared-region audit record exists (.github/shared-regions.sha256)"
 # bump force a wiring re-audit and every wiring bump force a guard
 # re-audit, and that friction is the likeliest reason for the whole
 # exercise to be skipped.
-CANON_REV="$(awk '$1 == "revision" { print $2; exit }' "${RECORD}")"
+CANON_REV="$(awk '{ sub(/\r$/, "") } $1 == "revision" { print $2; exit }' "${RECORD}")"
 
 if printf '%s' "${CANON_REV}" | grep -qE '^[0-9a-f]{40}$'; then
   ok "the audit record pins a full 40-character canonical revision (${CANON_REV})"
@@ -230,10 +370,16 @@ else
   exit 1
 fi
 
+CHECKED=0
+
 for entry in "${SHARED_FILES[@]}"; do
-  rel="${entry%%:*}"
-  names="${entry#*:}"
+  kind="${entry%%:*}"
+  rest="${entry#*:}"
+  rel="${rest%%:*}"
+  names="${rest#*:}"
   abs="${REPO_ROOT}/${rel}"
+
+  CHECKED=$((CHECKED + 1))
 
   if [ ! -f "${abs}" ]; then
     no "${rel} exists"
@@ -242,16 +388,18 @@ for entry in "${SHARED_FILES[@]}"; do
 
   # --- layer 1, offline, never skips ---------------------------------
 
-  got="$(shared_digest "${abs}" "${WORK}/local")"
+  got="$(digest_for_kind "${kind}" "${abs}" "${WORK}/local")"
   if [ -z "${got}" ]; then
     # The diagnostic goes ON the FAIL line, not under it. Anything that
     # reads these logs by grepping for `^FAIL ` (the mutation harness
     # does) would otherwise report the assertion's name and drop the
     # reason, which for a boundary defect is the only informative part.
-    no "${rel}: the CONFIG markers are malformed: $(tr '\n' ' ' < "${WORK}/local.err")"
+    no "${rel}: it could not be digested: $(tr '\n' ' ' < "${WORK}/local.err")"
     continue
   fi
-  ok "${rel}: the CONFIG markers are well formed"
+  if [ "${kind}" = "region" ]; then
+    ok "${rel}: the CONFIG markers are well formed"
+  fi
 
   want="$(recorded_digest "${rel}")"
   if [ -z "${want}" ]; then
@@ -260,19 +408,80 @@ for entry in "${SHARED_FILES[@]}"; do
   fi
 
   if [ "${got}" = "${want}" ]; then
-    ok "${rel}: the shared region matches the audited digest"
+    if [ "${kind}" = "whole" ]; then
+      ok "${rel}: the file matches the audited digest"
+    else
+      ok "${rel}: the shared region matches the audited digest"
+    fi
   else
-    no "${rel}: the shared region has DRIFTED from the audited digest"
+    if [ "${kind}" = "whole" ]; then
+      no "${rel}: the file has DRIFTED from the audited digest"
+    else
+      no "${rel}: the shared region has DRIFTED from the audited digest"
+    fi
     echo "     audited ${want}"
     echo "     local   ${got}"
-    echo "     everything outside the CONFIG markers is meant to be identical"
-    echo "     across the fleet; re-copy it from ${CANON_PREFIX}${rel}"
+    if [ "${kind}" = "whole" ]; then
+      echo "     this file carries no repo-specific configuration; re-copy"
+      echo "     it whole from ${CANON_PREFIX}${rel}"
+    else
+      echo "     everything outside the CONFIG markers is meant to be identical"
+      echo "     across the fleet; re-copy it from ${CANON_PREFIX}${rel}"
+    fi
+  fi
+
+  # --- is anything actually RUNNING it? ------------------------------
+  #
+  # Every one of these files is a control whose purpose is noticing
+  # silent divergence, and until this assertion existed all four of them
+  # appeared in both adopters' YAML only inside comments. They executed
+  # zero times per push. A control that runs when a human remembers to
+  # run it reports the state of that human's memory.
+  #
+  # So each file must be named by a workflow. This is checked here, in
+  # the file the fleet holds byte-identical, rather than by adding the
+  # CI workflow to the record: workflows genuinely differ per repository
+  # (a package with a Python suite has steps a library does not), so
+  # demanding byte-identity there would force forks, and a forked entry
+  # is a permanently red record. Naming is the part that must be true
+  # everywhere, and it is the part whose absence is silent.
+  #
+  # Comment lines are stripped first, since a workflow that MENTIONS a
+  # check in a comment is exactly the state this is here to refuse.
+  #
+  # The result is captured rather than tested with `grep -q`. `pipefail`
+  # is set, and `grep -q` exits at the first match and closes the pipe,
+  # which can leave the upstream stage killed by SIGPIPE and the whole
+  # pipeline non-zero on a SUCCESSFUL search. A glob that matches
+  # nothing does the same thing through `cat`, which is how the first
+  # version of this reported that nothing ran four files a workflow
+  # visibly ran.
+  runners=""
+  if [ -d "${WORKFLOW_DIR}" ]; then
+    runners="$(find "${WORKFLOW_DIR}" -maxdepth 1 -type f \
+                 \( -name '*.yml' -o -name '*.yaml' \) -exec cat {} + 2>/dev/null \
+               | grep -v '^[[:space:]]*#' | grep -F "${rel}" || true)"
+  fi
+
+  if [ ! -d "${WORKFLOW_DIR}" ]; then
+    no "${rel}: .github/workflows/ does not exist, so nothing runs it"
+  elif [ -n "${runners}" ]; then
+    ok "${rel}: a workflow runs it"
+  else
+    no "${rel}: no workflow names it, so it runs zero times per push"
+    echo "     a drift check nothing executes reports nothing; add a step"
+    echo "     running it to a workflow that fires on push and pull_request"
+    echo "     (a mention inside a YAML comment does not count, and was the"
+    echo "     state both original adopters were in)"
   fi
 
   # --- the config region, by grammar ---------------------------------
   #
   # A digest over everything-but-the-config is silent about the config,
-  # and the config is shell this file sources.
+  # and the config is shell this file sources. A whole-file entry has no
+  # such region and therefore nothing to check here.
+
+  [ "${kind}" = "region" ] || continue
 
   config_lines "${abs}" > "${WORK}/cfg"
 
@@ -304,41 +513,73 @@ for entry in "${SHARED_FILES[@]}"; do
 done
 
 # ---------------------------------------------------------------------
+# THE TABLE ITSELF, counted two ways.
+#
+# Deleting one row from SHARED_FILES removes a file from this check
+# entirely, and every remaining assertion still passes: a check that
+# covers three of four files prints exactly the log of one that covers
+# four. Layer 2 is the real answer, because this file is a whole-file
+# entry and a shrunk table is a digest change upstream would refuse.
+# These two counts are what make the same edit loud OFFLINE as well,
+# which is the state a machine without `gh` is in.
+# ---------------------------------------------------------------------
+if [ "${CHECKED}" = "${EXPECTED_SHARED_FILES}" ]; then
+  ok "all ${EXPECTED_SHARED_FILES} shared files were reached"
+else
+  no "${CHECKED} shared file(s) were reached, expected ${EXPECTED_SHARED_FILES}"
+  echo "     a row has been removed from SHARED_FILES, or the loop exited early"
+  echo "     a file dropped from that table is a file this check no longer covers"
+fi
+
+RECORD_ENTRIES="$(recorded_entry_count)"
+if [ "${RECORD_ENTRIES}" = "${CHECKED}" ]; then
+  ok "the audit record has one entry per checked file (${RECORD_ENTRIES})"
+else
+  no "the audit record has ${RECORD_ENTRIES} entr(ies) but ${CHECKED} file(s) were checked"
+  echo "     the record and the SHARED_FILES table describe different sets;"
+  echo "     one of them has been edited without the other"
+fi
+
+# ---------------------------------------------------------------------
 # Layer 2, online. Layer 1 compares against a number in a file in this
-# repository, so anyone who edits the body can regenerate it and go
-# green. This is the layer that makes the number honest.
+# repository, so anyone who edits a body can regenerate it and go green.
+# This is the layer that makes the number honest, and since this file is
+# itself one of the entries, it is also what stops the table above from
+# being quietly shortened.
 # ---------------------------------------------------------------------
 if [ -n "${SHARED_REGIONS_SKIP_FETCH:-}" ]; then
-  skip "the audited digests are the canonical template's (SHARED_REGIONS_SKIP_FETCH set)"
+  skip "the audited digests are the canonical files' (SHARED_REGIONS_SKIP_FETCH set)"
 elif ! command -v gh >/dev/null 2>&1; then
-  skip "the audited digests are the canonical template's (gh not installed)"
+  skip "the audited digests are the canonical files' (gh not installed)"
 elif ! gh auth status >/dev/null 2>&1; then
-  skip "the audited digests are the canonical template's (gh not authenticated)"
+  skip "the audited digests are the canonical files' (gh not authenticated)"
 else
   for entry in "${SHARED_FILES[@]}"; do
-    rel="${entry%%:*}"
+    kind="${entry%%:*}"
+    rest="${entry#*:}"
+    rel="${rest%%:*}"
     canon="${CANON_PREFIX}${rel}"
 
     if ! gh api "repos/${CANON_REPO}/contents/${canon}?ref=${CANON_REV}" \
            --jq .content 2>/dev/null | base64 -d > "${WORK}/canon" 2>/dev/null \
        || [ ! -s "${WORK}/canon" ]; then
       no "${canon} could not be fetched at ${CANON_REV}"
-      echo "     either the revision is not published yet or it does not carry the template"
+      echo "     either the revision is not published yet or it does not carry the file"
       continue
     fi
 
-    canon_digest="$(shared_digest "${WORK}/canon" "${WORK}/remote")"
+    canon_digest="$(digest_for_kind "${kind}" "${WORK}/canon" "${WORK}/remote")"
     if [ -z "${canon_digest}" ]; then
-      no "${canon}: the canonical template's own CONFIG markers are malformed"
+      no "${canon}: the canonical file could not be digested"
       sed 's/^/     /' "${WORK}/remote.err"
       continue
     fi
 
     want="$(recorded_digest "${rel}")"
     if [ "${canon_digest}" = "${want}" ]; then
-      ok "${rel}: the audited digest is the canonical template's at ${CANON_REV}"
+      ok "${rel}: the audited digest is the canonical file's at ${CANON_REV}"
     else
-      no "${rel}: the audited digest is NOT the canonical template's"
+      no "${rel}: the audited digest is NOT the canonical file's"
       echo "     canonical ${canon_digest}  (${canon} at ${CANON_REV})"
       echo "     audited   ${want}"
       echo "     the recorded number describes bytes that are not upstream's"

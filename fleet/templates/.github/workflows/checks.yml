@@ -1,0 +1,94 @@
+name: checks
+
+# RUN THE RELEASE-WIRING AND DRIFT CHECKS ON EVERY PUSH.
+#
+# WHY THIS EXISTS. Until it did, tests/test_release_wiring.sh,
+# tests/test_wiring_mutations.sh, tests/test_shared_regions.sh and
+# tests/test_guard_pins.sh appeared in this repository's YAML only
+# inside comments. Four controls whose entire purpose is noticing silent
+# divergence executed zero times per push, in a fleet of seventeen
+# repositories, and would have gone on doing so until someone ran them
+# by hand. A drift check that only runs when a human remembers is a
+# drift check that reports the state of that human's memory.
+#
+# They are cheap: no compiler, no toolchain, no dependencies. grep, awk
+# and sha256sum, plus `gh` for the layers that compare against the
+# canonical bytes upstream.
+#
+# WHAT IS NOT HERE. The .capa test suite is not run by this workflow;
+# that needs a released compiler and belongs with the clean-room
+# rehearsal in guard-selftest.yml, which exercises it against a real
+# tag. This workflow covers the wiring and the copies, which is what
+# nothing covered.
+#
+# THIS FILE IS NOT IN .github/shared-regions.sha256, and that is
+# deliberate. Workflows genuinely differ per repository: a package with
+# a Python suite has steps a Capa library does not, and a repository
+# with extra checks should add them here. Demanding byte-identity would
+# force forks, and a forked entry in the record is a permanently red
+# record that gets switched off. What IS enforced fleet-wide is that
+# every shared test file is NAMED by some workflow:
+# tests/test_shared_regions.sh reddens for any of the four that nothing
+# runs. So this file may be edited; it may not be emptied.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wiring:
+    name: Release wiring and shared-file drift
+    runs-on: ubuntu-latest
+
+    env:
+      # `gh` is preinstalled on the runner but unauthenticated without
+      # this. Layer 2 of the drift check and the digest half of the pin
+      # audit both SKIP when `gh auth status` fails, and a SKIP here
+      # would silently reduce both files to their offline halves, which
+      # are the halves that can be satisfied by editing this repository.
+      # The read is of a PUBLIC repository, so the default read-only
+      # token is enough.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: The release wiring matches this package
+        run: bash tests/test_release_wiring.sh
+
+      - name: The wiring test still bites
+        # Mutates a scratch copy of the workflow and asserts the wiring
+        # test reddens on each one. A wiring test that has stopped
+        # failing is indistinguishable from a wiring test that passes.
+        run: bash tests/test_wiring_mutations.sh
+
+      - name: The copied test files have not drifted from the fleet
+        # `tee` so the assertion below reads the same output the log
+        # shows. `pipefail` makes the script's own status decide.
+        shell: bash
+        run: |
+          set -o pipefail
+          bash tests/test_shared_regions.sh | tee shared-regions.log
+          if ! grep -q '0 skipped' shared-regions.log; then
+            echo "ERROR: the drift check SKIPPED something on a runner that has gh" >&2
+            echo "       layer 2 is what stops an edited body from being re-blessed" >&2
+            echo "       locally, so a skip here is the check running at half strength" >&2
+            exit 1
+          fi
+
+      - name: The pinned release guards are the bytes we audited
+        shell: bash
+        run: |
+          set -o pipefail
+          bash tests/test_guard_pins.sh | tee guard-pins.log
+          if ! grep -q '0 skipped' guard-pins.log; then
+            echo "ERROR: the guard-pin audit SKIPPED something on a runner that has gh" >&2
+            echo "       the offline half only checks that the record is well formed" >&2
+            exit 1
+          fi
