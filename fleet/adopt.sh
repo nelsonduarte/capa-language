@@ -564,15 +564,34 @@ else
   fi
 
   BRANCH="$(gh api "repos/${SLUG}" --jq .default_branch 2>/dev/null)"
-  CONTEXTS="$(gh api "repos/${SLUG}/branches/${BRANCH}/protection" \
-                --jq '.required_status_checks.contexts[]?' 2>/dev/null)"
-  if [ -z "${CONTEXTS}" ]; then
-    info "${BRANCH}: no required status checks (or protection is unreadable)"
+
+  # THE EXIT STATUS IS TESTED, and the shape of the answer is checked.
+  # An unprotected branch is an HTTP 404 whose BODY is a JSON error
+  # object, and `gh api` prints that body on stdout. Capturing it without
+  # testing the status put the error object into the variable, and the
+  # first real run of this reported
+  #
+  #   main requires: {"message":"Branch not protected", ... "status":"404"}
+  #
+  # which does not merely read badly: it states that the branch requires
+  # something, when what the API said is that it requires nothing. A
+  # report that inverts its own finding is worse than no report, and this
+  # one exists specifically so an operator can act on it.
+  #
+  # `join` collapses the list to one line, so "no contexts" and "not
+  # protected" both arrive as the empty string and are not distinguished
+  # by counting lines.
+  if CONTEXTS="$(gh api "repos/${SLUG}/branches/${BRANCH}/protection" \
+                   --jq '[.required_status_checks.contexts[]?] | join(" ")' \
+                   2>/dev/null)" \
+     && [ -n "${CONTEXTS}" ] \
+     && ! printf '%s' "${CONTEXTS}" | grep -q '[{}"]'; then
+    info "${BRANCH} requires: ${CONTEXTS}"
+    SETTINGS_NOTE="required checks on ${BRANCH}: ${CONTEXTS}"
+  else
+    info "${BRANCH}: NO required status checks (unprotected, or unreadable)"
     info "  the checks installed here will RUN but will not BLOCK a merge"
-    SETTINGS_NOTE="required checks: none on ${BRANCH}"
-  elif printf '%s\n' "${CONTEXTS}" | grep -q .; then
-    info "${BRANCH} requires: $(printf '%s' "${CONTEXTS}" | tr '\n' ' ')"
-    SETTINGS_NOTE="required checks: $(printf '%s' "${CONTEXTS}" | tr '\n' ' ')"
+    SETTINGS_NOTE="required checks on ${BRANCH}: NONE"
   fi
 fi
 
