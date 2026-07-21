@@ -45,6 +45,7 @@ TEMPLATES=(
   "region:tests/test_wiring_mutations.sh"
   "whole:tests/test_shared_regions.sh"
   "whole:tests/test_guard_pins.sh"
+  "whole:.github/workflows/checks.yml"
 )
 
 STATUS=0

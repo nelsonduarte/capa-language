@@ -1,7 +1,8 @@
 # `fleet/`: the canonical copies of what every adopter copies
 
 Every repository that adopts the shared release guards also copies four
-test files, together about 1600 lines of security-checking logic.
+test files and the workflow that runs them, together about 1700 lines of
+security-checking logic.
 Fifteen more repositories are queued to receive them.
 
 Nothing noticed when a copy diverged. This fleet has been bitten by that
@@ -31,7 +32,7 @@ release actually runs.
 | `templates/tests/test_wiring_mutations.sh` | The canonical mutation test for it. Same shape. |
 | `templates/tests/test_shared_regions.sh` | The adopter-side drift check. Zero configuration; copied verbatim. |
 | `templates/tests/test_guard_pins.sh` | The adopter-side guard-pin audit. Zero configuration; copied verbatim. |
-| `templates/.github/workflows/checks.yml` | The CI workflow that RUNS the four on every push. Not digested; see below. |
+| `templates/.github/workflows/checks.yml` | The CI workflow that RUNS the four on every push. A `whole:` entry; do not edit it in an adopter. |
 | `templates/.github/shared-regions.sha256` | The adopter's audit record, with the digests filled in and the revision left as an unusable placeholder so an unedited copy fails closed. |
 | `shared-regions.sha256` | The canonical digests, which the adopter record copies. |
 | `shared_region_digest.sh` | Regenerates those digests after a deliberate change here. |
@@ -72,9 +73,10 @@ digest does not move.
 
 ### Whole-file entries
 
-`test_shared_regions.sh` and `test_guard_pins.sh` have no repo-specific
-content at all, so the whole file is digested. They carry no markers, no
-config block, no grammar and no allowlist.
+`test_shared_regions.sh`, `test_guard_pins.sh` and
+`.github/workflows/checks.yml` have no repo-specific content at all, so
+the whole file is digested. They carry no markers, no config block, no
+grammar and no allowlist.
 
 **Keep it that way.** The config region is the only part of a shared
 file that nothing digests, which makes it the un-digested attack
@@ -101,7 +103,7 @@ against is upstream's.
 
 ## Something has to actually run them
 
-All four files once appeared in both adopters' YAML only inside
+All four test files once appeared in both adopters' YAML only inside
 comments. Four controls whose entire purpose is noticing silent
 divergence executed zero times per push, across a fleet of seventeen
 repositories, and would have gone on doing so until someone ran them by
@@ -109,39 +111,48 @@ hand. A drift check that runs when a human remembers reports the state
 of that human's memory.
 
 `templates/.github/workflows/checks.yml` is the workflow that runs them,
-and `test_shared_regions.sh` reddens for any shared file that no
-workflow step NAMES, with comments stripped first (trailing ones
-included, since `# was: bash tests/...` is what a person writes when
-temporarily disabling a step). Wiring the workflow by hand fixes two
-repositories; the assertion fixes the fifteen that have not been
-visited, because an adoption that forgets it cannot go green.
+and it is itself a `whole:` entry in the record, so every byte of it is
+compared against the canonical copy. **Do not edit it in an adopter.**
+A repository that needs more CI adds a separate workflow, which is what
+every adopter with extra checks has already done.
 
-`checks.yml` is deliberately NOT in `shared-regions.sha256`. Workflows
-genuinely differ per repository, so demanding byte-identity there would
-force forks, and a forked entry in the record is a permanently red
-record that gets switched off.
+It was briefly left out of the record on the premise that workflows
+differ per repository, so byte-identity would force forks. The fleet
+had already falsified that premise. `capa_authgate` is the shape it
+predicted would need variation, with five entry points, a negative
+ceiling entry, a compiler-rejects fixture and nested vendoring, and its
+copy is byte-identical to the pure library's. That is structural rather
+than lucky: every repo-specific fact is absorbed by the CONFIG region of
+the wiring tests one layer down, and this workflow only ever invokes
+four fixed script paths. So there was no variation to accommodate, and
+no YAML config grammar was needed; the existing `whole:` kind was
+enough.
 
-**What that check does not establish.** It does not establish that the
-step RUNS. It is one substring match over YAML. `|| true` on the naming
-line, and `if: false` or `continue-on-error: true` on the step naming
-it, are refused, which covers the accident and the lazy edit. Nothing
-here covers a job-level `if:`, a matrix that excludes every
-combination, an environment gate, a `${{ }}` expression evaluating
-false, or a step whose command is replaced outright. Measured: `if:
-false` on the four steps is a four-line diff after which every control
-reports success with the whole apparatus off, and because this check is
-itself one of the disabled steps, nobody sees the green.
+Leaving it out also left a one-line bypass. The check that stood in for
+a digest asked whether each shared file was NAMED by a step, refusing
+`|| true`, `if: false` and `continue-on-error: true` on a step. A
+job-level disable is none of those:
 
-That trade is right for the workflows the drift checks POLICE, which
-carry about fifty semantic assertions each plus a mutation harness
-proving they bite. It does not transfer to `checks.yml`, which is
-covered by one substring match, so the workflow that runs the drift
-checks currently has weaker cover than the workflows they police.
+```yaml
+  wiring:
+    runs-on: ubuntu-latest
+    if: false
+```
 
-**Named follow-up:** make `checks.yml` a `region:` entry, so the four
-steps become digested shared body and repo-specific steps live in a
-config region. That needs a YAML analogue of the shell config grammar,
-which is why it is not folded into the change that found it.
+reported `30 passed, 0 failed, 0 skipped`, exit 0, with the whole
+apparatus off. That is the line a person writes to park a job, so it was
+the accident case as much as the attack case.
+
+The naming check is kept, in a smaller role. It is cheap and it covers
+two states the digest does not: a repository mid-adoption whose record
+does not yet carry `checks.yml`, and a repository invoking the shared
+files from some other workflow, which is not digested and never will
+be. It is no longer the mechanism.
+
+**What no digest reaches.** Actions being disabled for the repository,
+branch protection not requiring these checks, and the required-check
+configuration itself. Those live in GitHub settings rather than in git,
+so no file-based mechanism here covers them.
 
 ## The two layers
 
@@ -190,7 +201,8 @@ worth reading.
 4. Edit ONLY the CONFIG block of the two wiring tests. Nothing else, and
    nothing at all in the other two.
 5. Copy `templates/.github/workflows/checks.yml` into
-   `.github/workflows/`, and add any steps this repository needs. It
+   `.github/workflows/` VERBATIM. It is a digested entry, so do not edit
+   it; if this repository needs more CI, add a separate workflow. It
    runs the four on every push and pull request, not only on a tag: a
    drift check that runs at release time notices divergence after the
    fifteen repositories have already diverged. Skipping this step is not
@@ -218,10 +230,10 @@ line to be below.
    adopter-side checks against the templates, drives layer 2 through a
    stubbed `gh`, and refuses any disagreement between the awk and Python
    implementations.
-4. In each adopter: read the diff, re-copy all four files keeping the
+4. In each adopter: read the diff, re-copy all five files keeping the
    local CONFIG blocks in the two that have them, then update the
    revision and the digests together. That is the whole per-repository
-   cost of a template change: four copies, four numbers and one
+   cost of a template change: five copies, five numbers and one
    revision line, with no per-repository judgement to exercise.
 
 Updating an adopter's digests without re-copying is how a local edit

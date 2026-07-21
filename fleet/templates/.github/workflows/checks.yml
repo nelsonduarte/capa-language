@@ -21,29 +21,40 @@ name: checks
 # tag. This workflow covers the wiring and the copies, which is what
 # nothing covered.
 #
-# THIS FILE IS NOT IN .github/shared-regions.sha256, and that is
-# deliberate. Workflows genuinely differ per repository: a package with
-# a Python suite has steps a Capa library does not, and a repository
-# with extra checks should add them here. Demanding byte-identity would
-# force forks, and a forked entry in the record is a permanently red
-# record that gets switched off.
+# THIS FILE IS IN .github/shared-regions.sha256 AS A WHOLE-FILE ENTRY.
+# Every byte of it is compared against the canonical copy in the
+# compiler repository, so DO NOT EDIT IT HERE. If this repository needs
+# more CI, add a separate workflow; that is what every adopter with
+# extra checks has already done.
 #
-# WHAT COVERS THIS FILE, STATED EXACTLY, because a shorter and false
-# claim stood here first. tests/test_shared_regions.sh reddens if any
-# of the four shared test files is not NAMED by a workflow step outside
-# a comment, and refuses `|| true` on the naming line and `if: false` or
-# `continue-on-error: true` on the step that names it. That is one
-# substring match plus three refusals. It does NOT establish that a step
-# runs: a job-level `if:`, a matrix excluding every combination, an
-# environment gate, a `${{ }}` expression evaluating false, or a command
-# replaced outright would all pass it. `if: false` on the four steps
-# below is a four-line diff after which every control reports success
-# with the whole apparatus off, and since the drift check is one of the
-# disabled steps, nobody sees the green.
+# It was briefly left out of the record, on the premise that workflows
+# differ per repository so byte-identity would force forks. The fleet
+# had already falsified that. capa_authgate is the shape that premise
+# predicted would need variation, with five entry points, a negative
+# ceiling entry, a compiler-rejects fixture and nested vendoring, and
+# its copy of this file is byte-identical to a pure library's. That is
+# structural: every repo-specific fact is absorbed by the CONFIG region
+# of the wiring tests one layer down, and this workflow only ever
+# invokes four fixed script paths.
 #
-# So: editing this file is expected. Weakening it is cheap and only
-# partly detected, and the fix for that is the named follow-up in
-# fleet/README.md, which makes this a digested `region:` entry.
+# Leaving it out also left a one-line bypass. The check that stood in
+# for a digest asked whether each shared file was NAMED by a step, and
+# refused `|| true`, `if: false` and `continue-on-error: true` ON A
+# STEP. A job-level disable is none of those:
+#
+#   wiring:
+#     runs-on: ubuntu-latest
+#     if: false
+#
+# reported 30 passed, 0 failed, 0 skipped, EXIT=0, with the entire
+# apparatus off. That is the line a person writes to park a job, so it
+# was the accident case as much as the attack case. The digest catches
+# it, and catches an emptied `on:` block, a deleted step, and anything
+# else in these bytes.
+#
+# WHAT NO DIGEST REACHES: Actions disabled for the repository, branch
+# protection not requiring these checks, and the required-check
+# configuration. Those live in GitHub settings rather than in git.
 
 on:
   push:
