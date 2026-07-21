@@ -797,6 +797,126 @@ class AdopterCheckTests(AdopterTreeMixin, unittest.TestCase):
             self.assertNotEqual(code, 0, out)
             self.assertIn("tests/test_guard_pins.sh: no workflow names it", out)
 
+    def test_a_trailing_comment_does_not_count_either(self):
+        """The ACCIDENT, which is likelier here than any attack.
+
+        Only whole-line comments were stripped, so the single most
+        natural way to disable a step temporarily,
+
+            run: echo disabled  # was: bash tests/test_release_wiring.sh
+
+        left the name visible and the check green. That reproduces the
+        original defect by accident, which is how it will actually
+        happen. Comments are now stripped from the first ``#`` that
+        begins one, anywhere on the line.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            victim = "tests/test_release_wiring.sh"
+            self.build_tree(root, unwired=(victim,))
+            workflow = root / ".github" / "workflows" / "checks.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + f"      - run: echo disabled  # was: bash {victim}\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            code, out = self.run_check(root)
+            self.assertNotEqual(code, 0, out)
+            self.assertIn(f"{victim}: no workflow names it", out)
+
+    def test_a_disabled_step_does_not_count(self):
+        """The neutering the shorter claim about this file did not cover.
+
+        ``if: false`` on the four steps is a four-line diff after which
+        every control reports success with the whole apparatus off, and
+        because this check is one of the disabled steps nobody sees the
+        green. These three refusals catch the accident and the lazy
+        edit. They are not a completeness claim, and the header at the
+        call site says so.
+        """
+        cases = [
+            ("        if: false\n", "`if: false` on the step"),
+            ("        if: 'false'\n", "`if: false` on the step"),
+            (
+                "        continue-on-error: true\n",
+                "`continue-on-error: true` on the step",
+            ),
+        ]
+        for marker, reason in cases:
+            with self.subTest(marker=marker.strip()), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp) / "repo"
+                victim = "tests/test_guard_pins.sh"
+                self.build_tree(root, unwired=(victim,))
+                workflow = root / ".github" / "workflows" / "checks.yml"
+                workflow.write_text(
+                    workflow.read_text(encoding="utf-8")
+                    + f"      - name: neutered\n{marker}        run: bash {victim}\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                code, out = self.run_check(root)
+                self.assertNotEqual(code, 0, out)
+                self.assertIn(f"{victim}: the only workflow step naming it is disabled", out)
+                self.assertIn(reason, out)
+
+    def test_or_true_on_the_naming_line_does_not_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            victim = "tests/test_shared_regions.sh"
+            self.build_tree(root, unwired=(victim,))
+            workflow = root / ".github" / "workflows" / "checks.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + f"      - run: bash {victim} || true\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            code, out = self.run_check(root)
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("`|| true` on the line that names it", out)
+
+    def test_one_live_step_is_enough_when_another_is_disabled(self):
+        """A disabled step must not condemn a repository that also runs it.
+
+        The refusals are per step. A workflow that keeps a live
+        invocation and also carries a disabled one, which is what a
+        matrix or a debugging leftover looks like, is covered.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            victim = "tests/test_guard_pins.sh"
+            self.build_tree(root)  # every file wired live
+            workflow = root / ".github" / "workflows" / "checks.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + f"      - name: leftover\n        if: false\n        run: bash {victim}\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            code, out = self.run_check(root)
+            self.assertEqual(code, 0, out)
+            self.assertIn(f"{victim}: a workflow step names it", out)
+
+    def test_the_shipped_workflow_template_passes_its_own_check(self):
+        """The template an adopter copies must satisfy the rule it ships with.
+
+        Otherwise every adoption starts red for a reason that is nobody's
+        fault, and the first thing a new adopter learns is that the check
+        is wrong.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            self.build_tree(root)
+            shutil.copyfile(
+                TEMPLATES / ".github" / "workflows" / "checks.yml",
+                root / ".github" / "workflows" / "checks.yml",
+            )
+            code, out = self.run_check(root)
+            self.assertEqual(code, 0, out)
+            for rel in SHARED_FILES:
+                self.assertIn(f"{rel}: a workflow step names it", out)
+
     def test_a_missing_workflow_directory_is_caught(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
@@ -1078,7 +1198,7 @@ class GuardPinsCheckTests(unittest.TestCase):
                 re.MULTILINE,
             )
         )
-        hardcoded.add("tools/verify_guard_digests.sh")
+        self.assertIn("tools/verify_guard_digests.sh", hardcoded)
         self.assertEqual(derived, hardcoded)
         # And nest_vendor.py, which appears only inside a comment block,
         # is correctly not in it.
@@ -1116,6 +1236,69 @@ class GuardPinsCheckTests(unittest.TestCase):
                 "the audit record omits tools/capa_floor.sh, which the guards execute",
                 out,
             )
+
+    def test_a_lookalike_path_does_not_satisfy_the_floor(self):
+        """The floor matched a substring of the line, so a suffix passed it.
+
+        A record naming ``tools/capa_floor.sh.orig`` satisfied the
+        requirement for ``tools/capa_floor.sh``, and the SAME log then
+        reported that ``tools/capa_floor.sh.orig`` is not the audited
+        file. One run, two answers, and the offline half was the
+        under-approximation its own header says it must never become.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = self.build_upstream(Path(tmp) / "upstream")
+            # A file that only LOOKS like the required one.
+            shutil.copyfile(
+                upstream / "tools" / "capa_floor.sh",
+                upstream / "tools" / "capa_floor.sh.orig",
+            )
+            root = Path(tmp) / "repo"
+            self.build_adopter(root, upstream, omit=("tools/capa_floor.sh",))
+            code, out = self.run_check(root, upstream)
+            self.assertNotEqual(code, 0, out)
+            self.assertIn(
+                "the audit record omits tools/capa_floor.sh, which the guards execute",
+                out,
+            )
+
+    def test_verify_guard_digests_is_required_unconditionally(self):
+        """Both halves of the completeness statement must say one thing.
+
+        The floor used to require it only when release.yml passes
+        ``guard-digests``, while the derived set requires it always,
+        because the step that calls it is not conditional. An adopter
+        passing no ``guard-digests`` therefore went green offline and red
+        online, with the two diagnostics fifty lines apart contradicting
+        each other. The stricter of the two is now the only one, and it
+        costs such a repository exactly one recorded digest.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = self.build_upstream(Path(tmp) / "upstream")
+            root = Path(tmp) / "repo"
+            self.build_adopter(
+                root, upstream, omit=("tools/verify_guard_digests.sh",)
+            )
+            # No guard-digests input at all: the old conditional would
+            # have skipped the requirement entirely.
+            workflow = root / ".github" / "workflows" / "release.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  guards:\n"
+                f"    uses: {self.GUARD_REPO}/.github/workflows/"
+                f"release-guards.yml@{self.REVISION}\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            code, out = self.run_check(root, upstream)
+            self.assertNotEqual(code, 0, out)
+            self.assertIn(
+                "the audit record omits tools/verify_guard_digests.sh, "
+                "which the guards execute",
+                out,
+            )
+            # And the two halves agree rather than contradicting.
+            self.assertIn("omits file(s) the pinned workflow invokes", out)
 
     def test_a_pin_that_is_not_the_audited_revision_stops_the_run(self):
         """Fail fast on preconditions: nothing after this could mean anything."""

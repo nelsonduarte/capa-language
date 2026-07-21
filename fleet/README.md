@@ -110,15 +110,38 @@ of that human's memory.
 
 `templates/.github/workflows/checks.yml` is the workflow that runs them,
 and `test_shared_regions.sh` reddens for any shared file that no
-workflow NAMES, with comment lines stripped first, since a mention
-inside a comment is exactly the state to refuse. Wiring the workflow by
-hand fixes two repositories; the assertion fixes the fifteen that have
-not been visited, because an adoption that forgets it cannot go green.
+workflow step NAMES, with comments stripped first (trailing ones
+included, since `# was: bash tests/...` is what a person writes when
+temporarily disabling a step). Wiring the workflow by hand fixes two
+repositories; the assertion fixes the fifteen that have not been
+visited, because an adoption that forgets it cannot go green.
 
 `checks.yml` is deliberately NOT in `shared-regions.sha256`. Workflows
 genuinely differ per repository, so demanding byte-identity there would
 force forks, and a forked entry in the record is a permanently red
-record that gets switched off. It may be edited; it may not be emptied.
+record that gets switched off.
+
+**What that check does not establish.** It does not establish that the
+step RUNS. It is one substring match over YAML. `|| true` on the naming
+line, and `if: false` or `continue-on-error: true` on the step naming
+it, are refused, which covers the accident and the lazy edit. Nothing
+here covers a job-level `if:`, a matrix that excludes every
+combination, an environment gate, a `${{ }}` expression evaluating
+false, or a step whose command is replaced outright. Measured: `if:
+false` on the four steps is a four-line diff after which every control
+reports success with the whole apparatus off, and because this check is
+itself one of the disabled steps, nobody sees the green.
+
+That trade is right for the workflows the drift checks POLICE, which
+carry about fifty semantic assertions each plus a mutation harness
+proving they bite. It does not transfer to `checks.yml`, which is
+covered by one substring match, so the workflow that runs the drift
+checks currently has weaker cover than the workflows they police.
+
+**Named follow-up:** make `checks.yml` a `region:` entry, so the four
+steps become digested shared body and repo-specific steps live in a
+config region. That needs a YAML analogue of the shell config grammar,
+which is why it is not folded into the change that found it.
 
 ## The two layers
 

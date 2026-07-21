@@ -169,29 +169,45 @@ fi
 # and because a regex over a workflow is a heuristic that could miss an
 # invocation written some other way. An under-approximation is the one
 # thing this must not become.
+#
+# THE MATCH IS ON THE PARSED PATH FIELD, not a substring of the line. It
+# was a substring test, and a record naming tools/capa_floor.sh.orig
+# therefore satisfied the requirement for tools/capa_floor.sh: the
+# offline half reported `ok the audit record covers tools/capa_floor.sh`
+# while the online half, fifty lines below, reported that
+# tools/capa_floor.sh.orig is NOT the audited file. One log, two answers,
+# and the offline one was the under-approximation this paragraph says it
+# must not become.
 # ---------------------------------------------------------------------
+covers() {
+  # ENTRIES has already been filtered to exactly two fields, so $2 IS
+  # the path and equality is the whole test.
+  printf '%s\n' "${ENTRIES}" | awk -v p="$1" '$2 == p { hit = 1 } END { exit !hit }'
+}
+
 for required in \
   "${GUARD_WORKFLOW}" \
   tools/check_tag_version.sh \
   tools/clean_room_build.sh \
-  tools/capa_floor.sh
+  tools/capa_floor.sh \
+  tools/verify_guard_digests.sh
 do
-  if printf '%s\n' "${ENTRIES}" | grep -qF "  ${required}"; then
+  if covers "${required}"; then
     ok "the audit record covers ${required}"
   else
     no "the audit record omits ${required}, which the guards execute"
   fi
 done
 
-# verify_guard_digests.sh runs only if this repository passes
-# guard-digests, so it is required exactly when that input is present.
-if grep -qE '^[[:space:]]*guard-digests:[[:space:]]*\|' "${WORKFLOW}"; then
-  if printf '%s\n' "${ENTRIES}" | grep -qF "  tools/verify_guard_digests.sh"; then
-    ok "the audit record covers tools/verify_guard_digests.sh, which guard-digests causes to run"
-  else
-    no "release.yml passes guard-digests but the audit record omits tools/verify_guard_digests.sh"
-  fi
-fi
+# verify_guard_digests.sh IS in that list unconditionally, and used not
+# to be: it was required only when release.yml passes `guard-digests`,
+# on the reasoning that the script does nothing without it. The step
+# that calls it is NOT conditional, though, so the derived check below
+# requires it in every repository, and an adopter that passes no
+# guard-digests would go green offline and red in CI with a diagnostic
+# contradicting the conditional check above it. One log must not give
+# two answers. Requiring it always is the stricter of the two and costs
+# a repository that does not use the input exactly one recorded digest.
 
 if ! command -v gh >/dev/null 2>&1; then
   skip "every guard file matches its audited digest (gh not installed)"
@@ -260,7 +276,7 @@ if gh api "repos/${GUARD_REPO}/contents/${GUARD_WORKFLOW}?ref=${PIN}" \
   else
     missing=""
     while read -r path; do
-      printf '%s\n' "${ENTRIES}" | grep -qF "  ${path}" || missing="${missing} ${path}"
+      covers "${path}" || missing="${missing} ${path}"
     done < "${WORK}/derived"
 
     if [ -z "${missing}" ]; then

@@ -26,10 +26,24 @@ name: checks
 # a Python suite has steps a Capa library does not, and a repository
 # with extra checks should add them here. Demanding byte-identity would
 # force forks, and a forked entry in the record is a permanently red
-# record that gets switched off. What IS enforced fleet-wide is that
-# every shared test file is NAMED by some workflow:
-# tests/test_shared_regions.sh reddens for any of the four that nothing
-# runs. So this file may be edited; it may not be emptied.
+# record that gets switched off.
+#
+# WHAT COVERS THIS FILE, STATED EXACTLY, because a shorter and false
+# claim stood here first. tests/test_shared_regions.sh reddens if any
+# of the four shared test files is not NAMED by a workflow step outside
+# a comment, and refuses `|| true` on the naming line and `if: false` or
+# `continue-on-error: true` on the step that names it. That is one
+# substring match plus three refusals. It does NOT establish that a step
+# runs: a job-level `if:`, a matrix excluding every combination, an
+# environment gate, a `${{ }}` expression evaluating false, or a command
+# replaced outright would all pass it. `if: false` on the four steps
+# below is a four-line diff after which every control reports success
+# with the whole apparatus off, and since the drift check is one of the
+# disabled steps, nobody sees the green.
+#
+# So: editing this file is expected. Weakening it is cheap and only
+# partly detected, and the fix for that is the named follow-up in
+# fleet/README.md, which makes this a digested `region:` entry.
 
 on:
   push:

@@ -263,6 +263,67 @@ config_lines() {
   ' "$1"
 }
 
+# Read a workflow on stdin and report how it names "$1":
+#
+#   live                    at least one step names it with no disabling
+#                           marker on that step;
+#   <reason>                every step naming it carries one, and the
+#                           reason names the first such marker;
+#   (empty)                 nothing outside a comment names it.
+#
+# Steps are delimited by a line beginning with `-` at any indentation,
+# which is what a YAML sequence item is, so a marker anywhere in the
+# same item is attributed to the step that names the file whether it
+# appears above or below the naming line. That is an approximation of
+# YAML, not a parse of it: a job-level `if:` sits outside every item and
+# is NOT seen. See the note at the call site for what this does and does
+# not establish.
+naming_status() {
+  awk -v target="$1" '
+    # Strip a YAML comment: a `#` at the start of the line, or one
+    # preceded by whitespace. Over-stripping is the SAFE direction here,
+    # since it can only make this report that nothing names the file.
+    function decomment(s,   i, c, p) {
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c != "#") continue
+        if (i == 1) return ""
+        p = substr(s, i - 1, 1)
+        if (p == " " || p == "\t") return substr(s, 1, i - 1)
+      }
+      return s
+    }
+
+    function close_step() {
+      if (names) {
+        if (marker == "") live = 1
+        else if (dead == "") dead = marker
+      }
+      names = 0
+      marker = ""
+    }
+
+    /^[[:space:]]*-[[:space:]]/ { close_step() }
+
+    {
+      line = decomment($0)
+      if (index(line, target)) names = 1
+      if (line ~ /\|\|[[:space:]]*true/ && marker == "")
+        marker = "`|| true` on the line that names it"
+      if (line ~ /^[[:space:]]*if:[[:space:]]*("|\x27)?false("|\x27)?[[:space:]]*$/ && marker == "")
+        marker = "`if: false` on the step"
+      if (line ~ /^[[:space:]]*continue-on-error:[[:space:]]*("|\x27)?true("|\x27)?[[:space:]]*$/ && marker == "")
+        marker = "`continue-on-error: true` on the step"
+    }
+
+    END {
+      close_step()
+      if (live) print "live"
+      else if (dead != "") print dead
+    }
+  '
+}
+
 # ---------------------------------------------------------------------
 # The record parser.
 #
@@ -438,16 +499,41 @@ for entry in "${SHARED_FILES[@]}"; do
   # zero times per push. A control that runs when a human remembers to
   # run it reports the state of that human's memory.
   #
-  # So each file must be named by a workflow. This is checked here, in
-  # the file the fleet holds byte-identical, rather than by adding the
-  # CI workflow to the record: workflows genuinely differ per repository
-  # (a package with a Python suite has steps a library does not), so
-  # demanding byte-identity there would force forks, and a forked entry
-  # is a permanently red record. Naming is the part that must be true
-  # everywhere, and it is the part whose absence is silent.
+  # So each file must be NAMED by a workflow, outside a comment, in a
+  # step that carries no obvious disabling marker. That is checked here,
+  # in the file the fleet holds byte-identical, rather than by adding
+  # the CI workflow to the record: workflows genuinely differ per
+  # repository (a package with a Python suite has steps a library does
+  # not), so demanding byte-identity there would force forks, and a
+  # forked entry is a permanently red record.
   #
-  # Comment lines are stripped first, since a workflow that MENTIONS a
-  # check in a comment is exactly the state this is here to refuse.
+  # WHAT THIS DOES NOT ESTABLISH, stated here because the shorter claim
+  # it replaces was false and was about to ship to fifteen repositories.
+  # IT DOES NOT ESTABLISH THAT THE STEP RUNS. It is one substring match
+  # over YAML. The refusals below catch `|| true` on the naming line and
+  # `if: false` or `continue-on-error: true` on the step that names it,
+  # which is the accident and the lazy edit. They do not catch a
+  # job-level `if:`, a matrix that excludes every combination, an
+  # environment gate, a `${{ }}` expression that evaluates false, or a
+  # step whose command is edited to something else entirely. Measured:
+  # `if: false` on four steps, a four-line diff, and every control here
+  # reports success with the whole apparatus off. Because this check is
+  # itself one of the disabled steps, nobody sees the green.
+  #
+  # A stronger form is possible and is a NAMED FOLLOW-UP rather than
+  # this change: make checks.yml a `region:` entry, so the four steps
+  # become digested shared body and repo-specific steps live in a config
+  # region. That needs a YAML analogue of the shell config grammar
+  # above, which is not a change to make in passing. Until it exists,
+  # the workflow that runs the drift checks has weaker cover than the
+  # workflows the drift checks police, and this comment is the honest
+  # record of that.
+  #
+  # Comments are stripped first, and NOT only whole-line ones. A
+  # trailing `# was: bash tests/test_release_wiring.sh` is exactly what
+  # a person writes when temporarily disabling a step, so accepting it
+  # reproduces the original defect BY ACCIDENT, which is likelier than
+  # anyone attacking this.
   #
   # The result is captured rather than tested with `grep -q`. `pipefail`
   # is set, and `grep -q` exits at the first match and closes the pipe,
@@ -456,23 +542,29 @@ for entry in "${SHARED_FILES[@]}"; do
   # nothing does the same thing through `cat`, which is how the first
   # version of this reported that nothing ran four files a workflow
   # visibly ran.
-  runners=""
+  status=""
   if [ -d "${WORKFLOW_DIR}" ]; then
-    runners="$(find "${WORKFLOW_DIR}" -maxdepth 1 -type f \
-                 \( -name '*.yml' -o -name '*.yaml' \) -exec cat {} + 2>/dev/null \
-               | grep -v '^[[:space:]]*#' | grep -F "${rel}" || true)"
+    status="$(find "${WORKFLOW_DIR}" -maxdepth 1 -type f \
+                \( -name '*.yml' -o -name '*.yaml' \) -exec cat {} + 2>/dev/null \
+              | naming_status "${rel}" || true)"
   fi
 
   if [ ! -d "${WORKFLOW_DIR}" ]; then
     no "${rel}: .github/workflows/ does not exist, so nothing runs it"
-  elif [ -n "${runners}" ]; then
-    ok "${rel}: a workflow runs it"
+  elif [ "${status}" = "live" ]; then
+    ok "${rel}: a workflow step names it, with no disabling marker on it"
+  elif [ -n "${status}" ]; then
+    no "${rel}: the only workflow step naming it is disabled (${status})"
+    echo "     a step that is named and never runs is the same green log as"
+    echo "     one that is absent, and this check is one of the steps, so a"
+    echo "     disabled run of it prints nothing for anyone to notice"
   else
     no "${rel}: no workflow names it, so it runs zero times per push"
     echo "     a drift check nothing executes reports nothing; add a step"
     echo "     running it to a workflow that fires on push and pull_request"
-    echo "     (a mention inside a YAML comment does not count, and was the"
-    echo "     state both original adopters were in)"
+    echo "     (a mention inside a YAML comment does not count, trailing"
+    echo "     comments included, and was the state both original adopters"
+    echo "     were in)"
   fi
 
   # --- the config region, by grammar ---------------------------------
