@@ -228,16 +228,17 @@ class GenerationTests(GuardPinsTestCase):
             self.assertNotIn(REVISION, record)
 
     def test_an_explicit_ref_overrides_release_yml(self):
+        pin = "1" * 40
+        explicit = "2" * 40
         with tempfile.TemporaryDirectory() as tmp:
-            target, upstream = self.scenario(tmp, pin="1" * 40)
-            code, out = self.generate(target, upstream, "2" * 40)
+            target, upstream = self.scenario(tmp, pin=pin)
+            code, out = self.generate(target, upstream, explicit)
             self.assertEqual(code, 0, out)
-            self.assertRegex(
-                (target / ".github" / "guard-pins.sha256").read_text(
-                    encoding="utf-8"
-                ),
-                rf"(?m)^revision {"2" * 40}$",
+            record = (target / ".github" / "guard-pins.sha256").read_text(
+                encoding="utf-8"
             )
+            self.assertRegex(record, rf"(?m)^revision {explicit}$")
+            self.assertNotIn(pin, record)
 
     def test_the_derivation_is_not_hardcoded_in_the_generator(self):
         """A third copy of the list would be the drift problem one level up."""
