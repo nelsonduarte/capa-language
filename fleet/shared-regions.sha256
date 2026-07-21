@@ -1,0 +1,65 @@
+# THE CANONICAL DIGESTS OF EVERY FILE THE FLEET COPIES.
+#
+# Everything under fleet/templates/tests/ is COPIED, in full, into every
+# repository that adopts the shared release guards. Copies drift, and a
+# drifted copy still reports success. The fleet has been bitten by
+# exactly this twice: a capability tuple hand-copied at 21 sites in this
+# repository that had already drifted before anyone looked, and
+# capa_authgate's check_tag_version.sh becoming a second copy whose two
+# versions immediately printed different messages.
+#
+# TWO KINDS OF ENTRY.
+#
+#   REGION: tests/test_release_wiring.sh and
+#   tests/test_wiring_mutations.sh have to say repo-specific things, so
+#   each is split by two marker lines into a CONFIG region, which is
+#   repo-specific by design, and everything else, which is meant to be
+#   byte-identical everywhere. What is recorded is the SHA-256 of
+#   everything OUTSIDE the config region, markers included.
+#
+#   WHOLE: tests/test_shared_regions.sh and tests/test_guard_pins.sh
+#   have no repo-specific content at all, so the whole file is recorded.
+#   They carry no CONFIG block on purpose. The config region is the only
+#   part of a shared file that nothing digests, so a file that needs no
+#   configuration is given none, and with it none of the marker-shape
+#   failure modes, none of the grammar and none of the allowlist.
+#
+# The drift check is itself a whole-file entry, which is what stops its
+# own table of checked files from being quietly shortened: doing that
+# used to remove a file from the check while every remaining assertion
+# still passed.
+#
+# The KIND of each entry is not recorded in this file. It lives in the
+# tables in fleet/shared_region_digest.sh and in the adopter-side check,
+# which tests/test_fleet_templates.py holds to each other, so this file
+# stays a plain list of `<sha256>  <path>` and an adopter copying
+# numbers out of it has one thing to copy.
+#
+# The paths are the paths an ADOPTER sees. The canonical file is the
+# same path under fleet/templates/, which is the mapping the adopter
+# check applies to fetch it.
+#
+# WHO READS THIS:
+#
+#   * tests/test_fleet_templates.py, offline, which runs the real
+#     adopter-side check against these templates and refuses any
+#     disagreement with the numbers below;
+#   * every adopter's .github/shared-regions.sha256, which copies these
+#     numbers and adds a `revision` line naming the commit they were
+#     copied from. That revision is INDEPENDENT of the guard pin in
+#     .github/guard-pins.sha256, on purpose: one shared revision would
+#     make every guard bump force a wiring re-audit and every wiring
+#     bump force a guard re-audit, and that friction is the likeliest
+#     reason for the whole exercise to be skipped.
+#
+# TO REGENERATE AFTER A DELIBERATE CHANGE TO A TEMPLATE:
+#
+#   bash fleet/shared_region_digest.sh
+#
+# Then bump each adopter's record, revision line included, which is what
+# makes the change an adoption rather than a drift.
+
+16364eedf7bb6380c6d4156139acceec80dad0ae6f5cae5bfae3f67b3dbeee85  tests/test_release_wiring.sh
+f703c855c94cd5cec4e6502258c307cc5f3f0747b8b12ca906c6890727c2a745  tests/test_wiring_mutations.sh
+78d6b885031f7181f20d06bff913421c4b8bae07626a1ffa2fcfbbbab705559c  tests/test_shared_regions.sh
+a73e1c63abe8765f9c7fc22a4507094ad1cc39941a526be0f58d14a225c1f13a  tests/test_guard_pins.sh

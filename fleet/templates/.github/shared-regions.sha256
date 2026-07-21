@@ -1,0 +1,73 @@
+# THE SHARED TEST-FILE REVISION THIS REPOSITORY ADOPTED, BY CONTENT.
+#
+# The four files below are not this repository's work. They are ~1600
+# lines COPIED from the compiler repository's fleet/templates/. Nothing
+# noticed when a copy diverged, which has already happened twice in this
+# fleet: a capability tuple hand-copied at 21 sites that had already
+# drifted, and check_tag_version.sh becoming a second copy whose two
+# versions immediately printed different messages.
+#
+# TWO KINDS OF ENTRY, and the difference matters when you edit one.
+#
+#   tests/test_release_wiring.sh and tests/test_wiring_mutations.sh have
+#   to say repo-specific things, so each carries a CONFIG block. The
+#   number below covers everything OUTSIDE that block. Edit the block;
+#   never edit below it.
+#
+#   tests/test_shared_regions.sh and tests/test_guard_pins.sh carry no
+#   repo-specific configuration at all, so the number below covers the
+#   WHOLE file. There is nothing in either of them for you to edit. If
+#   you need to, say so upstream rather than forking it here: a config
+#   block is the one part of a shared file that nothing digests, and
+#   adding one to carry a single flag would open exactly the hole the
+#   grammar in test_shared_regions.sh exists to close.
+#
+# So this file records the SHA-256 of each, and
+# tests/test_shared_regions.sh checks it two ways:
+#
+#   1. OFFLINE, by digesting the local files and comparing. This never
+#      skips, and it catches the ordinary case, an edit below the line.
+#   2. ONLINE, by fetching the canonical file at the revision named
+#      below and digesting THAT with the same code. Layer 1 compares a
+#      file in this repository against a number in this repository, so
+#      anyone who edits a body can regenerate the number and go green.
+#      Layer 2 is what makes the number honest. It reports SKIP without
+#      `gh`, matching tests/test_release_wiring.sh.
+#
+# THE `revision` LINE BELOW IS NOT THE GUARD PIN. .github/guard-pins.sha256
+# has its own, and the two are deliberately independent: a single shared
+# revision would make every guard bump force a wiring re-audit and every
+# wiring bump force a guard re-audit, and that friction is the likeliest
+# reason for either audit to be skipped altogether.
+#
+# TO ADOPT: replace the placeholder revision with the compiler commit you
+# copied the files from, and the digests with that commit's
+# fleet/shared-regions.sha256. Then run
+#
+#   bash tests/test_shared_regions.sh
+#
+# and expect it green with layer 2 confirming the numbers, not skipping.
+#
+# ADD `* text eol=lf` TO .gitattributes IF IT IS NOT THERE ALREADY. The
+# check matches marker lines by whole-line equality and reads this file
+# field by field. A CRLF checkout is handled explicitly on both sides,
+# so it will not produce a wrong answer, but a repository whose files
+# flip line endings per platform will produce diffs and digests that
+# depend on who committed last, and the release tarball's digest is
+# covered by a signature.
+#
+# TO RE-ADOPT AFTER AN UPSTREAM CHANGE: read the diff between the two
+# revisions, re-copy all four files, keep your CONFIG blocks in the two
+# that have them, then update the revision and the digests together.
+# Updating the digests without re-copying is how a local edit becomes a
+# permanent fork with a green test over it.
+
+# A placeholder that deliberately is NOT 40 hex characters, so that an
+# unedited copy of this file reddens OFFLINE, on the first run, rather
+# than waiting for a network fetch to fail.
+revision REPLACE-ME-WITH-THE-CANONICAL-COMMIT-SHA
+
+16364eedf7bb6380c6d4156139acceec80dad0ae6f5cae5bfae3f67b3dbeee85  tests/test_release_wiring.sh
+f703c855c94cd5cec4e6502258c307cc5f3f0747b8b12ca906c6890727c2a745  tests/test_wiring_mutations.sh
+78d6b885031f7181f20d06bff913421c4b8bae07626a1ffa2fcfbbbab705559c  tests/test_shared_regions.sh
+a73e1c63abe8765f9c7fc22a4507094ad1cc39941a526be0f58d14a225c1f13a  tests/test_guard_pins.sh
