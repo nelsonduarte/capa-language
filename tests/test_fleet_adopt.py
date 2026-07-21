@@ -144,6 +144,18 @@ class AdoptScriptTestCase(unittest.TestCase):
         )
         return proc.returncode, proc.stdout + proc.stderr
 
+    def assert_installed(self, out):
+        """The install completed and the drift check went green.
+
+        A FIRST adoption exits NON-ZERO even when everything installed
+        correctly, because the CONFIG blocks are still the template's
+        placeholders and the repository is therefore not adopted. Cases
+        below that are about WHAT WAS INSTALLED assert this rather than
+        the exit status, which is about whether the adoption is
+        finished. ``FreshAdoptionTests`` covers the status itself.
+        """
+        self.assertIn("33 passed, 0 failed, 0 skipped", out)
+
     def full_adoption(self, tmp: str, **target_kwargs):
         root = Path(tmp)
         upstream = self.build_upstream(root / "upstream")
@@ -152,12 +164,27 @@ class AdoptScriptTestCase(unittest.TestCase):
 
 
 class FreshAdoptionTests(AdoptScriptTestCase):
-    def test_a_fresh_adoption_installs_everything_and_goes_green(self):
+    def test_a_fresh_adoption_installs_but_does_not_claim_success(self):
+        """BLOCKER: it reported ADOPTED and exit 0 on a first adoption.
+
+        The five files land and the drift check is green, but the CONFIG
+        blocks are still the template's placeholders, so three of the
+        four checks it just installed are red: the wiring test against a
+        config describing another package, the mutation harness whose
+        control therefore fails, and the guard-pin audit against a record
+        that does not exist yet. The work was listed, which is fine for
+        one repository and wrong for fifteen driven in a loop, where the
+        operator reads the last line and the exit status.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(tmp)
             code, out = self.adopt(target, upstream)
-            self.assertEqual(code, 0, out)
-            self.assertIn("ADOPTED", out)
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("INSTALLED, NOT YET ADOPTED", out)
+            self.assertFalse(
+                any(l.startswith("ADOPTED:") for l in out.splitlines()),
+                "it claimed a completed adoption",
+            )
             self.assertIn("33 passed, 0 failed, 0 skipped", out)
             for rel in SHARED_FILES:
                 self.assertTrue((target / rel).is_file(), f"{rel} not installed")
@@ -169,8 +196,7 @@ class FreshAdoptionTests(AdoptScriptTestCase):
         """A copy that is not a copy is the entire problem being solved."""
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(tmp)
-            code, out = self.adopt(target, upstream)
-            self.assertEqual(code, 0, out)
+            self.adopt(target, upstream)
             for rel in SHARED_FILES:
                 with self.subTest(rel=rel):
                     self.assertEqual(
@@ -181,8 +207,7 @@ class FreshAdoptionTests(AdoptScriptTestCase):
     def test_the_record_pins_the_resolved_sha_and_the_canonical_digests(self):
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(tmp)
-            code, out = self.adopt(target, upstream, "main")
-            self.assertEqual(code, 0, out)
+            self.adopt(target, upstream, "main")
             record = target / ".github" / "shared-regions.sha256"
             text = record.read_text(encoding="utf-8")
             self.assertRegex(text, rf"(?m)^revision {REVISION}$")
@@ -196,7 +221,7 @@ class FreshAdoptionTests(AdoptScriptTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(tmp)
             code, out = self.adopt(target, upstream)
-            self.assertEqual(code, 0, out)
+            self.assertNotEqual(code, 0, out)
             self.assertIn("Fill in the CONFIG block of", out)
             for rel, (kind, _) in SHARED_FILES.items():
                 if kind == "region":
@@ -207,9 +232,12 @@ class FreshAdoptionTests(AdoptScriptTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(tmp)
             code, out = self.adopt(target, upstream)
-            self.assertEqual(code, 0, out)
-            self.assertIn("SETTINGS", out)
-            self.assertIn("Actions is enabled", out)
+            self.assertIn("REPOSITORY SETTINGS", out)
+            self.assertIn("Branch", out)
+            self.assertIn("protection is not in git", out)
+            # And it now LOOKS rather than only warning, which stopped
+            # being impossible when gh became a hard precondition.
+            self.assertIn("Reporting repository settings", out)
 
 
 class StaleRecordTests(AdoptScriptTestCase):
@@ -243,7 +271,7 @@ class StaleRecordTests(AdoptScriptTestCase):
             self.assertNotEqual(stale, recorded_digests(FLEET_RECORD))
 
             code, out = self.adopt(target, upstream, "main", "--allow-dirty")
-            self.assertEqual(code, 0, out)
+            self.assert_installed(out)
             self.assertEqual(
                 recorded_digests(record),
                 recorded_digests(FLEET_RECORD),
@@ -281,7 +309,7 @@ class StaleRecordTests(AdoptScriptTestCase):
                     newline="\n",
                 )
                 code, out = self.adopt(target, upstream, "main", "--allow-dirty")
-                self.assertEqual(code, 0, out)
+                self.assert_installed(out)
                 self.assertIn("replaced the record that was here", out)
                 self.assertIn(revision, out)
                 self.assertEqual(
@@ -299,7 +327,7 @@ class StaleRecordTests(AdoptScriptTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(tmp)
             code, out = self.adopt(target, upstream)
-            self.assertEqual(code, 0, out)
+            self.assert_installed(out)
             record = target / ".github" / "shared-regions.sha256"
             forged = re.sub(
                 r"(?m)^[0-9a-f]{64}(\s+tests/test_guard_pins\.sh)$",
@@ -310,7 +338,7 @@ class StaleRecordTests(AdoptScriptTestCase):
             self.assertIn("f" * 64, record.read_text(encoding="utf-8"))
 
             code, out = self.adopt(target, upstream, "main", "--allow-dirty")
-            self.assertEqual(code, 0, out)
+            self.assert_installed(out)
             self.assertNotIn("f" * 64, record.read_text(encoding="utf-8"))
 
 
@@ -332,7 +360,7 @@ class ConfigPreservationTests(AdoptScriptTestCase):
     def test_a_re_adoption_preserves_the_config_and_refreshes_the_body(self):
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(tmp)
-            self.assertEqual(self.adopt(target, upstream)[0], 0)
+            self.assert_installed(self.adopt(target, upstream)[1])
             f = self.customise(target)
 
             # Now damage the BODY, which a re-adoption must repair.
@@ -342,8 +370,9 @@ class ConfigPreservationTests(AdoptScriptTestCase):
             f.write_text(text, encoding="utf-8", newline="\n")
 
             code, out = self.adopt(target, upstream, "main", "--allow-dirty")
-            self.assertEqual(code, 0, out)
+            self.assertEqual(code, 0, out)  # not fresh any more, so 0
             self.assertIn("local CONFIG preserved (6 names)", out)
+            self.assertIn("ADOPTED:", out)
 
             after = f.read_text(encoding="utf-8")
             self.assertIn("ENTRY_POINTS=(alpha.capa beta.capa gamma.capa)", after)
@@ -370,7 +399,7 @@ class ConfigPreservationTests(AdoptScriptTestCase):
         ):
             with self.subTest(case=description), tempfile.TemporaryDirectory() as tmp:
                 target, upstream = self.full_adoption(tmp)
-                self.assertEqual(self.adopt(target, upstream)[0], 0)
+                self.assert_installed(self.adopt(target, upstream)[1])
                 f = target / "tests" / "test_release_wiring.sh"
                 f.write_text(
                     mutate(f.read_text(encoding="utf-8")),
@@ -404,7 +433,7 @@ class ConfigPreservationTests(AdoptScriptTestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(tmp)
-            self.assertEqual(self.adopt(target, upstream)[0], 0)
+            self.assert_installed(self.adopt(target, upstream)[1])
             f = target / "tests" / "test_release_wiring.sh"
             lines = f.read_text(encoding="utf-8").split("\n")
             lines.insert(lines.index(END_MARK), "SOMETHING_ELSE=yes")
@@ -430,7 +459,7 @@ class GitattributesTests(AdoptScriptTestCase):
             target, upstream = self.full_adoption(tmp, gitattributes=None)
             self.assertFalse((target / ".gitattributes").exists())
             code, out = self.adopt(target, upstream)
-            self.assertEqual(code, 0, out)
+            self.assert_installed(out)
             self.assertIn("created .gitattributes", out)
             self.assertIn(
                 "* text eol=lf",
@@ -480,7 +509,7 @@ class GitattributesTests(AdoptScriptTestCase):
                 tmp, gitattributes="* text=auto eol=lf\n"
             )
             code, out = self.adopt(target, upstream)
-            self.assertEqual(code, 0, out)
+            self.assert_installed(out)
             self.assertIn("already pins LF", out)
 
 
@@ -557,7 +586,7 @@ class CheckoutBindingTests(AdoptScriptTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(tmp)
             code, out = self.adopt(target, upstream)
-            self.assertEqual(code, 0, out)
+            self.assert_installed(out)
             self.assertIn("byte-identical to", out)
             self.assertIn("what you have read is what will be installed", out)
 

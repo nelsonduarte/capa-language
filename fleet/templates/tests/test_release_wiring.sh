@@ -102,8 +102,25 @@
 #
 # ADOPTION CHECKLIST. In order, and none of the steps are optional:
 #
-#   1. Copy this file and .github/workflows/{release,guard-selftest}.yml
-#      and .github/guard-pins.sha256 from the template repository.
+#   1. Run, from a checkout of the compiler repository,
+#      `bash fleet/adopt.sh <this repository> <compiler revision>`.
+#      That installs this file, the mutation test, the two zero-config
+#      checks and the checks.yml workflow, and writes
+#      .github/shared-regions.sha256 from that revision. Do not copy any
+#      of them by hand.
+#   1a. Copy .github/workflows/{release,guard-selftest}.yml from an
+#      existing adopter and adapt their consumer flow to this package.
+#      There is no template for these two because they are genuinely
+#      repo-specific; this file checks the adaptation in detail, which is
+#      what makes copying them safe.
+#   1b. Run `bash fleet/guard_pins.sh <this repository>` to write
+#      .github/guard-pins.sha256 from the revision release.yml pins, then
+#      READ the guard files and replace the audit note it leaves blank.
+#      DO NOT COPY THAT FILE FROM ANOTHER ADOPTER. A copied one passes
+#      every check while having audited nothing, because its digests
+#      genuinely are the pinned revision's bytes. It used to be the only
+#      way to obtain one, and the copy then asserted in its new
+#      repository that a human had recomputed and read everything.
 #   2. Edit ONLY the CONFIG block below. Run
 #      `bash tests/test_release_wiring.sh` and fix what it reddens; the
 #      body will tell you about every top-level module you have not
