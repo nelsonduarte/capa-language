@@ -1,6 +1,6 @@
 # THE SHARED TEST-FILE REVISION THIS REPOSITORY ADOPTED, BY CONTENT.
 #
-# The four files below are not this repository's work. They are ~1600
+# The five files below are not this repository's work. They are ~1700
 # lines COPIED from the compiler repository's fleet/templates/. Nothing
 # noticed when a copy diverged, which has already happened twice in this
 # fleet: a capability tuple hand-copied at 21 sites that had already
@@ -14,13 +14,16 @@
 #   number below covers everything OUTSIDE that block. Edit the block;
 #   never edit below it.
 #
-#   tests/test_shared_regions.sh and tests/test_guard_pins.sh carry no
-#   repo-specific configuration at all, so the number below covers the
-#   WHOLE file. There is nothing in either of them for you to edit. If
-#   you need to, say so upstream rather than forking it here: a config
-#   block is the one part of a shared file that nothing digests, and
-#   adding one to carry a single flag would open exactly the hole the
-#   grammar in test_shared_regions.sh exists to close.
+#   tests/test_shared_regions.sh, tests/test_guard_pins.sh and
+#   .github/workflows/checks.yml carry no repo-specific configuration at
+#   all, so the number below covers the WHOLE file. There is nothing in
+#   any of them for you to edit. If you need to, say so upstream rather
+#   than forking it here: a config block is the one part of a shared
+#   file that nothing digests, and adding one to carry a single flag
+#   would open exactly the hole the grammar in test_shared_regions.sh
+#   exists to close. If this repository needs more CI, add a SEPARATE
+#   workflow rather than editing checks.yml; that is what every adopter
+#   with extra checks has done.
 #
 # So this file records the SHA-256 of each, and
 # tests/test_shared_regions.sh checks it two ways:
@@ -57,7 +60,7 @@
 # covered by a signature.
 #
 # TO RE-ADOPT AFTER AN UPSTREAM CHANGE: read the diff between the two
-# revisions, re-copy all four files, keep your CONFIG blocks in the two
+# revisions, re-copy all five files, keep your CONFIG blocks in the two
 # that have them, then update the revision and the digests together.
 # Updating the digests without re-copying is how a local edit becomes a
 # permanent fork with a green test over it.
@@ -69,5 +72,6 @@ revision REPLACE-ME-WITH-THE-CANONICAL-COMMIT-SHA
 
 16364eedf7bb6380c6d4156139acceec80dad0ae6f5cae5bfae3f67b3dbeee85  tests/test_release_wiring.sh
 f703c855c94cd5cec4e6502258c307cc5f3f0747b8b12ca906c6890727c2a745  tests/test_wiring_mutations.sh
-78d6b885031f7181f20d06bff913421c4b8bae07626a1ffa2fcfbbbab705559c  tests/test_shared_regions.sh
+47a9c72c36cb003f0b3288be5c92d629c8a83f48cc1493a2e00342be21d191c4  tests/test_shared_regions.sh
 a73e1c63abe8765f9c7fc22a4507094ad1cc39941a526be0f58d14a225c1f13a  tests/test_guard_pins.sh
+f98d7f84e43844f4dcaa76aa92cbfea8c3cce54456819ebbb0a0434ee54e346f  .github/workflows/checks.yml

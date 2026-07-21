@@ -21,10 +21,11 @@
 #   byte-identical across the fleet. Only the part outside the markers
 #   is digested, and the config region is checked separately by grammar.
 #
-#   WHOLE. tests/test_shared_regions.sh (this file) and
-#   tests/test_guard_pins.sh have NO repo-specific content at all, so
-#   the whole file is digested and there is no config region, no
-#   markers, no marker-shape failure modes, no grammar and no allowlist.
+#   WHOLE. tests/test_shared_regions.sh (this file),
+#   tests/test_guard_pins.sh and .github/workflows/checks.yml have NO
+#   repo-specific content at all, so the whole file is digested and
+#   there is no config region, no markers, no marker-shape failure
+#   modes, no grammar and no allowlist.
 #
 # THE SECOND KIND IS NOT A CONVENIENCE. The config region is the only
 # part of a shared file that nothing digests, which makes it the
@@ -82,14 +83,28 @@
 # uses one, and an adopter who wants to explain a value has the whole
 # rest of the region to do it in.
 #
-# AND EACH FILE MUST BE NAMED BY A WORKFLOW. A drift check that nothing
-# executes reports nothing. All four of these files once appeared in
-# both adopters' YAML only inside comments, so they ran zero times per
-# push across a fleet of seventeen repositories, and would have gone on
-# doing so until someone ran them by hand. That is checked here rather
-# than by adding the CI workflow to the record, because workflows
-# genuinely differ per repository and demanding byte-identity there
-# would force forks; being NAMED is the part that must hold everywhere.
+# AND THE WORKFLOW THAT RUNS THEM IS ITSELF AN ENTRY. A drift check
+# that nothing executes reports nothing. All of these files once
+# appeared in both adopters' YAML only inside comments, so they ran zero
+# times per push across a fleet of seventeen repositories.
+#
+# .github/workflows/checks.yml is therefore a WHOLE-FILE entry too. It
+# was briefly left out, on the premise that workflows differ per
+# repository so byte-identity would force forks. The fleet had already
+# falsified that: the most structurally complex adopter's copy is
+# byte-identical to the simplest one's, because every repo-specific fact
+# is absorbed by the CONFIG region one layer down and this workflow only
+# invokes four fixed script paths. Repositories with extra CI put it in
+# a separate workflow, every time. Leaving it out also left a one-line
+# bypass, a job-level `if: false`, which every step-level refusal in
+# this file missed and which reported 30 passed, 0 failed, EXIT=0.
+#
+# WHAT NO FILE-BASED MECHANISM CAN COVER, stated plainly rather than
+# left for someone to discover: Actions being disabled for the
+# repository, branch protection not requiring these checks, and the
+# required-check configuration itself. Those live in GitHub settings,
+# not in git, so nothing here reaches them and nothing here should be
+# read as covering them.
 #
 # TWO LAYERS, because layer 1 alone is self-certifying:
 #
@@ -151,6 +166,7 @@ SHARED_FILES=(
   "region:tests/test_wiring_mutations.sh:PRIMARY_MODULE SECOND_MODULE CEILING_LINE_WIDE CEILING_NAME"
   "whole:tests/test_shared_regions.sh:"
   "whole:tests/test_guard_pins.sh:"
+  "whole:.github/workflows/checks.yml:"
 )
 
 # How many files the table above must yield a verdict for. A count is
@@ -158,7 +174,7 @@ SHARED_FILES=(
 # makes a shrunk table loud on a machine where layer 2 skipped, instead
 # of silent. It is cross-checked against the record's own entry count
 # below as well, so the table and the record cannot quietly disagree.
-EXPECTED_SHARED_FILES=4
+EXPECTED_SHARED_FILES=5
 
 BEGIN_MARK='# ================== CONFIG: the only repo-specific part =================='
 END_MARK='# ======================= END CONFIG; shared body ========================='
@@ -499,35 +515,39 @@ for entry in "${SHARED_FILES[@]}"; do
   # zero times per push. A control that runs when a human remembers to
   # run it reports the state of that human's memory.
   #
-  # So each file must be NAMED by a workflow, outside a comment, in a
-  # step that carries no obvious disabling marker. That is checked here,
-  # in the file the fleet holds byte-identical, rather than by adding
-  # the CI workflow to the record: workflows genuinely differ per
-  # repository (a package with a Python suite has steps a library does
-  # not), so demanding byte-identity there would force forks, and a
-  # forked entry is a permanently red record.
+  # THE PRIMARY ANSWER IS NOW THE DIGEST, not this. .github/workflows/
+  # checks.yml is a whole-file entry above, so the workflow that runs
+  # these four is compared against the canonical bytes like everything
+  # else, and any edit to it reddens.
   #
-  # WHAT THIS DOES NOT ESTABLISH, stated here because the shorter claim
-  # it replaces was false and was about to ship to fifteen repositories.
-  # IT DOES NOT ESTABLISH THAT THE STEP RUNS. It is one substring match
-  # over YAML. The refusals below catch `|| true` on the naming line and
-  # `if: false` or `continue-on-error: true` on the step that names it,
-  # which is the accident and the lazy edit. They do not catch a
-  # job-level `if:`, a matrix that excludes every combination, an
-  # environment gate, a `${{ }}` expression that evaluates false, or a
-  # step whose command is edited to something else entirely. Measured:
-  # `if: false` on four steps, a four-line diff, and every control here
-  # reports success with the whole apparatus off. Because this check is
-  # itself one of the disabled steps, nobody sees the green.
+  # That replaced a weaker design and a false premise. The premise was
+  # that "workflows genuinely differ per repository", so demanding
+  # byte-identity would force forks. The fleet has falsified it:
+  # capa_authgate is exactly the shape predicted to need variation, with
+  # five entry points, a negative ceiling entry, a compiler-rejects
+  # fixture and nested vendoring, and its checks.yml is byte-identical
+  # to a pure library's. That is structural, not luck. Every
+  # repo-specific fact is absorbed by the CONFIG region one layer down,
+  # and this workflow only ever invokes four fixed script paths. Where
+  # repositories DO have extra CI, they put it in a separate workflow,
+  # which is what the fleet has actually done every time.
   #
-  # A stronger form is possible and is a NAMED FOLLOW-UP rather than
-  # this change: make checks.yml a `region:` entry, so the four steps
-  # become digested shared body and repo-specific steps live in a config
-  # region. That needs a YAML analogue of the shell config grammar
-  # above, which is not a change to make in passing. Until it exists,
-  # the workflow that runs the drift checks has weaker cover than the
-  # workflows the drift checks police, and this comment is the honest
-  # record of that.
+  # And the weaker design leaked. Naming plus the three step-level
+  # refusals below missed a one-line job-level disable:
+  #
+  #   wiring:
+  #     runs-on: ubuntu-latest
+  #     if: false          # 30 passed, 0 failed, 0 skipped, EXIT=0
+  #
+  # which is the line a person writes to park a job, so it was the
+  # accident case as much as the attack case. The digest catches it.
+  #
+  # WHY THIS CHECK STAYS ANYWAY, in a smaller role. It is cheap, and it
+  # covers two states the digest does not: a repository mid-adoption
+  # whose record does not yet carry checks.yml, and a repository that
+  # invokes the shared files from some OTHER workflow, which is not
+  # digested and never will be. It is no longer the mechanism, and this
+  # comment does not present it as one.
   #
   # Comments are stripped first, and NOT only whole-line ones. A
   # trailing `# was: bash tests/test_release_wiring.sh` is exactly what
@@ -549,23 +569,35 @@ for entry in "${SHARED_FILES[@]}"; do
               | naming_status "${rel}" || true)"
   fi
 
-  if [ ! -d "${WORKFLOW_DIR}" ]; then
-    no "${rel}: .github/workflows/ does not exist, so nothing runs it"
-  elif [ "${status}" = "live" ]; then
-    ok "${rel}: a workflow step names it, with no disabling marker on it"
-  elif [ -n "${status}" ]; then
-    no "${rel}: the only workflow step naming it is disabled (${status})"
-    echo "     a step that is named and never runs is the same green log as"
-    echo "     one that is absent, and this check is one of the steps, so a"
-    echo "     disabled run of it prints nothing for anyone to notice"
-  else
-    no "${rel}: no workflow names it, so it runs zero times per push"
-    echo "     a drift check nothing executes reports nothing; add a step"
-    echo "     running it to a workflow that fires on push and pull_request"
-    echo "     (a mention inside a YAML comment does not count, trailing"
-    echo "     comments included, and was the state both original adopters"
-    echo "     were in)"
-  fi
+  case "${rel}" in
+    .github/workflows/*)
+      # A workflow is not named by another file and does not need to
+      # be: the platform runs it because it is there and its `on:`
+      # block matches. Asking whether something names it would be
+      # asking the wrong question and would redden every adoption. Its
+      # `on:` block, its jobs and its steps are all inside its digest.
+      ok "${rel}: run by the platform on its own triggers, not named by another file"
+      ;;
+    *)
+      if [ ! -d "${WORKFLOW_DIR}" ]; then
+        no "${rel}: .github/workflows/ does not exist, so nothing runs it"
+      elif [ "${status}" = "live" ]; then
+        ok "${rel}: a workflow step names it, with no disabling marker on it"
+      elif [ -n "${status}" ]; then
+        no "${rel}: the only workflow step naming it is disabled (${status})"
+        echo "     a step that is named and never runs is the same green log as"
+        echo "     one that is absent, and this check is one of the steps, so a"
+        echo "     disabled run of it prints nothing for anyone to notice"
+      else
+        no "${rel}: no workflow names it, so it runs zero times per push"
+        echo "     a drift check nothing executes reports nothing; add a step"
+        echo "     running it to a workflow that fires on push and pull_request"
+        echo "     (a mention inside a YAML comment does not count, trailing"
+        echo "     comments included, and was the state both original adopters"
+        echo "     were in)"
+      fi
+      ;;
+  esac
 
   # --- the config region, by grammar ---------------------------------
   #

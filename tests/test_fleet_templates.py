@@ -91,6 +91,20 @@ SHARED_FILES = {
     ),
     "tests/test_shared_regions.sh": ("whole", []),
     "tests/test_guard_pins.sh": ("whole", []),
+    # The workflow that RUNS the four above. A whole-file entry like any
+    # other, and the reason there is no YAML config grammar anywhere in
+    # this design: all three copies in the fleet are byte-identical, so
+    # there was never any variation to accommodate. See
+    # ``WorkflowEntryTests``.
+    ".github/workflows/checks.yml": ("whole", []),
+}
+
+#: Entries the naming assertion does not apply to. A workflow is run by
+#: the platform because it is present and its ``on:`` block matches, not
+#: because another file names it, so asking would be the wrong question
+#: and would redden every adoption.
+WORKFLOW_ENTRIES = {
+    rel for rel in SHARED_FILES if rel.startswith(".github/workflows/")
 }
 
 REGION_FILES = {
@@ -532,21 +546,41 @@ class AdopterTreeMixin:
 
     REVISION = "a" * 40
 
-    def build_tree(self, root: Path, revision: str = REVISION, unwired=()):
+    def build_tree(self, root: Path, revision: str = REVISION, workflow=None):
+        """A synthetic adopter that copies every entry verbatim.
+
+        ``workflow`` REPLACES the canonical checks.yml, which is how the
+        naming cases below are built. Doing that necessarily also trips
+        checks.yml's own digest, since it is an entry now; those tests
+        assert both failures, because both are correct and the digest is
+        the primary one.
+        """
         (root / "tests").mkdir(parents=True)
         (root / ".github" / "workflows").mkdir(parents=True)
         for rel in SHARED_FILES:
             shutil.copyfile(TEMPLATES / rel, root / rel)
-        # A workflow that actually names each file. Without one the check
-        # correctly reddens: a control nothing executes reports nothing.
-        steps = "".join(
-            f"      - run: bash {rel}\n" for rel in SHARED_FILES if rel not in unwired
+        if workflow is not None:
+            (root / ".github" / "workflows" / "checks.yml").write_text(
+                workflow, encoding="utf-8", newline="\n"
+            )
+        record = ADOPTER_RECORD_TEMPLATE.read_text(encoding="utf-8")
+        record = re.sub(
+            r"^revision .*$", f"revision {revision}", record, flags=re.MULTILINE
         )
-        (root / ".github" / "workflows" / "checks.yml").write_text(
+        (root / ".github" / "shared-regions.sha256").write_text(
+            record, encoding="utf-8", newline="\n"
+        )
+
+    def synthetic_workflow(self, unwired=()):
+        """A minimal workflow naming each shared TEST file, less ``unwired``."""
+        steps = "".join(
+            f"      - run: bash {rel}\n"
+            for rel in SHARED_FILES
+            if rel not in unwired and rel not in WORKFLOW_ENTRIES
+        )
+        return (
             "on: [push]\njobs:\n  wiring:\n    runs-on: ubuntu-latest\n    steps:\n"
-            + (steps or "      - run: true\n"),
-            encoding="utf-8",
-            newline="\n",
+            + (steps or "      - run: true\n")
         )
         record = ADOPTER_RECORD_TEMPLATE.read_text(encoding="utf-8")
         record = re.sub(
@@ -559,8 +593,8 @@ class AdopterTreeMixin:
     def build_upstream(self, root: Path):
         """A tree the ``gh`` stub serves as the canonical repository."""
         dest = root / CANON_PREFIX
-        (dest / "tests").mkdir(parents=True, exist_ok=True)
         for rel in SHARED_FILES:
+            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(TEMPLATES / rel, dest / rel)
         return root
 
@@ -764,38 +798,71 @@ class AdopterCheckTests(AdopterTreeMixin, unittest.TestCase):
             code, out = self.run_check(root)
             self.assertEqual(code, 0, out)
 
+    # ------------------------------------------------------------------
+    # The naming assertion, now a SECONDARY control.
+    #
+    # checks.yml is a digested entry, so every case below trips its
+    # digest as well, and the first one asserts both failures. That is
+    # the point rather than an annoyance: the digest is the mechanism
+    # and the naming check is the belt. What the naming check still buys
+    # is the mid-adoption state, where a record does not yet carry
+    # checks.yml, and a repository invoking the shared files from some
+    # other workflow that is not digested.
+    # ------------------------------------------------------------------
+
     def test_a_file_no_workflow_runs_is_caught(self):
         """BLOCKER C2, made structural rather than remembered.
 
-        Both original adopters named all four of these files in YAML only
+        Both original adopters named all four test files in YAML only
         inside comments, so all four executed zero times per push. Wiring
         them by hand fixes two repositories; this assertion fixes the
         fifteen that have not been visited yet, because an adoption that
         forgets the workflow cannot go green.
         """
         for victim in SHARED_FILES:
+            if victim in WORKFLOW_ENTRIES:
+                continue
             with self.subTest(victim=victim), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp) / "repo"
-                self.build_tree(root, unwired=(victim,))
+                self.build_tree(root, workflow=self.synthetic_workflow((victim,)))
                 code, out = self.run_check(root)
                 self.assertNotEqual(code, 0, out)
                 self.assertIn(f"{victim}: no workflow names it", out)
+                # And the digest, which is now the primary answer.
+                self.assertIn(
+                    ".github/workflows/checks.yml: the file has DRIFTED", out
+                )
+
+    def test_a_workflow_entry_is_never_asked_who_names_it(self):
+        """A workflow is run by the platform, not named by another file.
+
+        Asking would be the wrong question and would redden every
+        adoption, since nothing names checks.yml and nothing should. Its
+        ``on:`` block, its jobs and its steps are all inside its digest,
+        which is where that question is actually answered.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            self.build_tree(root)
+            code, out = self.run_check(root)
+            self.assertEqual(code, 0, out)
+            for rel in WORKFLOW_ENTRIES:
+                self.assertIn(f"{rel}: run by the platform on its own triggers", out)
+                self.assertNotIn(f"{rel}: no workflow names it", out)
 
     def test_a_mention_in_a_yaml_comment_does_not_count(self):
         """The exact state both adopters were in, which looked like coverage."""
+        victim = "tests/test_guard_pins.sh"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
-            self.build_tree(root, unwired=("tests/test_guard_pins.sh",))
-            workflow = root / ".github" / "workflows" / "checks.yml"
-            workflow.write_text(
-                workflow.read_text(encoding="utf-8")
-                + "      # see also: bash tests/test_guard_pins.sh\n",
-                encoding="utf-8",
-                newline="\n",
+            self.build_tree(
+                root,
+                workflow=self.synthetic_workflow((victim,))
+                + f"      # see also: bash {victim}\n",
             )
             code, out = self.run_check(root)
             self.assertNotEqual(code, 0, out)
-            self.assertIn("tests/test_guard_pins.sh: no workflow names it", out)
+            self.assertIn(f"{victim}: no workflow names it", out)
 
     def test_a_trailing_comment_does_not_count_either(self):
         """The ACCIDENT, which is likelier here than any attack.
@@ -810,31 +877,20 @@ class AdopterCheckTests(AdopterTreeMixin, unittest.TestCase):
         happen. Comments are now stripped from the first ``#`` that
         begins one, anywhere on the line.
         """
+        victim = "tests/test_release_wiring.sh"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
-            victim = "tests/test_release_wiring.sh"
-            self.build_tree(root, unwired=(victim,))
-            workflow = root / ".github" / "workflows" / "checks.yml"
-            workflow.write_text(
-                workflow.read_text(encoding="utf-8")
+            self.build_tree(
+                root,
+                workflow=self.synthetic_workflow((victim,))
                 + f"      - run: echo disabled  # was: bash {victim}\n",
-                encoding="utf-8",
-                newline="\n",
             )
             code, out = self.run_check(root)
             self.assertNotEqual(code, 0, out)
             self.assertIn(f"{victim}: no workflow names it", out)
 
     def test_a_disabled_step_does_not_count(self):
-        """The neutering the shorter claim about this file did not cover.
-
-        ``if: false`` on the four steps is a four-line diff after which
-        every control reports success with the whole apparatus off, and
-        because this check is one of the disabled steps nobody sees the
-        green. These three refusals catch the accident and the lazy
-        edit. They are not a completeness claim, and the header at the
-        call site says so.
-        """
+        """Step-level disabling markers, kept as the secondary control."""
         cases = [
             ("        if: false\n", "`if: false` on the step"),
             ("        if: 'false'\n", "`if: false` on the step"),
@@ -843,34 +899,30 @@ class AdopterCheckTests(AdopterTreeMixin, unittest.TestCase):
                 "`continue-on-error: true` on the step",
             ),
         ]
+        victim = "tests/test_guard_pins.sh"
         for marker, reason in cases:
             with self.subTest(marker=marker.strip()), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp) / "repo"
-                victim = "tests/test_guard_pins.sh"
-                self.build_tree(root, unwired=(victim,))
-                workflow = root / ".github" / "workflows" / "checks.yml"
-                workflow.write_text(
-                    workflow.read_text(encoding="utf-8")
+                self.build_tree(
+                    root,
+                    workflow=self.synthetic_workflow((victim,))
                     + f"      - name: neutered\n{marker}        run: bash {victim}\n",
-                    encoding="utf-8",
-                    newline="\n",
                 )
                 code, out = self.run_check(root)
                 self.assertNotEqual(code, 0, out)
-                self.assertIn(f"{victim}: the only workflow step naming it is disabled", out)
+                self.assertIn(
+                    f"{victim}: the only workflow step naming it is disabled", out
+                )
                 self.assertIn(reason, out)
 
     def test_or_true_on_the_naming_line_does_not_count(self):
+        victim = "tests/test_shared_regions.sh"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
-            victim = "tests/test_shared_regions.sh"
-            self.build_tree(root, unwired=(victim,))
-            workflow = root / ".github" / "workflows" / "checks.yml"
-            workflow.write_text(
-                workflow.read_text(encoding="utf-8")
+            self.build_tree(
+                root,
+                workflow=self.synthetic_workflow((victim,))
                 + f"      - run: bash {victim} || true\n",
-                encoding="utf-8",
-                newline="\n",
             )
             code, out = self.run_check(root)
             self.assertNotEqual(code, 0, out)
@@ -883,39 +935,106 @@ class AdopterCheckTests(AdopterTreeMixin, unittest.TestCase):
         invocation and also carries a disabled one, which is what a
         matrix or a debugging leftover looks like, is covered.
         """
+        victim = "tests/test_guard_pins.sh"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
-            victim = "tests/test_guard_pins.sh"
-            self.build_tree(root)  # every file wired live
-            workflow = root / ".github" / "workflows" / "checks.yml"
-            workflow.write_text(
-                workflow.read_text(encoding="utf-8")
-                + f"      - name: leftover\n        if: false\n        run: bash {victim}\n",
-                encoding="utf-8",
-                newline="\n",
+            self.build_tree(
+                root,
+                workflow=self.synthetic_workflow()
+                + "      - name: leftover\n        if: false\n"
+                + f"        run: bash {victim}\n",
             )
             code, out = self.run_check(root)
-            self.assertEqual(code, 0, out)
+            # checks.yml is not canonical here, so its digest reddens;
+            # what is under test is that the NAMING verdict stays live.
             self.assertIn(f"{victim}: a workflow step names it", out)
+            self.assertNotIn(
+                f"{victim}: the only workflow step naming it is disabled", out
+            )
 
     def test_the_shipped_workflow_template_passes_its_own_check(self):
-        """The template an adopter copies must satisfy the rule it ships with.
+        """A verbatim adoption must be green, including the workflow.
 
         Otherwise every adoption starts red for a reason that is nobody's
         fault, and the first thing a new adopter learns is that the check
-        is wrong.
+        is wrong. The canonical checks.yml must therefore both match its
+        own digest AND name every shared test file live.
         """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
             self.build_tree(root)
-            shutil.copyfile(
-                TEMPLATES / ".github" / "workflows" / "checks.yml",
-                root / ".github" / "workflows" / "checks.yml",
-            )
             code, out = self.run_check(root)
             self.assertEqual(code, 0, out)
             for rel in SHARED_FILES:
-                self.assertIn(f"{rel}: a workflow step names it", out)
+                if rel in WORKFLOW_ENTRIES:
+                    self.assertIn(
+                        f"{rel}: run by the platform on its own triggers", out
+                    )
+                else:
+                    self.assertIn(f"{rel}: a workflow step names it", out)
+
+    def test_every_way_of_disabling_the_workflow_reddens_offline(self):
+        """The acceptance set for making checks.yml a digested entry.
+
+        The job-level case is the one that motivated the change: a
+        one-line ``if: false`` on the job, which every step-level refusal
+        missed, reported 30 passed / 0 failed / 0 skipped with the whole
+        apparatus off. It is the line a person writes to park a job, so
+        it is the accident case as much as the attack case.
+
+        All of these are asserted OFFLINE, with layer 2 forced to skip,
+        because detection must not depend on ``gh``. A repository on a
+        machine with no network is exactly where a disabled CI workflow
+        would otherwise go unnoticed.
+        """
+        canonical = (TEMPLATES / ".github" / "workflows" / "checks.yml").read_text(
+            encoding="utf-8"
+        )
+        mutations = {
+            "job-level if: false": lambda t: t.replace(
+                "    runs-on: ubuntu-latest",
+                "    runs-on: ubuntu-latest\n    if: false",
+                1,
+            ),
+            "step-level if: false": lambda t: t.replace(
+                "      - name: The release wiring matches this package",
+                "      - name: The release wiring matches this package\n        if: false",
+                1,
+            ),
+            "continue-on-error: true": lambda t: t.replace(
+                "      - name: The release wiring matches this package",
+                "      - name: The release wiring matches this package\n"
+                "        continue-on-error: true",
+                1,
+            ),
+            "|| true on a run line": lambda t: t.replace(
+                "run: bash tests/test_release_wiring.sh",
+                "run: bash tests/test_release_wiring.sh || true",
+                1,
+            ),
+            "emptied on: block": lambda t: t.replace(
+                "on:\n  push:\n    branches: ['**']\n  pull_request:\n"
+                "  workflow_dispatch:\n",
+                "on:\n  workflow_dispatch:\n",
+                1,
+            ),
+            "a deleted step": lambda t: t.replace(
+                "      - name: The wiring test still bites\n", "", 1
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name), tempfile.TemporaryDirectory() as tmp:
+                mutated = mutate(canonical)
+                self.assertNotEqual(
+                    mutated, canonical, f"the {name} mutation did not apply"
+                )
+                root = Path(tmp) / "repo"
+                self.build_tree(root, workflow=mutated)
+                code, out = self.run_check(root)  # offline; layer 2 skips
+                self.assertNotEqual(code, 0, out)
+                self.assertIn(
+                    ".github/workflows/checks.yml: the file has DRIFTED", out
+                )
 
     def test_a_missing_workflow_directory_is_caught(self):
         with tempfile.TemporaryDirectory() as tmp:
