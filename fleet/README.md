@@ -36,6 +36,7 @@ release actually runs.
 | `templates/.github/shared-regions.sha256` | The adopter's audit record, with the digests filled in and the revision left as an unusable placeholder so an unedited copy fails closed. |
 | `shared-regions.sha256` | The canonical digests, which the adopter record copies. |
 | `shared_region_digest.sh` | Regenerates those digests after a deliberate change here. |
+| `adopt.sh` | Performs an adoption or a re-pin against one repository. Not copied into adopters, and not in the record; see below. |
 
 The templates are stored as COMPLETE files rather than as headerless
 fragments, so that the extraction logic is identical on both sides of
@@ -188,37 +189,79 @@ worth reading.
 
 ## Adopting, per repository
 
-1. Copy all four of `templates/tests/*.sh` into `tests/`.
-2. Copy `templates/.github/shared-regions.sha256` into `.github/`, and
-   replace the placeholder `revision` with the commit of this repository
-   you copied from.
-3. Make sure `.gitattributes` contains `* text eol=lf`. Both the drift
-   check and the guard-pin audit handle CRLF explicitly, so a Windows
-   checkout will not produce a wrong answer, but a repository whose
-   files flip line endings per platform produces diffs and digests that
-   depend on who committed last, and the release tarball's digest is
-   covered by a signature.
-4. Edit ONLY the CONFIG block of the two wiring tests. Nothing else, and
-   nothing at all in the other two.
-5. Copy `templates/.github/workflows/checks.yml` into
-   `.github/workflows/` VERBATIM. It is a digested entry, so do not edit
-   it; if this repository needs more CI, add a separate workflow. It
-   runs the four on every push and pull request, not only on a tag: a
-   drift check that runs at release time notices divergence after the
-   fifteen repositories have already diverged. Skipping this step is not
-   available; step 6 reddens without it.
-6. Run `bash tests/test_shared_regions.sh` and expect it green with layer 2
-   confirming the digests rather than skipping.
-7. Run `bash tests/test_guard_pins.sh`, with the same expectation.
-8. Follow the adoption checklist in the wiring test's own header, which
-   covers the workflows, the manifest floor and the clean-room
-   rehearsal.
+```
+bash fleet/adopt.sh <target-repo-dir> <compiler-ref>
+```
 
-Step 4 is the whole design: if you find yourself editing below the line,
-the config block is missing a dimension, and the fix is to add one here
-rather than to fork the body. If you find yourself editing a whole-file
-entry at all, the same applies with no exceptions, because there is no
-line to be below.
+That is the whole adoption. It resolves the ref to a full commit SHA,
+fetches the five shared files and all five digests **from that
+revision**, splices your existing CONFIG blocks into the fresh bodies,
+asserts `.gitattributes` pins LF, and runs the installed drift check.
+
+**Why it exists rather than the checklist below.** Two of the manual
+steps could go wrong quietly, and one was uniquely dangerous:
+transcribing the five digests. The natural shortcut is to copy
+`.github/shared-regions.sha256` from a sibling repository rather than
+from the compiler revision being adopted. If that sibling is one
+revision stale, layer 1 goes **green**, because the test files came from
+the same stale place and genuinely match, while layer 2 goes red. The
+obvious response is to bump the revision line until it passes, and that
+is exactly the "update the digests without re-copying" fork the record's
+own header warns against. It is the one place in this design where the
+obvious way to make it green is the wrong action; everywhere else the
+wrong move looks wrong. The script does not discourage that path, it
+removes it: no human transcribes a digest and no sibling is ever read.
+
+**When it refuses rather than repairs.** A CONFIG block whose markers
+are malformed, or whose set of assigned names differs from the
+template's in either direction. Both are questions about what your
+repository means, and a script that answered them would invent a value
+nobody chose. The refusal names the file and the exact names.
+
+**What it does not reach.** Whether Actions is enabled, whether branch
+protection requires these checks, and the required-check configuration.
+Those live in GitHub settings rather than in git. The script says so on
+every run.
+
+`adopt.sh` is deliberately **not** in the shared-region record. That
+record exists because files are copied and copies drift; this file is
+copied nowhere, lives here, and has one instance. Shipping it into
+seventeen repositories in order to check that seventeen copies agree
+would manufacture the problem the record exists to solve. It is held
+honest the way `tools/check_tag_version.sh` is: one copy, tested where
+it lives, by `tests/test_fleet_adopt.py`.
+
+### What the script does not do for you
+
+1. Fill in the CONFIG block of the two wiring tests. On a fresh adoption
+   every value in them is a placeholder; the script says so and names
+   the files. Run `bash tests/test_release_wiring.sh` and fix what it
+   reddens, which will name every top-level module you have not
+   accounted for. Edit ONLY the CONFIG block: nothing else in those two
+   files, and nothing at all in the other three.
+2. The release workflows, the manifest floor and the clean-room
+   rehearsal, which are the checklist in the wiring test's own header.
+3. Require the `checks` workflow on the default branch, in the
+   repository settings, and confirm Actions is enabled.
+
+If you are adopting by hand instead, the steps are: copy all four of
+`templates/tests/*.sh` into `tests/`; copy
+`templates/.github/workflows/checks.yml` into `.github/workflows/`
+verbatim; copy `templates/.github/shared-regions.sha256` into `.github/`
+and replace the placeholder `revision` with the compiler commit you
+copied from, taking the digests from THAT commit's
+`fleet/shared-regions.sha256` and not from another adopter; add
+`* text eol=lf` to `.gitattributes`; then run
+`bash tests/test_shared_regions.sh` and `bash tests/test_guard_pins.sh`
+and expect both green with layer 2 confirming rather than skipping.
+Prefer the script: the digest-transcription step above is the one this
+apparatus cannot make safe by hand.
+
+Editing only the CONFIG block is the whole design: if you find yourself
+editing below the line, the config block is missing a dimension, and the
+fix is to add one here rather than to fork the body. If you find
+yourself editing a whole-file entry at all, the same applies with no
+exceptions, because there is no line to be below.
 
 ## Changing a template
 
@@ -230,11 +273,16 @@ line to be below.
    adopter-side checks against the templates, drives layer 2 through a
    stubbed `gh`, and refuses any disagreement between the awk and Python
    implementations.
-4. In each adopter: read the diff, re-copy all five files keeping the
-   local CONFIG blocks in the two that have them, then update the
-   revision and the digests together. That is the whole per-repository
-   cost of a template change: five copies, five numbers and one
-   revision line, with no per-repository judgement to exercise.
+4. In each adopter, read the diff, then
+
+   ```
+   bash fleet/adopt.sh <adopter-dir> <the new compiler revision>
+   ```
+
+   which re-copies all five files, preserves the local CONFIG blocks,
+   and rewrites the revision and the digests together from that
+   revision. It refuses rather than guessing if the set of CONFIG names
+   changed, which is the case where reading the diff was the point.
 
 Updating an adopter's digests without re-copying is how a local edit
 becomes a permanent fork with a green test over it.
