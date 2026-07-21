@@ -29,7 +29,6 @@ Every case runs against a stubbed ``gh`` serving this working tree, so
 the suite needs no network and no credentials.
 """
 
-import base64
 import os
 import re
 import shutil
@@ -49,7 +48,6 @@ from tests.test_fleet_templates import (
     SHARED_FILES,
     TEMPLATES,
     bash_path,
-    read_lines,
     recorded_digests,
 )
 
@@ -255,16 +253,40 @@ class StaleRecordTests(AdoptScriptTestCase):
                 record.read_text(encoding="utf-8"), rf"(?m)^revision {REVISION}$"
             )
 
-    def test_the_previous_revision_is_reported_not_silently_replaced(self):
-        """Overwriting quietly would hide a re-pin the reader should see."""
-        with tempfile.TemporaryDirectory() as tmp:
-            target, upstream = self.full_adoption(tmp)
-            record = target / ".github" / "shared-regions.sha256"
-            record.parent.mkdir(parents=True, exist_ok=True)
-            record.write_text(self.stale_record(), encoding="utf-8", newline="\n")
-            code, out = self.adopt(target, upstream, "main", "--allow-dirty")
-            self.assertEqual(code, 0, out)
-            self.assertIn("was pinned to " + "a" * 40, out)
+    def test_a_replaced_record_is_always_reported(self):
+        """Reported whether or not the REVISION moved.
+
+        Gating the notice on a changed revision left the single case the
+        record's own header warns about, digests transcribed forward with
+        the revision already bumped, as the one case that printed nothing
+        about five digests and four files having just been replaced. So
+        the notice fires whenever a record was there, and names the
+        revision it carried.
+        """
+        for description, revision in (
+            ("a different revision", "a" * 40),
+            ("the same revision, only the digests stale", REVISION),
+        ):
+            with self.subTest(case=description), tempfile.TemporaryDirectory() as tmp:
+                target, upstream = self.full_adoption(tmp)
+                record = target / ".github" / "shared-regions.sha256"
+                record.parent.mkdir(parents=True, exist_ok=True)
+                record.write_text(
+                    re.sub(
+                        r"(?m)^revision .*$",
+                        f"revision {revision}",
+                        self.stale_record(),
+                    ),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                code, out = self.adopt(target, upstream, "main", "--allow-dirty")
+                self.assertEqual(code, 0, out)
+                self.assertIn("replaced the record that was here", out)
+                self.assertIn(revision, out)
+                self.assertEqual(
+                    recorded_digests(record), recorded_digests(FLEET_RECORD)
+                )
 
     def test_a_hand_written_digest_never_survives(self):
         """MUTATION: a record digest that is not from the named revision.
@@ -416,7 +438,17 @@ class GitattributesTests(AdoptScriptTestCase):
             )
 
     def test_an_existing_gitattributes_without_an_lf_rule_is_refused(self):
-        """Appending to a file somebody wrote is their decision, not ours."""
+        """Refused BEFORE anything is written, not after installing six files.
+
+        This assertion used to check only that ``.gitattributes`` was not
+        edited, which is why it did not notice that the refusal fired at
+        the install step with the whole apparatus already on disk and no
+        mention that anything had been written. The script's own
+        preconditions comment names that failure: a tool that half-adopts
+        leaves a repository in a state no test describes. It now holds
+        the same standard as
+        ``test_malformed_markers_are_refused_before_anything_is_written``.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             target, upstream = self.full_adoption(
                 tmp, gitattributes="*.png binary\n"
@@ -425,10 +457,20 @@ class GitattributesTests(AdoptScriptTestCase):
             self.assertNotEqual(code, 0, out)
             self.assertIn("does not pin LF", out)
             self.assertIn("* text eol=lf", out)
+            self.assertIn("NOTHING HAS BEEN WRITTEN", out)
             self.assertEqual(
                 (target / ".gitattributes").read_text(encoding="utf-8"),
                 "*.png binary\n",
                 "the script edited a file it said it would not edit",
+            )
+            for rel in SHARED_FILES:
+                self.assertFalse(
+                    (target / rel).exists(),
+                    f"{rel} was installed before the refusal fired",
+                )
+            self.assertFalse(
+                (target / ".github" / "shared-regions.sha256").exists(),
+                "the record was written before the refusal fired",
             )
 
     def test_the_text_auto_spelling_is_accepted(self):
@@ -440,6 +482,123 @@ class GitattributesTests(AdoptScriptTestCase):
             code, out = self.adopt(target, upstream)
             self.assertEqual(code, 0, out)
             self.assertIn("already pins LF", out)
+
+
+class CheckoutBindingTests(AdoptScriptTestCase):
+    """CRITICAL 2: the checkout must be the revision being installed.
+
+    Every byte comes from the API at the resolved revision, which is what
+    closes the stale-sibling hole. It opens a different one, and the
+    script produced it on its first real use. The operator reads
+    ``fleet/templates/`` in their own checkout, forms a belief about what
+    they are installing, and writes a commit message describing THEIR
+    CHECKOUT. What lands is the revision.
+
+    That happened: adopting ``ddf452e`` from a branch that had reworded
+    the record's placeholder comment installed the older wording with
+    zero warnings and ``33 passed, 0 failed, 0 skipped``, and produced
+    two commit messages in two repositories asserting the opposite of
+    what they contained. At two repositories it gets noticed. At fifteen
+    it is fifteen stale stampings and fifteen false messages.
+
+    The canonical bytes are already fetched by then, so the comparison
+    costs nothing.
+    """
+
+    def diverge_upstream(self, upstream: Path, rel: str):
+        """Make the served revision differ from this working tree."""
+        served = upstream / CANON_PREFIX / rel
+        served.write_text(
+            served.read_text(encoding="utf-8") + "# only upstream has this\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return served
+
+    def test_a_checkout_that_differs_from_the_revision_is_refused(self):
+        for rel in ("tests/test_guard_pins.sh", ".github/workflows/checks.yml"):
+            with self.subTest(rel=rel), tempfile.TemporaryDirectory() as tmp:
+                target, upstream = self.full_adoption(tmp)
+                self.diverge_upstream(upstream, rel)
+                code, out = self.adopt(target, upstream)
+                self.assertNotEqual(code, 0, out)
+                self.assertIn("is not the revision you are adopting", out)
+                self.assertIn(rel, out)
+                self.assertIn("NOTHING HAS BEEN WRITTEN", out)
+                self.assertFalse(
+                    (target / "tests").exists(), "it installed before refusing"
+                )
+
+    def test_a_divergent_record_template_is_refused(self):
+        """The exact file that produced two false commit messages.
+
+        The record is the one file no digest covers, so nothing
+        downstream would ever have caught this.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, upstream = self.full_adoption(tmp)
+            served = upstream / CANON_PREFIX / ".github" / "shared-regions.sha256"
+            served.write_text(
+                served.read_text(encoding="utf-8").replace(
+                    "# The revision below must be a FULL",
+                    "# An older wording of this paragraph.\n# The revision below must be a FULL",
+                    1,
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            code, out = self.adopt(target, upstream)
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("is not the revision you are adopting", out)
+            self.assertIn(".github/shared-regions.sha256", out)
+
+    def test_a_matching_checkout_says_so(self):
+        """The green path must state the binding, not stay silent about it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target, upstream = self.full_adoption(tmp)
+            code, out = self.adopt(target, upstream)
+            self.assertEqual(code, 0, out)
+            self.assertIn("byte-identical to", out)
+            self.assertIn("what you have read is what will be installed", out)
+
+    def test_the_escape_hatch_warns_loudly_and_proceeds(self):
+        """An opt-out has to be louder than the thing it opts out of."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target, upstream = self.full_adoption(tmp)
+            self.diverge_upstream(upstream, "tests/test_guard_pins.sh")
+            code, out = self.adopt(
+                target, upstream, "main", "--allow-template-mismatch"
+            )
+            self.assertIn("INSTALLING BYTES YOU HAVE NOT READ", out)
+            self.assertIn("tests/test_guard_pins.sh", out)
+            self.assertIn("will describe files that were not installed", out)
+            # And it really did install the SERVED bytes, not the local ones.
+            self.assertIn(
+                "# only upstream has this",
+                (target / "tests" / "test_guard_pins.sh").read_text(
+                    encoding="utf-8"
+                ),
+            )
+
+    def test_a_missing_local_template_counts_as_divergence(self):
+        """Running from a checkout that has no templates at all must refuse."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target, upstream = self.full_adoption(tmp)
+            elsewhere = Path(tmp) / "elsewhere" / "fleet"
+            elsewhere.mkdir(parents=True)
+            shutil.copyfile(ADOPT, elsewhere / "adopt.sh")
+            binx = target.parent / "stubbin"
+            write_gh_stub(binx, upstream)
+            env = dict(os.environ)
+            env["PATH"] = str(binx) + os.pathsep + env.get("PATH", "")
+            proc = subprocess.run(
+                [BASH, bash_path(elsewhere / "adopt.sh"),
+                 bash_path(target), "main"],
+                capture_output=True, text=True, env=env,
+            )
+            out = proc.stdout + proc.stderr
+            self.assertNotEqual(proc.returncode, 0, out)
+            self.assertIn("is not the revision you are adopting", out)
 
 
 class PreconditionTests(AdoptScriptTestCase):

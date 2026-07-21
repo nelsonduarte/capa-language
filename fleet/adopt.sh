@@ -70,8 +70,19 @@ usage: bash fleet/adopt.sh <target-repo-dir> <compiler-ref> [--allow-dirty]
                      moving ref in the record would defeat the audit.
 
   --allow-dirty      proceed even though the target has uncommitted
-                     changes. Refused by default so that `git checkout
-                     -- .` is guaranteed to undo everything this writes.
+                     changes. Refused by default so that
+                     `git checkout -- . && git clean -fd` in the target
+                     undoes exactly what this wrote and nothing else.
+                     Both commands: a first adoption writes files that
+                     are untracked, which `checkout` does not touch.
+
+  --allow-template-mismatch
+                     proceed even though this checkout's fleet/templates/
+                     differs from the resolved revision. Refused by
+                     default: every byte is installed from the revision,
+                     not from here, so a mismatch means installing files
+                     nobody has read and describing them from files that
+                     were not installed.
 USAGE
   exit 2
 }
@@ -87,10 +98,12 @@ END_MARK='# ======================= END CONFIG; shared body ====================
 TARGET=""
 REF=""
 ALLOW_DIRTY=""
+ALLOW_MISMATCH=""
 
 for arg in "$@"; do
   case "${arg}" in
-    --allow-dirty) ALLOW_DIRTY=1 ;;
+    --allow-dirty)             ALLOW_DIRTY=1 ;;
+    --allow-template-mismatch) ALLOW_MISMATCH=1 ;;
     -h|--help)     usage ;;
     -*)            echo "unknown option: ${arg}" >&2; usage ;;
     *)
@@ -135,9 +148,29 @@ TARGET="$(cd "${TARGET}" && pwd)"
 
 if [ -z "${ALLOW_DIRTY}" ] && [ -n "$(git -C "${TARGET}" status --porcelain)" ]; then
   die "${TARGET} has uncommitted changes" \
-      "Commit or stash them first, so that \`git checkout -- .\` undoes" \
-      "exactly what this script wrote and nothing else. Pass --allow-dirty" \
-      "to proceed anyway."
+      "Commit or stash them first, so that the undo below is exactly what" \
+      "this script wrote and nothing else. Pass --allow-dirty to proceed."
+fi
+
+# .gitattributes is ASSERTED HERE, with the other preconditions, and not
+# after installing. It needs no network and no fetched bytes, and the
+# refusal used to fire at step 6 with six files already written and no
+# mention that anything had been, which is the "half-adopts and leaves a
+# state no test describes" failure this block's own comment names.
+#
+# CREATING a missing one is a write, so that part waits for the install
+# step below. Only the refusal lives here.
+ATTRS="${TARGET}/.gitattributes"
+if [ -f "${ATTRS}" ] \
+   && ! grep -qE '^\*[[:space:]]+text([[:space:]]*=[[:space:]]*auto)?[[:space:]]+eol=lf[[:space:]]*$' "${ATTRS}"; then
+  die ".gitattributes exists but does not pin LF for every file" \
+      "Add this line to ${ATTRS}:" \
+      "  ${GITATTRIBUTES_RULE}" \
+      "It is not appended automatically because editing a file you wrote is" \
+      "a decision about your repository. Without it a Windows checkout" \
+      "produces different bytes from a Linux one, and the digests this" \
+      "installs would depend on who committed last." \
+      "NOTHING HAS BEEN WRITTEN."
 fi
 info "target: ${TARGET}"
 
@@ -215,6 +248,87 @@ while IFS= read -r entry; do
   info "${rel}"
 done <<< "${ENTRIES}"
 info "${COUNT} shared file(s), and the audit record"
+
+# ---------------------------------------------------------------------
+# BIND THIS CHECKOUT TO THE REVISION BEING INSTALLED.
+#
+# Everything above came from the API at ${REV}, which is what closes the
+# stale-sibling hole. It opens a different one, and this script produced
+# it on its first real use.
+#
+# The operator reads fleet/templates/ in their own checkout, forms a
+# belief about what they are installing, runs this, and writes a commit
+# message describing THEIR CHECKOUT. What lands is ${REV}. When the two
+# differ, every one of those commit messages is false, and the record is
+# the one file no digest covers, so no layer catches it.
+#
+# That is not hypothetical. Adopting ddf452e from a branch that had
+# reworded the record's placeholder comment installed ddf452e's older
+# wording, with zero warnings and 33 passed / 0 failed / 0 skipped, and
+# produced two commit messages in two repositories asserting the
+# opposite of what they contained. At two repositories that gets
+# noticed. At fifteen it is fifteen stale stampings and fifteen false
+# messages.
+#
+# The canonical bytes are already in ${WORK} from the step above, so
+# this comparison is free. It is the same class of guard as the
+# .gitattributes assertion: cheap, and it refuses before anything is
+# written rather than explaining afterwards.
+# ---------------------------------------------------------------------
+say "Binding this checkout to ${REV}"
+
+FLEET_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+MISMATCH=""
+compare_local() {
+  # compare_local <path-as-adopter-sees-it> <fetched-file>
+  local here="${FLEET_DIR}/templates/$1"
+  if [ ! -f "${here}" ] || ! cmp -s "${here}" "$2"; then
+    MISMATCH="${MISMATCH}
+           ${1}"
+  fi
+}
+
+while IFS= read -r entry; do
+  [ -n "${entry}" ] || continue
+  rel="${entry#*:}"; rel="${rel%%:*}"
+  compare_local "${rel}" "${WORK}/new/${rel}"
+done <<< "${ENTRIES}"
+compare_local "${RECORD_REL}" "${WORK}/record"
+
+if [ -z "${MISMATCH}" ]; then
+  info "fleet/templates/ here is byte-identical to ${REV}"
+  info "what you have read is what will be installed"
+elif [ -n "${ALLOW_MISMATCH}" ]; then
+  echo
+  echo "    ############################################################"
+  echo "    # WARNING: INSTALLING BYTES YOU HAVE NOT READ.             #"
+  echo "    ############################################################"
+  echo "    Your fleet/templates/ differs from ${REV} in:${MISMATCH}"
+  echo
+  echo "    ${REV} is what gets installed and pinned. Your checkout is"
+  echo "    NOT. Any commit message you write from what you can see here"
+  echo "    will describe files that were not installed."
+  echo
+else
+  die "your fleet/templates/ is not the revision you are adopting" \
+      "These files differ between this checkout and ${REV}:${MISMATCH}" \
+      "" \
+      "${REV} is what gets installed and pinned; this checkout is not read" \
+      "for any byte. So whatever you have reviewed locally, and whatever" \
+      "commit message you write from it, would describe files that were" \
+      "never installed. This script has already produced exactly that, in" \
+      "two repositories, on its first real use." \
+      "" \
+      "Either check out the revision you mean to adopt:" \
+      "    git -C ${FLEET_DIR%/fleet} checkout ${REV}" \
+      "or adopt the revision you have:" \
+      "    push this checkout, then pass the resulting commit" \
+      "or, if you genuinely mean to install bytes you have not read," \
+      "pass --allow-template-mismatch." \
+      "" \
+      "NOTHING HAS BEEN WRITTEN."
+fi
 
 # ---------------------------------------------------------------------
 # CONFIG PRESERVATION, which is the hard part and the reason this
@@ -326,14 +440,31 @@ done <<< "${ENTRIES}"
 # ---------------------------------------------------------------------
 say "Installing into ${TARGET}"
 
-OLD_REV="$(awk '{ sub(/\r$/, "") } $1 == "revision" { print $2; exit }' \
-  "${TARGET}/${RECORD_REL}" 2>/dev/null || true)"
+HAD_RECORD=""
+OLD_REV=""
+if [ -f "${TARGET}/${RECORD_REL}" ]; then
+  HAD_RECORD=1
+  OLD_REV="$(awk '{ sub(/\r$/, "") } $1 == "revision" { print $2; exit }' \
+    "${TARGET}/${RECORD_REL}")"
+fi
 
+# `set -e` is deliberately NOT on, because several branches here read a
+# command's status rather than trusting it, so these two writes are
+# checked by hand. An unchecked mkdir or cp would leave a partially
+# installed tree that only step 8 would notice, and it would notice it
+# as DRIFT rather than as a failed copy, which is a diagnosis pointing
+# at the wrong thing entirely.
 while IFS= read -r entry; do
   [ -n "${entry}" ] || continue
   rel="${entry#*:}"; rel="${rel%%:*}"
-  mkdir -p "${TARGET}/$(dirname "${rel}")"
-  cp "${WORK}/new/${rel}" "${TARGET}/${rel}"
+  mkdir -p "${TARGET}/$(dirname "${rel}")" \
+    || die "could not create $(dirname "${rel}") in ${TARGET}" \
+           "The tree is now PARTIALLY INSTALLED. Undo with:" \
+           "    git -C ${TARGET} checkout -- . && git -C ${TARGET} clean -fd"
+  cp "${WORK}/new/${rel}" "${TARGET}/${rel}" \
+    || die "could not write ${rel} into ${TARGET}" \
+           "The tree is now PARTIALLY INSTALLED. Undo with:" \
+           "    git -C ${TARGET} checkout -- . && git -C ${TARGET} clean -fd"
   info "${rel}"
 done <<< "${ENTRIES}"
 
@@ -341,31 +472,40 @@ done <<< "${ENTRIES}"
 # deliberately unusable placeholder. The DIGESTS are the template's own,
 # untouched, straight from ${REV}. This is the whole point: no human
 # transcribes a digest and no sibling repository is ever read.
-mkdir -p "${TARGET}/$(dirname "${RECORD_REL}")"
+mkdir -p "${TARGET}/$(dirname "${RECORD_REL}")" \
+  || die "could not create $(dirname "${RECORD_REL}") in ${TARGET}"
 awk -v rev="${REV}" '
   { sub(/\r$/, "") }
   $1 == "revision" { print "revision " rev; next }
   { print }
-' "${WORK}/record" > "${TARGET}/${RECORD_REL}"
+' "${WORK}/record" > "${TARGET}/${RECORD_REL}" \
+  || die "could not write ${RECORD_REL} into ${TARGET}" \
+         "The tree is now PARTIALLY INSTALLED. Undo with:" \
+         "    git -C ${TARGET} checkout -- . && git -C ${TARGET} clean -fd"
 info "${RECORD_REL}  (revision ${REV})"
-if [ -n "${OLD_REV}" ] && [ "${OLD_REV}" != "${REV}" ]; then
-  info "  was pinned to ${OLD_REV}"
+
+# REPORTED UNCONDITIONALLY, not only when the revision moved. Gating it
+# on a changed revision left the single case the record's own header
+# warns about, digests transcribed forward with the revision ALREADY
+# bumped, as the one case that printed nothing at all about five digests
+# and four files having just been replaced.
+if [ -n "${HAD_RECORD}" ]; then
+  info "  replaced the record that was here (pinned ${OLD_REV:-nothing usable})"
 fi
 
 # ---------------------------------------------------------------------
 # .gitattributes. Step 3 of the old prose checklist, asserted by nothing
-# until now, in an apparatus whose every CRLF handler exists because
-# this has bitten repeatedly. On the sixteenth repository someone was
-# going to skip it.
+# until this script existed, in an apparatus whose every CRLF handler is
+# there because that has bitten repeatedly. On the sixteenth repository
+# someone was going to skip it.
 #
-# A MISSING file is created, which is not destructive. An EXISTING file
-# without an LF rule is a refusal, because appending to a file somebody
-# wrote is a decision about their repository and not this script's to
-# make.
+# The REFUSAL, for a file that exists and does not pin LF, is in the
+# preconditions block: it needs no network and no fetched bytes, and
+# refusing here would leave six files written. Only the CREATION of a
+# missing file is left, because that is a write and writes belong here.
 # ---------------------------------------------------------------------
-say "Asserting .gitattributes pins LF"
+say "Ensuring .gitattributes pins LF"
 
-ATTRS="${TARGET}/.gitattributes"
 if [ ! -f "${ATTRS}" ]; then
   {
     echo "# Keep every committed file LF-terminated on every platform. The"
@@ -409,8 +549,11 @@ if [ -n "${ADOPTION_OK}" ]; then
   echo "ADOPTED: ${TARGET} at ${REV}"
 else
   echo "INSTALLED, BUT THE CHECK IS RED. Read the failures above." >&2
-  echo "Nothing outside this repository was changed; \`git -C ${TARGET} checkout -- .\`" >&2
-  echo "undoes everything this wrote." >&2
+  echo "Nothing outside ${TARGET} was changed. To undo everything:" >&2
+  echo "    git -C ${TARGET} checkout -- . && git -C ${TARGET} clean -fd" >&2
+  echo "BOTH commands are needed. On a first adoption every file this wrote" >&2
+  echo "is UNTRACKED, and \`git checkout -- .\` does not touch untracked files," >&2
+  echo "so on its own it would leave the whole installation in place." >&2
 fi
 
 echo

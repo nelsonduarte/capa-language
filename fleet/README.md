@@ -212,11 +212,26 @@ obvious way to make it green is the wrong action; everywhere else the
 wrong move looks wrong. The script does not discourage that path, it
 removes it: no human transcribes a digest and no sibling is ever read.
 
+**Run it from a checkout of the revision you are adopting.** It refuses
+otherwise, and that refusal is the second thing it exists for. Every
+byte comes from the API at the resolved revision; your checkout is not
+read for any of them. So if your `fleet/templates/` differs from that
+revision, you install files you have not read and then write a commit
+message describing files that were not installed. That is not
+hypothetical: the script's first real use adopted `ddf452e` from a
+branch carrying an unpushed template change, installed `ddf452e`, and
+produced two commit messages in two repositories asserting the opposite
+of what they contained. The record is the one file no digest covers, so
+nothing downstream would ever have caught it. At two repos it gets
+noticed; at fifteen it is fifteen stale stampings.
+
 **When it refuses rather than repairs.** A CONFIG block whose markers
 are malformed, or whose set of assigned names differs from the
 template's in either direction. Both are questions about what your
 repository means, and a script that answered them would invent a value
 nobody chose. The refusal names the file and the exact names.
+
+All refusals fire **before anything is written**, and say so.
 
 **What it does not reach.** Whether Actions is enabled, whether branch
 protection requires these checks, and the required-check configuration.
