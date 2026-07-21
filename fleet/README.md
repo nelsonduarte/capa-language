@@ -37,6 +37,7 @@ release actually runs.
 | `shared-regions.sha256` | The canonical digests, which the adopter record copies. |
 | `shared_region_digest.sh` | Regenerates those digests after a deliberate change here. |
 | `adopt.sh` | Performs an adoption or a re-pin against one repository. Not copied into adopters, and not in the record; see below. |
+| `guard_pins.sh` | Writes one repository's `.github/guard-pins.sha256` by fetching, and leaves the audit note blank. Same reasoning. |
 
 The templates are stored as COMPLETE files rather than as headerless
 fragments, so that the extraction logic is identical on both sides of
@@ -246,6 +247,39 @@ would manufacture the problem the record exists to solve. It is held
 honest the way `tools/check_tag_version.sh` is: one copy, tested where
 it lives, by `tests/test_fleet_adopt.py`.
 
+### The guard-pin record, and why it is a second command
+
+`.github/guard-pins.sha256` records the digest of every file the release
+guards execute, at the revision `release.yml` pins. That revision is
+**independent** of the shared-region one by design, so it cannot be
+folded into `adopt.sh`: one shared revision would make every guard bump
+force a wiring re-audit and every wiring bump force a guard re-audit,
+and on a first adoption `release.yml` does not exist yet.
+
+```
+bash fleet/guard_pins.sh <target-repo-dir> [guard-ref]
+```
+
+Until it existed, nothing produced this file, and the adoption checklist
+said to copy it "from the template repository", which did not exist. So
+the only source was another adopter. **A copied record passes every
+check having audited nothing**, because its digests genuinely are the
+pinned revision's bytes: 14 passed, 0 failed, exit 0. The hole was never
+in the digests. It was in what the file claimed about how it came to
+exist, and `capa_hex`'s said, in prose a `cp` carries verbatim, that
+"each digest below was recomputed here" and "ALL FIVE FILES WERE READ AT
+THIS REVISION". Both false in the receiving repository, and unfalsifiable
+there.
+
+So the generator does the mechanical half and leaves the rest blank:
+
+> **A record should never carry a pre-written sentence describing work a
+> human did, because copies carry the sentence and not the work.**
+
+`tests/test_guard_pins.sh` refuses the record while the blank survives,
+which turns an unverifiable claim into a red test. It cannot tell whether
+you read the guard files; it can ensure the file does not claim you did.
+
 ### What the script does not do for you
 
 1. Fill in the CONFIG block of the two wiring tests. On a fresh adoption
@@ -254,10 +288,18 @@ it lives, by `tests/test_fleet_adopt.py`.
    reddens, which will name every top-level module you have not
    accounted for. Edit ONLY the CONFIG block: nothing else in those two
    files, and nothing at all in the other three.
-2. The release workflows, the manifest floor and the clean-room
-   rehearsal, which are the checklist in the wiring test's own header.
-3. Require the `checks` workflow on the default branch, in the
-   repository settings, and confirm Actions is enabled.
+2. Copy `.github/workflows/{release,guard-selftest}.yml` from an
+   existing adopter and adapt their consumer flow. There is no template
+   for those two because they are genuinely repo-specific, and
+   `tests/test_release_wiring.sh` checks the adaptation in detail, which
+   is what makes copying them safe.
+3. `bash fleet/guard_pins.sh <target>`, then READ the guard files and
+   write the audit note it leaves blank.
+4. The manifest floor and the clean-room rehearsal, which are the rest
+   of the checklist in the wiring test's own header.
+5. Require the `checks` workflow on the default branch, in the
+   repository settings. `adopt.sh` now REPORTS what it finds there,
+   since `gh` is a hard precondition anyway, but it cannot change it.
 
 If you are adopting by hand instead, the steps are: copy all four of
 `templates/tests/*.sh` into `tests/`; copy

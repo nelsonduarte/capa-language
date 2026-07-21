@@ -106,16 +106,68 @@ if printf '%s' "${PIN}" | grep -qE '^[0-9a-f]{40}$'; then
   ok "release.yml pins a full 40-character guard revision (${PIN})"
 else
   no "release.yml does not pin a full 40-character guard revision (got '${PIN}')"
+  if [ -z "${PIN}" ]; then
+    echo "     Nothing in release.yml calls the shared release guards. Expected"
+    echo "     a line of the form:"
+    echo "         uses: ${GUARD_REPO}/${GUARD_WORKFLOW}@<40-character sha>"
+    echo "     If this repository is mid-adoption: copy release.yml and"
+    echo "     guard-selftest.yml from an existing adopter, adapt their"
+    echo "     consumer flow to this package, then follow the checklist in the"
+    echo "     header of tests/test_release_wiring.sh."
+  else
+    echo "     A tag or a branch here would let the guards change under you."
+    echo "     Resolve it to a commit SHA and pin that."
+  fi
   finish
   exit 1
 fi
 
 if [ ! -f "${PINS}" ]; then
   no "the audited guard digests are recorded (.github/guard-pins.sha256)"
+  echo "     There is no record here. Write one FROM THE PINNED REVISION:"
+  echo "         bash fleet/guard_pins.sh <this repository>"
+  echo "     run from a checkout of the compiler repository."
+  echo "     DO NOT COPY THIS FILE FROM ANOTHER ADOPTER. A copied record"
+  echo "     passes every check below while having audited nothing: its"
+  echo "     digests really are the pinned revision's bytes, so nothing here"
+  echo "     can tell the difference. What a copy cannot carry is the"
+  echo "     reading, and the reading is the entire point of the record."
   finish
   exit 1
 fi
 ok "the audited guard digests are recorded (.github/guard-pins.sha256)"
+
+# THE AUDIT NOTE MUST HAVE BEEN WRITTEN BY A HUMAN.
+#
+# fleet/guard_pins.sh leaves a marked blank where the note goes, and this
+# refuses the record while the marker survives. The reason generalises
+# past this file and is worth stating where it is enforced:
+#
+#   A RECORD SHOULD NEVER CARRY A PRE-WRITTEN SENTENCE DESCRIBING WORK A
+#   HUMAN DID, BECAUSE COPIES CARRY THE SENTENCE AND NOT THE WORK.
+#
+# This record used to be obtainable only by copying another adopter's,
+# because nothing generated it and the adoption checklist said to take it
+# from a template repository that did not exist. The copy then asserted,
+# inside its new repository, "each digest below was recomputed here by
+# re-fetching the file at the pin" and "ALL FIVE FILES WERE READ AT THIS
+# REVISION, not accepted on their digests". Both false there, and no
+# layer could falsify them, because the digests were genuinely correct.
+# A blank that fails closed turns that from a sentence nobody can check
+# into a red test.
+if grep -q 'REPLACE-THIS-AUDIT-NOTE' "${PINS}"; then
+  no "the audit note in guard-pins.sha256 has not been written"
+  echo "     fleet/guard_pins.sh fetched and hashed the guard files, which is"
+  echo "     the mechanical half. The other half is reading them, and it left"
+  echo "     a marked blank rather than prose you would carry without having"
+  echo "     done the work. Replace the AUDIT NOTE block with what you"
+  echo "     actually read at this revision: what changed since the one it"
+  echo "     replaces, and which files you opened rather than accepted on"
+  echo "     their digest. If you read none of them, write that instead."
+  finish
+  exit 1
+fi
+ok "the audit note has been written"
 
 AUDITED_REV="$(awk '{ sub(/\r$/, "") } $1 == "revision" { print $2; exit }' "${PINS}")"
 

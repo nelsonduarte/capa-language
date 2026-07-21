@@ -70,6 +70,25 @@ CEILING_NAME=Stdio
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WIRING_TEST=tests/test_release_wiring.sh
+
+# THE TWO WORKFLOWS MUST EXIST BEFORE ANY MUTATION RUNS. Every mutation
+# below edits both of them with `sed -i`, so on a repository that has
+# only just been adopted and has not copied them yet, sed printed
+# `can't read .github/workflows/guard-selftest.yml` into the middle of
+# the output and the harness carried on producing meaningless verdicts.
+# A missing precondition should say so once, not leak a tool's error
+# once per mutation.
+for _wf in .github/workflows/release.yml .github/workflows/guard-selftest.yml; do
+  if [ ! -f "${REPO_ROOT}/${_wf}" ]; then
+    echo "FAIL: ${_wf} not found" >&2
+    echo "      Every mutation here edits both release.yml and" >&2
+    echo "      guard-selftest.yml, so there is nothing to mutate and any" >&2
+    echo "      verdict would be meaningless. Copy both from an existing" >&2
+    echo "      adopter and adapt their consumer flow to this package; see" >&2
+    echo "      the adoption checklist in tests/test_release_wiring.sh." >&2
+    exit 1
+  fi
+done
 SHARED_TEST=tests/test_shared_regions.sh
 MUTATIONS_TEST=tests/test_wiring_mutations.sh
 

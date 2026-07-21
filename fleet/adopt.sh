@@ -536,6 +536,46 @@ fi
 # that they can be held against each other. The authority on whether an
 # adoption is correct is the check the adoption installs.
 # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# REPORT what the repository settings say. This cannot ENFORCE anything:
+# branch protection is not in git, and a script that wrote it would need
+# admin rights nobody should hand an adoption tool. But "no file-based
+# tool reaches this" stopped being true when gh became a hard
+# precondition above, and an unverifiable claim in a checklist is worth
+# less than a fact printed once. So it looks, and says what it found.
+# ---------------------------------------------------------------------
+say "Reporting repository settings (not enforcing them)"
+
+SLUG="$(git -C "${TARGET}" remote get-url origin 2>/dev/null \
+        | sed -E 's|^git@github\.com:|https://github.com/|; s|\.git$||' \
+        | sed -E 's|^https://github\.com/||')"
+
+if [ -z "${SLUG}" ]; then
+  info "no origin remote, so nothing to query"
+  SETTINGS_NOTE="not checked (no origin remote)"
+elif ! ACTIONS="$(gh api "repos/${SLUG}/actions/permissions" --jq .enabled 2>/dev/null)"; then
+  info "could not read ${SLUG} settings; the token may not carry the scope"
+  SETTINGS_NOTE="not checked (settings unreadable)"
+else
+  if [ "${ACTIONS}" = "true" ]; then
+    info "Actions: enabled"
+  else
+    info "Actions: DISABLED. Nothing installed here will ever run."
+  fi
+
+  BRANCH="$(gh api "repos/${SLUG}" --jq .default_branch 2>/dev/null)"
+  CONTEXTS="$(gh api "repos/${SLUG}/branches/${BRANCH}/protection" \
+                --jq '.required_status_checks.contexts[]?' 2>/dev/null)"
+  if [ -z "${CONTEXTS}" ]; then
+    info "${BRANCH}: no required status checks (or protection is unreadable)"
+    info "  the checks installed here will RUN but will not BLOCK a merge"
+    SETTINGS_NOTE="required checks: none on ${BRANCH}"
+  elif printf '%s\n' "${CONTEXTS}" | grep -q .; then
+    info "${BRANCH} requires: $(printf '%s' "${CONTEXTS}" | tr '\n' ' ')"
+    SETTINGS_NOTE="required checks: $(printf '%s' "${CONTEXTS}" | tr '\n' ' ')"
+  fi
+fi
+
 say "Running the installed drift check"
 
 if bash "${TARGET}/tests/test_shared_regions.sh" 2>&1 | sed 's/^/    /'; then
@@ -545,8 +585,28 @@ else
 fi
 
 echo
-if [ -n "${ADOPTION_OK}" ]; then
+if [ -n "${ADOPTION_OK}" ] && [ -z "${FRESH}" ]; then
   echo "ADOPTED: ${TARGET} at ${REV}"
+elif [ -n "${ADOPTION_OK}" ]; then
+  # THE DRIFT CHECK PASSES AND THE REPOSITORY IS NOT ADOPTED. On a first
+  # adoption the CONFIG blocks are still the template's placeholders, so
+  # three of the four checks just installed are red: the wiring test
+  # against a config describing another package, the mutation harness
+  # whose control therefore fails, and the guard-pin audit against a
+  # record that does not exist yet.
+  #
+  # It used to print ADOPTED and exit 0 here, with the work listed below
+  # it. That is fine for one repository and wrong for fifteen driven in
+  # a loop, where the operator reads the last line and the exit status
+  # and moves on. So it says what happened and exits non-zero, and the
+  # loop stops.
+  echo "INSTALLED, NOT YET ADOPTED: ${TARGET} at ${REV}"
+  echo
+  echo "The five shared files are in place and the drift check is green."
+  echo "The CONFIG blocks are still the TEMPLATE'S PLACEHOLDERS, so this"
+  echo "repository is not adopted yet and three of the four checks just"
+  echo "installed are red. Exiting non-zero for that reason, so that a"
+  echo "loop over several repositories stops here rather than accumulating."
 else
   echo "INSTALLED, BUT THE CHECK IS RED. Read the failures above." >&2
   echo "Nothing outside ${TARGET} was changed. To undo everything:" >&2
@@ -565,11 +625,28 @@ if [ -n "${FRESH}" ]; then
   echo "    and fix what it reddens; it will name every top-level module you"
   echo "    have not accounted for."
 fi
-echo "  * Follow the adoption checklist in tests/test_release_wiring.sh's own"
-echo "    header, which covers the release workflows, the manifest floor and"
-echo "    the clean-room rehearsal. This script does not write those."
-echo "  * In the repository's SETTINGS, require the \`checks\` workflow on the"
-echo "    default branch, and confirm Actions is enabled. Those live outside"
-echo "    git; no file here reaches them and nothing here has checked them."
+echo "  * Copy .github/workflows/{release,guard-selftest}.yml from an existing"
+echo "    adopter and adapt their consumer flow to this package. There is no"
+echo "    template for those two because they are genuinely repo-specific,"
+echo "    and tests/test_release_wiring.sh checks the adaptation in detail."
+echo "  * Write .github/guard-pins.sha256 with"
+echo "        bash fleet/guard_pins.sh ${TARGET}"
+echo "    and then READ the guard files and fill in the audit note it leaves"
+echo "    blank. DO NOT COPY that file from another adopter: a copied one"
+echo "    passes every check having audited nothing, because its digests"
+echo "    really are the pinned revision's bytes."
+echo "  * Follow the rest of the checklist in tests/test_release_wiring.sh's"
+echo "    own header: the manifest floor and the clean-room rehearsal."
+echo "  * REPOSITORY SETTINGS, which this reported above but cannot change:"
+echo "        ${SETTINGS_NOTE:-not checked}"
+echo "    Require the \`checks\` workflow on the default branch. Branch"
+echo "    protection is not in git and no file here reaches it."
 
-[ -n "${ADOPTION_OK}" ]
+# EXIT 0 ONLY IF THIS REPOSITORY IS ACTUALLY ADOPTED: the drift check
+# passed AND no CONFIG block is still a placeholder. The status used to
+# depend on the drift check alone, so a first adoption reported success
+# while three of the four checks it had just installed were red. For one
+# repository that is harmless, because the work is listed above it. For
+# fifteen driven in a loop it is not, because the operator reads the
+# exit status and moves on.
+[ -n "${ADOPTION_OK}" ] && [ -z "${FRESH}" ]
