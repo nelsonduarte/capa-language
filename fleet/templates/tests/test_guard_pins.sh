@@ -102,7 +102,12 @@ fi
 PIN="$(sed -n 's|^[[:space:]]*uses:[[:space:]]*'"${GUARD_REPO}"'/\.github/workflows/release-guards\.yml@||p' "${WORKFLOW}")"
 PIN="${PIN%%[[:space:]]*}"
 
-if printf '%s' "${PIN}" | grep -qE '^[0-9a-f]{40}$'; then
+# A here-string rather than `printf | grep -q`. `pipefail` is set, and
+# `grep -q` exits at its first match while the producer is still
+# writing, so the producer takes SIGPIPE and the PIPELINE reports 141 on
+# a search that SUCCEEDED, which here would report a well-formed pin as
+# malformed and stop the run. A redirection has no producer to kill.
+if grep -qE '^[0-9a-f]{40}$' <<< "${PIN}"; then
   ok "release.yml pins a full 40-character guard revision (${PIN})"
 else
   no "release.yml does not pin a full 40-character guard revision (got '${PIN}')"

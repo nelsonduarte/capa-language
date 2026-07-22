@@ -439,7 +439,14 @@ ok "the shared-region audit record exists (.github/shared-regions.sha256)"
 # exercise to be skipped.
 CANON_REV="$(awk '{ sub(/\r$/, "") } $1 == "revision" { print $2; exit }' "${RECORD}")"
 
-if printf '%s' "${CANON_REV}" | grep -qE '^[0-9a-f]{40}$'; then
+# A here-string rather than `printf | grep -q`. `pipefail` is set, and
+# `grep -q` exits at its first match while the producer is still
+# writing, so the producer takes SIGPIPE and the PIPELINE reports 141 on
+# a search that SUCCEEDED. The note above the naming check below records
+# the same defect; a drift check must never go red for a reason that has
+# nothing to do with drift, because a spurious red here is what teaches
+# people to ignore it.
+if grep -qE '^[0-9a-f]{40}$' <<< "${CANON_REV}"; then
   ok "the audit record pins a full 40-character canonical revision (${CANON_REV})"
 else
   no "the audit record pins no usable canonical revision (got '${CANON_REV}')"

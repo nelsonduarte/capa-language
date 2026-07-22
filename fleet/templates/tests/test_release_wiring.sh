@@ -280,6 +280,49 @@ check() {
   if eval "${condition}"; then ok "${desc}"; else no "${desc}"; fi
 }
 
+# --- searching captured text WITHOUT a pipeline -------------------------
+#
+# NOTHING BELOW MAY WRITE A CAPTURED BLOCK INTO A PIPELINE WHOSE READER
+# CAN STOP EARLY. `pipefail` is set above, and `grep -q` exits at its
+# FIRST match while the producer is still writing, so the producer dies
+# of SIGPIPE and the PIPELINE reports 141 on a search that SUCCEEDED.
+# `head`, `grep -m` and anything else that closes its input do the same.
+#
+# That made the answer depend on how much text FOLLOWS the match, and
+# on the machine. `printf` writes in buffer-sized chunks, and only a
+# chunk issued AFTER the reader has gone takes the signal, so a block
+# that fits in one write was always answered correctly and a longer one
+# was a race the producer usually but not always won. The buffer is
+# about 4 KiB where stdio sizes it from a pipe's st_blksize, which is
+# the Linux runners, and the pipe's own 64 KiB capacity where the shell
+# buffers more, which is MSYS. Measured on a valid manifest the
+# `[capabilities]` check failed 7 runs in 15; with 200 comment lines
+# added after `max` it failed 10 out of 10; past 64 KiB of tail it fails
+# 20 out of 20 everywhere, because no producer can finish a write that
+# large after the reader has exited.
+#
+# BOTH DIRECTIONS WERE WRONG, and the negated one was the dangerous one.
+# `printf ... | grep -q X` reporting 141 turns a genuine match into a
+# failed check, which is noise; `! printf ... | grep -q X` turns 141
+# into SUCCESS, so `continue-on-error` sitting early in a long job block
+# was reported as absent. A release gate that had been switched off read
+# as green, which is the exact class of defect this file exists to
+# catch.
+#
+# A here-string is a redirection and not a pipeline, so there is no
+# producer to kill, no `pipefail` to trip and no dependence on the
+# length of the input. The empty case is unchanged: `printf "%s" ""`
+# offers grep zero lines and `<<< ""` offers one empty line, and no
+# pattern used here matches an empty line.
+matches()  { grep -qE -- "$2" <<< "$1"; }
+contains() { grep -qF -- "$2" <<< "$1"; }
+has_line() { grep -qxF -- "$2" <<< "$1"; }
+
+# `head -1` with the same defect one layer down: it closes the pipe on a
+# producer that is still writing. This prints the first line and then
+# CONSUMES THE REST rather than exiting, which is the whole difference.
+first_line() { awk 'NR == 1'; }
+
 if [ ! -f "${WORKFLOW}" ]; then
   echo "FAIL: ${WORKFLOW} not found" >&2
   exit 1
@@ -314,37 +357,37 @@ USES="$(printf '%s\n' "${GUARDS}" | sed -n 's/^[[:space:]]*uses:[[:space:]]*//p'
 check "the guards job calls a reusable workflow" '[ -n "${USES}" ]'
 
 check "it calls the shared guards, not a local copy" \
-  'printf "%s" "${USES}" | grep -qF "${GUARD_REPO}/${GUARD_PATH}@"'
+  'contains "${USES}" "${GUARD_REPO}/${GUARD_PATH}@"'
 
 # The pin itself. A tag is mutable and a branch more so, so anything
 # that is not a full 40-hex commit SHA is refused. An abbreviated SHA is
 # refused too: abbreviations can become ambiguous as a repository grows.
 PIN="${USES##*@}"
 check "the guards are pinned by a full 40-character commit SHA (got '${PIN}')" \
-  'printf "%s" "${PIN}" | grep -qE "^[0-9a-f]{40}$"'
+  'matches "${PIN}" "^[0-9a-f]{40}$"'
 
 # --- the guards actually gate the release ------------------------------
 
 check "the release job declares needs: guards" \
-  'printf "%s" "${RELEASE}" | grep -qE "^[[:space:]]*needs:[[:space:]]*(guards|\[[[:space:]]*guards[[:space:]]*\])[[:space:]]*$"'
+  'matches "${RELEASE}" "^[[:space:]]*needs:[[:space:]]*(guards|\[[[:space:]]*guards[[:space:]]*\])[[:space:]]*$"'
 
 # `continue-on-error` on the guards job turns a failing gate into a
 # passing one, which is the single most dangerous edit possible here.
 check "the guards job does not set continue-on-error" \
-  '! printf "%s" "${GUARDS}" | grep -qE "^[[:space:]]*continue-on-error:"'
+  '! matches "${GUARDS}" "^[[:space:]]*continue-on-error:"'
 
 check "the release job does not set continue-on-error" \
-  '! printf "%s" "${RELEASE}" | grep -qE "^[[:space:]]*continue-on-error:"'
+  '! matches "${RELEASE}" "^[[:space:]]*continue-on-error:"'
 
 # A job-level `if:` on the release job can defeat `needs:` entirely:
 # `if: always()` and `if: !cancelled()` both run the job after the
 # guards have failed. Step-level `if:` keys sit deeper than four spaces
 # and are not matched here.
 check "the release job has no job-level if: that could bypass the guards" \
-  '! printf "%s" "${RELEASE}" | grep -qE "^    if:"'
+  '! matches "${RELEASE}" "^    if:"'
 
 check "the guards job has no job-level if: that could skip it" \
-  '! printf "%s" "${GUARDS}" | grep -qE "^    if:"'
+  '! matches "${GUARDS}" "^    if:"'
 
 # --- the declared compiler floor ---------------------------------------
 #
@@ -367,7 +410,7 @@ if [ ! -f "${MANIFEST}" ]; then
   FLOOR_RAW=""
 else
   ok "capa.toml exists"
-  FLOOR_RAW="$(package_block | sed -n 's/^[[:space:]]*capa[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  FLOOR_RAW="$(package_block | sed -n 's/^[[:space:]]*capa[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | first_line)"
 fi
 
 check "capa.toml [package] declares a compiler floor (got '${FLOOR_RAW}')" \
@@ -376,7 +419,7 @@ check "capa.toml [package] declares a compiler floor (got '${FLOOR_RAW}')" \
 # The guard parses this key, so the form is load-bearing too: anything
 # other than a plain `>=X.Y.Z` is refused rather than interpreted.
 check "the floor is written as >=X.Y.Z" \
-  'printf "%s" "${FLOOR_RAW}" | grep -qE "^>=[0-9]+\.[0-9]+\.[0-9]+$"'
+  'matches "${FLOOR_RAW}" "^>=[0-9]+\.[0-9]+\.[0-9]+$"'
 
 FLOOR_VER="${FLOOR_RAW#>=}"
 
@@ -385,9 +428,9 @@ FLOOR_VER="${FLOOR_RAW#>=}"
 # must say so rather than guess an answer.
 if ! printf '1.2.3\n1.2.4\n' | sort -V >/dev/null 2>&1; then
   skip "the declared floor is at least the fleet floor ${FLEET_FLOOR_MIN} (sort -V unavailable)"
-elif ! printf "%s" "${FLOOR_VER}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+elif ! matches "${FLOOR_VER}" '^[0-9]+\.[0-9]+\.[0-9]+$'; then
   no "the declared floor is at least the fleet floor ${FLEET_FLOOR_MIN} (unparseable floor '${FLOOR_RAW}')"
-elif [ "$(printf '%s\n%s\n' "${FLOOR_VER}" "${FLEET_FLOOR_MIN}" | sort -V | head -1)" = "${FLEET_FLOOR_MIN}" ]; then
+elif [ "$(printf '%s\n%s\n' "${FLOOR_VER}" "${FLEET_FLOOR_MIN}" | sort -V | first_line)" = "${FLEET_FLOOR_MIN}" ]; then
   ok "the declared floor ${FLOOR_RAW} is at least the fleet floor ${FLEET_FLOOR_MIN}"
 else
   no "the declared floor ${FLOOR_RAW} is BELOW the fleet floor ${FLEET_FLOOR_MIN}; every package self-imports capa_<name>.<module> and no release below 1.18.0 can resolve that in an extracted tarball"
@@ -411,12 +454,12 @@ COMMANDS="$(printf '%s\n' "${GUARDS}" | awk '
 # `hex.capa`. Fixed-string, whole-line matching has no such reading.
 COMMANDS_TRIMMED="$(printf '%s\n' "${COMMANDS}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
 
-flow_has() { printf '%s\n' "${COMMANDS_TRIMMED}" | grep -qxF "$1"; }
+flow_has() { has_line "${COMMANDS_TRIMMED}" "$1"; }
 
 check "the clean room is given consumer commands" '[ -n "${COMMANDS}" ]'
 
 check "the consumer flow imports the publisher key first" \
-  '[ "$(printf "%s\n" "${COMMANDS}" | head -1 | tr -d "[:space:]")" = "gpg--importpublisher.asc" ]'
+  '[ "$(printf "%s\n" "${COMMANDS}" | first_line | tr -d "[:space:]")" = "gpg--importpublisher.asc" ]'
 
 check "the consumer flow installs dependencies" 'flow_has "capa install"'
 
@@ -430,7 +473,7 @@ if [ "${NEEDS_NEST_VENDOR}" = "yes" ]; then
     'flow_has "python tools/nest_vendor.py"'
 else
   check "the consumer flow does NOT carry a nest_vendor step it has no tools/ for" \
-    '! printf "%s" "${COMMANDS}" | grep -qF "nest_vendor"'
+    '! contains "${COMMANDS}" "nest_vendor"'
 fi
 
 # --- every configured module names a file that is really there ---------
@@ -556,7 +599,7 @@ else
   # Without a ceiling the command prints "nothing to verify" and exits
   # 0, so its presence would be a green step that inspected nothing.
   check "the consumer flow does NOT run a --check-capabilities that would verify nothing" \
-    '! printf "%s" "${COMMANDS}" | grep -qF -- "--check-capabilities"'
+    '! contains "${COMMANDS}" "--check-capabilities"'
 fi
 
 # The negatives. Each is asserted in the flow in a form that requires
@@ -611,7 +654,7 @@ if [ "${DECLARES_CEILING}" = "yes" ]; then
   # An unparseable `max` (a multi-line array, a missing key) must not be
   # read as an empty one, which would silently pass every check below.
   check "capa.toml's [capabilities].max parses as a single-line array" \
-    'printf "%s\n" "$(awk "/^[[:space:]]*\[capabilities\][[:space:]]*\$/ { in_c = 1; next } in_c && /^[[:space:]]*\[/ { in_c = 0 } in_c { print }" "${MANIFEST}")" | grep -qE "^[[:space:]]*max[[:space:]]*=[[:space:]]*\[.*\][[:space:]]*$"'
+    'matches "$(awk "/^[[:space:]]*\[capabilities\][[:space:]]*\$/ { in_c = 1; next } in_c && /^[[:space:]]*\[/ { in_c = 0 } in_c { print }" "${MANIFEST}")" "^[[:space:]]*max[[:space:]]*=[[:space:]]*\[.*\][[:space:]]*$"'
 
   UNKNOWN=""
   while IFS= read -r name; do
@@ -629,7 +672,7 @@ EOF
 
   EXCLUDED=""
   for cap in ${KNOWN_CAPABILITIES}; do
-    printf '%s\n' "${CEILING_MAX}" | grep -qxF "${cap}" || EXCLUDED="${EXCLUDED}${cap} "
+    has_line "${CEILING_MAX}" "${cap}" || EXCLUDED="${EXCLUDED}${cap} "
   done
   EXCLUDED="${EXCLUDED% }"
   check "the ceiling excludes at least one capability, so it bounds something${EXCLUDED:+ (excluded: ${EXCLUDED})}" \
@@ -651,10 +694,10 @@ check "the guards job states its own permissions" '[ -n "${GUARD_PERMS}" ]'
 # guards read; `id-token: write` in particular is the token that SIGNS
 # attestations, and a guard must not be able to sign anything.
 check "the guards job grants itself no write permission" \
-  '! printf "%s" "${GUARD_PERMS}" | grep -qE ":[[:space:]]*write[[:space:]]*$"'
+  '! matches "${GUARD_PERMS}" ":[[:space:]]*write[[:space:]]*$"'
 
 check "the guards job does not take id-token" \
-  '! printf "%s" "${GUARD_PERMS}" | grep -qE "^[[:space:]]*id-token:"'
+  '! matches "${GUARD_PERMS}" "^[[:space:]]*id-token:"'
 
 # --- the caller closes the gap the guards cannot ------------------------
 
@@ -663,7 +706,7 @@ check "the guards job does not take id-token" \
 # release job holds the artefact it is about to publish, so only it can
 # assert the two are the same.
 check "the release job compares its tarball to the digest the guards verified" \
-  'printf "%s" "${RELEASE}" | grep -qF "needs.guards.outputs.tarball-sha256"'
+  'contains "${RELEASE}" "needs.guards.outputs.tarball-sha256"'
 
 # --- what already existed here must not be weakened ---------------------
 #
@@ -673,7 +716,7 @@ check "the release job compares its tarball to the digest the guards verified" \
 # working release.
 
 check "the release job still verifies the tag's GPG signature" \
-  'printf "%s" "${RELEASE}" | grep -qF "git verify-tag"'
+  'contains "${RELEASE}" "git verify-tag"'
 
 check "the tag signature is still anchored to a pinned fingerprint" \
   'grep -qE "^[[:space:]]*PINNED_FPR:" "${WORKFLOW}"'
@@ -773,7 +816,7 @@ if ! command -v gh >/dev/null 2>&1; then
   skip "the pinned commit exists and carries ${GUARD_PATH} (gh not installed)"
 elif ! gh auth status >/dev/null 2>&1; then
   skip "the pinned commit exists and carries ${GUARD_PATH} (gh not authenticated)"
-elif ! printf "%s" "${PIN}" | grep -qE "^[0-9a-f]{40}$"; then
+elif ! matches "${PIN}" "^[0-9a-f]{40}$"; then
   skip "the pinned commit exists and carries ${GUARD_PATH} (no valid SHA to look up)"
 else
   # Two separate facts. A commit can exist without containing the file,

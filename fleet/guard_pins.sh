@@ -142,7 +142,8 @@ if [ -z "${REF}" ]; then
 fi
 
 REV="$(gh api "repos/${GUARD_REPO}/commits/${REF}" --jq .sha 2>/dev/null)"
-printf '%s' "${REV}" | grep -qE '^[0-9a-f]{40}$' \
+# A here-string, not `printf | grep -q`: see the note in fleet/adopt.sh.
+grep -qE '^[0-9a-f]{40}$' <<< "${REV}" \
   || die "could not resolve '${REF}' to a commit in ${GUARD_REPO}"
 info "recording ${REV}"
 
