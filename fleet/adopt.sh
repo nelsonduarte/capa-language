@@ -183,7 +183,10 @@ info "target: ${TARGET}"
 say "Resolving ${REF} in ${CANON_REPO}"
 
 REV="$(gh api "repos/${CANON_REPO}/commits/${REF}" --jq .sha 2>/dev/null)"
-printf '%s' "${REV}" | grep -qE '^[0-9a-f]{40}$' \
+# A here-string, not `printf | grep -q`. `pipefail` is set, and a reader
+# that exits at its first match kills the producer with SIGPIPE, so the
+# PIPELINE reports 141 over a search that SUCCEEDED.
+grep -qE '^[0-9a-f]{40}$' <<< "${REV}" \
   || die "could not resolve '${REF}' to a commit in ${CANON_REPO}" \
          "Check the ref exists and has been pushed. An unpublished commit" \
          "cannot be adopted, which is deliberate: the audit compares" \
@@ -581,11 +584,19 @@ else
   # `join` collapses the list to one line, so "no contexts" and "not
   # protected" both arrive as the empty string and are not distinguished
   # by counting lines.
+  #
+  # The JSON test is a here-string rather than `printf | grep -q`, and
+  # that direction is the reason it matters here rather than being
+  # tidiness: `grep -q` exits at its first match, and under `pipefail` a
+  # producer killed by SIGPIPE makes the NEGATED test true. An error
+  # object long enough to outlive one buffer would then be reported as a
+  # list of required checks, which is this report inverting its own
+  # finding by another route.
   if CONTEXTS="$(gh api "repos/${SLUG}/branches/${BRANCH}/protection" \
                    --jq '[.required_status_checks.contexts[]?] | join(" ")' \
                    2>/dev/null)" \
      && [ -n "${CONTEXTS}" ] \
-     && ! printf '%s' "${CONTEXTS}" | grep -q '[{}"]'; then
+     && ! grep -q '[{}"]' <<< "${CONTEXTS}"; then
     info "${BRANCH} requires: ${CONTEXTS}"
     SETTINGS_NOTE="required checks on ${BRANCH}: ${CONTEXTS}"
   else

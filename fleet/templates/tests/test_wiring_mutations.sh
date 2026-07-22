@@ -96,14 +96,23 @@ PASS=0
 FAIL=0
 SKIP=0
 
+# Print the first line and CONSUME THE REST, which is the difference
+# from `head -1`. `pipefail` is set, and a reader that closes the pipe
+# early kills the producer with SIGPIPE, so the pipeline reports 141
+# over output that was produced correctly. Whether it does depends on
+# how much text follows, which is not a property any of these answers
+# should turn on.
+first_line() { awk 'NR == 1'; }
+first_lines() { awk -v n="$1" 'NR <= n'; }
+
 # The two negative dimensions are optional (a pure library declares
 # neither), so the mutations that exercise them read the names out of
 # the wiring test's own config and report SKIP where the dimension is
 # unused, rather than asserting something about a list that is empty.
 NEG_MODULE="$(sed -n 's/^NEGATIVE_CEILING_ENTRIES=(\([^ )]*\).*/\1/p' \
-  "$(cd "$(dirname "$0")/.." && pwd)/tests/test_release_wiring.sh" | head -1)"
+  "$(cd "$(dirname "$0")/.." && pwd)/tests/test_release_wiring.sh" | first_line)"
 REJECT_MODULE="$(sed -n 's/^COMPILER_REJECTS=("\([^=]*\)=.*/\1/p' \
-  "$(cd "$(dirname "$0")/.." && pwd)/tests/test_release_wiring.sh" | head -1)"
+  "$(cd "$(dirname "$0")/.." && pwd)/tests/test_release_wiring.sh" | first_line)"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
@@ -177,7 +186,7 @@ expect_red() {
   else
     PASS=$((PASS + 1))
     printf 'ok   %s: %s\n' "${id}" "${desc}"
-    sed -n 's/^FAIL /       caught: /p' "${dir}/.wiring.out" | head -4
+    sed -n 's/^FAIL /       caught: /p' "${dir}/.wiring.out" | first_lines 4
   fi
 }
 
@@ -210,7 +219,7 @@ expect_green() {
     FAIL=$((FAIL + 1))
     printf 'FAIL %s: %s\n' "${id}" "${desc}"
     printf '     the test went RED on an edit it is supposed to permit\n'
-    sed -n 's/^FAIL /       said: /p' "${dir}/.wiring.out" | head -4
+    sed -n 's/^FAIL /       said: /p' "${dir}/.wiring.out" | first_lines 4
   fi
 }
 
