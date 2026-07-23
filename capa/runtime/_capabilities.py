@@ -53,12 +53,18 @@ class ResultCapExceeded(RuntimeError):
     ValueError)`` IO-error funnel does not swallow it: it must propagate
     to the caller that set the cap.
 
-    Only ever raised when a caller opts in by passing ``max_bytes``; the
-    default (``None``) path is unbounded and never raises this. The typed
-    foreign-component sandbox (``capa.runtime._foreign``) is the sole such
-    caller today, translating it into ``ForeignResourceExceeded`` (a clean
-    exit-1 diagnostic) so an untrusted child cannot OOM the host by making
-    the host-mediated closure buffer a giant response body."""
+    Only ever raised when a caller opts in by passing an EXPLICIT
+    ``max_bytes``. The typed foreign-component sandbox
+    (``capa.runtime._foreign``) is the sole such caller today, translating
+    it into ``ForeignResourceExceeded`` (a clean exit-1 diagnostic) so an
+    untrusted child cannot OOM the host by making the host-mediated
+    closure buffer a giant response body.
+
+    An ordinary caller that passes no ``max_bytes`` gets the implicit
+    ``_NET_DEFAULT_MAX_BYTES`` ceiling instead, and ``Net`` lowers an
+    over-cap body into an ``Err(IoError)`` for them rather than raising:
+    a remote server dictating the response size must not be able to
+    crash a Capa program."""
 
 
 # Chunk size for a bounded host-side read (a capped network body). Reading
@@ -68,21 +74,46 @@ class ResultCapExceeded(RuntimeError):
 _CAPPED_READ_CHUNK = 65536
 
 
-def _read_body_capped(resp, max_bytes: Optional[int]) -> bytes:
-    """Read an HTTP response body, bounding PEAK host allocation.
+def _read_body_capped(resp, max_bytes: Optional[int], deadline=None) -> bytes:
+    """Read an HTTP response body, bounding PEAK host allocation and,
+    when a ``deadline`` is supplied, the wall-clock time spent reading.
 
-    ``max_bytes is None`` -> unbounded, the current behaviour (read the
-    whole body). Otherwise read at most ``max_bytes + 1`` bytes in bounded
-    chunks and raise :class:`ResultCapExceeded` the moment the body proves
-    LARGER than ``max_bytes`` -- so the host never buffers more than
+    ``max_bytes is None`` -> unbounded (no ``Net`` path takes it any
+    more; kept for the helper's other users and for an explicit opt-out).
+    Otherwise read at most ``max_bytes + 1`` bytes in bounded chunks and
+    raise :class:`ResultCapExceeded` the moment the body proves LARGER
+    than ``max_bytes`` -- so the host never buffers more than
     ~``max_bytes`` bytes. A body of EXACTLY ``max_bytes`` is allowed (the
-    ``+ 1`` probe byte is what distinguishes at-cap from over-cap)."""
+    ``+ 1`` probe byte is what distinguishes at-cap from over-cap).
+
+    ``deadline`` (a :class:`_Deadline`) makes the chunked path
+    time-bounded as well as size-bounded: before every chunk the budget
+    is checked and what remains of it is re-armed on the underlying
+    socket, so a server dribbling one byte every few seconds is abandoned
+    at the deadline instead of holding the call open indefinitely."""
     if max_bytes is None:
         return resp.read()
+    sock = _response_socket(resp) if deadline is not None else None
+    # ``read(n)`` blocks until it has all n bytes, so a whole chunk can
+    # elapse inside ONE call and the deadline check below would never get
+    # to run against a dribbling server. ``read1`` returns what one
+    # underlying read produced, which is what makes the loop -- and
+    # therefore the deadline -- observable.
+    read = getattr(resp, "read1", None) or resp.read
     chunks: list[bytes] = []
     remaining = max_bytes + 1
     while remaining > 0:
-        chunk = resp.read(min(remaining, _CAPPED_READ_CHUNK))
+        if deadline is not None:
+            deadline.check()
+            if sock is not None:
+                # Re-arm the per-operation timeout with what is left of
+                # the whole-request budget, so no single blocking read can
+                # run past the deadline.
+                try:
+                    sock.settimeout(deadline.remaining)
+                except OSError:
+                    sock = None
+        chunk = read(min(remaining, _CAPPED_READ_CHUNK))
         if not chunk:
             break
         chunks.append(chunk)
@@ -93,6 +124,19 @@ def _read_body_capped(resp, max_bytes: Optional[int]) -> bytes:
             f"response body exceeded the result cap ({max_bytes} bytes)"
         )
     return raw
+
+
+def _response_socket(resp):
+    """The socket underlying an ``http.client`` response, or ``None``.
+
+    ``HTTPResponse.fp`` is ``sock.makefile("rb")``: a ``BufferedReader``
+    over a ``socket.SocketIO`` whose ``_sock`` is the real socket. That
+    chain is an implementation detail of the stdlib, so every step is
+    probed defensively and a miss simply costs the caller the socket
+    re-arming (the deadline check between chunks still applies)."""
+    raw = getattr(getattr(resp, "fp", None), "raw", None)
+    sock = getattr(raw, "_sock", None)
+    return sock if hasattr(sock, "settimeout") else None
 
 
 @dataclass(frozen=True)
@@ -584,6 +628,196 @@ class _StubCapability:
         )
 
 
+# The only schemes a ``Net`` capability may speak. The capability's
+# surface is HTTP GET / POST and nothing else, so a request must never
+# reach a handler for another protocol: urllib's default opener carries
+# ``FTPHandler`` / ``FileHandler`` / ``DataHandler``, and its redirect
+# handler admits ``ftp:`` targets, which turns a redirect into a
+# protocol escalation out of the capability's own API (measured: a
+# ``302 Location: ftp://...`` did open an FTP control connection). The
+# opener ``Net`` builds carries no such handler, and both the initial
+# URL and every redirect hop are checked against this set.
+_NET_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+# Wall-clock ceiling on ONE ``Net.get`` / ``Net.post`` call. What it
+# actually enforces: every body read -- each intermediate 3xx body AND
+# the final one -- is re-checked against the deadline and has its socket
+# re-armed to the remaining budget before each chunk, and each connect /
+# header / hop socket operation is opened with a per-operation timeout of
+# the budget then remaining. Passing ``timeout=`` to ``urlopen`` alone
+# does NOT do this: it is a PER-SOCKET-OPERATION timeout that every byte
+# resets, so a server emitting one byte every few seconds ran forever
+# (measured: still running at 75s), and urllib reads a 3xx redirect's own
+# body with that same resettable timeout before following the Location,
+# so answering 302 instead of 200 reopened the same DoS (measured: a call
+# under a 3s bound ran 14s on a dribbling 302) until the redirect handler
+# was taught the deadline too.
+_NET_TIMEOUT_SECS = 10.0
+
+# Default ceiling on EACH response body a ``Net`` call materialises -- the
+# final body and every intermediate 3xx body it drains while following a
+# redirect. Without it the remote endpoint dictates the host allocation
+# (measured: a 512 MiB final body, and separately a 200 MiB body on an
+# intermediate 302, were both taken in full). A caller that genuinely
+# wants a bigger body passes an explicit, larger ``max_bytes``, which
+# raises the cap for both the final and the intermediate reads.
+_NET_DEFAULT_MAX_BYTES = 32 * 1024 * 1024
+
+
+class _NetRefused(Exception):
+    """Internal: a request ``Net`` refuses to carry on with, carrying the
+    ``IoError`` the caller should see.
+
+    Raised from inside urllib's redirect machinery (a hop the capability
+    does not permit) and from the deadline check. Deliberately NOT an
+    ``OSError`` / ``ValueError`` so the IO funnel in
+    :meth:`Net._fetch` cannot flatten a capability denial into a generic
+    "HTTP GET failed"; the denial keeps its own diagnostic."""
+
+    def __init__(self, io_error: IoError):
+        super().__init__(str(io_error))
+        self.io_error = io_error
+
+
+class _Deadline:
+    """A monotonic wall-clock budget for one whole ``Net`` call."""
+
+    __slots__ = ("_end", "_total")
+
+    def __init__(self, seconds: float):
+        self._total = seconds
+        self._end = time.monotonic() + seconds
+
+    @property
+    def remaining(self) -> float:
+        # Never returns 0 or less: a socket timeout of 0 means
+        # non-blocking, and a negative one is an error. ``check`` is what
+        # decides expiry; this only sizes the next operation.
+        return max(0.001, self._end - time.monotonic())
+
+    @property
+    def expired(self) -> bool:
+        return time.monotonic() >= self._end
+
+    @property
+    def error(self) -> IoError:
+        return IoError(
+            "request timed out",
+            f"exceeded the {self._total:g}s wall-clock bound on a single "
+            f"Net request",
+        )
+
+    def check(self) -> None:
+        if self.expired:
+            raise _NetRefused(self.error)
+
+
+def _redirect_handler(net: "Net", deadline: _Deadline, ceiling: Optional[int]):
+    """Build a redirect handler that re-checks the capability on EVERY hop
+    and bounds the intermediate response body the same way the final one
+    is bounded.
+
+    ``urllib`` follows redirects transparently, and the host gate on a
+    ``Net`` call can only ever see the URL the program wrote. A permitted
+    host answering ``302 Location: http://forbidden/`` therefore reached
+    the forbidden host with no check at all, which made ``restrict_to``
+    -- the language's attenuation primitive, documented as only ever
+    narrowing -- false. Following a hop is fine when the target is
+    permitted BY THE SAME CAPABILITY (an ordinary http-to-https or
+    www-to-apex redirect stays useful, and a permitted host is
+    permitted); a hop the capability would refuse as a first request is
+    refused as a redirect too.
+
+    ``urllib.request.HTTPRedirectHandler.http_error_302`` does an
+    UNMEDIATED ``fp.read()`` of the 3xx response's OWN body before
+    following the ``Location``. The deadline re-arm and the size cap in
+    ``_read_body_capped`` run on the FINAL body only, so a permitted host
+    answering a ``302`` whose body dribbles reopened the dribble DoS, and
+    one whose ``302`` carried a giant body drove host allocation past the
+    size cap and still returned ``Ok`` (both measured). This handler
+    drains the intermediate body itself, under the SAME deadline and
+    ``ceiling``, before returning the next request, so urllib's later
+    ``fp.read()`` reads an already-exhausted stream.
+
+    Built per call, closing over the ``net`` doing the fetch, its
+    deadline, and the byte ceiling, so there is no shared opener whose
+    gate could go stale. Defined inside a function because ``Net`` imports
+    urllib lazily."""
+    from urllib.parse import urlparse
+    from urllib.request import HTTPRedirectHandler
+
+    class _GatedRedirectHandler(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            # ``newurl`` arrives absolute (``http_error_302`` joins it
+            # against the current URL before calling us), so the scheme
+            # and host below are the ones the next hop would really
+            # contact.
+            parsed = urlparse(newurl)
+            scheme = (parsed.scheme or "").lower()
+            host = parsed.hostname or ""
+            refusal = None
+            if scheme not in _NET_ALLOWED_SCHEMES:
+                refusal = IoError(
+                    f"Net capability does not permit a redirect to scheme "
+                    f"{scheme!r}",
+                    f"a Net capability speaks "
+                    f"{'/'.join(sorted(_NET_ALLOWED_SCHEMES))} only; "
+                    f"refused redirect to {newurl!r}",
+                )
+            elif not net.allows(host):
+                refusal = _deny_host_error(
+                    host, net, f"refused redirect to {newurl!r}",
+                )
+            if refusal is not None:
+                # urllib closes ``fp`` only on the paths it controls; we
+                # are leaving through an exception it does not know
+                # about, so close it here rather than leak the socket.
+                fp.close()
+                raise _NetRefused(refusal)
+            deadline.check()
+            # ``http_error_302`` opens the next hop with
+            # ``timeout=req.timeout`` -- the OLD request's attribute --
+            # so shrinking it here is what keeps the per-socket timeout
+            # inside the remaining whole-request budget.
+            req.timeout = deadline.remaining
+            new = super().redirect_request(
+                req, fp, code, msg, headers, newurl,
+            )
+            if new is not None:
+                # We ARE following this hop, so urllib is about to
+                # ``fp.read()`` the intermediate body unmediated. Drain it
+                # first under the deadline + ceiling; the bytes are
+                # discarded (only the ``Location`` matters). Any exception
+                # (``_NetRefused`` from the deadline, ``ResultCapExceeded``
+                # from the ceiling, or a socket timeout on a dribble) must
+                # not leak the socket, so close ``fp`` before it escapes.
+                # ``super().redirect_request`` never touches ``fp``'s
+                # body, so draining here is the first and only read of it.
+                try:
+                    _read_body_capped(fp, ceiling, deadline)
+                except BaseException:
+                    fp.close()
+                    raise
+            return new
+
+    return _GatedRedirectHandler()
+
+
+def _deny_host_error(host: str, net: "Net", detail: str = "") -> IoError:
+    """The single deny diagnostic for a host a ``Net`` refuses, shared by
+    the pre-flight gate and the per-hop redirect gate so an auditor reads
+    the same sentence whichever one fired."""
+    allowed_repr = (
+        sorted(net._allowed) if net._allowed is not None else "unrestricted"
+    )
+    cause = f"current restrictions: {allowed_repr}"
+    if detail:
+        cause = f"{cause}; {detail}"
+    return IoError(
+        f"Net capability does not permit access to host {host!r}", cause,
+    )
+
+
 class Net:
     """Capability for network access, with first-class attenuation.
 
@@ -597,6 +831,43 @@ class Net:
     The actual HTTP transport uses ``urllib.request`` from the Python
     stdlib. Restriction is enforced *before* any system call, so a
     rejected host never reaches the network layer.
+
+    **Every hop is gated, not just the first.** urllib follows redirects
+    transparently, so a permitted host answering ``302 Location:
+    http://forbidden/`` used to reach ``forbidden`` with no check at all
+    -- a program could truthfully report ``allows("forbidden") == false``
+    and contact it on the next line, and the ``--manifest`` artifact
+    recorded only the narrow ``restrict_to``. ``Net`` now runs the
+    request through an opener whose redirect handler re-checks the SAME
+    capability on every hop (:func:`_redirect_handler`): a hop to a
+    permitted host is followed as before, a hop to any other host is
+    refused with the ordinary host-deny ``Err(IoError)``. The scheme is
+    bounded to :data:`_NET_ALLOWED_SCHEMES` on the first request and on
+    every hop, and the opener carries no FTP / file / data handler at
+    all, so a redirect cannot escalate the capability into a protocol
+    its API does not offer.
+
+    **Two bounds hold on every call, on every hop, with one residual.**
+    The wall clock, :data:`_NET_TIMEOUT_SECS`, is enforced PRECISELY on
+    every body read (each intermediate 3xx body and the final one): the
+    deadline is checked and the socket re-armed to the remaining budget
+    before every chunk, so a server that dribbles a BODY is abandoned at
+    the deadline. The connect / header / hop socket operations get a
+    per-operation timeout equal to the budget then remaining, set ONCE at
+    ``open()`` -- and a byte arriving resets it, so a server that dribbles
+    its RESPONSE HEADERS one byte at a time keeps the header phase alive
+    far past the wall clock (measured: 68.5s under a 1.5s bound). The
+    header phase is therefore NOT held to :data:`_NET_TIMEOUT_SECS`; that
+    is a known residual, attacker-controlled through the header length and
+    the inter-byte gap, no better than the raw ``urlopen`` per-operation
+    timeout for the header phase specifically. The body-read defence is
+    what makes the common dribble-the-payload DoS bounded. Byte
+    allocation is bounded by :data:`_NET_DEFAULT_MAX_BYTES` per body
+    (intermediate and final) unless the caller passes a larger explicit
+    ``max_bytes``. Both bounds cover the redirect path, because urllib
+    reads a 3xx body itself before following the ``Location`` and the
+    handler drains it under the same two bounds; both lower into
+    ``Err(IoError)`` on the default path.
 
     Capa code uses the capability through four methods:
     - ``restrict_to(host: String) -> Net``, attenuation
@@ -624,39 +895,104 @@ class Net:
     def allows(self, host: str) -> bool:
         return self._allowed is None or host in self._allowed
 
-    def get(self, url: str, max_bytes: Optional[int] = None):
-        """HTTP GET, gated by the current restriction set.
+    def _opener(self, deadline: _Deadline, ceiling: Optional[int]):
+        """The ``urllib`` opener one ``Net`` call runs through.
 
-        ``max_bytes`` bounds the response body the host will materialise:
-        ``None`` (the default) is the unbounded, historical behaviour, so
-        every normal caller is UNCHANGED. A non-negative ``max_bytes``
-        reads at most that many bytes and raises
-        :class:`ResultCapExceeded` if the body is larger, so a caller can
-        bound peak host allocation (the typed foreign-component sandbox
-        passes its ``--foreign-result-cap``)."""
+        Built explicitly rather than with ``build_opener`` so the handler
+        list is the security boundary it looks like: the default opener
+        ships ``FTPHandler`` / ``FileHandler`` / ``DataHandler``, none of
+        which a capability whose API is HTTP GET / POST should be able to
+        reach. ``ProxyHandler`` is kept so a deployment's proxy
+        environment keeps working exactly as it did. ``ceiling`` is the
+        per-body byte cap; the redirect handler applies it to each
+        intermediate 3xx body as ``_fetch`` applies it to the final one."""
+        from urllib import request as urlreq
+
+        opener = urlreq.OpenerDirector()
+        handlers = [
+            urlreq.ProxyHandler(),
+            urlreq.UnknownHandler(),
+            urlreq.HTTPHandler(),
+            urlreq.HTTPDefaultErrorHandler(),
+            _redirect_handler(self, deadline, ceiling),
+            urlreq.HTTPErrorProcessor(),
+        ]
+        # ``HTTPSHandler`` exists only when the interpreter has ``ssl``;
+        # ``build_opener`` guards it the same way.
+        https_handler = getattr(urlreq, "HTTPSHandler", None)
+        if https_handler is not None:
+            handlers.append(https_handler())
+        for handler in handlers:
+            opener.add_handler(handler)
+        return opener
+
+    def _gate(self, url: str):
+        """Pre-flight check for the URL a program named: parse it, bound
+        the scheme, and check the host against this capability.
+
+        Returns ``None`` when the request may proceed and the ``Err`` to
+        hand back when it may not. The same two questions are asked again
+        on every redirect hop; this is only the first one.
+
+        KNOWN LATENT INCONSISTENCY (not a vuln today): this gate reads the
+        host with ``urlparse(url).hostname`` while urllib connects using
+        ``Request.host``, and on adversarial inputs the two parsers can
+        disagree. It fails SAFE for an attenuated cap -- a host this gate
+        does not recognise is not in the allow-list, so the request is
+        denied regardless of what urllib would have connected to -- which
+        is why it could not be weaponised. It is noted here so a future
+        urllib change to ``Request.host`` cannot silently open a gap
+        without this comment being revisited; the robust fix, if it ever
+        bites, is to gate on the host urllib will actually use."""
         from urllib.parse import urlparse
-        from urllib.request import Request, urlopen
 
         try:
-            host = urlparse(url).hostname or ""
+            parsed = urlparse(url)
         except ValueError as e:
             return Err(IoError("invalid URL", str(e)))
-
-        if not self.allows(host):
-            allowed_repr = (
-                sorted(self._allowed) if self._allowed is not None else "unrestricted"
-            )
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in _NET_ALLOWED_SCHEMES:
             return Err(IoError(
-                f"Net capability does not permit access to host {host!r}",
-                f"current restrictions: {allowed_repr}",
+                f"Net capability does not permit scheme {scheme!r}",
+                f"a Net capability speaks "
+                f"{'/'.join(sorted(_NET_ALLOWED_SCHEMES))} only",
             ))
+        host = parsed.hostname or ""
+        if not self.allows(host):
+            return Err(_deny_host_error(host, self))
+        return None
 
+    def _fetch(self, req, max_bytes: Optional[int], label: str):
+        """Run ``req`` through the gated opener under both bounds.
+
+        Shared by :meth:`get` and :meth:`post`, which differ only in how
+        the ``Request`` is built and in the error label, so the redirect
+        gate and the two bounds cannot drift apart between them."""
+        deadline = _Deadline(_NET_TIMEOUT_SECS)
+        capped_by_default = max_bytes is None
+        ceiling = _NET_DEFAULT_MAX_BYTES if capped_by_default else max_bytes
         try:
-            with urlopen(Request(url), timeout=10) as resp:
-                data = _read_body_capped(resp, max_bytes).decode(
+            with self._opener(deadline, ceiling).open(
+                    req, timeout=deadline.remaining) as resp:
+                data = _read_body_capped(resp, ceiling, deadline).decode(
                     "utf-8", errors="replace",
                 )
                 return Ok(data)
+        except _NetRefused as e:
+            return Err(e.io_error)
+        except ResultCapExceeded as e:
+            # An EXPLICIT ``max_bytes`` belongs to a caller that asked to
+            # be told (the foreign sandbox turns it into a clean exit-1
+            # diagnostic), so it keeps propagating. The implicit default
+            # ceiling belongs to no caller, so it lowers into the ordinary
+            # Err a Capa program can match on.
+            if not capped_by_default:
+                raise
+            return Err(IoError(
+                f"{label} failed",
+                f"{e}; pass a larger max_bytes to raise the "
+                f"{_NET_DEFAULT_MAX_BYTES}-byte default limit",
+            ))
         except (OSError, ValueError) as e:
             # ``HTTPError`` (a subclass of OSError raised on status >= 400)
             # is itself a response object holding an open socket; close it
@@ -664,7 +1000,43 @@ class Net:
             close = getattr(e, "close", None)
             if callable(close):
                 close()
-            return Err(IoError("HTTP GET failed", str(e)))
+            if deadline.expired:
+                # The budget ran out while a socket operation was in
+                # flight, so the transport reports its own timeout first.
+                # Name the bound that actually fired rather than lowering
+                # it into a generic transport failure.
+                return Err(deadline.error)
+            return Err(IoError(f"{label} failed", str(e)))
+
+    def get(self, url: str, max_bytes: Optional[int] = None):
+        """HTTP GET, gated by the current restriction set on the URL the
+        program named AND on every redirect hop the response asks for.
+
+        ``max_bytes`` bounds EACH response body the host materialises: the
+        final body and every intermediate 3xx body drained while following
+        a redirect. ``None`` (the default) applies
+        :data:`_NET_DEFAULT_MAX_BYTES` and reports an over-size body as
+        ``Err(IoError)``; an explicit ``max_bytes`` reads at most that many
+        bytes and RAISES :class:`ResultCapExceeded` if a body is larger.
+
+        The two over-cap shapes are DELIBERATELY different: the default cap
+        belongs to no caller, so it lowers into an ``Err`` a Capa program
+        matches on; an explicit cap belongs to the caller that set it and
+        wants to be told, so it propagates as an exception (the typed
+        foreign-component sandbox passes its ``--foreign-result-cap`` here
+        and turns the exception into a clean exit-1 diagnostic).
+
+        Every body read (each intermediate 3xx body and the final one) is
+        held precisely to :data:`_NET_TIMEOUT_SECS` of wall clock, redirect
+        hops included; the connect / header phase is a known residual a
+        slow-header server can stretch past that bound (see the class
+        docstring)."""
+        from urllib.request import Request
+
+        denied = self._gate(url)
+        if denied is not None:
+            return denied
+        return self._fetch(Request(url), max_bytes, "HTTP GET")
 
     def post(self, url: str, body: str, max_bytes: Optional[int] = None):
         """HTTP POST: same attenuation gate as ``get``, sends ``body``
@@ -678,46 +1050,24 @@ class Net:
         ``data`` is supplied; the Wasm host bridge mirrors that
         exactly via ``Request(url, data=body.encode(\"utf-8\"))``.
 
-        ``max_bytes`` bounds the response body exactly as in :meth:`get`
-        (``None`` = unbounded, the historical default)."""
-        from urllib.parse import urlparse
-        from urllib.request import Request, urlopen
+        ``max_bytes`` bounds the response body exactly as in :meth:`get`,
+        the per-hop redirect gate and the wall-clock bound are the same,
+        and the scheme is bounded the same way."""
+        from urllib.request import Request
 
-        try:
-            host = urlparse(url).hostname or ""
-        except ValueError as e:
-            return Err(IoError("invalid URL", str(e)))
-
-        if not self.allows(host):
-            allowed_repr = (
-                sorted(self._allowed) if self._allowed is not None else "unrestricted"
-            )
-            return Err(IoError(
-                f"Net capability does not permit access to host {host!r}",
-                f"current restrictions: {allowed_repr}",
-            ))
-
-        try:
-            body_bytes = body.encode("utf-8")
-            req = Request(
-                url, data=body_bytes,
-                headers={"Content-Type": "application/octet-stream"},
-            )
-            with urlopen(req, timeout=10) as resp:
-                data = _read_body_capped(resp, max_bytes).decode(
-                    "utf-8", errors="replace",
-                )
-                return Ok(data)
-        except (OSError, ValueError) as e:
-            close = getattr(e, "close", None)
-            if callable(close):
-                close()
-            return Err(IoError("HTTP POST failed", str(e)))
+        denied = self._gate(url)
+        if denied is not None:
+            return denied
+        req = Request(
+            url, data=body.encode("utf-8"),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        return self._fetch(req, max_bytes, "HTTP POST")
 
 
 # Bounded waits for the Serve capability. Nothing in Capa may block
-# forever: ``Net.get`` bounds an outbound request at 10s and
-# ``Proc.exec`` bounds a child at 30s, so the two inbound waits get
+# forever: ``Net.get`` bounds an outbound request at 10s of wall clock
+# and ``Proc.exec`` bounds a child at 30s, so the two inbound waits get
 # the same treatment. ``accept`` waits for a client that may never
 # arrive, which is closer to "wait for a child to finish" than to
 # "wait for a server to answer", hence the 30s bound; a per-connection

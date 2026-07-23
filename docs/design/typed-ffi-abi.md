@@ -166,7 +166,8 @@ therefore metered on THREE axes IN ADDITION to the restricted linker
   hang the host despite the fuel ceiling. `clock.sleep` is clamped to a
   bounded maximum per call; a `db.exec` / `db.query` SQL statement is
   aborted past a bounded wall-clock deadline (a sqlite progress handler);
-  `net.get` / `net.post` (urllib `timeout=10`) and `proc.exec`
+  `net.get` / `net.post` (a 10s WALL-CLOCK deadline over the whole
+  request, redirect hops and body read included) and `proc.exec`
   (`timeout=30`) are already bounded in `capa.runtime._capabilities`.
 
 This is separate from the parent `--wasm-memory-cap` (which bounds the

@@ -238,8 +238,9 @@ _FOREIGN_MAX_INSTANCES = 64   # bounds nested core-instance explosion
 # blocking closure (``clock.sleep``, a long-running SQL query) would hang
 # the host indefinitely despite the fuel ceiling unless bounded here.
 # Generous for legitimate use, bounded so no guest- or external-controlled
-# UNBOUNDED blocking is possible. ``net.get`` / ``net.post`` (urllib
-# ``timeout=10``) and ``proc.exec`` (``timeout=30``) are already bounded in
+# UNBOUNDED blocking is possible. ``net.get`` / ``net.post`` (a 10s
+# WALL-CLOCK deadline over the whole request, redirect hops and body read
+# included) and ``proc.exec`` (``timeout=30``) are already bounded in
 # ``capa.runtime._capabilities``.
 MAX_FOREIGN_BLOCKING_SECS = 5.0
 
