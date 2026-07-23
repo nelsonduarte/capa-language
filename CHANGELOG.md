@@ -85,6 +85,26 @@ breaking changes and the discipline is still being shaped.
   what it was documented to be for (programs outside the Phase-6
   subset) and is safe because nothing has executed yet.
 
+- *A secret pushed into a container by a CALLED FUNCTION no longer
+  escapes the information-flow check.* The cross-function summary in
+  `capa/analyzer/_ifc_summary.py` recorded an effect for a callee's
+  field store (`obj.f = v`) and propagated it at the call site, but the
+  container mutators of `_CONTAINER_MUTATORS` (`List.push`, `Set.add`,
+  `Map.set`) were reflected only into the summary walk's local
+  environment. So a two-line helper that took a list and a value and
+  called `push` on the parameter laundered the secret completely:
+  `capa --check` exited 0 with empty stderr, `@strict_ifc` did not
+  catch it either, and the program printed the secret on both backends
+  -- while the *identical* push written inline was flagged. The
+  mutators now record the same effect the field store does, so they
+  share its fixpoint (a callee that calls a callee that pushes) and its
+  call-site propagation (a container reached through a parameter that
+  was itself passed along), and both tiers behave as the inline case
+  does: a warning by default, a hard error under `@strict_ifc`. The
+  registry is the single source of truth, and a new test asserts every
+  entry in it has a leak program, so a future mutator cannot be added
+  uncovered.
+
 **Changed (upgrade notes).**
 
 - *Prebuilt `.wasm` and `.cwasm` artifacts that predate the capability

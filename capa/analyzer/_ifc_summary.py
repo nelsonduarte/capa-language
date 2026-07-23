@@ -35,25 +35,42 @@ statically is matched against every user method of that name, so the
 analysis never under-reports a leak. It only ADDS detection; no
 existing label or check is relaxed.
 
-FIELD-WRITE EFFECTS (closes the cross-function self/param field-write
-false negative). Alongside the sink-reaching set, every callable also
-gets a **field-write effect**: a map ``target_param_idx -> set of
-sources`` recording that the callee writes a field of the object bound
-to ``target_param_idx`` (``self`` is index 0) from a value tainted by
-either another parameter (the source's index) or an internal secret
-source within the body (the sentinel ``INTERNAL_SECRET``), directly or
-transitively (the field is written from a value passed to a further
-call that itself has the effect). It is computed to the SAME fixpoint.
+MUTATION EFFECTS (closes the cross-function self/param field-write
+false negative, and the container one). Alongside the sink-reaching
+set, every callable also gets a **mutation effect**: a map
+``target_param_idx -> set of sources`` recording that the callee writes
+INTO the object bound to ``target_param_idx`` (``self`` is index 0)
+from a value tainted by either another parameter (the source's index)
+or an internal secret source within the body (the sentinel
+``INTERNAL_SECRET``), directly or transitively (the write happens from
+a value passed to a further call that itself has the effect). It is
+computed to the SAME fixpoint.
 
-The call site (see ``_check_ifc_field_write_effect`` in :mod:`._ifc`)
-propagates it CONSERVATIVELY: when the callee writes a field of param
-``j`` from param ``i`` and the caller's argument for ``i`` is @secret,
-the caller's binding bound to ``j`` is tainted at WHOLE-VALUE secret
-(so a later read of any field of it is caught); an internal-secret
+Two kinds of write record it, because both mutate a shared heap object
+that the CALLER still holds a reference to:
+
+* a FIELD STORE, ``obj.f = v`` (any store op, including the augmented
+  ``obj.f += v``, which can only raise the field's label); and
+* a CONTAINER MUTATION, ``xs.push(v)`` and every other entry of the
+  ``_CONTAINER_MUTATORS`` registry in :mod:`._ifc`, which is the single
+  source of truth for the mutator set so a mutator added there is
+  carried across the boundary with no further change here. Without
+  this, a secret pushed onto a list / set / map by a CALLEE escaped the
+  analysis entirely while the identical push written inline was caught.
+  The receiver may be a parameter (``xs.push(v)``) or a field chain
+  rooted at one (``self.items.push(v)``); the effect is recorded
+  against the ROOT parameter, whole-value.
+
+The call site (see ``_check_ifc_call_field_effect`` /
+``_check_ifc_method_call_field_effect`` in :mod:`._ifc`) propagates it
+CONSERVATIVELY: when the callee writes into param ``j`` from param
+``i`` and the caller's argument for ``i`` is @secret, the caller's
+binding bound to ``j`` is tainted at WHOLE-VALUE secret (so a later
+read of any field / element of it is caught); an internal-secret
 source taints the caller's binding-``j`` unconditionally. This is an
 explicit data-flow taint, default-warn / strict-error like the
-sink-reaching check, and whole-value (never per-field) on the caller
-side -- the sound approximation.
+sink-reaching check, and whole-value (never per-field, never
+per-element) on the caller side -- the sound approximation.
 """
 
 from __future__ import annotations
@@ -101,8 +118,9 @@ def compute_ifc_summaries(
       public sink inside the body.
     * ``field_effects``: ``{callable_key: {target_param_idx:
       frozenset(source_param_idx | INTERNAL_SECRET)}}`` -- the callee
-      writes a field of the object at ``target_param_idx`` from the
-      named source(s).
+      writes INTO the object at ``target_param_idx`` from the named
+      source(s), either by storing a field of it or by mutating it
+      through a ``_CONTAINER_MUTATORS`` method.
     * ``return_effects``: ``{callable_key: frozenset(source_param_idx |
       INTERNAL_SECRET)}`` -- the callee returns a value derived from the
       named source(s); the call result is @secret when one fires (a real
@@ -171,7 +189,8 @@ class _SummaryBuilder:
         # over-approx) capability here.
         self.sink_caps: dict = {}
         # callable_key -> {target param idx -> set of source param idx /
-        # INTERNAL_SECRET}: the field-write effect (see module docstring).
+        # INTERNAL_SECRET}: the mutation effect -- a field store OR a
+        # container mutation (see module docstring).
         self.field_effects: dict = {}
         # callable_key -> set of source param idx / INTERNAL_SECRET that
         # flow into a RETURNED value -- the return-secret effect. The
@@ -535,7 +554,7 @@ class _SummaryBuilder:
                 # RAISE the field's label, never lower it -- recording the
                 # effect for every op is sound and closes the augmented-
                 # store cross-function leak.
-                self._record_field_write(stmt.target, src, env)
+                self._record_mutation_effect(stmt.target, src, env)
         elif isinstance(stmt, A.IfStmt):
             self._taint_of(stmt.cond, env, reaching)
             self._walk_scoped_block(stmt.then_block, env, reaching)
@@ -616,17 +635,20 @@ class _SummaryBuilder:
             for sub in pat.elements:
                 self._bind_pattern_field_secrets(sub, env)
 
-    def _record_field_write(
-        self, target: A.FieldAccess, value_src: set, env: dict,
+    def _record_mutation_effect(
+        self, target: A.Expr, value_src: set, env: dict,
     ) -> None:
-        """Record a field-write effect for ``target.f = value``. The
-        written object's identity is the env taint set of the chain's
-        ROOT name (a struct binding carries the param indices of every
-        param it aliases by reference). For each such target param
-        ``j``, every source flowing into the value becomes a field-write
-        effect ``j <- source``. A source that is itself a parameter
-        index (or ``INTERNAL_SECRET``) is recorded; transitive sources
-        already collapsed into ``value_src`` by ``_taint_of``."""
+        """Record a mutation effect for a write into ``target`` -- a
+        field store (``target.f = value``) or a container mutation
+        (``target.push(value)`` and every other entry of
+        ``_CONTAINER_MUTATORS``). The written object's identity is the
+        env taint set of the chain's ROOT name (a struct / container
+        binding carries the param indices of every param it aliases by
+        reference). For each such target param ``j``, every source
+        flowing into the value becomes a mutation effect ``j <-
+        source``. A source that is itself a parameter index (or
+        ``INTERNAL_SECRET``) is recorded; transitive sources already
+        collapsed into ``value_src`` by ``_taint_of``."""
         root = self._chain_root_name(target)
         if root is None:
             return
@@ -946,11 +968,13 @@ class _SummaryBuilder:
                     self._attribute_sink_caps(
                         arg_srcs[arg_idx], callee_caps.get(pidx, ()),
                     )
-            # Transitive field-write effect: ``g`` writes a field of its
-            # param ``j`` from sources ``S``; if the argument bound to
-            # ``j`` here is rooted at one of MY params, that object's
-            # field is written, so I inherit the effect (with ``S``
-            # translated from g's params to my taint).
+            # Transitive mutation effect: ``g`` writes into its param
+            # ``j`` (a field store or a container mutation) from sources
+            # ``S``; if the argument bound to ``j`` here is rooted at one
+            # of MY params, that object is written, so I inherit the
+            # effect (with ``S`` translated from g's params to my taint).
+            # This is what gives the container case its DEPTH: a callee
+            # that calls a callee that pushes reaches me too.
             self._propagate_callee_effects(
                 self.field_effects.get(key, {}), perm, e.args, arg_srcs, env,
             )
@@ -1036,21 +1060,55 @@ class _SummaryBuilder:
                     # Serve was first given a ``write``.
                     self._attribute_sink_caps(arg_srcs[pos], (_cap,))
 
-        # A mutating container method (push / add / set) routes the
-        # argument taint into the receiver, so a later read of the
-        # receiver does not launder it. Reflect that in ``env`` when
-        # the receiver is a plain name.
+        # A mutating container method (every entry of the
+        # ``_CONTAINER_MUTATORS`` registry -- push / add / set -- so a
+        # mutator added there is covered here without a further change)
+        # routes the argument taint into the receiver, so a later read
+        # of the receiver does not launder it. Reflect that in ``env``
+        # when the receiver is a plain name, AND record it as a
+        # CONTAINER-MUTATION EFFECT when the receiver is rooted at one
+        # of this callable's parameters: the container is a reference,
+        # so the CALLER's binding holds the injected secret after the
+        # call returns. This is the container analogue of the
+        # field-write effect and shares its map, its fixpoint and its
+        # call-site propagation, which is what makes it transitive (a
+        # callee that calls a callee that pushes) and what carries it
+        # through a parameter that was merely passed along.
+        #
+        # The ``_CONTAINER_MUTATORS`` match is BY METHOD NAME, so the
+        # by-name shortcut fires ONLY when the receiver is a built-in
+        # container, never a user type that defines its OWN
+        # push/add/set: a by-name collision must not taint a user-typed
+        # receiver whole-value across the boundary (that was a precision
+        # regression -- a spurious warning, a hard error under
+        # ``@strict_ifc``, widening through the fixpoint). Skipping the
+        # shortcut loses no leak: a user type's real mutation is a field
+        # store in that method's body, carried by its OWN summary and
+        # propagated below by ``_propagate_callee_effects``. The rest of
+        # this method (the user-method sink-reaching path, the transitive
+        # field-write propagation, the return taint) still runs. The gate
+        # mirrors the type-aware intra-procedural check
+        # (``_check_ifc_container_mutation``).
+        receiver_is_user_owner = self._receiver_is_user_method_owner(e)
         for (_ty, meth), positions in _CONTAINER_MUTATORS.items():
-            if meth != e.method:
+            if meth != e.method or receiver_is_user_owner:
                 continue
             injected = set()
             for pos in positions:
                 if pos < len(arg_srcs):
                     injected |= arg_srcs[pos]
-            if injected and isinstance(e.receiver, A.Ident):
+            if not injected:
+                continue
+            if isinstance(e.receiver, A.Ident):
                 env[e.receiver.name] = (
                     env.get(e.receiver.name, set()) | injected
                 )
+            # The receiver may be a plain parameter (``xs.push(v)``) or
+            # a field chain rooted at one (``self.items.push(v)``); the
+            # effect is recorded against the ROOT parameter, whole-value
+            # -- the same sound over-approximation the field-write path
+            # uses.
+            self._record_mutation_effect(e.receiver, injected, env)
 
         # User method call: receiver-type may be unknown at summary
         # time, so over-approximate across every user method of this
@@ -1094,7 +1152,7 @@ class _SummaryBuilder:
                         arg_srcs[arg_idx], callee_caps.get(full_pidx, ()),
                     )
 
-        # Transitive field-write effect across the (possibly
+        # Transitive mutation effect across the (possibly
         # over-approximated) candidate methods. The full-order argument
         # map binds ``self`` (param 0) to the receiver and the explicit
         # params to their call arguments.
@@ -1200,6 +1258,31 @@ class _SummaryBuilder:
             return tuple(by_name)
         return ()
 
+    def _receiver_is_user_method_owner(self, e: A.MethodCall) -> bool:
+        """True when the method-call receiver PROVABLY resolves to a
+        USER-defined type that declares its own method ``e.method`` -- a
+        parameter whose declared type has an exact impl-method key, or a
+        parameter typed as a trait (dynamic dispatch). Reuses the exact
+        receiver-vs-built-in distinction the return-effect narrowing uses
+        (``_result_candidate_keys``).
+
+        Used to gate the cross-function CONTAINER-MUTATION effect: the
+        ``_CONTAINER_MUTATORS`` match is BY METHOD NAME, so without this
+        a user type that merely shares a mutator's name
+        (``push`` / ``add`` / ``set``) would have its receiver tainted
+        whole-value across a call boundary -- a false positive that
+        escapes to every caller and widens through the fixpoint, and a
+        hard error under ``@strict_ifc``. The intra-procedural check
+        (``_check_ifc_container_mutation``) is already type-aware, keying
+        ``_CONTAINER_MUTATORS.get((cap_name, method))``; this keeps the
+        summary path from being laxer. Only a BUILT-IN container (whose
+        method has no user body to summarise) records the effect; a user
+        type's genuine mutation is carried by that method's OWN summary,
+        propagated at the call site by ``_propagate_callee_effects``, so
+        gating the by-name shortcut out never loses a real leak."""
+        candidate_keys = self.methods_by_name.get(e.method, [])
+        return bool(self._result_candidate_keys(e, candidate_keys))
+
     def _is_trait_type(self, type_name: str) -> bool:
         """True if ``type_name`` resolves to a TRAIT (dynamic dispatch),
         the only concrete case where the by-name union over impl methods
@@ -1232,10 +1315,10 @@ class _SummaryBuilder:
         self, effects: dict, perm: dict, args: list,
         arg_srcs: list, env: dict,
     ) -> None:
-        """Inherit a callee's field-write effects at a call site. For
+        """Inherit a callee's mutation effects at a call site. For
         each callee target param ``j`` with sources ``S``: the argument
         bound to ``j`` is the written object; if it is rooted at one of
-        MY bindings, record a field-write effect on every param that
+        MY bindings, record a mutation effect on every param that
         object aliases, with ``S`` translated from the callee's params
         to my taint (a real source param ``i`` -> the taint of my
         argument bound to ``i``; ``INTERNAL_SECRET`` stays itself).

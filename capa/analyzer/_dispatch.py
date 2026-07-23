@@ -235,9 +235,10 @@ class _DispatchMixin:
                         from ..builtins import BUILTIN_POS
                         if sym.name == "panic" and sym.pos == BUILTIN_POS:
                             self._check_ifc_panic_sink(e)
-                        # Cross-function field-write effect: a callee
-                        # that stores a secret-derived value into a
-                        # field of one of its parameters taints the
+                        # Cross-function mutation effect: a callee that
+                        # stores a secret-derived value into a field of
+                        # one of its parameters -- or pushes one into a
+                        # container reached through one -- taints the
                         # caller's binding whole-value (closes gap 1).
                         self._check_ifc_call_field_effect(e, sym, perm)
                         reordered_args = [e.args[j] for j in perm]
@@ -755,9 +756,10 @@ class _DispatchMixin:
         self._check_ifc_method_call_summary(
             e, type_sym, method_sym, recv_ty, perm,
         )
-        # Cross-function field-write effect (closes gap 1): a method
-        # that stores a secret-derived value into a field of ``self`` /
-        # a parameter taints the caller's binding whole-value.
+        # Cross-function mutation effect (closes gap 1): a method that
+        # stores a secret-derived value into a field of ``self`` / a
+        # parameter -- or pushes one into a container reached through
+        # either -- taints the caller's binding whole-value.
         self._check_ifc_method_call_field_effect(
             e, method_sym, recv_ty, perm,
         )
