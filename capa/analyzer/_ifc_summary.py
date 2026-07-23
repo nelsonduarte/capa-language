@@ -1284,12 +1284,17 @@ class _SummaryBuilder:
     # ---- helpers ----------------------------------------------------
 
     def _is_declassify(self, e: A.Call) -> bool:
-        if not isinstance(e.callee, A.Ident) or e.callee.name != "declassify":
-            return False
-        # A user function named ``declassify`` would shadow the
-        # built-in; the analyzer forbids that collision, so a plain
-        # name check is sufficient here, and matches the built-in.
-        return ("fun", "declassify") not in self.callables
+        """True when ``e`` is a call to the BUILT-IN ``declassify``.
+
+        Delegates to :func:`capa._declassify.is_declassify_call`, the
+        single source of truth the intra-procedural walk and the artifact
+        pipeline also consult. This pass runs BEFORE the body walk fills
+        ``Analyzer.bindings``, so identity comes from the global scope
+        (the module-scope floor): a user-declared ``declassify`` of ANY
+        item kind -- not just a ``fun``, which is all the previous
+        hand-rolled check looked at -- displaces the built-in."""
+        from .._declassify import is_declassify_call
+        return is_declassify_call(e, module_scope=self.global_scope)
 
 
 def _bind(args: list, arg_names: list, param_names: list[str]) -> dict:

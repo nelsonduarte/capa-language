@@ -1646,14 +1646,15 @@ class _IfcMixin:
     def _is_declassify_call(self, e: A.Expr) -> bool:
         """True if ``e`` is a call to the built-in ``declassify``.
         Guarded by the binding's built-in position so a user function
-        that happens to be named ``declassify`` is not special-cased."""
-        from ..builtins import BUILTIN_POS
-        if not isinstance(e, A.Call):
-            return False
-        if not isinstance(e.callee, A.Ident) or e.callee.name != "declassify":
-            return False
-        sym = self.bindings.get(id(e.callee))
-        return sym is not None and sym.pos == BUILTIN_POS
+        that happens to be named ``declassify`` is not special-cased.
+
+        Delegates to :func:`capa._declassify.is_declassify_call`, the
+        SINGLE source of truth this predicate shares with the artifact
+        pipeline: the manifest collector asks the same function, so the
+        analyzer and the SBOM can no longer disagree about which calls
+        are declassifications."""
+        from .._declassify import is_declassify_call
+        return is_declassify_call(e, self.bindings)
 
     def _check_declassify(self, e: A.Call, arg_tys: list):
         """Validate a ``declassify(value, reason: "...")`` call and

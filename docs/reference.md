@@ -531,7 +531,13 @@ string literal so the manifest can record it. Declassifying a value
 that is not `@secret` is reported as a no-op warning and is excluded
 from the SBOM record. Every *genuine* `@secret -> @public` call site
 is recorded in the SBOM as `declassifications` per function and
-`declassification_sites` in the summary.
+`declassification_sites` in the summary. A `declassify` written
+outside any function body, in a top-level `const` initializer, is
+recorded too, under `module_declassifications`; the summary count is
+the module-wide total across both. Identity, not the name, decides:
+a user-defined function called `declassify` is an ordinary function
+and produces no record (nor any relabelling, so a secret routed
+through it still reports as a leak).
 
 ```capa
 fun leak(env: Env, stdio: Stdio)

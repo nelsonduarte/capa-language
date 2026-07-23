@@ -378,7 +378,10 @@ that contains one carries a `declassifications` list of
 source-stringified value, and the `line:col` position), and the
 manifest `summary` exposes a program-wide `declassification_sites`
 count, the regulator-facing record of every point where the program
-deliberately lets secret data cross to public. See
+deliberately lets secret data cross to public. A call outside any
+function body, in a top-level `const` initializer, is recorded in the
+manifest's `module_declassifications` block with the same entry shape
+plus the owning declaration, and is counted in the same total. See
 [`reference.md`](reference.md) for the information-flow model and
 [`cra.md`](cra.md) for the SBOM surface.
 
