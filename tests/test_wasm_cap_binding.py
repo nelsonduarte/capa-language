@@ -743,18 +743,132 @@ class TestForgedBindingIsContainedOnEveryBridge(unittest.TestCase):
 
 def _tests_for_none(fn: ast.AST, var: str) -> bool:
     """True when ``fn`` compares ``var`` against None or negates it
-    (``not var``). Those are the two shapes the fail-closed host
-    bridges use to react to a bad handle."""
+    (``not var``). Those are the shapes the fail-closed host bridges
+    use to react to a bad handle."""
     for node in ast.walk(fn):
         if isinstance(node, ast.Compare):
             if isinstance(node.left, ast.Name) and node.left.id == var:
-                if any(isinstance(op, ast.Is) for op in node.ops):
+                if any(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops):
                     return True
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             if isinstance(node.operand, ast.Name):
                 if node.operand.id == var:
                     return True
     return False
+
+
+def _swallowing_call_name(node) -> "str | None":
+    """The name of the swallowing resolver ``node`` calls, if any.
+
+    Matched by NAME PREFIX (``_lookup``) rather than an allow-list, so
+    a new per-cap variant is policed the day it is written. The RAISING
+    resolver ``_require_receiver`` calls ``self._cap_handles.lookup``
+    (no leading underscore) and is intentionally not matched: it cannot
+    honour a bad handle, so it needs no consumer check."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if isinstance(func, ast.Name) and func.id.startswith("_lookup"):
+        return func.id
+    if isinstance(func, ast.Attribute) and func.attr.startswith("_lookup"):
+        return func.attr
+    return None
+
+
+def _parent_map(tree: ast.AST) -> dict:
+    parents: dict = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    return parents
+
+
+def _enclosing_function(node, parents: dict):
+    cur = parents.get(node)
+    while cur is not None:
+        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return cur
+        cur = parents.get(cur)
+    return None
+
+
+def _inline_none_tested(call, parent) -> bool:
+    """The call's own result is compared against None right here
+    (``if self._lookup_or(...) is None``) or negated in a boolean
+    position (``not self._lookup_or(...)``)."""
+    if isinstance(parent, ast.Compare):
+        operands = [parent.left, *parent.comparators]
+        has_is = any(
+            isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops
+        )
+        has_none = any(
+            isinstance(o, ast.Constant) and o.value is None
+            for o in operands
+        )
+        if call in operands and has_is and has_none:
+            return True
+    if isinstance(parent, ast.UnaryOp) and isinstance(parent.op, ast.Not):
+        if parent.operand is call:
+            return True
+    return False
+
+
+def _swallowing_result_is_checked(call, parents: dict) -> bool:
+    """Whether a swallowing-lookup ``call``'s result reaches a
+    fail-closed check. A result that does not is a slot that would be
+    honoured on a bad handle, which is exactly the C1/C2 bug.
+
+    Four "checked" shapes are accepted, and NOTHING else:
+
+    * ``x = <call>`` where ``x`` is later None-tested in the same
+      function (what every real bridge does);
+    * ``if (x := <call>) is None`` (the walrus form of the same);
+    * ``return <call>`` (the caller inherits the None);
+    * ``<call> is None`` / ``not <call>`` inline.
+
+    Every other context - a bare statement, an argument to another
+    call (``self._note(<call>)``), a builtin wrapper (``bool(<call>)``),
+    an f-string field - flows the result somewhere that does not
+    fail-close, so it is a violation. This is the set the earlier
+    two-shape check missed."""
+    parent = parents.get(call)
+    if parent is None:
+        return False
+    if isinstance(parent, ast.Return) and parent.value is call:
+        return True
+    if isinstance(parent, ast.Assign) and parent.value is call:
+        if len(parent.targets) == 1 and isinstance(parent.targets[0], ast.Name):
+            fn = _enclosing_function(call, parents)
+            if fn is not None and _tests_for_none(fn, parent.targets[0].id):
+                return True
+        return False
+    if isinstance(parent, ast.NamedExpr) and parent.value is call:
+        # ``if (cap := <call>) is None`` tests the walrus expression
+        # itself, in the grandparent; ``... := <call>`` used later
+        # tests the bound name.
+        if _inline_none_tested(parent, parents.get(parent)):
+            return True
+        if isinstance(parent.target, ast.Name):
+            fn = _enclosing_function(call, parents)
+            if fn is not None and _tests_for_none(fn, parent.target.id):
+                return True
+        return False
+    return _inline_none_tested(call, parent)
+
+
+def _unchecked_swallowing_lookups(tree: ast.AST):
+    """``(lineno, name)`` for every swallowing lookup in ``tree`` whose
+    result is not consumed in a fail-closed shape."""
+    parents = _parent_map(tree)
+    out = []
+    for node in ast.walk(tree):
+        name = _swallowing_call_name(node)
+        if name is None:
+            continue
+        if _swallowing_result_is_checked(node, parents):
+            continue
+        out.append((getattr(node, "lineno", 0), name))
+    return out
 
 
 class TestEveryBridgeRequiresItsReceiver(unittest.TestCase):
@@ -767,28 +881,19 @@ class TestEveryBridgeRequiresItsReceiver(unittest.TestCase):
     bad handle so its caller can answer fail-closed, and a RAISING one
     (``_require_receiver``) for bridges with no fail-closed answer to
     give. The rule enforced here is that a swallowing lookup's result
-    is always read. Discarded as a bare statement, and bound to a name
-    nothing ever tests, are the two shapes the hole can take."""
+    is always consumed in a way that fail-closes on None:
+    ``_swallowing_result_is_checked`` names the four shapes that count,
+    and flags everything else - a bare statement, an argument to
+    another call, a builtin wrapper, an f-string field. The earlier
+    version of this guard only recognised the first two of those
+    violation shapes; a reviewer mutation-testing it with
+    ``self._note(self._lookup_or(...))`` and ``bool(self._lookup_or(
+    ...))`` found the other two slipped through."""
 
     _HOSTS = [
         "capa/runtime/_wasm_host.py",
         "capa/runtime/_wasm_component_host.py",
     ]
-
-    @staticmethod
-    def _swallowing_call(node):
-        """The name of the swallowing resolver ``node`` calls, if any.
-        Matched by NAME PREFIX rather than an allow-list, so a new
-        per-cap variant is policed the day it is written."""
-        if not isinstance(node, ast.Call):
-            return None
-        func = node.func
-        if isinstance(func, ast.Name) and func.id.startswith("_lookup"):
-            return func.id
-        if isinstance(func, ast.Attribute):
-            if func.attr.startswith("_lookup"):
-                return func.attr
-        return None
 
     def _trees(self):
         root = Path(__file__).resolve().parent.parent
@@ -798,59 +903,81 @@ class TestEveryBridgeRequiresItsReceiver(unittest.TestCase):
 
     def test_the_rule_can_find_the_calls_it_polices(self):
         # A guard that matches nothing passes forever. Both hosts must
-        # actually contain swallowing lookups for the two rules below
-        # to mean anything.
+        # actually contain swallowing lookups for the rule to mean
+        # anything.
         for rel, tree in self._trees():
             with self.subTest(module=rel):
                 calls = [
-                    n for n in ast.walk(tree) if self._swallowing_call(n)
+                    n for n in ast.walk(tree)
+                    if _swallowing_call_name(n)
                 ]
                 self.assertGreater(len(calls), 5, rel)
 
-    def test_no_swallowing_lookup_is_discarded(self):
+    def test_no_swallowing_lookup_result_goes_unchecked(self):
         for rel, tree in self._trees():
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Expr):
-                    continue
-                name = self._swallowing_call(node.value)
-                if name is None:
-                    continue
-                self.fail(
-                    f"{rel}:{node.lineno} calls {name}() and throws the "
-                    f"result away. That resolver SWALLOWS a bad handle "
-                    f"and returns None, so calling it without reading "
-                    f"it checks nothing and a slot holding the wrong "
-                    f"root is honoured. Use _require_receiver(), which "
-                    f"raises."
-                )
+            unchecked = _unchecked_swallowing_lookups(tree)
+            self.assertEqual(
+                unchecked, [],
+                f"{rel} calls a swallowing lookup whose result never "
+                f"reaches a None check at {unchecked}. That resolver "
+                f"returns None on a bad handle, so an unchecked result "
+                f"honours a slot holding the wrong root. Use "
+                f"_require_receiver(), which raises.",
+            )
 
-    def test_no_swallowing_lookup_is_bound_and_ignored(self):
-        # The same hole with one extra step: `cap = self._lookup_or(...)`
-        # and then nothing ever asks whether `cap` is None.
-        for rel, tree in self._trees():
-            fns = [
-                n for n in ast.walk(tree)
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-            ]
-            for fn in fns:
-                for node in ast.walk(fn):
-                    if not isinstance(node, ast.Assign):
-                        continue
-                    if len(node.targets) != 1:
-                        continue
-                    target = node.targets[0]
-                    if not isinstance(target, ast.Name):
-                        continue
-                    name = self._swallowing_call(node.value)
-                    if name is None:
-                        continue
-                    self.assertTrue(
-                        _tests_for_none(fn, target.id),
-                        f"{rel}:{node.lineno} binds {name}() to "
-                        f"{target.id!r} but never tests it for None. A "
-                        f"bad handle resolves to None there, so the op "
-                        f"would proceed on a receiver it never got.",
-                    )
+    def test_the_detector_flags_every_discarding_shape(self):
+        # Fail-first evidence, and the fix for the reviewer's finding
+        # in one place: the detector must FLAG all four ways a result
+        # can be thrown away, including the two the old guard missed,
+        # and must PASS the four fail-closed shapes. If any BAD snippet
+        # stops being flagged, the guard above has regressed to theatre.
+        bad = {
+            "bare statement":
+                "    self._lookup_or(h, Env)\n",
+            "assigned, never None-tested":
+                "    cap = self._lookup_or(h, Env)\n"
+                "    return cap.read()\n",
+            "argument to another call":
+                "    self._note(self._lookup_or(h, Env))\n",
+            "wrapped in a builtin":
+                "    bool(self._lookup_or(h, Env))\n",
+        }
+        good = {
+            "assigned and None-tested":
+                "    cap = self._lookup_or(h, Env)\n"
+                "    if cap is None:\n"
+                "        return None\n"
+                "    return cap.read()\n",
+            "walrus None-test":
+                "    if (cap := self._lookup_or(h, Env)) is None:\n"
+                "        return None\n"
+                "    return cap.read()\n",
+            "returned raw":
+                "    return self._lookup_or(h, Env)\n",
+            "inline None-test":
+                "    if self._lookup_or(h, Env) is None:\n"
+                "        return None\n"
+                "    return 1\n",
+        }
+        for label, body in bad.items():
+            with self.subTest(kind="flagged", shape=label):
+                tree = ast.parse(f"def f(self, h, Env):\n{body}")
+                self.assertEqual(
+                    len(_unchecked_swallowing_lookups(tree)), 1,
+                    f"the detector did not flag a discarded lookup "
+                    f"({label}); the hole this guard exists to close "
+                    f"would slip through",
+                )
+        for label, body in good.items():
+            with self.subTest(kind="passed", shape=label):
+                tree = ast.parse(f"def f(self, h, Env):\n{body}")
+                self.assertEqual(
+                    _unchecked_swallowing_lookups(tree), [],
+                    f"the detector flagged a fail-closed lookup "
+                    f"({label}) as a violation; a false positive would "
+                    f"force real bridges to be exempted and rot the "
+                    f"guard",
+                )
 
 
 @unittest.skipUnless(
