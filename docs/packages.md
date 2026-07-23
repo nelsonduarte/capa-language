@@ -629,7 +629,10 @@ stops the build:
 
 ```
 capa: broken capa.toml: /path/to/capa.toml: [capabilities].max names
-unknown capability(ies): ['stdio']; allowed: ['Clock', 'Db', ...]
+unknown capability(ies): ['stdio']; a ceiling may name a built-in
+capability (['Clock', 'Db', ...]) or a capability declared by this
+package or one of its dependencies (['Notifier']). Check the
+spelling, or declare the capability in this package's source.
 ```
 
 Exit code `2`, the same code `capa test` and `capa install`
@@ -647,3 +650,28 @@ be genuinely unfixable by the person who hits it ("upgrade the
 compiler" is not always available), while a broken manifest is
 always fixable by editing the file. An escape here would restore
 the source substitution along with the convenience.
+
+**What `[capabilities].max` may name.** A user-defined
+`capability` as well as a built-in one. A `capability Notifier`
+declaration composes as introduced authority just like `Net`
+does, so a package that declares one and cannot name it has no
+satisfiable ceiling at all: omitting the name fails the ceiling
+check, and naming it used to fail the parse. The accepted names
+are read off the package's own source tree, `vendor/` included,
+so a consumer can name a capability its dependency defines. The
+names come from the lexer, so a `capability` mention in a comment
+is not one, and a Unicode-named capability is. Anything else is
+still refused by name, and `Unsafe` is not nameable under any
+spelling: crossing it composes as authority-unknown, which is
+what `allow_unknown` is for.
+
+One qualification on "refused by name": the name check needs a
+dependency's source to know that dependency's capabilities, so it
+runs only once every declared dependency is on disk. Before `capa
+install` has vendored them, an unrecognised name is carried
+rather than refused, because `install` reads the very manifest it
+is about to satisfy and a package that names a not-yet-vendored
+dependency's capability must not be unfixable. Nothing is waved
+through: a package with an unvendored dependency composes as
+authority-unknown and its ceiling fails closed at
+`--check-capabilities` time unless it sets `allow_unknown`.

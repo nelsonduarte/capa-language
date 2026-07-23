@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..typesys import CAPABILITY_NAMES
+from ._capnames import ceiling_vocabulary, is_capability_name
 
 if sys.version_info >= (3, 11):
     import tomllib as _toml
@@ -59,11 +60,17 @@ _DEP_GIT_KEYS = frozenset({"git", "tag", "rev", "verify_key", "verify_provenance
 # silently-ignored policy weakening.
 _CAPABILITIES_KEYS = frozenset({"max", "pure", "allow_unknown"})
 
-# The capability names a ceiling may name. ``Unsafe`` is deliberately
-# EXCLUDED: crossing ``Unsafe`` escapes the analysis entirely and composes
-# as authority-unknown (TOP), so it can never be a bounded capability a
-# ceiling permits. The single source of truth for the built-in capabilities
-# is ``typesys.CAPABILITY_NAMES``; the ceiling excludes only ``Unsafe``.
+# The BUILT-IN capability names a ceiling may name. ``Unsafe`` is
+# deliberately EXCLUDED: crossing ``Unsafe`` escapes the analysis entirely
+# and composes as authority-unknown (TOP), so it can never be a bounded
+# capability a ceiling permits. The single source of truth for the built-in
+# capabilities is ``typesys.CAPABILITY_NAMES``; the ceiling excludes only
+# ``Unsafe``.
+#
+# A ceiling may ALSO name a user-defined capability, which is not in this
+# set and is validated against the package's own source tree instead; see
+# ``_capnames`` for the vocabulary and for why that check is here in the
+# parser rather than at check time.
 _CEILING_CAP_NAMES = frozenset(CAPABILITY_NAMES) - {"Unsafe"}
 
 # The three accepted values for ``verify_provenance`` (per git dep).
@@ -184,7 +191,11 @@ class CapabilityCeiling:
     """A package's DECLARED capability ceiling (composition S3).
 
     ``max`` is the set of capability names the package (and its ENTIRE
-    transitive dependency subtree) is allowed to reach. ``pure = true`` in
+    transitive dependency subtree) is allowed to reach. A name is either a
+    built-in capability or a user-defined ``capability`` declared by this
+    package or one of its dependencies, since a user-defined capability
+    composes as introduced authority exactly like a built-in one and would
+    otherwise make every ceiling unsatisfiable. ``pure = true`` in
     ``capa.toml`` is sugar for ``max = []`` (a leaf that must stay
     authority-free). A package with no ``[capabilities]`` section has no
     ceiling at all (``Manifest.capability_ceiling is None``): it is
@@ -305,6 +316,8 @@ def read_manifest(path: Path) -> Manifest:
     deps = _parse_dep_table(path, data, "dependencies")
     dev_deps = _parse_dep_table(path, data, "dev-dependencies")
     ceiling = _parse_capability_ceiling(path, data)
+    if ceiling is not None:
+        _check_ceiling_vocabulary(path, ceiling, deps)
 
     # A name in both tables would race for the same ``vendor/<name>``
     # directory (and make the import surface ambiguous); refuse it
@@ -345,10 +358,13 @@ def _parse_capability_ceiling(
     S3). Returns ``None`` when the section is absent (unconstrained; the
     package is never checked).
 
-    Strict/closed like every other Capa manifest table: an unknown key,
-    an unknown capability name in ``max``, a wrong type, or the
+    Strict/closed like every other Capa manifest table: an unknown key, a
+    malformed capability name in ``max``, a wrong type, or the
     ``pure = true`` + non-empty ``max`` conflict is a hard
-    ``ManifestError``, never a silently-ignored policy weakening."""
+    ``ManifestError``, never a silently-ignored policy weakening. Whether
+    a well-formed non-built-in name denotes a capability that EXISTS
+    needs the package's source tree, so that half lives in
+    :func:`_check_ceiling_vocabulary`."""
     if "capabilities" not in data:
         return None
     section = data["capabilities"]
@@ -372,12 +388,30 @@ def _parse_capability_ceiling(
                 f"{path}: [capabilities].max must be a list of capability "
                 f"name strings"
             )
-        unknown = [c for c in raw_max if c not in _CEILING_CAP_NAMES]
-        if unknown:
+        # ``Unsafe`` is refused outright, ahead of everything else: it is
+        # not a bounded capability under any vocabulary, and no
+        # user-defined capability may reintroduce the name.
+        if "Unsafe" in raw_max:
             raise ManifestError(
                 f"{path}: [capabilities].max names unknown capabilit"
-                f"y(ies): {sorted(set(unknown))}; allowed: "
-                f"{sorted(_CEILING_CAP_NAMES)}"
+                f"y(ies): ['Unsafe']; 'Unsafe' can never be a bounded "
+                f"capability a ceiling permits - crossing it escapes the "
+                f"analysis and composes as authority-unknown. Drop it, and "
+                f"declare allow_unknown = true if the unanalyzable subtree "
+                f"is deliberate."
+            )
+        # A name that is not a built-in is a candidate USER-DEFINED
+        # capability. It must at least be shaped like one under the
+        # lexer's real identifier grammar (Unicode included, so a
+        # ``capability Café`` stays nameable); whether it actually exists
+        # is settled below, against the package's source tree.
+        malformed = [c for c in raw_max if not is_capability_name(c)]
+        if malformed:
+            raise ManifestError(
+                f"{path}: [capabilities].max names unknown capabilit"
+                f"y(ies): {sorted(set(malformed))}; a capability name must "
+                f"be a single identifier. The built-in capabilities are "
+                f"{sorted(_CEILING_CAP_NAMES)}."
             )
         max_set = frozenset(raw_max)
     else:
@@ -407,6 +441,44 @@ def _parse_capability_ceiling(
         )
 
     return CapabilityCeiling(max=max_set, allow_unknown=allow_unknown)
+
+
+def _check_ceiling_vocabulary(
+    path: Path, ceiling: CapabilityCeiling, deps: list[Dependency],
+) -> None:
+    """Refuse a ``[capabilities].max`` entry that names no capability.
+
+    Built-ins are always nameable. Anything else must be a capability
+    DECLARED by this package or by one of its vendored dependencies, read
+    off the package's source tree (see :mod:`._capnames` for why that is
+    the vocabulary, and why this stays in the parser). A typo therefore
+    still fails loudly, naming itself, rather than silently widening the
+    ceiling by a name nothing can satisfy.
+
+    The refusal is armed only when every declared product dependency is
+    on disk. A dependency that is not vendored yet (``capa install`` has
+    not run) means the vocabulary is incomplete, and refusing there would
+    make a package that names a dependency's capability impossible to
+    install. Such a package composes as authority-unknown TOP and its
+    ceiling already fails closed."""
+    candidates = sorted(set(ceiling.max) - _CEILING_CAP_NAMES)
+    if not candidates:
+        return
+    declared, complete = ceiling_vocabulary(path.parent.resolve(), deps)
+    if not complete:
+        return
+    unknown = [c for c in candidates if c not in declared]
+    if not unknown:
+        return
+    found = sorted(declared)
+    raise ManifestError(
+        f"{path}: [capabilities].max names unknown capability(ies): "
+        f"{unknown}; a ceiling may name a built-in capability "
+        f"({sorted(_CEILING_CAP_NAMES)}) or a capability declared by this "
+        f"package or one of its dependencies "
+        f"({found if found else 'none declared'}). Check the spelling, or "
+        f"declare the capability in this package's source."
+    )
 
 
 def _parse_dep_table(path: Path, data: dict, table: str) -> list[Dependency]:
