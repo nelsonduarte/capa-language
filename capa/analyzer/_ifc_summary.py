@@ -1074,8 +1074,24 @@ class _SummaryBuilder:
         # call-site propagation, which is what makes it transitive (a
         # callee that calls a callee that pushes) and what carries it
         # through a parameter that was merely passed along.
+        #
+        # The ``_CONTAINER_MUTATORS`` match is BY METHOD NAME, so the
+        # by-name shortcut fires ONLY when the receiver is a built-in
+        # container, never a user type that defines its OWN
+        # push/add/set: a by-name collision must not taint a user-typed
+        # receiver whole-value across the boundary (that was a precision
+        # regression -- a spurious warning, a hard error under
+        # ``@strict_ifc``, widening through the fixpoint). Skipping the
+        # shortcut loses no leak: a user type's real mutation is a field
+        # store in that method's body, carried by its OWN summary and
+        # propagated below by ``_propagate_callee_effects``. The rest of
+        # this method (the user-method sink-reaching path, the transitive
+        # field-write propagation, the return taint) still runs. The gate
+        # mirrors the type-aware intra-procedural check
+        # (``_check_ifc_container_mutation``).
+        receiver_is_user_owner = self._receiver_is_user_method_owner(e)
         for (_ty, meth), positions in _CONTAINER_MUTATORS.items():
-            if meth != e.method:
+            if meth != e.method or receiver_is_user_owner:
                 continue
             injected = set()
             for pos in positions:
@@ -1241,6 +1257,31 @@ class _SummaryBuilder:
         if self._is_trait_type(tyname):
             return tuple(by_name)
         return ()
+
+    def _receiver_is_user_method_owner(self, e: A.MethodCall) -> bool:
+        """True when the method-call receiver PROVABLY resolves to a
+        USER-defined type that declares its own method ``e.method`` -- a
+        parameter whose declared type has an exact impl-method key, or a
+        parameter typed as a trait (dynamic dispatch). Reuses the exact
+        receiver-vs-built-in distinction the return-effect narrowing uses
+        (``_result_candidate_keys``).
+
+        Used to gate the cross-function CONTAINER-MUTATION effect: the
+        ``_CONTAINER_MUTATORS`` match is BY METHOD NAME, so without this
+        a user type that merely shares a mutator's name
+        (``push`` / ``add`` / ``set``) would have its receiver tainted
+        whole-value across a call boundary -- a false positive that
+        escapes to every caller and widens through the fixpoint, and a
+        hard error under ``@strict_ifc``. The intra-procedural check
+        (``_check_ifc_container_mutation``) is already type-aware, keying
+        ``_CONTAINER_MUTATORS.get((cap_name, method))``; this keeps the
+        summary path from being laxer. Only a BUILT-IN container (whose
+        method has no user body to summarise) records the effect; a user
+        type's genuine mutation is carried by that method's OWN summary,
+        propagated at the call site by ``_propagate_callee_effects``, so
+        gating the by-name shortcut out never loses a real leak."""
+        candidate_keys = self.methods_by_name.get(e.method, [])
+        return bool(self._result_candidate_keys(e, candidate_keys))
 
     def _is_trait_type(self, type_name: str) -> bool:
         """True if ``type_name`` resolves to a TRAIT (dynamic dispatch),

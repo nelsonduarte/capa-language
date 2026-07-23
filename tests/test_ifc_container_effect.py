@@ -472,6 +472,125 @@ class TestNoFalsePositives(unittest.TestCase):
                          [w.message for w in r.warnings])
 
 
+class TestUserMethodNameCollision(unittest.TestCase):
+    """The cross-function container-mutation effect matches the mutator
+    by METHOD NAME. It must be gated by the receiver TYPE so a
+    USER-defined method that merely shares a mutator's name
+    (``push`` / ``add`` / ``set``) does NOT taint its receiver across a
+    call boundary. The intra-procedural check is already type-aware
+    (``_CONTAINER_MUTATORS.get((cap_name, method))``); the summary path
+    must not be laxer. A user type's genuine mutation is still carried
+    by that method's own summary, so gating out the by-name shortcut
+    does not reopen the hole.
+
+    ``fp_min``: a ``Box`` with a discarding ``push``, a ``bump`` that
+    calls ``c.push(v)``, and a ``main`` that reads an unrelated,
+    never-written field afterwards. Parent 6321246: 0 warnings. The
+    by-name summary regression made this 1 spurious @secret warning, and
+    a HARD COMPILE ERROR under ``@strict_ifc``."""
+
+    _FP_MIN = (
+        "type Box { a: String }\n"
+        "impl Box\n"
+        "    fun push(self, v: String)\n"
+        "        let _ = v\n"
+        "fun bump(c: Box, v: String)\n"
+        "    c.push(v)\n"
+        "fun main(stdio: Stdio, token: @secret String)\n"
+        "    var c: Box = Box { a: \"public\" }\n"
+        "    bump(c, token)\n"
+        "    stdio.println(c.a)\n"
+    )
+
+    _FP_TRANSITIVE = (
+        "type Box { a: String }\n"
+        "impl Box\n"
+        "    fun push(self, v: String)\n"
+        "        let _ = v\n"
+        "fun leaf(c: Box, v: String)\n"
+        "    c.push(v)\n"
+        "fun middle(b: Box, v: String)\n"
+        "    leaf(b, v)\n"
+        "fun main(stdio: Stdio, token: @secret String)\n"
+        "    var c: Box = Box { a: \"public\" }\n"
+        "    middle(c, token)\n"
+        "    stdio.println(c.a)\n"
+    )
+
+    def test_user_push_collision_no_warning(self):
+        r = _analyze(self._FP_MIN)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_user_push_collision_no_strict_error(self):
+        strict = self._FP_MIN.replace(
+            "fun main(stdio: Stdio, token: @secret String)",
+            "@strict_ifc()\nfun main(stdio: Stdio, token: @secret String)",
+        )
+        r = _analyze(strict)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_errors(r)), 0,
+                         [e.message for e in r.errors])
+
+    def test_user_push_collision_transitive_no_warning(self):
+        r = _analyze(self._FP_TRANSITIVE)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_user_add_and_set_collisions_no_warning(self):
+        # The gate must cover every mutator name, not only ``push``.
+        for meth in ("add", "set"):
+            with self.subTest(method=meth):
+                src = (
+                    "type Box { a: String }\n"
+                    "impl Box\n"
+                    f"    fun {meth}(self, v: String)\n"
+                    "        let _ = v\n"
+                    f"fun bump(c: Box, v: String)\n"
+                    f"    c.{meth}(v)\n"
+                    "fun main(stdio: Stdio, token: @secret String)\n"
+                    "    var c: Box = Box { a: \"public\" }\n"
+                    "    bump(c, token)\n"
+                    "    stdio.println(c.a)\n"
+                )
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+
+    def test_builtin_container_still_warns_after_gate(self):
+        # The gate must NOT reopen the closed hole: a genuine built-in
+        # List mutated by a callee is still flagged.
+        r = _analyze(_MUTATOR_PROGRAMS[("List", "push")])
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+    def test_user_type_that_really_stores_still_caught(self):
+        # A user "container" whose ``push`` genuinely stores the value
+        # into a @secret-reachable field is caught through that method's
+        # OWN summary (the field-write effect), so gating out the
+        # by-name shortcut does not lose a real leak. Here ``push``
+        # stores ``v`` into ``self.a`` and ``main`` reads it back.
+        r = _analyze(
+            "type Box { a: String }\n"
+            "impl Box\n"
+            "    fun push(self, v: String)\n"
+            "        self.a = v\n"
+            "fun bump(c: Box, v: String)\n"
+            "    c.push(v)\n"
+            "fun main(stdio: Stdio, token: @secret String)\n"
+            "    var c: Box = Box { a: \"public\" }\n"
+            "    bump(c, token)\n"
+            "    stdio.println(c.a)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+
+
 # The leaking program, run end to end. The check is a WARNING, so the
 # program still compiles and runs; both backends must print the same
 # thing, which is what makes the missed diagnostic a real leak rather
