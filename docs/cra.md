@@ -160,7 +160,11 @@ recorded in the manifest:
 ],
 ```
 
-with a program-wide `declassification_sites` count in the summary.
+with a program-wide `declassification_sites` count in the summary. A
+disclosure written outside any function body, in a top-level `const`
+initializer, is recorded under `module_declassifications` and counted
+in the same total, so the enumeration covers the whole module rather
+than only its functions.
 For Annex I Part I (2)(e) (confidentiality of processed data) and
 (2)(g) (data minimisation), this turns an organisational assertion
 ("we are careful with cardholder data") into a machine-checkable one:

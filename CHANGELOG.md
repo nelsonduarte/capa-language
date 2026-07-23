@@ -105,6 +105,45 @@ breaking changes and the discipline is still being shaped.
   entry in it has a leak program, so a future mutator cannot be added
   uncovered.
 
+- *A signed conformance report could assert `no-declassification` for a
+  program that prints a credential.* Moving a `declassify` one line up,
+  out of a function body and into a top-level `const` initializer, made
+  it invisible to every artifact the compiler emits while the analyzer
+  went on honouring it: `--check` exited 0, `--run` printed the secret,
+  `--manifest` reported `declassification_sites = 0`, `--compose-sbom`
+  reported `has_declassification = False`, `--check-policies` printed
+  "OK - every declared compliance policy holds" and exited 0, and
+  `--conformance-report` emitted `pass: true` with a digest over it. It
+  under-counted as well as all-or-nothing: three declassifications, two
+  of them hoisted into constants, were reported as one.
+
+  The cause was two subsystems answering the same question by walking
+  the AST with different rules. The manifest's collector iterated only
+  `FunDecl` bodies and `ImplBlock` methods and never touched
+  `ConstDecl.value`. The same split produced a second, opposite error:
+  the manifest matched a declassification on the callee's NAME, so a
+  user-defined `fun declassify(...)` yielded a phantom audited-
+  disclosure record while the analyzer, which checks that the callee
+  binds to the built-in symbol, still reported the leak. One artifact
+  claimed an audited declassification and an un-audited secret sink at
+  the same position. A third walk, in the cross-function summary pass,
+  had a third rule again.
+
+  `capa/_declassify.py` is now the single source of truth for what
+  counts as a declassification, consumed by all three: the identity
+  predicate (`is_declassify_call`), the recordable-site shape, and an
+  EXHAUSTIVE registry of the expression-bearing top-level items. An
+  item class missing from that registry raises rather than contributing
+  zero sites, and a meta-test enumerates the AST's own item inventory
+  against it, so a new expression-bearing item cannot silently fall
+  outside the artifact walk.
+
+  The manifest gains a `module_declassifications` block for sites
+  outside any function body; `summary.declassification_sites` is the
+  module-wide total across both, and the composed SBOM attributes each
+  module-scope site to the package whose file declares it, exactly as
+  it does a function site.
+
 **Changed (upgrade notes).**
 
 - *Prebuilt `.wasm` and `.cwasm` artifacts that predate the capability

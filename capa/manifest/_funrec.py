@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import capa_ast as A
+from .._declassify import FUNCTION_KINDS, module_expression_roots
 from ..lexer import SYNTHETIC_FILENAME
 from ..typesys import CAPABILITY_NAMES
 
@@ -340,6 +341,7 @@ def build_manifest(
     *,
     filename: str = "<input>",
     capa_version: Optional[str] = None,
+    bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
     operator_declared_grants: Optional[dict[str, Any]] = None,
     unaudited_secret_sinks: Optional[dict] = None,
@@ -349,6 +351,15 @@ def build_manifest(
     The dict is directly JSON-serialisable. The caller is expected to
     have run the analyser first; this builder does not re-validate
     attributes or types.
+
+    ``bindings`` is the analyser's ``id(Ident) -> Symbol`` map
+    (``AnalysisResult.bindings``). When supplied, a ``declassify`` site
+    is recognised by the IDENTITY of its callee binding rather than by
+    its name, so a user-defined ``fun declassify(...)`` does not produce
+    a phantom declassification record. Every artifact-producing CLI path
+    supplies it; the analysis-free callers (docgen, the LSP code lens,
+    the Wasm capability side-table, the migrator) do not read the
+    declassification surface at all.
 
     ``expr_labels`` is the analyser's ``id(expr) -> label`` map
     (``AnalysisResult.expr_labels``). When supplied, the
@@ -463,6 +474,7 @@ def build_manifest(
                 container=None, implicit_cap=None,
                 reachable=reachable, unprovable=unprovable,
                 linear_types=linear_types,
+                bindings=bindings,
                 expr_labels=expr_labels,
                 foreign_names=foreign_names,
                 unaudited_secret_sinks=unaudited_secret_sinks,
@@ -480,10 +492,21 @@ def build_manifest(
                     implicit_cap=implicit,
                     reachable=reachable, unprovable=unprovable,
                     linear_types=linear_types,
+                    bindings=bindings,
                     expr_labels=expr_labels,
                     foreign_names=foreign_names,
                     unaudited_secret_sinks=unaudited_secret_sinks,
                 ))
+
+    # Roadmap S2.5: declassification sites OUTSIDE any function body --
+    # today only a top-level ``const`` initializer, tomorrow whatever new
+    # expression-bearing item ``capa._declassify._ITEM_ROOTS`` registers.
+    # These have no function record to live in, so they get their own
+    # block; the summary counts BOTH so the artifact's
+    # ``declassification_sites`` is the module-wide total it claims to be.
+    module_declassifications = _module_declassifications(
+        module, filename, bindings=bindings, expr_labels=expr_labels,
+    )
 
     summary = {
         "total_functions": len(functions),
@@ -497,10 +520,11 @@ def build_manifest(
             1 for f in functions if f["has_unsafe"]
         ),
         # Roadmap S2.5: program-wide count of auditable secret->public
-        # declassification sites.
+        # declassification sites, over EVERY expression-bearing item --
+        # function bodies plus module scope (a ``const`` initializer).
         "declassification_sites": sum(
             len(f["declassifications"]) for f in functions
-        ),
+        ) + len(module_declassifications),
     }
 
     # Roadmap S3: the protocols (typestates) the module declares, with
@@ -541,6 +565,12 @@ def build_manifest(
         # runtime that makes the bound SOUND is F2.
         "foreign_components": foreign_components_block,
         "functions": functions,
+        # Roadmap S2.5: the audited @secret -> @public bridges that sit
+        # OUTSIDE any function body (a top-level ``const`` initializer).
+        # Same record shape as a function record's ``declassifications``
+        # plus the owner it belongs to, so the composed roll-up attributes
+        # them to the owning package exactly as it does function sites.
+        "module_declassifications": module_declassifications,
         # WASI Fs layer b1: operator-declared authority (e.g. --preopen),
         # honestly labelled Level-2 / operator-declared, distinct from the
         # derived surface above. Always present (empty when none declared).
@@ -555,6 +585,63 @@ def build_manifest(
         "compiler_derived_path_arg_surface": build_path_arg_surface(module),
         "summary": summary,
     }
+
+
+def _module_declassifications(
+    module: A.Module,
+    filename: str,
+    *,
+    bindings: Optional[dict[int, Any]] = None,
+    expr_labels: Optional[dict[int, str]] = None,
+) -> list[dict[str, Any]]:
+    """The declassification sites of every expression-bearing item that
+    is NOT a function body (roadmap S2.5).
+
+    The item inventory comes from
+    :func:`capa._declassify.module_expression_roots`, which raises on an
+    unregistered ``Item`` class: a new expression-bearing item cannot
+    silently fall outside this walk, it fails loudly instead.
+
+    Each record carries the function-record shape (``reason`` / ``value``
+    / ``pos`` as ``<line>:<col>``) plus its owner:
+
+    - ``owner_kind`` -- the expression-root kind (today ``"const"``);
+    - ``owner``      -- the LOADER-TIME identifier, mangled exactly as a
+      function record's ``name`` is, so the composed SBOM can key on it
+      unambiguously when two packages declare same-positioned constants;
+    - ``source_owner`` -- the demangled display name, the analogue of a
+      function record's ``source_name``;
+    - ``owner_pos``  -- ``<display file>:<line>:<col>`` of the
+      DECLARATION, exactly like a function record's ``pos``.
+
+    The composed SBOM attributes a site by ``owner_kind`` + ``owner`` +
+    ``owner_pos``, the same identity a function record is attributed by."""
+    out: list[dict[str, Any]] = []
+    for root in module_expression_roots(module):
+        if root.kind in FUNCTION_KINDS:
+            continue
+        sites: list[dict[str, Any]] = []
+        _collect_declassifications(
+            root.node, sites, bindings=bindings, expr_labels=expr_labels,
+        )
+        if not sites:
+            continue
+        decl_file = root.decl.pos.filename
+        if not decl_file or decl_file == SYNTHETIC_FILENAME:
+            decl_file = filename
+        decl_file = _display_path(decl_file, filename)
+        source_owner, _module_index = _demangle(root.name)
+        for site in sites:
+            out.append({
+                "owner_kind": root.kind,
+                "owner": root.name,
+                "source_owner": source_owner,
+                "owner_pos": (
+                    f"{decl_file}:{root.decl.pos.line}:{root.decl.pos.col}"
+                ),
+                **site,
+            })
+    return out
 
 
 def _foreign_components_block(module: A.Module) -> list[dict[str, Any]]:
@@ -625,6 +712,7 @@ def _fun_record(
     reachable: Optional[dict[str, set[str]]] = None,
     unprovable: Optional[set[str]] = None,
     linear_types: Optional[set[str]] = None,
+    bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
     foreign_names: Optional[set[str]] = None,
     unaudited_secret_sinks: Optional[dict] = None,
@@ -778,7 +866,8 @@ def _fun_record(
     # secret data cross to a public sink.
     declassifications: list[dict[str, Any]] = []
     _collect_declassifications(
-        fn.body, declassifications, expr_labels=expr_labels,
+        fn.body, declassifications,
+        bindings=bindings, expr_labels=expr_labels,
     )
 
     # Feature #6 (B1): the UN-AUDITED @secret -> public-sink flows the IFC

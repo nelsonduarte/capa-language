@@ -16,6 +16,12 @@ function in the program, *what other functions it invokes and with
 what arguments*, including restrictions applied via
 ``restrict_to(...)`` calls visible directly in the argument
 expressions.
+
+:func:`_collect_declassifications` alongside it is the declassification
+walker. It takes ANY expression-bearing root, not just a function body
+(a top-level ``const`` initializer carries one too), and it does not
+decide what counts as a declassification: :mod:`capa._declassify` does,
+for the analyzer and this walker alike.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .. import capa_ast as A
+from .._declassify import declassification_site
 
 from ._flow import _arg_flow
 from ._strings import _stringify_expr
@@ -117,10 +124,11 @@ def _collect_declassifications(
     node,
     sites: list[dict[str, Any]],
     *,
+    bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
 ) -> None:
     """Recursively collect ``declassify(value, reason: "...")`` call
-    sites from a function body (roadmap S2.5).
+    sites from an expression-bearing root (roadmap S2.5).
 
     Each site records the ``reason`` string verbatim, the source-like
     stringification of the declassified value, and the position. This
@@ -128,43 +136,31 @@ def _collect_declassifications(
     reads off every point where the program deliberately lets a
     ``@secret`` value cross to ``@public``, and the stated reason.
 
-    ``expr_labels`` is the analyzer's ``id(expr) -> label`` map. When
-    supplied, a ``declassify`` whose value argument is provably NOT
-    ``@secret`` is skipped: such a call is a no-op (the analyzer already
-    warns on it), and counting it would inflate the manifest's
-    ``declassification_sites`` with disclosures that never happen,
-    contradicting the field's definition ("every point where @secret
-    crosses to @public"). When ``expr_labels`` is ``None`` (a manifest
-    built without an accompanying analysis), every syntactic declassify
-    is recorded, the historical behaviour.
+    WHAT counts as a site is NOT decided here: it is decided by
+    :func:`capa._declassify.declassification_site`, the single source of
+    truth this walker shares with the analyzer. This function only walks
+    and formats. ``bindings`` (the analyzer's ``id(Ident) -> Symbol``
+    map) and ``expr_labels`` (its ``id(expr) -> label`` map) are passed
+    straight through: the former makes IDENTITY rather than the callee's
+    NAME decide (a user-defined ``fun declassify`` is not a
+    declassification), the latter drops the no-op declassify of an
+    already-public value.
 
-    The analyzer has already enforced the call shape (a required
-    ``reason:`` string literal), so this walker trusts it; a
-    defensively malformed node is skipped rather than recorded."""
+    The root may be a function body OR any other expression-bearing item
+    root -- a top-level ``const`` initializer above all, whose sites were
+    invisible to every artifact before this walk was generalised."""
     if node is None:
         return
 
-    if (
-        isinstance(node, A.Call)
-        and isinstance(node.callee, A.Ident)
-        and node.callee.name == "declassify"
-        and len(node.args) == 2
-        and len(node.arg_names) == 2
-        and node.arg_names[1] == "reason"
-        and isinstance(node.args[1], A.StringLit)
-    ):
-        # Only a declassify of a genuinely @secret value is a real
-        # disclosure. With label info, drop the no-op case.
-        is_real = True
-        if expr_labels is not None:
-            label = expr_labels.get(id(node.args[0]))
-            is_real = label == "secret"
-        if is_real:
-            sites.append({
-                "reason": node.args[1].value,
-                "value": _stringify_expr(node.args[0]),
-                "pos": f"{node.pos.line}:{node.pos.col}",
-            })
+    parts = declassification_site(
+        node, bindings=bindings, expr_labels=expr_labels,
+    )
+    if parts is not None:
+        sites.append({
+            "reason": parts.reason,
+            "value": _stringify_expr(parts.value),
+            "pos": f"{parts.pos.line}:{parts.pos.col}",
+        })
 
     # Always keep walking: a declassify can be nested anywhere, and a
     # declassified value may itself contain a nested declassify.
@@ -174,16 +170,21 @@ def _collect_declassifications(
                 continue
             v = getattr(node, f.name)
             if isinstance(v, A.Node):
-                _collect_declassifications(v, sites, expr_labels=expr_labels)
+                _collect_declassifications(
+                    v, sites, bindings=bindings, expr_labels=expr_labels,
+                )
             elif isinstance(v, list):
                 for item in v:
                     if isinstance(item, A.Node):
                         _collect_declassifications(
-                            item, sites, expr_labels=expr_labels,
+                            item, sites,
+                            bindings=bindings, expr_labels=expr_labels,
                         )
                     elif isinstance(item, tuple):
                         for it in item:
                             if isinstance(it, A.Node):
                                 _collect_declassifications(
-                                    it, sites, expr_labels=expr_labels,
+                                    it, sites,
+                                    bindings=bindings,
+                                    expr_labels=expr_labels,
                                 )

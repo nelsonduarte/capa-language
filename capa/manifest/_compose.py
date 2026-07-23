@@ -390,6 +390,40 @@ def _function_files(module: A.Module) -> dict[tuple, str]:
     return out
 
 
+def _module_scope_files(module: A.Module) -> dict[tuple, str]:
+    """Map each MODULE-SCOPE expression root's attribution key to the
+    ABSOLUTE source file it was declared in.
+
+    The module-scope analogue of :func:`_function_files`, for the
+    declassification sites that live outside any function body (a
+    top-level ``const`` initializer). The key is ``(kind, name, line,
+    col)`` -- the expression-root kind, the LOADER-TIME (possibly
+    mangled) name, and the declaration position -- which lines up exactly
+    with the ``owner_kind`` / ``owner`` / ``owner_pos`` a
+    ``module_declassifications`` record carries, so two packages that
+    declare same-positioned constants are still told apart.
+
+    Like :func:`_function_files`, a key that would map to two DIFFERENT
+    files is a mis-attribution hazard and raises :class:`ComposeError`
+    rather than picking one silently."""
+    from .._declassify import FUNCTION_KINDS, module_expression_roots
+
+    out: dict[tuple, str] = {}
+    for root in module_expression_roots(module):
+        if root.kind in FUNCTION_KINDS:
+            continue
+        key = (root.kind, root.name, root.decl.pos.line, root.decl.pos.col)
+        filename = root.decl.pos.filename or ""
+        prev = out.get(key)
+        if prev is not None and prev != filename:
+            raise ComposeError(
+                f"ambiguous attribution: {root.kind} {root.name!r} maps to "
+                f"both {prev!r} and {filename!r}; cannot attribute soundly"
+            )
+        out[key] = filename
+    return out
+
+
 def _owning_dir(filename: str, dirs_by_depth: list[Path]) -> Optional[Path]:
     """The DEEPEST package directory that encloses ``filename`` (so a
     nested ``vendor/a/vendor/b`` file is attributed to ``b``), or ``None``
@@ -424,8 +458,14 @@ def _attribute(
     A function under no package (external CAPA_PATH module, built-in,
     synthetic) is attributed to ``root_dir`` so its authority is never
     silently dropped from the product roll-up (soundness: over-attribute
-    to the product, never lose a capability)."""
+    to the product, never lose a capability).
+
+    Declassification sites that live OUTSIDE any function body (the
+    manifest's ``module_declassifications``, e.g. a top-level ``const``
+    initializer) are attributed by the same rule, keyed on the owning
+    declaration's file instead of the function's."""
     keyfile = _function_files(module)
+    modfile = _module_scope_files(module)
     dirs_by_depth = sorted(
         nodes.keys(), key=lambda d: len(d.parts), reverse=True,
     )
@@ -530,6 +570,30 @@ def _attribute(
                         # the module-wide union rather than under-attribute.
                         foreign_caps[owner] |= foreign_caps_union
 
+    # Roadmap S2.5: the declassification sites outside any function body.
+    # Attributed by the OWNING DECLARATION's file, so a secret released in
+    # a dependency's ``const`` lands on that dependency, not the root.
+    # Defensive .get(): a manifest serialised before the block existed has
+    # no key, and an owner whose file is under no package falls back to the
+    # root exactly like a function (over-attribute, never lose a site).
+    for site in manifest.get("module_declassifications", []):
+        owner_pos = site.get("owner_pos", "")
+        owner_file, owner_line, owner_col = _split_owner_pos(owner_pos)
+        abs_file = modfile.get(
+            (
+                site.get("owner_kind", ""), site.get("owner", ""),
+                owner_line, owner_col,
+            ),
+            "",
+        )
+        owner = _owning_dir(abs_file, dirs_by_depth)
+        if owner is None:
+            owner = root_dir
+        declass[owner].append({
+            "reason": site.get("reason", ""),
+            "pos": f"{owner_file}:{site.get('pos', '')}",
+        })
+
     for d, node in nodes.items():
         node.attributed_caps = frozenset(caps[d])
         node.crosses_unsafe = unsafe[d]
@@ -563,6 +627,21 @@ def _pos_line_col(pos: str) -> tuple[int, int]:
     the split."""
     parts = pos.rsplit(":", 2)
     return int(parts[-2]), int(parts[-1])
+
+
+def _split_owner_pos(pos: str) -> tuple[str, int, int]:
+    """Split a manifest ``<file>:<line>:<col>`` into its three parts.
+
+    The file half is returned as-is (already root-relative display form);
+    a malformed / missing position yields ``("", -1, -1)``, which
+    attributes the site to the root rather than dropping it."""
+    parts = pos.rsplit(":", 2)
+    if len(parts) != 3:
+        return "", -1, -1
+    try:
+        return parts[0], int(parts[1]), int(parts[2])
+    except ValueError:
+        return parts[0], -1, -1
 
 
 # ---------------------------------------------------------------------------

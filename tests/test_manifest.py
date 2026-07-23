@@ -277,6 +277,11 @@ class TestTopLevelShape(unittest.TestCase):
         # present (empty when none declared).
         "foreign_components",
         "functions",
+        # Roadmap S2.5: declassification sites outside any function body
+        # (a top-level ``const`` initializer), always present (empty when
+        # none). Without it the summary's ``declassification_sites`` count
+        # would have nowhere to point at for a const-level disclosure.
+        "module_declassifications",
         # WASI Fs layer b1: operator-declared authority (e.g. --preopen),
         # always present (empty when none declared), distinct from the
         # compiler-derived surface.

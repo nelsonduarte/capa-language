@@ -1976,6 +1976,7 @@ def _main_dispatch() -> int:
             import json
             manifest = build_manifest(
                 module, filename=filename,
+                bindings=result.bindings,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
                 unaudited_secret_sinks=result.unaudited_secret_sinks,
@@ -1986,6 +1987,7 @@ def _main_dispatch() -> int:
             from capa.manifest import canonical_json, canonical_manifest
             manifest = build_manifest(
                 module, filename=filename,
+                bindings=result.bindings,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
                 unaudited_secret_sinks=result.unaudited_secret_sinks,
@@ -2016,6 +2018,7 @@ def _main_dispatch() -> int:
             _enforce_floor_for_file_root(root_dir, _gated_roots)
             manifest = build_manifest(
                 module, filename=filename,
+                bindings=result.bindings,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
                 unaudited_secret_sinks=result.unaudited_secret_sinks,
@@ -2067,6 +2070,7 @@ def _main_dispatch() -> int:
             _enforce_floor_for_file_root(root_dir, _gated_roots)
             manifest = build_manifest(
                 module, filename=filename,
+                bindings=result.bindings,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
                 unaudited_secret_sinks=result.unaudited_secret_sinks,
@@ -2136,6 +2140,7 @@ def _main_dispatch() -> int:
             policy_path = find_policy_file(root_dir)
             manifest = build_manifest(
                 module, filename=filename,
+                bindings=result.bindings,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
                 unaudited_secret_sinks=result.unaudited_secret_sinks,
@@ -2215,6 +2220,7 @@ def _main_dispatch() -> int:
                 module, filename=filename, source=source,
                 sources=linked.sources if linked is not None else None,
                 timestamp=build_ts,
+                bindings=result.bindings,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
             )
@@ -2226,6 +2232,7 @@ def _main_dispatch() -> int:
                 module, filename=filename, source=source,
                 sources=linked.sources if linked is not None else None,
                 timestamp=build_ts,
+                bindings=result.bindings,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
             )

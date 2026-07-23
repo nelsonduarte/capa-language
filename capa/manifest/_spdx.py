@@ -104,6 +104,7 @@ def build_spdx(
     document_namespace: Optional[str] = None,
     source: Optional[str] = None,
     sources: Optional[dict[str, str]] = None,
+    bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
     operator_declared_grants: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
@@ -121,6 +122,7 @@ def build_spdx(
         from .. import __version__ as capa_version
     inner = build_manifest(
         module, filename=filename, capa_version=capa_version,
+        bindings=bindings,
         expr_labels=expr_labels,
         operator_declared_grants=operator_declared_grants,
     )
