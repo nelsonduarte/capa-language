@@ -611,6 +611,12 @@ class _IfcMixin:
     #       cross-function whole-value taint walks the binding's alias
     #       group, so an embed alias (see (b)) mutated across a function
     #       boundary still taints every aliased binding (FN-2).
+    #       The same effect carries a CONTAINER mutated by a callee
+    #       (``xs.push(v)`` and every other ``_CONTAINER_MUTATORS``
+    #       entry, the single source of truth for the mutator set):
+    #       before, a struct field written by a callee was caught but a
+    #       container mutated by one escaped the analysis entirely, even
+    #       though the identical push written inline was caught (FN-3).
     #   (b) embed-then-mutate staleness: CLOSED. A struct EXPRESSION
     #       embedded into another struct literal (``Outer { inner: b }``,
     #       or a field-access chain ``Outer { inner: m.inner }``) names a
@@ -2514,19 +2520,21 @@ class _IfcMixin:
         else:
             self._warn(msg, pos)
 
-    # ---- cross-function field-write effect (closes gap 1) --------
+    # ---- cross-function mutation effect (closes gap 1) -----------
 
     def _check_ifc_call_field_effect(
         self, e: A.Call, sym, perm: list[int],
     ) -> None:
-        """At a user free-function call, apply the callee's field-write
+        """At a user free-function call, apply the callee's mutation
         effects to the CALLER's bindings. ``perm`` is in parameter
         order: ``e.args[perm[i]]`` is the argument bound to parameter
-        ``i``. The effect ``{j -> sources}`` means the callee writes a
-        field of the object passed as parameter ``j`` from those
-        sources; when a source fires (a @secret real-param argument, or
-        the unconditional internal-secret sentinel), the caller's
-        binding for parameter ``j`` is tainted whole-value secret."""
+        ``i``. The effect ``{j -> sources}`` means the callee writes
+        into the object passed as parameter ``j`` -- storing a field of
+        it, or mutating it through a ``_CONTAINER_MUTATORS`` method --
+        from those sources; when a source fires (a @secret real-param
+        argument, or the unconditional internal-secret sentinel), the
+        caller's binding for parameter ``j`` is tainted whole-value
+        secret."""
         effects = self._ifc_field_effects.get(("fun", sym.name))
         if not effects:
             return
@@ -2535,7 +2543,7 @@ class _IfcMixin:
     def _check_ifc_method_call_field_effect(
         self, e: A.MethodCall, method_sym, recv_ty, perm: list[int],
     ) -> None:
-        """Method-call form of the field-write-effect propagation.
+        """Method-call form of the mutation-effect propagation.
         Parameter index 0 is ``self`` (the receiver); the explicit
         parameters follow. Builds the full-order argument list
         (receiver first) and the full-order ``param_idx -> arg_idx``
@@ -2598,10 +2606,11 @@ class _IfcMixin:
 
     def _taint_binding_whole_value(self, e: A.Expr) -> None:
         """Raise the binding rooted at ``e`` to whole-value @secret and
-        escape it, so a later read of ANY field of it is caught. The
-        conservative, sound granularity for a cross-function field-write
-        effect (per-field precision across the boundary is not
-        attempted). No-op when ``e`` is not rooted at a binding.
+        escape it, so a later read of ANY field / element of it is
+        caught. The conservative, sound granularity for a cross-function
+        mutation effect (per-field / per-element precision across the
+        boundary is not attempted). No-op when ``e`` is not rooted at a
+        binding.
 
         Aliasing soundness: if the binding is in an alias group (an embed
         alias ``Outer { inner: b }`` links ``o`` and ``b``, or ``var
