@@ -48,14 +48,63 @@ from typing import Any, Iterable, Optional
 import wasmtime
 import wasmtime.component as wc
 
+from ..ir._cap_binding import (
+    CAP_KINDS,
+    REBUILD_HINT,
+    CapBindingError,
+    parse_wit_cap_slot_name,
+)
 from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Stdio, _write_safe
 from ._fs_guard import PostOpenDenied
 from ._cap_handles import (
     CapHandleError,
     CapHandleTable,
     bootstrap_root_handles,
+    root_handle_map,
 )
 from ._result import Ok
+
+
+def _read_component_cap_types(params) -> list[str]:
+    """Decode the capability kind of each of ``main``'s handle slots
+    from the component type's parameter labels.
+
+    ``params`` is the ``(label, ValType)`` sequence wasmtime lifts from
+    the component's exported world. Every label must be the
+    ``cap<N>-<kind>`` slot label ``_emit_wit`` writes, with ``N``
+    matching the slot's position; anything else raises
+    :class:`CapBindingError` and NO capability is granted. A component
+    built by Capa 1.19.0 or earlier labels its slots ``fs`` / ``net`` /
+    ... and lands here, which is deliberate: the old host resolved an
+    unrecognised label to the Fs root, so accepting those labels as a
+    compatibility mode would re-open the hole."""
+    kinds: list[str] = []
+    for i, (label, _vtype) in enumerate(params):
+        parsed = parse_wit_cap_slot_name(label)
+        if parsed is None:
+            raise CapBindingError(
+                f"component `main` parameter {i} is labelled {label!r}, "
+                f"not the `cap{i}-<kind>` slot label this toolchain "
+                f"requires, so the host cannot tell which root "
+                f"capability it is entitled to; {REBUILD_HINT}"
+            )
+        index, kind = parsed
+        if index != i:
+            raise CapBindingError(
+                f"component `main` parameter {i} is labelled {label!r}, "
+                f"which claims slot {index}; the slot labels do not "
+                f"describe the signature they travel with, so no "
+                f"capability is granted. {REBUILD_HINT}"
+            )
+        if kind not in CAP_KINDS:
+            raise CapBindingError(
+                f"component `main` parameter {i} declares unknown "
+                f"capability kind {kind!r}; known kinds are "
+                f"{', '.join(sorted(CAP_KINDS))}. No capability is "
+                f"granted. {REBUILD_HINT}"
+            )
+        kinds.append(kind)
+    return kinds
 
 
 class IoErrorRecord(wc.Record):
@@ -1209,13 +1258,15 @@ class WasmComponentHost:
         Slice 25.8 (2026-05-30): inspect ``main``'s component
         function type to see which handle-bearing cap slots it
         declares, then pass the matching root handle for each.
-        The WIT generator (``_emit_wit._main_handle_param_names``)
-        emits the param names in source-level order with the
-        lowercase cap-kind (``fs`` / ``net`` / ...); we map by
-        name to the root-handle dict so out-of-order param lists
-        thread the right cap to each slot. Pure ``fun main()``
-        programs (no handle-bearing cap params) keep the trivial
-        zero-arg dispatch."""
+        The WIT generator (``_emit_wit._main_handle_slot_labels``)
+        labels each slot ``cap<N>-<kind>`` from the parameter's
+        DECLARED TYPE, so the kind is read back out of the component
+        type here. Until 2026-07-23 the label was the parameter's
+        source NAME and an unrecognised one resolved to the Fs root,
+        which handed ``fun main(conn: Net, ...)`` the filesystem. A
+        component whose labels are not slot labels is now refused.
+        Pure ``fun main()`` programs (no handle-bearing cap params)
+        keep the trivial zero-arg dispatch."""
         # Clear the per-host panic latch at the start of every run so
         # a host reused across programs cannot let a deliberate panic
         # from one run silence a genuine trap in the next.
@@ -1246,33 +1297,22 @@ class WasmComponentHost:
                 "the WIT world must declare ``export main: func(...);``"
             )
         # Inspect main's signature: ``params`` returns a list of
-        # (name, ValType) tuples lifted from the component's WIT
-        # world. The WIT generator names each handle slot by its
-        # source-level cap-kind (``fs`` / ``net`` / ...), so we
-        # map each declared slot to the matching root handle.
-        # Unknown slot names fall back to the Fs root (defensive;
-        # an analyzer-mismatched signature would already have been
-        # rejected long before this point).
+        # (label, ValType) tuples lifted from the component's WIT
+        # world. Each handle slot is labelled ``cap<N>-<kind>`` by
+        # the WIT generator, encoding the parameter's declared
+        # capability TYPE and its position; decoding that is the
+        # ONLY way a slot gets an authority here. There is no
+        # fallback: a label this toolchain did not emit means the
+        # component predates the binding, and guessing is the defect
+        # this replaced.
         ftype = main.type(self._store)
         params = ftype.params
         if not params:
             main(self._store)
             return
+        cap_types = _read_component_cap_types(params)
         roots = self._bootstrap_root_handles()
-        # WIT-side names are kebab-case (``my-fs``); on the source
-        # side a user could conceivably write ``fun main(my_fs:
-        # Fs)``. The emitter rewrites ``_`` -> ``-`` on the way
-        # out; we don't bother reversing because our examples
-        # use plain ``fs`` / ``net`` / ... names. Match strictly
-        # against the lowercase cap-kind keys.
-        name_to_root: dict[str, int] = {
-            "fs": roots.get("fs", 0),
-            "net": roots.get("net", 0),
-            "db": roots.get("db", 0),
-            "proc": roots.get("proc", 0),
-            "env": roots.get("env", 0),
-            "clock": roots.get("clock", 0),
-        }
+        kind_to_root = root_handle_map(roots)
         # WASI mode: Env attenuation is enforced GUEST-SIDE (Level 2 of
         # docs/design/wasi-attenuation.md). The guest reinterprets the
         # Env i32 value as 0 = unrestricted root, or a pointer to a
@@ -1283,14 +1323,14 @@ class WasmComponentHost:
         # other handle-bearing caps (Fs / Net / Db / Proc / Clock) keep
         # their capa:host table handles in this hybrid mode.
         if self._wasi:
-            name_to_root["env"] = 0
+            kind_to_root["env"] = 0
             # WASI Fs (2026-06-27): Fs metadata is enforced by the host
             # PREOPENS, not the capa:host handle table. The Fs i32 param
             # on ``main`` is vestigial in this mode (the guest metadata
             # wrappers address preopens by compile-time index, never the
             # receiver handle), so pass the 0 sentinel rather than a
             # capa:host table handle, matching the Env treatment.
-            name_to_root["fs"] = 0
+            kind_to_root["fs"] = 0
             # WASI Net (2026-06-28, Phase 1): Net.get is served by
             # wasi:http and gated GUEST-SIDE against the static ceiling
             # (codegen), not the capa:host handle table. The Net i32 param
@@ -1298,8 +1338,6 @@ class WasmComponentHost:
             # never consults the receiver handle for the ceiling), so pass
             # the 0 sentinel rather than a capa:host table handle, matching
             # the Env / Fs treatment.
-            name_to_root["net"] = 0
-        handle_args: list[int] = []
-        for name, _vtype in params:
-            handle_args.append(name_to_root.get(name, roots.get("fs", 0)))
+            kind_to_root["net"] = 0
+        handle_args = [kind_to_root[kind] for kind in cap_types]
         main(self._store, *handle_args)

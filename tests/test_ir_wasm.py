@@ -703,8 +703,8 @@ class TestWitGeneration(unittest.TestCase):
     def test_main_result_clause_present_with_handle_params(self):
         # The result clause must sit AFTER the cap-handle param list,
         # so a ``main`` with both handle params and a scalar return
-        # produces ``export main: func(fs: u32) -> s64;``. Guards the
-        # ordering the shared ``main_result_clause`` helper appends.
+        # produces ``export main: func(cap0-fs: u32) -> s64;``. Guards
+        # the ordering the shared ``main_result_clause`` helper appends.
         src = (
             "fun main(stdio: Stdio, fs: Fs) -> Int\n"
             "    let _e = fs.exists(\"/nope\")\n"
@@ -713,7 +713,7 @@ class TestWitGeneration(unittest.TestCase):
         )
         ir_mod, _, _ = _parse_lower(src)
         wit = emit_wit(ir_mod)
-        self.assertIn("export main: func(fs: u32) -> s64;", wit)
+        self.assertIn("export main: func(cap0-fs: u32) -> s64;", wit)
 
     def test_main_returning_string_rejected_with_clear_error(self):
         # ``main -> String``: the core returns a flattened (i32 i32)

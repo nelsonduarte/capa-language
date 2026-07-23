@@ -9,6 +9,71 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Security.**
+
+- *The Wasm hosts decided which capability a program received by
+  matching a string in a strippable debug section.* Both hosts bound
+  `main`'s capability parameters by the parameter's NAME, lowercased,
+  against a six-entry map, and handed out the **filesystem root** for
+  any name that missed. The declared TYPE was never consulted. Three
+  measured consequences, every one of them exiting 0:
+
+  ```
+  fun main(conn: Net, stdio: Stdio)   python -> net allows example.com
+                                      --wasm -> net denies example.com
+  fun main(net: Fs, stdio: Stdio)     --wasm -> the Net root, and the
+                                                mismatch arrives as an
+                                                ordinary Err
+  wasm-tools strip --all              --wasm -> every slot becomes Fs;
+                                                a successful Env.get
+                                                becomes "no such key"
+  ```
+
+  The names came from the WebAssembly debug `name` custom section on
+  the core-module path, and from the WIT parameter labels (also
+  derived from the source names) on the Component path. Capa's claim
+  is that the type is the contract and the capability is in the
+  signature; WASI's first design principle is that handles are
+  unforgeable and there are no ambient authorities. Deciding the
+  authority from a strippable identifier contradicted both, and a
+  routine release step changed program behaviour.
+
+  The binding is now driven by the declared capability type, in
+  declaration order, and travels in structure that ordinary Wasm
+  tooling cannot remove and the running program cannot address: a core
+  module carries it as the NAME of an exported immutable global
+  (`capa:main-cap-types=net,fs`, in the export section), and a
+  component carries it as `cap<N>-<kind>` labels in its exported
+  component type. Nothing lands in a custom section (strippable) or a
+  data segment (writable linear memory, per Lehmann/Kinder/Pradel,
+  USENIX Security 2020, section 4.2.3). **There is no fallback**: a
+  slot whose capability cannot be determined grants nothing and the
+  host refuses to run.
+
+- *A `Clock` query no longer accepts a non-`Clock` receiver.*
+  `now_secs` / `now_monotonic` on the core host looked their receiver
+  up and discarded the result, while the comment beside them claimed a
+  bogus handle "surfaces here rather than silently returning a real
+  clock reading". It did not: the lookup helper returned `None` on a
+  bad handle and nothing read it, so a slot holding the wrong
+  authority returned a real wall-clock reading. The lookup now raises.
+
+**Changed (upgrade notes).**
+
+- *Prebuilt `.wasm` artifacts and `.cwasm` AOT artifacts built by
+  1.19.0 or earlier are refused, on purpose.* They carry no capability
+  binding, and the only way to run them would be to guess it from the
+  parameter names, which is the defect. Both hosts print a diagnostic
+  naming the problem and telling the operator to rebuild. Rebuilding
+  from source needs no source changes. The AOT container format is
+  version 2; a version-1 container is refused by the existing
+  version check.
+
+- *The generated WIT world labels `main`'s capability slots
+  `cap0-fs` / `cap1-net` rather than the source parameter name.* A
+  hand-written host that matched the old bare-kind labels needs to
+  decode the kind out of the new label instead.
+
 ## [1.19.0], 2026-07-20
 
 > **A typo in your `capa.toml` could silently change which source file

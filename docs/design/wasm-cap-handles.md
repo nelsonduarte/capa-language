@@ -6,6 +6,70 @@
 > state travels with the handle across function boundaries, matching
 > the Python backend). This document is kept as the design record for
 > how the fix was reasoned out; it does not describe a live defect.
+> The follow-up section immediately below records a SECOND defect, in
+> how a root handle reached a `main` slot, found and closed on
+> 2026-07-23.
+
+## Follow-up: how a root handle reaches a `main` slot (2026-07-23)
+
+Point 5 above ("`main`'s cap params are root handles, allocated by the
+host at instance init") left one question open, and slices 25.2-25.8
+answered it the cheap way: the host matched the parameter's NAME,
+lowercased, against `{fs, net, db, proc, env, clock}`, and used the
+`Fs` root for anything that missed.
+
+That is a strictly weaker guarantee than the handle table it feeds.
+The handle table makes attenuation travel with the value; the binding
+decided which value a slot started from by reading an identifier out
+of the WebAssembly debug `name` custom section. Three consequences,
+all reproduced, all exiting 0:
+
+- `fun main(conn: Net, stdio: Stdio)` got the `Fs` root, so
+  `conn.allows("example.com")` answered `true` on Python and `false`
+  on `--wasm`.
+- `fun main(net: Fs, ...)` got the `Net` root because of how the
+  parameter was spelled.
+- `wasm-tools strip --all` deletes the `name` section, after which
+  every slot fell to `Fs`.
+
+WASI's first design principle is that handles are unforgeable and
+there are no ambient authorities; Capa's is that the type is the
+contract. Neither survives a binding decided by a strippable string.
+
+The binding is now derived from the DECLARED capability type, in
+declaration order, and is carried where two separate classes of
+tampering cannot reach it:
+
+| path | carrier | section |
+| --- | --- | --- |
+| core module (`WasmHost`) | export NAME of an immutable global, `capa:main-cap-types=net,fs` | export section (id 7) |
+| component (`WasmComponentHost`) | slot labels `cap<N>-<kind>` in the exported world | component type |
+| AOT container | `main_cap_types` in the header, copied from the `.wasm` at build time | container header |
+
+Two criteria drove that choice, not one:
+
+1. **It must survive normal tooling.** A custom section does not: a
+   strip removes it, which is how the third consequence above arose.
+2. **The running program must not be able to reach it.** Lehmann,
+   Kinder and Pradel ("Everything Old is New Again: Binary Security of
+   WebAssembly", USENIX Security 2020, section 4.2.3) show that data a
+   compiler treats as constant is routinely writable once it lives in
+   linear memory. So the binding is in no data segment: an export name
+   is not addressable by any Wasm instruction, and the global it hangs
+   off is immutable and never read. Capa is memory-safe, so this is
+   not a threat from Capa code; it matters at the foreign-component
+   boundary, where a module Capa did not compile shares the address
+   space.
+
+There is **no fallback and no compatibility mode**. A slot whose
+capability the host cannot determine grants nothing and the run is
+refused with a diagnostic naming the problem. An artifact built by
+1.19.0 or earlier carries no binding and is refused for the same
+reason: accepting it would mean reinstating the name matching, which
+is the vulnerability. The encoding and its inverse live in
+[`capa/ir/_cap_binding.py`](../../capa/ir/_cap_binding.py) so the two
+emitters and the two hosts cannot drift; the tests are
+[`tests/test_wasm_cap_binding.py`](../../tests/test_wasm_cap_binding.py).
 
 ## Problem (audit slice 25 F1)
 

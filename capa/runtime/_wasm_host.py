@@ -45,13 +45,18 @@ from typing import Optional
 import wasmtime
 import wasmtime.component as wc
 
-from ..ir._capa_types import HANDLE_BEARING_CAPS
+from ..ir._cap_binding import (
+    CapBindingError,
+    parse_main_cap_types_export_name,
+    resolve_cap_types,
+)
 from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Stdio, _write_safe
 from ._fs_guard import PostOpenDenied
 from ._cap_handles import (
     CapHandleError,
     CapHandleTable,
     bootstrap_root_handles,
+    root_handle_map,
 )
 
 
@@ -1097,16 +1102,31 @@ class WasmHost:
             except CapHandleError:
                 return None
 
+        def _require_clock(handle):
+            """Resolve the receiver Clock or trap. The now_* ops are
+            pure queries that ignore the cap's deadline, but they are
+            still Clock ops: a handle that does not resolve to a Clock
+            means the guest was handed the wrong authority (or none),
+            and returning a real reading anyway would make that
+            invisible. Until 2026-07-23 the two now_* bodies called
+            ``_lookup_clock`` and DISCARDED the result while their
+            comment claimed a bogus handle surfaced here, so the guard
+            the comment described did not exist."""
+            clock = _lookup_clock(handle)
+            if clock is None:
+                raise CapHandleError(
+                    f"invalid Clock capability handle {handle}: the "
+                    f"receiver of this clock query is not a Clock "
+                    f"(emitter / host bridge mismatch)"
+                )
+            return clock
+
         def now_secs(handle):
-            # The cap is looked up for wire uniformity (and so a
-            # bogus handle surfaces here rather than silently
-            # returning a real clock reading). The now_* ops are
-            # pure queries that ignore the cap's deadline.
-            _lookup_clock(handle)
+            _require_clock(handle)
             return time.time()
 
         def now_monotonic(handle):
-            _lookup_clock(handle)
+            _require_clock(handle)
             return time.monotonic()
 
         self.linker.define_func(
@@ -3075,34 +3095,36 @@ class WasmHost:
         thread).
 
         ``main`` now takes one i32 arg per un-erased cap declared
-        in its source signature (in declaration order). To dispatch
-        the right root handle to each slot we recover main's
-        parameter names from the wasm ``name`` custom section the
-        WAT compiler preserves (params are declared as
-        ``(param $fs i32)`` / ``(param $net i32)`` / ... so the
-        name maps directly to the cap-kind). Programs whose main
-        takes no cap params (every i32-free signature) follow the
-        legacy no-handle path."""
+        in its source signature (in declaration order). Which root
+        handle each slot receives is decided by the DECLARED
+        capability type, read from the module's
+        ``capa:main-cap-types=`` export name (see
+        [`capa/ir/_cap_binding.py`](../ir/_cap_binding.py)). A module
+        without that export is refused: the pre-2026-07-23 host
+        guessed from the debug ``name`` section and fell back to the
+        ``Fs`` root, which handed programs an authority they never
+        declared. Programs whose main takes no cap params (every
+        i32-free signature) still carry the (empty) binding and
+        follow the no-handle path."""
         instance = self.instantiate(wasm_blob)
         main = instance.exports(self.store)["main"]
         n_params = self._main_param_count(main)
-        # The .wasm carries a name section, so recover param names from
-        # the blob itself.
-        param_names = _read_main_param_names(wasm_blob, n_params)
-        self._invoke_main(main, n_params, param_names)
+        cap_types = _read_main_cap_types(wasm_blob)
+        self._invoke_main(main, n_params, cap_types, artifact="module")
 
     def run_main_aot(self, module, header: dict) -> None:
         """Instantiate and run a deserialized AOT ``module`` (from
         ``capa.runtime._aot.load_aot``) against the registered host
         imports.
 
-        The serialized ``.cwasm`` has no readable name section, so the
-        ``main`` parameter names cannot be recovered from it; they were
-        captured at build time and travel in the AOT container header
-        (roadmap P1). We take them from ``header`` instead of parsing
-        the blob, then share the same root-handle mapping + invocation
-        path as ``run_main``."""
-        from ._aot import aot_main_param_names
+        The serialized ``.cwasm`` is wasmtime's machine-code format,
+        not a ``.wasm``: it carries no export names to read the
+        capability binding back out of. The binding was captured from
+        the source ``.wasm`` at build time and travels in the AOT
+        container header (roadmap P1). We take it from ``header``
+        instead of parsing the blob, then share the same root-handle
+        mapping + invocation path as ``run_main``."""
+        from ._aot import aot_main_cap_types
         instance = self.linker.instantiate(self.store, module)
         exports = instance.exports(self.store)
         if "memory" in exports:
@@ -3111,8 +3133,10 @@ class WasmHost:
             self._alloc_export = exports["alloc"]
         main = exports["main"]
         n_params = self._main_param_count(main)
-        param_names = aot_main_param_names(header)
-        self._invoke_main(main, n_params, param_names)
+        cap_types = aot_main_cap_types(header)
+        self._invoke_main(
+            main, n_params, cap_types, artifact="AOT artifact",
+        )
 
     def _main_param_count(self, main) -> int:
         """Number of i32 args the ``main`` export takes (0 on any
@@ -3122,17 +3146,33 @@ class WasmHost:
         except Exception:
             return 0
 
-    def _invoke_main(self, main, n_params: int, param_names: list) -> None:
+    def _invoke_main(
+        self,
+        main,
+        n_params: int,
+        cap_types: list | None,
+        *,
+        artifact: str,
+    ) -> None:
         """Shared root-handle bootstrap + dispatch for both the JIT
         (``run_main``) and AOT (``run_main_aot``) paths. Allocates the
         root capabilities, maps each of ``main``'s i32 slots to the
-        right root handle by parameter name, and calls ``main``.
+        root handle of the DECLARED capability type, and calls
+        ``main``.
 
         Lazy-constructs the roots once per host instance so a re-run
         reuses the same handle-table entries (handle identity stays
-        stable across invocations). Unknown / missing param names fall
-        back to Fs (the legacy slice-25.2 behaviour) so a blob without
-        usable names still runs."""
+        stable across invocations).
+
+        ``cap_types`` is the artifact's own declaration of what each
+        slot holds. ``None`` (no declaration) and any disagreement
+        with ``main``'s real arity raise ``CapBindingError`` BEFORE a
+        single root is handed out. There is deliberately no fallback:
+        the previous default-to-``Fs`` branch is the vulnerability
+        this signature exists to remove."""
+        cap_types = resolve_cap_types(
+            cap_types, n_params, artifact=artifact,
+        )
         # ``panicked`` is a per-host latch the panic builtin sets so
         # the CLI can suppress the wasmtime traceback for a deliberate
         # abort. It is per-host, not per-run, so a host reused for a
@@ -3166,44 +3206,18 @@ class WasmHost:
             clock=self._root_clock,
             stdio=self._root_stdio,
         )
-        name_to_root = _root_handle_map(roots)
-        handle_args: list[int] = []
-        for i in range(n_params):
-            name = param_names[i] if i < len(param_names) else ""
-            handle_args.append(name_to_root.get(name, roots.get("fs", 0)))
+        kind_to_root = root_handle_map(roots)
+        handle_args = [kind_to_root[kind] for kind in cap_types]
         main(self.store, *handle_args)
 
 
 # ---- helpers ----------------------------------------------------
 
 
-def _root_handle_map(roots: dict) -> dict[str, int]:
-    """Map ``main``'s cap PARAM NAME to the root handle it should
-    receive, for the caps that lower to an i32 handle.
-
-    DERIVED from ``HANDLE_BEARING_CAPS`` rather than hand-listed, so
-    reclassifying a capability as handle-bearing cannot leave this
-    map behind. It was a hardcoded six-entry literal until
-    2026-07-18; had a future attenuation slice un-erased Stdio or
-    Random, that slice would have had to remember to edit this
-    literal too, and forgetting would have silently routed the new
-    cap's slot to the Fs root instead of failing.
-
-    Extracted from ``_invoke_main`` (and kept module-level) so the
-    registry guard in ``tests/test_cap_handles.py`` can assert
-    against the real map rather than against
-    ``bootstrap_root_handles``' output, which is a strictly larger
-    dict (it also serves the erased caps).
-    """
-    return {
-        cap.lower(): roots.get(cap.lower(), 0)
-        for cap in HANDLE_BEARING_CAPS
-    }
-
-
 def _read_uleb128(buf: bytes, off: int) -> tuple[int, int]:
     """Decode an unsigned LEB128 from ``buf`` at ``off``; returns
-    ``(value, next_offset)``. Used by the wasm name-section parser."""
+    ``(value, next_offset)``. Used by the wasm export-section parser
+    below."""
     val = 0
     shift = 0
     while True:
@@ -3215,108 +3229,65 @@ def _read_uleb128(buf: bytes, off: int) -> tuple[int, int]:
         shift += 7
 
 
-def _read_main_param_names(wasm_blob: bytes, n_params: int) -> list[str]:
-    """Recover ``main``'s parameter names from the wasm ``name``
-    custom section. Returns a list of length ``n_params`` (or empty
-    on any parse failure / absent section).
+def _read_main_cap_types(wasm_blob: bytes) -> list[str] | None:
+    """Recover the capability binding for ``main`` from ``wasm_blob``'s
+    EXPORT section, or ``None`` when the module carries none.
 
-    Slice 25.3 (2026-05-30): used by ``WasmHost.run_main`` to map
-    each i32 param of the ``main`` export to the matching root
-    capability handle. The WAT compiler preserves the source-level
-    param identifiers (``(param $fs i32) (param $net i32)``) into
-    the name section's ``local`` subsection (id 2), keyed by the
-    function index of ``main``. We:
+    The emitter attaches an exported global whose export NAME is
+    ``capa:main-cap-types=<kind>,<kind>,...`` in ``main``'s slot order
+    (see [`capa/ir/_cap_binding.py`](../ir/_cap_binding.py)). Export
+    names live in the module's structure, so unlike the debug ``name``
+    section this parser used to read they survive ``wasm-tools strip
+    --all`` and every other normal post-processing step.
 
-    1. Walk the top-level section list looking for the ``name``
-       custom section (custom section, id 0, payload starts with
-       the section name as a length-prefixed string).
-    2. Inside the name section, scan subsection id 1 (function
-       names) to find the function index whose name is ``main``.
-    3. Scan subsection id 2 (local names) for that function's
-       entry, extract the first ``n_params`` local names (in
-       wasm-locals these come first, before any non-param local).
+    Section id 7 is the export section: a vec of ``{name, kind_byte,
+    index}``. We only need the names, so the trailing byte + index of
+    each entry are skipped without interpreting them.
 
-    Returns ``[]`` if the section is absent, the lookup fails, or
-    the layout doesn't match. Callers must tolerate the empty case
-    (falling back to a sensible default per index)."""
+    ``None`` means "this module predates the binding" and the caller
+    must refuse to run it; an empty list means "declared, and ``main``
+    has no capability slots"."""
     try:
         # Header: magic (4) + version (4) = 8 bytes.
         if len(wasm_blob) < 8 or wasm_blob[:4] != b"\x00asm":
-            return []
+            return None
         off = 8
-        name_payload: bytes | None = None
         while off < len(wasm_blob):
             section_id = wasm_blob[off]
             off += 1
             size, off = _read_uleb128(wasm_blob, off)
             payload_start = off
             off += size
-            if section_id != 0:
+            if section_id != 7:
                 continue
-            # Custom section: payload starts with name as LEB-len-
-            # prefixed UTF-8 string.
             j = payload_start
-            nlen, j = _read_uleb128(wasm_blob, j)
-            name = wasm_blob[j:j + nlen].decode("utf-8", errors="replace")
-            j += nlen
-            if name == "name":
-                name_payload = wasm_blob[j:payload_start + size]
-                break
-        if name_payload is None:
-            return []
-
-        # Walk subsections; cache function-name -> idx, then look
-        # up main's local names.
-        fn_idx_for_main: int | None = None
-        local_names_by_fn: dict[int, list[str]] = {}
-        p = 0
-        while p < len(name_payload):
-            sub_id = name_payload[p]
-            p += 1
-            sub_size, p = _read_uleb128(name_payload, p)
-            sub_payload = name_payload[p:p + sub_size]
-            p += sub_size
-            if sub_id == 1:
-                # function names: namemap (vec of {idx, name}).
-                q = 0
-                count, q = _read_uleb128(sub_payload, q)
-                for _ in range(count):
-                    idx, q = _read_uleb128(sub_payload, q)
-                    nlen, q = _read_uleb128(sub_payload, q)
-                    name = sub_payload[q:q + nlen].decode(
-                        "utf-8", errors="replace",
-                    )
-                    q += nlen
-                    if name == "main":
-                        fn_idx_for_main = idx
-            elif sub_id == 2:
-                # local names: indirectnamemap = vec of {fn_idx,
-                # namemap}.
-                q = 0
-                fn_count, q = _read_uleb128(sub_payload, q)
-                for _ in range(fn_count):
-                    fn_idx, q = _read_uleb128(sub_payload, q)
-                    local_count, q = _read_uleb128(sub_payload, q)
-                    locals_here: list[tuple[int, str]] = []
-                    for _ in range(local_count):
-                        local_idx, q = _read_uleb128(sub_payload, q)
-                        nlen, q = _read_uleb128(sub_payload, q)
-                        name = sub_payload[q:q + nlen].decode(
-                            "utf-8", errors="replace",
-                        )
-                        q += nlen
-                        locals_here.append((local_idx, name))
-                    # Keep first ``n_params`` local names in
-                    # local-index order; those correspond to the
-                    # function's parameters (wasm convention:
-                    # params come first in the local index space).
-                    locals_here.sort(key=lambda t: t[0])
-                    local_names_by_fn[fn_idx] = [
-                        n for _, n in locals_here
-                    ]
-        if fn_idx_for_main is None:
-            return []
-        names = local_names_by_fn.get(fn_idx_for_main, [])
-        return names[:n_params]
+            count, j = _read_uleb128(wasm_blob, j)
+            found: list[list[str]] = []
+            for _ in range(count):
+                nlen, j = _read_uleb128(wasm_blob, j)
+                name = wasm_blob[j:j + nlen].decode(
+                    "utf-8", errors="replace",
+                )
+                j += nlen
+                j += 1  # export kind byte
+                _idx, j = _read_uleb128(wasm_blob, j)
+                cap_types = parse_main_cap_types_export_name(name)
+                if cap_types is not None:
+                    found.append(cap_types)
+            # The whole export list is scanned rather than stopping at
+            # the first hit. A module carrying TWO bindings has no
+            # single answer, and taking either one would let a
+            # post-processing step prepend a more generous binding and
+            # have it win. Refuse instead.
+            if len(found) > 1:
+                raise CapBindingError(
+                    f"this module declares the `main` capability "
+                    f"binding {len(found)} times "
+                    f"({'; '.join(','.join(f) or 'none' for f in found)}); "
+                    f"there is no single answer to which authority each "
+                    f"slot is entitled to, so none is granted"
+                )
+            return found[0] if found else None
+        return None
     except (IndexError, UnicodeDecodeError, ValueError):
-        return []
+        return None

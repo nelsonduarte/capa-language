@@ -40,6 +40,8 @@ from __future__ import annotations
 
 from typing import Optional, TypeVar
 
+from ..ir._capa_types import HANDLE_BEARING_CAPS
+from ..ir._cap_binding import CapBindingError
 from ._capabilities import (
     Clock,
     Db,
@@ -201,4 +203,42 @@ def bootstrap_root_handles(
     ):
         if cap is not None:
             out[name] = table.alloc(cap)
+    return out
+
+
+def root_handle_map(roots: dict) -> dict[str, int]:
+    """Map a capability KIND (``fs`` / ``net`` / ...) to the root
+    handle a ``main`` slot of that declared type receives.
+
+    DERIVED from ``HANDLE_BEARING_CAPS`` rather than hand-listed, so
+    reclassifying a capability as handle-bearing cannot leave this map
+    behind. It was a hardcoded six-entry literal in ``_wasm_host`` until
+    2026-07-18, and duplicated a second time in
+    ``_wasm_component_host``.
+
+    Keyed by cap kind since 2026-07-23. Both hosts used to key it by
+    ``main``'s source PARAM NAME, which is what let ``fun main(conn:
+    Net, ...)`` miss every key and take their Fs fallback.
+
+    A handle-bearing cap with no root in ``roots`` raises rather than
+    yielding the ``0`` sentinel: a slot silently bound to 0 would fail
+    only at the first privileged call, and only for the ops that check.
+
+    Lives here rather than in either host so the two cannot drift, and
+    so the registry guard in ``tests/test_cap_handles.py`` can assert
+    against the real map without importing wasmtime. Deliberately NOT
+    ``bootstrap_root_handles``' output, which is a strictly larger dict
+    (it also serves the erased caps).
+    """
+    out: dict[str, int] = {}
+    for cap in HANDLE_BEARING_CAPS:
+        kind = cap.lower()
+        handle = roots.get(kind)
+        if not handle:
+            raise CapBindingError(
+                f"the host bootstrapped no root handle for the "
+                f"{cap!r} capability, so a `main` slot declaring it "
+                f"cannot be bound; no capability is granted"
+            )
+        out[kind] = handle
     return out
