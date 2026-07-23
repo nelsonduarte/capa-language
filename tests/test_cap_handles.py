@@ -11,6 +11,7 @@ from capa.runtime._cap_handles import (
     CapHandleError,
     CapHandleTable,
     bootstrap_root_handles,
+    root_handle_map,
 )
 from capa.ir._capa_types import (
     BUILTIN_CAPS,
@@ -38,17 +39,14 @@ from capa.typesys import CAPABILITY_NAMES
 # load, so it is NOT imported at top level here: the plain ``test``
 # CI job does not install the ``wasm`` extra and importing it would
 # ERROR the whole module at collection (a failed import is an error,
-# not a skip). Only the root-handle guard needs it; it imports the
-# symbol LOCALLY and is gated on ``_has_wasmtime()``. Every other
-# capability-registry guard is pure data and MUST keep running on
-# the no-wasm job -- that is the whole reason these guards live here
-# instead of in the skip-happy ``tests/test_properties.py``.
-def _has_wasmtime() -> bool:
-    try:
-        import wasmtime  # noqa: F401
-        return True
-    except ImportError:
-        return False
+# not a skip). Nothing in this module needs it any more: the
+# root-handle guard used to import ``_wasm_host._root_handle_map``
+# behind a skip, and since 2026-07-23 that map lives in
+# ``capa.runtime._cap_handles`` (wasmtime-free) so BOTH hosts can
+# share one copy. The guard therefore runs unskipped on the no-wasm
+# job, which is what a registry guard should always have done --
+# that is the whole reason these guards live here instead of in the
+# skip-happy ``tests/test_properties.py``.
 
 
 # The Agda mechanisation in ``proofs/`` is a FOURTH copy of the
@@ -382,41 +380,33 @@ class TestCapabilityRegistry(unittest.TestCase):
             f"built-ins: {sorted(stray)}",
         )
 
-    @unittest.skipUnless(_has_wasmtime(), "wasmtime-py not installed")
     def test_host_root_handle_map_covers_every_handle_bearing_cap(self):
-        # Imported here, not at module scope: ``_wasm_host`` pulls in
-        # wasmtime, and this is the only guard in the class that
-        # needs it. The rest stay importable on the no-wasm job.
-        from capa.runtime._wasm_host import _root_handle_map
-
         # ``WasmHost._invoke_main`` maps each i32 slot of ``main`` to
-        # a root handle by the PARAM NAME recovered from the wasm
-        # name section (NOT by cap type - the host never sees the
-        # type, only the identifier the program chose). A handle-
-        # bearing cap missing from that map falls back to the Fs
-        # root: a silent cross-cap substitution rather than an error.
+        # a root handle by the CAP KIND the artifact declares for that
+        # slot. A handle-bearing cap missing from that map would make
+        # every program declaring it unrunnable.
         #
-        # This asserts against ``_root_handle_map`` itself, not
+        # This asserts against ``root_handle_map`` itself, not
         # against ``bootstrap_root_handles``' output. The latter is a
         # strictly larger dict (it serves the erased caps too), so
         # checking it would pass for a cap that bootstrap supports
-        # but the param-name map omits - exactly the divergence this
+        # but the kind map omits - exactly the divergence this
         # guard exists to catch.
         roots = bootstrap_root_handles(
             CapHandleTable(),
             fs=Fs(), net=Net(), db=Db(), proc=Proc(),
             env=Env(), clock=Clock(), stdio=Stdio(),
         )
-        name_to_root = _root_handle_map(roots)
+        kind_to_root = root_handle_map(roots)
         for cap in sorted(HANDLE_BEARING_CAPS):
             self.assertIn(
-                cap.lower(), name_to_root,
-                f"{cap} bears a Wasm handle but WasmHost's param-name "
-                "map has no entry for it, so a main declaring it would "
-                "silently receive the Fs root (see _root_handle_map)",
+                cap.lower(), kind_to_root,
+                f"{cap} bears a Wasm handle but WasmHost's cap-kind "
+                "map has no entry for it, so a main declaring it "
+                "could not be bound (see root_handle_map)",
             )
             self.assertNotEqual(
-                name_to_root[cap.lower()], 0,
+                kind_to_root[cap.lower()], 0,
                 f"{cap} bears a Wasm handle but _invoke_main never "
                 "bootstraps a root instance for it, so its slot would "
                 "carry handle 0 (the 'no cap' sentinel)",

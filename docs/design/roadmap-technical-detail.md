@@ -12,9 +12,11 @@
 **Estado:** implementado. `capa build --release` + `capa run-aot`,
 container `capa/runtime/_aot.py`, `WasmHost.run_main_aot`, 12 testes
 em `tests/test_aot.py`. Notas de implementação face ao desenho abaixo:
-(1) os param-names do main TÊM de ser capturados no header do
-container, o `.cwasm` serializado perde a name section (confirmado:
-`'net'` não aparece nos bytes serializados); (2) `load_aot` recebe o
+(1) o binding de capacidades do main TEM de ser capturado no header do
+container, o `.cwasm` serializado não guarda nomes de export
+(originalmente eram os param-names e a name section, substituídos em
+2026-07-23 pelo binding por TIPO declarado, ver
+`docs/design/wasm-cap-handles.md`); (2) `load_aot` recebe o
 engine do host porque o wasmtime recusa cross-Engine instantiation;
 (3) ganho de module-load ~1.3x num módulo trivial (escala com o
 tamanho), wall-clock dominado pelo arranque do Python, a P1.2(b)

@@ -12,13 +12,14 @@ no new backend (roadmap P1, see docs/design/roadmap-technical-detail.md).
 Two problems the raw serialized blob does not solve, handled by the
 container format below:
 
-1. **Param names are lost.** ``WasmHost.run_main`` recovers ``main``'s
-   capability parameter names from the ``name`` custom section of the
-   ``.wasm`` (to hand each i32 slot the right root handle). The
-   serialized ``.cwasm`` is wasmtime's internal machine-code format,
-   not a ``.wasm``; it does not carry a readable name section. We
-   therefore extract the param names from the ``.wasm`` BEFORE
-   serialising and store them in the container header.
+1. **The capability binding is lost.** ``WasmHost.run_main`` reads
+   which capability TYPE each of ``main``'s i32 slots is entitled to
+   from the ``capa:main-cap-types=`` export name of the ``.wasm``
+   (see :mod:`capa.ir._cap_binding`). The serialized ``.cwasm`` is
+   wasmtime's internal machine-code format, not a ``.wasm``; it has no
+   export names to read back. We therefore extract the binding from
+   the ``.wasm`` BEFORE serialising and store it in the container
+   header.
 
 2. **Non-portability.** A ``.cwasm`` is specific to the exact wasmtime
    version (and target) that produced it; ``Module.deserialize`` of a
@@ -34,7 +35,7 @@ Container layout (all integers little-endian)::
     header       header_len bytes, UTF-8 JSON:
                    {"capa_version": str,
                     "wasmtime_version": str,
-                    "main_param_names": [str, ...]}
+                    "main_cap_types": [str, ...]}
     cwasm        the rest of the file: Module.serialize() bytes
 """
 
@@ -44,8 +45,16 @@ import json
 import struct
 from typing import Optional
 
+from ..ir._cap_binding import CARRIER_WASM_EXPORT, resolve_cap_types
+
 _MAGIC = b"CPAO"
-_FORMAT_VERSION = 1
+# Bumped to 2 on 2026-07-23: the header carries ``main_cap_types``
+# (the declared capability TYPE of each of ``main``'s slots) where it
+# used to carry ``main_param_names``. A version-1 container is refused
+# by :func:`parse_aot` rather than read with the old key, because the
+# old key drove a name-matching binding that fell back to the Fs root
+# for any unrecognised name.
+_FORMAT_VERSION = 2
 
 
 def _wasmtime_version() -> str:
@@ -60,11 +69,12 @@ def build_aot(wasm_blob: bytes, *, capa_version: str) -> bytes:
     """Compile ``wasm_blob`` (a binary ``.wasm``) to a portable AOT
     container.
 
-    Extracts ``main``'s parameter names from the ``.wasm`` name section
-    (so the loader can still map cap handles), serialises the module
-    via wasmtime/Cranelift, and wraps both in the container described in
-    the module docstring. Raises ``RuntimeError`` with a clear message
-    if wasmtime is unavailable."""
+    Extracts ``main``'s capability binding from the ``.wasm`` export
+    section (so the loader can still map cap handles), serialises the
+    module via wasmtime/Cranelift, and wraps both in the container
+    described in the module docstring. Raises ``RuntimeError`` with a
+    clear message if wasmtime is unavailable, or ``CapBindingError`` if
+    the source module carries no binding to copy forward."""
     try:
         import wasmtime
     except ImportError as e:  # pragma: no cover - exercised without the dep
@@ -73,22 +83,28 @@ def build_aot(wasm_blob: bytes, *, capa_version: str) -> bytes:
             "`pip install wasmtime`"
         ) from e
 
-    # Recover the param names from the source .wasm BEFORE serialising
-    # -- the serialized form drops the name section.
-    from ._wasm_host import _read_main_param_names
+    # Recover the capability binding from the source .wasm BEFORE
+    # serialising -- the serialized form has no export names.
+    from ._wasm_host import (
+        _module_main_param_count,
+        _read_main_cap_types,
+    )
 
     # n_params: ask the module's main export how many params it takes.
     engine = wasmtime.Engine()
     module = wasmtime.Module(engine, wasm_blob)
-    n_params = _main_param_count(module)
-    param_names = _read_main_param_names(wasm_blob, n_params)
+    n_params = _module_main_param_count(module)
+    cap_types = resolve_cap_types(
+        _read_main_cap_types(wasm_blob), n_params,
+        artifact="module", carrier=CARRIER_WASM_EXPORT,
+    )
 
     cwasm = module.serialize()
 
     header = {
         "capa_version": capa_version,
         "wasmtime_version": _wasmtime_version(),
-        "main_param_names": list(param_names),
+        "main_cap_types": list(cap_types),
     }
     header_bytes = json.dumps(header).encode("utf-8")
 
@@ -99,18 +115,6 @@ def build_aot(wasm_blob: bytes, *, capa_version: str) -> bytes:
         header_bytes,
         cwasm,
     ])
-
-
-def _main_param_count(module) -> int:
-    """Number of params the module's ``main`` export takes. Returns 0
-    if main is absent or has no params (the legacy no-cap shape)."""
-    for exp in module.exports:
-        if exp.name == "main":
-            try:
-                return len(list(exp.type.params))
-            except Exception:
-                return 0
-    return 0
 
 
 class AotError(RuntimeError):
@@ -184,9 +188,17 @@ def load_aot(blob: bytes, engine=None):
     return module, header
 
 
-def aot_main_param_names(header: dict) -> list[str]:
-    """The ``main`` parameter names recorded at build time. Used by the
-    host loader to map each i32 slot to a root capability handle, since
-    the serialized module has no name section to recover them from."""
-    names = header.get("main_param_names")
-    return list(names) if isinstance(names, list) else []
+def aot_main_cap_types(header: dict) -> list[str] | None:
+    """The declared capability type of each of ``main``'s handle slots,
+    recorded at build time. Used by the host loader to map each i32
+    slot to a root capability handle, since the serialized module has
+    no export names to recover them from.
+
+    ``None`` when the header carries no usable binding; the host then
+    refuses to run rather than granting a default authority."""
+    kinds = header.get("main_cap_types")
+    if not isinstance(kinds, list):
+        return None
+    if not all(isinstance(k, str) for k in kinds):
+        return None
+    return list(kinds)

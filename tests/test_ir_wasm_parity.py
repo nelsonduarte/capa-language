@@ -2597,10 +2597,10 @@ class TestPythonWasmComponentParity(unittest.TestCase):
 
     # Slice 25.8 (2026-05-30): the Component Model host now mirrors
     # the core host's cap-handle threading. The WIT generator emits
-    # ``export main: func(<cap>: u32, ...)`` for each handle-bearing
-    # cap on ``main``'s signature, ``WasmComponentHost`` parses the
-    # exported func's WIT param list and dispatches the right root
-    # handle into each slot, and every cap host bridge takes a
+    # ``export main: func(cap<N>-<kind>: u32, ...)`` for each
+    # handle-bearing cap on ``main``'s signature, ``WasmComponentHost``
+    # decodes the cap kind out of each WIT slot label and dispatches
+    # the matching root handle, and every cap host bridge takes a
     # ``handle: u32`` first arg + looks the receiver up in the
     # per-instance handle table before performing the syscall. The
     # tests that were parked here while the CM wrapper still hard-

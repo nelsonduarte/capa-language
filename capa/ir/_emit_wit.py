@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from ._cap_binding import main_handle_cap_types, wit_cap_slot_name
 from ._nodes import Module, Call, MethodCall
 from ._walk import walk_module
 
@@ -734,7 +735,7 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     return out
 
 
-from ._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
+from ._capa_types import BUILTIN_CAPS
 from ._python_only_caps import find_rejection as find_python_only_rejection
 
 
@@ -952,7 +953,7 @@ def emit_wit(
     # result only makes the world accept + drop it. Composite returns
     # raise ``MainReturnTypeUnsupported`` here (a clear Capa error).
     result_clause = main_result_clause(module)
-    main_cap_params = _main_handle_param_names(module)
+    main_cap_params = _main_handle_slot_labels(module)
     if main_cap_params:
         sig = ", ".join(f"{name}: u32" for name in main_cap_params)
         lines.append(f"  export main: func({sig}){result_clause};")
@@ -1169,7 +1170,7 @@ def _emit_wit_wasi(
     # ``main_result_clause``): the WASI world export must match the
     # core module's ``main`` result or ``component new`` rejects it.
     result_clause = main_result_clause(module)
-    main_cap_params = _main_handle_param_names(module)
+    main_cap_params = _main_handle_slot_labels(module)
     if main_cap_params:
         sig = ", ".join(f"{name}: u32" for name in main_cap_params)
         lines.append(f"  export main: func({sig}){result_clause};")
@@ -1181,30 +1182,26 @@ def _emit_wit_wasi(
     return "\n".join(lines)
 
 
-def _main_handle_param_names(module: Module) -> list[str]:
-    """Return the lowercase cap-param names of ``main`` for the WIT
-    world export, in declaration order, filtered to caps that lower
-    to a real i32 handle (the wasm side erases the rest).
+def _main_handle_slot_labels(module: Module) -> list[str]:
+    """Return the WIT labels for ``main``'s handle slots, in
+    declaration order, filtered to caps that lower to a real i32
+    handle (the wasm side erases the rest).
+
+    Each label is ``cap<N>-<kind>`` (``cap0-net``), derived from the
+    parameter's declared TYPE and position, never from its source
+    name. The Component host reads the capability kind back out of
+    these labels to decide which root handle each slot receives; a
+    component type is not a debug section, so the information survives
+    every strip. Until 2026-07-23 the label was the SOURCE parameter
+    name (``p.name.lower()``), which made ``fun main(conn: Net)`` an
+    unrecognised label the host quietly resolved to the ``Fs`` root.
+    See [`_cap_binding.py`](_cap_binding.py).
 
     Returns ``[]`` if ``main`` is absent or has no handle-bearing
     cap params; the caller then emits the trivial ``func()`` shape
     so plain ``fun main()`` programs and Stdio-only programs are
     unchanged."""
-    for fn in module.functions:
-        if fn.name != "main":
-            continue
-        out: list[str] = []
-        for p in fn.params:
-            if p.ty in HANDLE_BEARING_CAPS:
-                # WIT identifiers are strict kebab-case (lowercase
-                # ASCII letters / digits / dashes). Capa source-
-                # level param names are typically already conformant
-                # (``fs`` / ``net`` / ``db`` / ``proc`` / ``env`` /
-                # ``clock``); rewrite any underscores to dashes for
-                # robustness against a project that named its cap
-                # ``my_fs``. The wasm-side param identifier is
-                # untouched (Wasm allows ``$my_fs``); only the WIT
-                # spelling is sanitised.
-                out.append(p.name.lower().replace("_", "-"))
-        return out
-    return []
+    return [
+        wit_cap_slot_name(i, kind)
+        for i, kind in enumerate(main_handle_cap_types(module))
+    ]

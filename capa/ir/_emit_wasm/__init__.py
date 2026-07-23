@@ -48,6 +48,11 @@ from .._nodes import (
 # ``_discovery.py`` (early validation); not referenced directly
 # from this module any more after the mixin extraction.
 from .._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
+from .._cap_binding import (
+    MAIN_CAP_TYPES_GLOBAL,
+    main_cap_types_export_name,
+    main_handle_cap_types,
+)
 from .._walk import iter_functions, walk_module
 from ._layout import (
     WasmEmissionError,
@@ -1402,6 +1407,7 @@ class WasmEmitter(
         for fn in module.functions:
             self._emit_function(fn)
         self._emit_impl_methods(module)
+        self._emit_main_cap_binding(module)
         # Audit M4 (2026-05): embed the per-function capability
         # manifest in a Wasm custom section so the discipline travels
         # with the artefact. Runtimes ignore custom sections by
@@ -1416,6 +1422,32 @@ class WasmEmitter(
         self._indent -= 1
         self._write(")")
         return "\n".join(self._lines) + "\n"
+
+    def _emit_main_cap_binding(self, module: Module) -> None:
+        """Record which capability TYPE each of ``main``'s handle slots
+        is entitled to, as the name of an exported global.
+
+        The host used to answer that question from the debug ``name``
+        section, which meant ``fun main(conn: Net, ...)`` was handed the
+        ``Fs`` root (unrecognised name) and ``wasm-tools strip --all``
+        turned every slot into ``Fs``. Export names are module
+        structure, so a strip leaves this intact; see
+        [`_cap_binding.py`](../_cap_binding.py) for the wire format and
+        why there is no fallback on the host side.
+
+        Always emitted, including for a ``fun main()`` with no handle
+        slots: the host treats a MISSING export as "built by an older
+        toolchain, refuse", so the empty binding has to be spelled out
+        rather than left implicit."""
+        cap_types = main_handle_cap_types(module)
+        export_name = main_cap_types_export_name(cap_types)
+        self._write(
+            f"(global ${MAIN_CAP_TYPES_GLOBAL} i32 "
+            f"(i32.const {len(cap_types)}))"
+        )
+        self._write(
+            f'(export "{export_name}" (global ${MAIN_CAP_TYPES_GLOBAL}))'
+        )
 
     # Discovery + classification passes (_discover,
     # _refine_pattern_binder_types, _uses_*,

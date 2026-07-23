@@ -2464,22 +2464,33 @@ def _main_dispatch() -> int:
     ):
         if result is None:
             result = analyze(module, source=source, filename=filename)
+        from capa.ir import compile_wasm
+        from capa.runtime._wasm_host import WasmHost
+        # The silent fallback covers exactly one thing: the Wasm
+        # backend cannot COMPILE this program (a construct outside the
+        # Phase-6 subset). That is what ``--prefer-wasm`` promises to
+        # absorb, and it is safe because nothing has executed yet.
+        #
+        # It used to wrap ``run_main`` too, under one bare
+        # ``except Exception: pass``. Two things were wrong with that.
+        # A capability-discipline refusal (``CapBindingError``, or the
+        # ``CapHandleError`` a forged binding now raises) was swallowed
+        # and the program re-run on the Python pipeline with FULL
+        # authority: fail-open in the one mode whose point is to fail
+        # closed. And a failure PART-WAY through a run was retried from
+        # the top, so whatever the first attempt had already written
+        # happened twice. Once execution starts, failures are loud.
         try:
-            from capa.ir import compile_wasm
-            from capa.runtime._wasm_host import WasmHost
             blob = compile_wasm(
                 module, types=result.types,
                 memory_cap_pages=wasm_memory_cap,
                 filename=filename,
             )
-            host = WasmHost(args=program_args)
-            host.run_main(blob)
-            return 0
         except Exception:
-            # Fall through to the Python pipeline. The user opted
-            # into best-effort Wasm; silent fallback keeps the
-            # default execution path predictable.
-            pass
+            blob = None
+        if blob is not None:
+            WasmHost(args=program_args).run_main(blob)
+            return 0
 
     if args.wasm and (args.transpile or args.run or args.output):
         # Wasm pipeline: AST -> CIR -> WAT -> binary -> (wasmtime

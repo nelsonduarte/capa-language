@@ -58,7 +58,7 @@ class TestAotContainerFormat(unittest.TestCase):
     def _make_container(self, header_json: bytes, cwasm: bytes) -> bytes:
         return b"".join([
             b"CPAO",
-            struct.pack("<I", 1),
+            struct.pack("<I", _aot._FORMAT_VERSION),
             struct.pack("<I", len(header_json)),
             header_json,
             cwasm,
@@ -81,21 +81,46 @@ class TestAotContainerFormat(unittest.TestCase):
             _aot.parse_aot(body)
         self.assertIn("format version", str(ctx.exception))
 
+    def test_format_version_1_refused_not_read(self):
+        # Container format 1 carried ``main_param_names``, which drove
+        # the name-matching root-handle binding (unrecognised name ->
+        # Fs root). Reading such a header with today's loader would
+        # find no ``main_cap_types`` and refuse anyway, but the version
+        # check must fire FIRST so the operator is told to rebuild
+        # rather than shown a binding diagnostic about a stale field.
+        header = b'{"main_param_names": ["fs"]}'
+        body = (
+            b"CPAO" + struct.pack("<I", 1)
+            + struct.pack("<I", len(header)) + header
+        )
+        with self.assertRaises(_aot.AotError) as ctx:
+            _aot.parse_aot(body)
+        self.assertIn("format version 1", str(ctx.exception))
+        self.assertIn("rebuild", str(ctx.exception))
+
     def test_truncated_header_rejected(self):
         # header_len claims 100 bytes but only 2 follow.
-        body = b"CPAO" + struct.pack("<I", 1) + struct.pack("<I", 100) + b"{}"
+        body = (
+            b"CPAO" + struct.pack("<I", _aot._FORMAT_VERSION)
+            + struct.pack("<I", 100) + b"{}"
+        )
         with self.assertRaises(_aot.AotError) as ctx:
             _aot.parse_aot(body)
         self.assertIn("truncated", str(ctx.exception))
 
-    def test_aot_main_param_names_helper(self):
+    def test_aot_main_cap_types_helper(self):
         self.assertEqual(
-            _aot.aot_main_param_names({"main_param_names": ["fs", "net"]}),
+            _aot.aot_main_cap_types({"main_cap_types": ["fs", "net"]}),
             ["fs", "net"],
         )
-        self.assertEqual(_aot.aot_main_param_names({}), [])
-        self.assertEqual(
-            _aot.aot_main_param_names({"main_param_names": "bad"}), []
+        # A header with no binding yields None, NOT an empty list: the
+        # host must be able to tell "declares no cap slots" from
+        # "declares nothing", and only the latter is a refusal.
+        self.assertIsNone(_aot.aot_main_cap_types({}))
+        self.assertEqual(_aot.aot_main_cap_types({"main_cap_types": []}), [])
+        self.assertIsNone(_aot.aot_main_cap_types({"main_cap_types": "bad"}))
+        self.assertIsNone(
+            _aot.aot_main_cap_types({"main_cap_types": ["fs", 7]})
         )
 
 
@@ -117,10 +142,11 @@ class TestAotBuildLoad(unittest.TestCase):
         self.assertIsNotNone(module)
         self.assertEqual(hdr2["capa_version"], "9.9.9")
 
-    def test_main_param_names_captured(self):
-        # A main with cap params: the names must be captured at build
-        # time (the serialized cwasm drops the name section, so this is
-        # the only place run-aot can recover the cap->slot mapping).
+    def test_main_cap_types_captured(self):
+        # A main with cap params: the declared cap TYPES must be
+        # captured at build time (the serialized cwasm has no export
+        # names, so this is the only place run-aot can recover the
+        # cap->slot binding).
         src = (
             "fun use_fs(fs: Fs) -> Bool\n"
             '    match fs.read("/nope_xyz")\n'
@@ -134,7 +160,8 @@ class TestAotBuildLoad(unittest.TestCase):
         artifact = _aot.build_aot(blob, capa_version="t")
         header, _ = _aot.parse_aot(artifact)
         # main's params are (stdio erased, fs kept) -> the i32 slot is fs.
-        self.assertIn("fs", header["main_param_names"])
+        self.assertEqual(header["main_cap_types"], ["fs"])
+        self.assertNotIn("main_param_names", header)
 
     def test_version_mismatch_fails_closed(self):
         # An artifact stamped with a different wasmtime version must be
@@ -145,7 +172,7 @@ class TestAotBuildLoad(unittest.TestCase):
         import json
         header["wasmtime_version"] = "0.0.0-not-this"
         forged = b"".join([
-            b"CPAO", struct.pack("<I", 1),
+            b"CPAO", struct.pack("<I", _aot._FORMAT_VERSION),
             struct.pack("<I", len(json.dumps(header).encode())),
             json.dumps(header).encode(), cwasm,
         ])
