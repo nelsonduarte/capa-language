@@ -847,18 +847,27 @@ class Net:
     all, so a redirect cannot escalate the capability into a protocol
     its API does not offer.
 
-    **Two bounds hold on every call, on every hop.** Wall-clock time is
-    bounded by :data:`_NET_TIMEOUT_SECS`: every body read (each
-    intermediate 3xx body and the final one) is held to the deadline
-    precisely, and each connect / header / hop socket operation is opened
-    with the remaining budget as its per-operation timeout -- not the raw
-    ``urlopen`` per-operation timeout a dribbling server resets forever.
-    Byte allocation is bounded by :data:`_NET_DEFAULT_MAX_BYTES` per body
+    **Two bounds hold on every call, on every hop, with one residual.**
+    The wall clock, :data:`_NET_TIMEOUT_SECS`, is enforced PRECISELY on
+    every body read (each intermediate 3xx body and the final one): the
+    deadline is checked and the socket re-armed to the remaining budget
+    before every chunk, so a server that dribbles a BODY is abandoned at
+    the deadline. The connect / header / hop socket operations get a
+    per-operation timeout equal to the budget then remaining, set ONCE at
+    ``open()`` -- and a byte arriving resets it, so a server that dribbles
+    its RESPONSE HEADERS one byte at a time keeps the header phase alive
+    far past the wall clock (measured: 68.5s under a 1.5s bound). The
+    header phase is therefore NOT held to :data:`_NET_TIMEOUT_SECS`; that
+    is a known residual, attacker-controlled through the header length and
+    the inter-byte gap, no better than the raw ``urlopen`` per-operation
+    timeout for the header phase specifically. The body-read defence is
+    what makes the common dribble-the-payload DoS bounded. Byte
+    allocation is bounded by :data:`_NET_DEFAULT_MAX_BYTES` per body
     (intermediate and final) unless the caller passes a larger explicit
-    ``max_bytes``. Both cover the redirect path, because urllib reads a
-    3xx body itself before following the ``Location`` and the handler
-    drains it under the same two bounds; both lower into ``Err(IoError)``
-    on the default path.
+    ``max_bytes``. Both bounds cover the redirect path, because urllib
+    reads a 3xx body itself before following the ``Location`` and the
+    handler drains it under the same two bounds; both lower into
+    ``Err(IoError)`` on the default path.
 
     Capa code uses the capability through four methods:
     - ``restrict_to(host: String) -> Net``, attenuation
@@ -1017,8 +1026,11 @@ class Net:
         foreign-component sandbox passes its ``--foreign-result-cap`` here
         and turns the exception into a clean exit-1 diagnostic).
 
-        The whole call is bounded by :data:`_NET_TIMEOUT_SECS` of wall
-        clock, redirect hops included."""
+        Every body read (each intermediate 3xx body and the final one) is
+        held precisely to :data:`_NET_TIMEOUT_SECS` of wall clock, redirect
+        hops included; the connect / header phase is a known residual a
+        slow-header server can stretch past that bound (see the class
+        docstring)."""
         from urllib.request import Request
 
         denied = self._gate(url)
