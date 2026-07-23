@@ -165,6 +165,60 @@ def _body(text: str):
     return handle
 
 
+def _redirect_with_body(location: str, body: str, status: int = 302):
+    """A 3xx whose OWN body is non-empty. urllib reads that intermediate
+    body before following the Location; the gated handler drains it under
+    the deadline + size cap, so a permitted hop must still succeed and an
+    unbounded one must not."""
+    payload = body.encode("utf-8")
+
+    def handle(h):
+        h.send_response(status)
+        h.send_header("Location", location)
+        h.send_header("Content-Length", str(len(payload)))
+        h.end_headers()
+        h.wfile.write(payload)
+    return handle
+
+
+def _redirect_with_slow_body(location: str, count: int, gap: float):
+    """A 3xx that dribbles its own body one byte at a time. Bounded on the
+    server side too (stops after ``count`` bytes) so a failing test cannot
+    hang."""
+    def handle(h):
+        h.send_response(302)
+        h.send_header("Location", location)
+        h.send_header("Content-Length", str(count))
+        h.end_headers()
+        for _ in range(count):
+            try:
+                h.wfile.write(b"x")
+                h.wfile.flush()
+            except OSError:
+                return
+            time.sleep(gap)
+    return handle
+
+
+def _redirect_with_large_body(location: str, total: int):
+    """A 3xx carrying a large body, to prove the size cap applies to the
+    intermediate hop and not only the final one."""
+    def handle(h):
+        h.send_response(302)
+        h.send_header("Location", location)
+        h.send_header("Content-Length", str(total))
+        h.end_headers()
+        block = b"x" * 65536
+        sent = 0
+        while sent < total:
+            try:
+                h.wfile.write(block)
+                sent += len(block)
+            except OSError:
+                return
+    return handle
+
+
 # ---- the redirect host gate ------------------------------------------
 
 
@@ -391,6 +445,83 @@ class TestResponseSizeBound(unittest.TestCase):
         # would both be silent regressions.
         self.assertGreaterEqual(_capabilities._NET_DEFAULT_MAX_BYTES, 1 << 20)
         self.assertLessEqual(_capabilities._NET_DEFAULT_MAX_BYTES, 1 << 30)
+
+
+# ---- the intermediate 3xx body ---------------------------------------
+
+
+class TestIntermediateRedirectBodyBounds(unittest.TestCase):
+    """urllib's ``HTTPRedirectHandler`` reads a 3xx response's OWN body
+    (``fp.read()``) before following the ``Location``. The deadline re-arm
+    and the size cap in ``_read_body_capped`` run on the FINAL body, so a
+    PERMITTED host answering a 302 whose body dribbles or is huge reopened
+    both the time and the size hole simply by answering 302 instead of
+    200. The gated redirect handler drains that intermediate body under
+    the same two bounds. Both the target host and the redirecting host are
+    permitted here, so ONLY the intermediate-body bound can stop the
+    abuse."""
+
+    def test_intermediate_302_body_is_time_bounded(self):
+        # 40 bytes at one every 0.3s = 12s of intermediate body, well past
+        # the 1s budget. Pre-fix the redirect handler read it unmediated
+        # and the call ran the full dribble.
+        with mock.patch.object(_capabilities, "_NET_TIMEOUT_SECS", 1.0):
+            with _Server(_body("FINAL")) as final:
+                loc = f"http://127.0.0.1:{final.port}/final"
+                with _Server(_redirect_with_slow_body(loc, 40, 0.3)) as hop:
+                    net = Net().restrict_to("127.0.0.1")
+                    started = time.monotonic()
+                    result = net.get(f"http://{hop.authority}/start")
+                    elapsed = time.monotonic() - started
+                # Abandoned at the intermediate body: the permitted final
+                # host is never even reached.
+                self.assertEqual(final.seen, [])
+        self.assertIsInstance(result.error, IoError)
+        self.assertIn("timed out", result.error.message)
+        self.assertLess(
+            elapsed, 6.0,
+            f"the call ran {elapsed:.1f}s against a 1s wall-clock bound "
+            f"on a dribbling 302 body",
+        )
+
+    def test_intermediate_302_body_is_size_bounded(self):
+        # A 5 MB intermediate body against a 4 KiB cap. Pre-fix it was read
+        # in full and the request went on to return Ok(final body).
+        with mock.patch.object(_capabilities, "_NET_DEFAULT_MAX_BYTES", 4096):
+            with _Server(_body("FINAL")) as final:
+                loc = f"http://127.0.0.1:{final.port}/final"
+                with _Server(
+                        _redirect_with_large_body(loc, 5_000_000)) as hop:
+                    net = Net().restrict_to("127.0.0.1")
+                    result = net.get(f"http://{hop.authority}/start")
+                # Refused at the intermediate body, so the final host is
+                # never contacted and the huge body never becomes Ok.
+                self.assertEqual(final.seen, [])
+        self.assertIsInstance(result.error, IoError)
+        self.assertIn("result cap", result.error.cause)
+
+    def test_intermediate_302_body_over_explicit_cap_raises(self):
+        # The explicit-cap caller (foreign sandbox) must be told about an
+        # oversized INTERMEDIATE body too, not only an oversized final one.
+        with _Server(_body("FINAL")) as final:
+            loc = f"http://127.0.0.1:{final.port}/final"
+            with _Server(_redirect_with_large_body(loc, 5_000_000)) as hop:
+                net = Net().restrict_to("127.0.0.1")
+                with self.assertRaises(ResultCapExceeded):
+                    net.get(f"http://{hop.authority}/start", max_bytes=4096)
+            self.assertEqual(final.seen, [])
+
+    def test_permitted_redirect_with_nonempty_intermediate_body_still_works(self):
+        # Draining the intermediate body must not break the normal case: a
+        # small 302 body is consumed and the final body is still returned.
+        with _Server(_body("FINAL-BODY")) as final:
+            loc = f"http://127.0.0.1:{final.port}/final"
+            with _Server(
+                    _redirect_with_body(loc, "ignored intermediate")) as hop:
+                net = Net().restrict_to("127.0.0.1")
+                result = net.get(f"http://{hop.authority}/start")
+            self.assertEqual(final.seen, ["/final"])
+        self.assertEqual(result.value, "FINAL-BODY")
 
 
 # ---- backend parity ---------------------------------------------------
