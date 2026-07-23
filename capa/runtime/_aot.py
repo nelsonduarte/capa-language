@@ -45,7 +45,7 @@ import json
 import struct
 from typing import Optional
 
-from ..ir._cap_binding import resolve_cap_types
+from ..ir._cap_binding import CARRIER_WASM_EXPORT, resolve_cap_types
 
 _MAGIC = b"CPAO"
 # Bumped to 2 on 2026-07-23: the header carries ``main_cap_types``
@@ -85,14 +85,18 @@ def build_aot(wasm_blob: bytes, *, capa_version: str) -> bytes:
 
     # Recover the capability binding from the source .wasm BEFORE
     # serialising -- the serialized form has no export names.
-    from ._wasm_host import _read_main_cap_types
+    from ._wasm_host import (
+        _module_main_param_count,
+        _read_main_cap_types,
+    )
 
     # n_params: ask the module's main export how many params it takes.
     engine = wasmtime.Engine()
     module = wasmtime.Module(engine, wasm_blob)
-    n_params = _main_param_count(module)
+    n_params = _module_main_param_count(module)
     cap_types = resolve_cap_types(
-        _read_main_cap_types(wasm_blob), n_params, artifact="module",
+        _read_main_cap_types(wasm_blob), n_params,
+        artifact="module", carrier=CARRIER_WASM_EXPORT,
     )
 
     cwasm = module.serialize()
@@ -111,18 +115,6 @@ def build_aot(wasm_blob: bytes, *, capa_version: str) -> bytes:
         header_bytes,
         cwasm,
     ])
-
-
-def _main_param_count(module) -> int:
-    """Number of params the module's ``main`` export takes. Returns 0
-    if main is absent or has no params (the legacy no-cap shape)."""
-    for exp in module.exports:
-        if exp.name == "main":
-            try:
-                return len(list(exp.type.params))
-            except Exception:
-                return 0
-    return 0
 
 
 class AotError(RuntimeError):

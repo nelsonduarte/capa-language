@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from ._cap_binding import main_handle_cap_types, wit_cap_slot_name
 from ._nodes import Module, Call, MethodCall
 from ._walk import walk_module
 
@@ -735,7 +736,6 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
 
 
 from ._capa_types import BUILTIN_CAPS
-from ._cap_binding import main_handle_cap_types, wit_cap_slot_name
 from ._python_only_caps import find_rejection as find_python_only_rejection
 
 

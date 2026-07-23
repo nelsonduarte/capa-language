@@ -33,10 +33,9 @@ breaking changes and the discipline is still being shaped.
   the core-module path, and from the WIT parameter labels (also
   derived from the source names) on the Component path. Capa's claim
   is that the type is the contract and the capability is in the
-  signature; WASI's first design principle is that handles are
-  unforgeable and there are no ambient authorities. Deciding the
-  authority from a strippable identifier contradicted both, and a
-  routine release step changed program behaviour.
+  signature. Deciding the authority from a strippable identifier
+  contradicts that, and a routine release step changed program
+  behaviour.
 
   The binding is now driven by the declared capability type, in
   declaration order, and travels in structure that ordinary Wasm
@@ -47,32 +46,76 @@ breaking changes and the discipline is still being shaped.
   component type. Nothing lands in a custom section (strippable) or a
   data segment (writable linear memory, per Lehmann/Kinder/Pradel,
   USENIX Security 2020, section 4.2.3). **There is no fallback**: a
-  slot whose capability cannot be determined grants nothing and the
-  host refuses to run.
+  slot whose capability cannot be determined grants nothing, and the
+  artifact is refused BEFORE it is instantiated, so a module with a
+  `start` function does not get to run first.
 
-- *A `Clock` query no longer accepts a non-`Clock` receiver.*
-  `now_secs` / `now_monotonic` on the core host looked their receiver
-  up and discarded the result, while the comment beside them claimed a
-  bogus handle "surfaces here rather than silently returning a real
-  clock reading". It did not: the lookup helper returned `None` on a
-  bad handle and nothing read it, so a slot holding the wrong
-  authority returned a real wall-clock reading. The lookup now raises.
+  Scope, stated plainly because an earlier draft of this entry
+  overreached: this delivers three properties, no more. The binding
+  follows the declared type; it is not carried anywhere ordinary
+  tooling strips or the guest can write; it cannot be silently
+  defaulted. It does **not** deliver WASI's "handles are unforgeable,
+  no ambient authorities" - root handles are still small sequential
+  integers, and the linker still defines every `capa:host/*` import
+  regardless of what the artifact declares, so a hand-written module
+  declaring only `net` can still call `capa:host/fs.exists` directly.
+  Both pre-date this change and are tracked separately.
+
+- *Three host bridges honoured a capability binding that named the
+  wrong type.* Rewriting a binding hands a slot a root of the wrong
+  TYPE, and the handle table's typed lookup is what contains that: the
+  op fails `lookup(handle, Env)` and denies. `now_secs`,
+  `now_monotonic` and `env_args`, on BOTH hosts, performed that lookup
+  and threw the result away, each under a comment claiming a bad
+  handle failed loudly there. It did not. With an `Env` slot rewritten
+  to hold the `Fs` root, `env.args()` returned the real process argv,
+  exit 0, no diagnostic, while `fs.allows` on the same run correctly
+  answered `false`. The three now use a raising resolver, and a
+  structural test fails if a fourth bridge performs the lookup without
+  reading it.
+
+- *`--prefer-wasm` no longer absorbs a capability refusal into a
+  full-authority re-run.* The flag wrapped both the Wasm compile and
+  the Wasm RUN in one bare `except Exception: pass` and silently
+  re-executed the program on the Python pipeline, which has no handle
+  table. A `CapBindingError` was therefore answered by running the
+  program somewhere the question is never asked; a failure part-way
+  through a run also repeated whatever the first attempt had already
+  written. The silent fallback now covers the compile only, which is
+  what it was documented to be for (programs outside the Phase-6
+  subset) and is safe because nothing has executed yet.
 
 **Changed (upgrade notes).**
 
-- *Prebuilt `.wasm` artifacts and `.cwasm` AOT artifacts built by
-  1.19.0 or earlier are refused, on purpose.* They carry no capability
-  binding, and the only way to run them would be to guess it from the
-  parameter names, which is the defect. Both hosts print a diagnostic
-  naming the problem and telling the operator to rebuild. Rebuilding
-  from source needs no source changes. The AOT container format is
-  version 2; a version-1 container is refused by the existing
-  version check.
+- *Prebuilt `.wasm` and `.cwasm` artifacts that predate the capability
+  binding are refused, on purpose.* They carry none, and the only way
+  to run them would be to guess it from the parameter names, which is
+  the defect. Both hosts RAISE `CapBindingError` with a message naming
+  the problem and telling the operator to rebuild; `capa run-aot`
+  prints it and exits 1, and an embedder calling `WasmHost.run_main`
+  directly catches the exception. Rebuilding from source needs no
+  source changes. The AOT container format is version 2; a version-1
+  container is refused by the existing version check.
+
+  The refusal deliberately does not say "built by 1.19.0 or earlier".
+  The binding landed after the 1.19.0 release, so a toolchain
+  reporting 1.19.0 is either that release (no binding) or a
+  development build past this commit (binding present), and naming the
+  version would tell half of those operators that the version they are
+  running is the broken one.
 
 - *The generated WIT world labels `main`'s capability slots
   `cap0-fs` / `cap1-net` rather than the source parameter name.* A
   hand-written host that matched the old bare-kind labels needs to
   decode the kind out of the new label instead.
+
+- *A `Clock` or `Env` op whose receiver is not a `Clock` / `Env` now
+  traps instead of answering.* `now_secs`, `now_monotonic` and
+  `env.args()` have no honest "denied" value to return - there is no
+  denied `f64` and no denied argv - so where the other bridges answer
+  fail-closed these raise. Reachable only from an artifact whose
+  binding disagrees with its own code, which a Capa build cannot
+  produce.
 
 ## [1.19.0], 2026-07-20
 

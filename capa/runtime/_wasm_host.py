@@ -46,6 +46,8 @@ import wasmtime
 import wasmtime.component as wc
 
 from ..ir._cap_binding import (
+    CARRIER_AOT_HEADER,
+    CARRIER_WASM_EXPORT,
     CapBindingError,
     parse_main_cap_types_export_name,
     resolve_cap_types,
@@ -1102,31 +1104,17 @@ class WasmHost:
             except CapHandleError:
                 return None
 
-        def _require_clock(handle):
-            """Resolve the receiver Clock or trap. The now_* ops are
-            pure queries that ignore the cap's deadline, but they are
-            still Clock ops: a handle that does not resolve to a Clock
-            means the guest was handed the wrong authority (or none),
-            and returning a real reading anyway would make that
-            invisible. Until 2026-07-23 the two now_* bodies called
-            ``_lookup_clock`` and DISCARDED the result while their
-            comment claimed a bogus handle surfaced here, so the guard
-            the comment described did not exist."""
-            clock = _lookup_clock(handle)
-            if clock is None:
-                raise CapHandleError(
-                    f"invalid Clock capability handle {handle}: the "
-                    f"receiver of this clock query is not a Clock "
-                    f"(emitter / host bridge mismatch)"
-                )
-            return clock
-
+        # The now_* family is a pure query that ignores the cap's
+        # deadline, but it is still a Clock op: a handle that does not
+        # resolve to a Clock means the guest holds the wrong authority,
+        # and returning a real reading anyway hides that. See
+        # ``_require_receiver``.
         def now_secs(handle):
-            _require_clock(handle)
+            self._require_receiver(handle, Clock)
             return time.time()
 
         def now_monotonic(handle):
-            _require_clock(handle)
+            self._require_receiver(handle, Clock)
             return time.monotonic()
 
         self.linker.define_func(
@@ -1350,10 +1338,11 @@ class WasmHost:
                 raise RuntimeError(
                     "env.args called before memory + $alloc set"
                 )
-            # Look up the cap (for wire uniformity / loud failure on
-            # a bad handle); args themselves don't depend on the
-            # cap's allow-list.
-            _lookup_env(handle)
+            # argv is not restriction-bearing (mirrors the Python
+            # ``Env.args``), but the receiver must still BE an Env.
+            # This discarded the lookup until 2026-07-23, so a slot
+            # holding the Fs root returned the real process argv.
+            self._require_receiver(handle, Env)
             n = len(self._args)
             # Allocate the data buffer (n * 8 bytes). Each slot
             # holds (str_ptr i32, str_len i32) which is the same
@@ -3069,11 +3058,41 @@ class WasmHost:
             json_to_string, access_caller=True,
         )
 
-    def instantiate(self, wasm_blob: bytes) -> wasmtime.Instance:
+    def _require_receiver(self, handle: int, expected_cls):
+        """Resolve ``handle`` to a cap of ``expected_cls``, or RAISE
+        ``CapHandleError``.
+
+        The counterpart to the per-cap ``_lookup_*`` helpers, which
+        SWALLOW a bad handle and return ``None`` so their caller can
+        answer fail-closed (deny, "no such key", an ``Err``). Some
+        bridges have no fail-closed answer to give: there is no honest
+        "denied" ``f64`` for ``now_secs`` and no honest "denied" list
+        for ``env.args``. Those three used to call the swallowing
+        helper and DISCARD the result, with a comment claiming a bogus
+        handle surfaced there. It did not, and a slot handed the wrong
+        root still returned a real clock reading and the real process
+        argv (2026-07-23). They call this instead.
+
+        The typed lookup is what actually contains a forged or
+        rewritten capability binding, so a bridge that performs it
+        without consulting it contains nothing. ``TestEveryBridge
+        RequiresItsReceiver`` fails if a fourth such bridge appears."""
+        return self._cap_handles.lookup(handle, expected_cls)
+
+    def instantiate(
+        self, wasm_blob: bytes, *, module=None,
+    ) -> wasmtime.Instance:
         """Load ``wasm_blob`` and instantiate it against the
         registered host imports. Caches the exported memory so
-        subsequent host callbacks can resolve string pointers."""
-        module = wasmtime.Module(self.engine, wasm_blob)
+        subsequent host callbacks can resolve string pointers.
+
+        ``module`` lets a caller pass a ``wasmtime.Module`` it already
+        compiled. ``run_main`` needs one BEFORE instantiating, to read
+        ``main``'s arity and refuse an unusable capability binding
+        without executing the module; recompiling the same bytes a
+        second time would just pay Cranelift twice."""
+        if module is None:
+            module = wasmtime.Module(self.engine, wasm_blob)
         instance = self.linker.instantiate(self.store, module)
         exports = instance.exports(self.store)
         if "memory" in exports:
@@ -3105,12 +3124,28 @@ class WasmHost:
         ``Fs`` root, which handed programs an authority they never
         declared. Programs whose main takes no cap params (every
         i32-free signature) still carry the (empty) binding and
-        follow the no-handle path."""
-        instance = self.instantiate(wasm_blob)
+        follow the no-handle path.
+
+        The binding is read and RESOLVED against ``main``'s real arity
+        before the module is instantiated, from the module type alone.
+        Instantiating first would run the module's ``start`` function
+        and any active data-segment initialisers, so a bindingless
+        module got to execute before being refused (measured: a
+        ``(start)`` that slept two seconds ran to completion first).
+        "Refuse without granting anything" has to mean refuse without
+        running anything, not merely refuse to pass a handle."""
+        module = wasmtime.Module(self.engine, wasm_blob)
+        n_params = _module_main_param_count(module)
+        cap_types = resolve_cap_types(
+            _read_main_cap_types(wasm_blob), n_params,
+            artifact="module", carrier=CARRIER_WASM_EXPORT,
+        )
+        instance = self.instantiate(wasm_blob, module=module)
         main = instance.exports(self.store)["main"]
-        n_params = self._main_param_count(main)
-        cap_types = _read_main_cap_types(wasm_blob)
-        self._invoke_main(main, n_params, cap_types, artifact="module")
+        self._invoke_main(
+            main, n_params, cap_types,
+            artifact="module", carrier=CARRIER_WASM_EXPORT,
+        )
 
     def run_main_aot(self, module, header: dict) -> None:
         """Instantiate and run a deserialized AOT ``module`` (from
@@ -3123,8 +3158,18 @@ class WasmHost:
         the source ``.wasm`` at build time and travels in the AOT
         container header (roadmap P1). We take it from ``header``
         instead of parsing the blob, then share the same root-handle
-        mapping + invocation path as ``run_main``."""
+        mapping + invocation path as ``run_main``.
+
+        Like ``run_main``, the binding is resolved BEFORE instantiating
+        so a ``start`` function in the serialized module cannot run
+        ahead of the refusal. The arity comes from the deserialized
+        module's export TYPE, which is readable without an instance."""
         from ._aot import aot_main_cap_types
+        n_params = _module_main_param_count(module)
+        cap_types = resolve_cap_types(
+            aot_main_cap_types(header), n_params,
+            artifact="AOT artifact", carrier=CARRIER_AOT_HEADER,
+        )
         instance = self.linker.instantiate(self.store, module)
         exports = instance.exports(self.store)
         if "memory" in exports:
@@ -3132,10 +3177,9 @@ class WasmHost:
         if "alloc" in exports:
             self._alloc_export = exports["alloc"]
         main = exports["main"]
-        n_params = self._main_param_count(main)
-        cap_types = aot_main_cap_types(header)
         self._invoke_main(
-            main, n_params, cap_types, artifact="AOT artifact",
+            main, n_params, cap_types,
+            artifact="AOT artifact", carrier=CARRIER_AOT_HEADER,
         )
 
     def _main_param_count(self, main) -> int:
@@ -3153,6 +3197,7 @@ class WasmHost:
         cap_types: list | None,
         *,
         artifact: str,
+        carrier: str,
     ) -> None:
         """Shared root-handle bootstrap + dispatch for both the JIT
         (``run_main``) and AOT (``run_main_aot``) paths. Allocates the
@@ -3160,18 +3205,25 @@ class WasmHost:
         root handle of the DECLARED capability type, and calls
         ``main``.
 
-        Lazy-constructs the roots once per host instance so a re-run
-        reuses the same handle-table entries (handle identity stays
-        stable across invocations).
+        Lazy-constructs the root cap OBJECTS once per host instance, so
+        a re-run reuses the same ``Fs`` / ``Net`` / ... instances and
+        their attenuation state. Their HANDLES are not stable:
+        ``bootstrap_root_handles`` allocates fresh table entries on
+        every call, so three runs on one host leave the table at 7, 14
+        and 21 entries. Harmless for the CLI (one run per process) and
+        pre-existing, but the docstring used to claim the opposite, and
+        a long-lived embedder reusing a host should know it grows.
 
         ``cap_types`` is the artifact's own declaration of what each
-        slot holds. ``None`` (no declaration) and any disagreement
-        with ``main``'s real arity raise ``CapBindingError`` BEFORE a
-        single root is handed out. There is deliberately no fallback:
-        the previous default-to-``Fs`` branch is the vulnerability
-        this signature exists to remove."""
+        slot holds. ``None`` (no declaration) and any disagreement with
+        ``main``'s real arity raise ``CapBindingError``. ``run_main``
+        resolves it earlier still, before instantiating; this second
+        resolve is what makes the guarantee hold for EVERY caller
+        rather than for the one that remembered. There is deliberately
+        no fallback: the previous default-to-``Fs`` branch is the
+        vulnerability this signature exists to remove."""
         cap_types = resolve_cap_types(
-            cap_types, n_params, artifact=artifact,
+            cap_types, n_params, artifact=artifact, carrier=carrier,
         )
         # ``panicked`` is a per-host latch the panic builtin sets so
         # the CLI can suppress the wasmtime traceback for a deliberate
@@ -3212,6 +3264,25 @@ class WasmHost:
 
 
 # ---- helpers ----------------------------------------------------
+
+
+def _module_main_param_count(module) -> int:
+    """Number of params the ``main`` export of a compiled but NOT yet
+    instantiated ``wasmtime.Module`` takes. ``0`` if main is absent or
+    takes none (the legacy no-cap shape).
+
+    Read from the module TYPE rather than from an instance, because
+    ``run_main`` has to know the arity in order to refuse an unusable
+    capability binding BEFORE instantiating (a module's ``start``
+    function would otherwise run first). ``capa.runtime._aot`` shares
+    it so build-time and run-time count the same way."""
+    for exp in module.exports:
+        if exp.name == "main":
+            try:
+                return len(list(exp.type.params))
+            except Exception:
+                return 0
+    return 0
 
 
 def _read_uleb128(buf: bytes, off: int) -> tuple[int, int]:

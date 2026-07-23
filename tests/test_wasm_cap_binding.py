@@ -38,6 +38,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from capa import Lexer, Parser, analyze, transpile
@@ -45,6 +46,8 @@ from capa.ir import compile_wasm, lower
 from capa.ir._capa_types import HANDLE_BEARING_CAPS
 from capa.ir._cap_binding import (
     CAP_KINDS,
+    CARRIER_AOT_HEADER,
+    CARRIER_WASM_EXPORT,
     MAIN_CAP_TYPES_EXPORT_PREFIX,
     CapBindingError,
     main_cap_types_export_name,
@@ -263,30 +266,84 @@ class TestResolveCapTypesGrantsNothing(unittest.TestCase):
 
     def test_missing_binding_is_refused_with_a_rebuild_hint(self):
         with self.assertRaises(CapBindingError) as ctx:
-            resolve_cap_types(None, 1, artifact="module")
+            resolve_cap_types(
+                None, 1, artifact="module", carrier=CARRIER_WASM_EXPORT,
+            )
         msg = str(ctx.exception)
         self.assertIn(MAIN_CAP_TYPES_EXPORT_PREFIX, msg)
         self.assertIn("rebuild", msg)
-        self.assertIn("1.19.0", msg)
+
+    def test_the_carrier_named_matches_the_artifact(self):
+        # The AOT container is a JSON header with no sections at all,
+        # so telling its operator that a `capa:main-cap-types=` EXPORT
+        # is missing sends them looking for something the format
+        # cannot have.
+        with self.assertRaises(CapBindingError) as ctx:
+            resolve_cap_types(
+                None, 1, artifact="AOT artifact",
+                carrier=CARRIER_AOT_HEADER,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("container header", msg)
+        self.assertNotIn(MAIN_CAP_TYPES_EXPORT_PREFIX, msg)
+
+    def test_no_refusal_blames_the_running_toolchain_version(self):
+        # `capa --version` IS 1.19.0 on a development build that has
+        # the binding, so a message saying "artifacts built by 1.19.0
+        # or earlier carry no binding" tells half its readers that the
+        # version they are running is the broken one. The message
+        # anchors on the RELEASE instead.
+        import capa
+        for kwargs in (
+            {"cap_types": None, "n_slots": 1},
+            {"cap_types": ["fs"], "n_slots": 2},
+            {"cap_types": ["nope"], "n_slots": 1},
+        ):
+            with self.subTest(**kwargs):
+                with self.assertRaises(CapBindingError) as ctx:
+                    resolve_cap_types(
+                        kwargs["cap_types"], kwargs["n_slots"],
+                        artifact="module", carrier=CARRIER_WASM_EXPORT,
+                    )
+                msg = str(ctx.exception)
+                self.assertNotIn(
+                    f"built by Capa {capa.__version__}", msg,
+                    "the refusal names the running toolchain as the "
+                    "broken one",
+                )
 
     def test_arity_disagreement_is_refused(self):
         for declared, slots in (([], 1), (["fs"], 0), (["fs"], 2)):
             with self.subTest(declared=declared, slots=slots):
                 with self.assertRaises(CapBindingError) as ctx:
-                    resolve_cap_types(declared, slots, artifact="module")
+                    resolve_cap_types(
+                        declared, slots, artifact="module",
+                        carrier=CARRIER_WASM_EXPORT,
+                    )
                 self.assertIn("no capability", str(ctx.exception).lower())
 
     def test_unknown_kind_is_refused(self):
         with self.assertRaises(CapBindingError) as ctx:
-            resolve_cap_types(["stdio"], 1, artifact="module")
+            resolve_cap_types(
+                ["stdio"], 1, artifact="module",
+                carrier=CARRIER_WASM_EXPORT,
+            )
         self.assertIn("unknown capability", str(ctx.exception))
 
     def test_a_usable_binding_passes_through_unchanged(self):
         self.assertEqual(
-            resolve_cap_types(["net", "fs"], 2, artifact="module"),
+            resolve_cap_types(
+                ["net", "fs"], 2, artifact="module",
+                carrier=CARRIER_WASM_EXPORT,
+            ),
             ["net", "fs"],
         )
-        self.assertEqual(resolve_cap_types([], 0, artifact="module"), [])
+        self.assertEqual(
+            resolve_cap_types(
+                [], 0, artifact="module", carrier=CARRIER_WASM_EXPORT,
+            ),
+            [],
+        )
 
     def test_root_map_refuses_rather_than_defaulting(self):
         # R3 has a second face: even with a well-formed binding, a cap
@@ -322,7 +379,7 @@ class TestComponentSlotLabelDecoding(unittest.TestCase):
 
     @unittest.skipUnless(_has_wasmtime(), "wasmtime-py not installed")
     def test_legacy_bare_kind_labels_are_refused(self):
-        # A component built by 1.19.0 or earlier labels its slots
+        # A component built before this change labels its slots
         # ``fs`` / ``net`` / ... Accepting those as a compatibility
         # mode would reinstate exactly the name matching this change
         # removes, so they are refused.
@@ -385,9 +442,10 @@ class TestCoreHostBinding(unittest.TestCase):
         )
 
     def test_absent_binding_export_is_refused_not_defaulted(self):
-        # Simulates a 1.19.0 artifact by renaming the binding export in
-        # place (same length, so the module stays structurally valid).
-        # The host must refuse rather than fall back to name matching.
+        # Simulates a pre-binding artifact by renaming the binding
+        # export in place (same length, so the module stays
+        # structurally valid). The host must refuse rather than fall
+        # back to name matching.
         from capa.runtime._wasm_host import WasmHost
         blob = bytearray(_wasm_blob(_MISNAMED_PROGRAMS["net"]))
         _rename_binding_export(blob)
@@ -395,7 +453,7 @@ class TestCoreHostBinding(unittest.TestCase):
             WasmHost().run_main(bytes(blob))
         msg = str(ctx.exception)
         self.assertIn("rebuild", msg)
-        self.assertIn("1.19.0", msg)
+        self.assertIn(MAIN_CAP_TYPES_EXPORT_PREFIX, msg)
 
     def test_unknown_kind_in_the_binding_is_refused(self):
         from capa.runtime._wasm_host import WasmHost
@@ -432,6 +490,51 @@ class TestCoreHostBinding(unittest.TestCase):
             _read_main_cap_types(proc.stdout)
         self.assertIn("2 times", str(ctx.exception))
 
+    @unittest.skipUnless(_has_wasm_tools(), "wasm-tools not installed")
+    def test_guest_code_does_not_run_before_the_refusal(self):
+        # "Grants nothing" has to mean "runs nothing". The binding used
+        # to be read AFTER ``instantiate``, which executes the module's
+        # ``start`` function and its active data-segment initialisers,
+        # so a bindingless module got to do whatever it liked and was
+        # only then refused.
+        #
+        # The ``start`` here TRAPS, which makes "the module executed"
+        # and "the module was refused" two distinguishable outcomes
+        # without a timing assertion.
+        from capa.runtime._wasm_host import WasmHost
+        wat = (
+            "(module\n"
+            "  (global $g i32 (i32.const 1))\n"
+            f'  (export "{main_cap_types_export_name(["fs"])}" '
+            "(global $g))\n"
+            '  (func $main (export "main") (param i32))\n'
+            "  (func $boom unreachable)\n"
+            "  (start $boom)\n"
+            ")\n"
+        )
+        proc = subprocess.run(
+            ["wasm-tools", "parse", "-"],
+            input=wat.encode("utf-8"), capture_output=True,
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            proc.stderr.decode("utf-8", errors="replace"),
+        )
+        blob = proc.stdout
+
+        # Control: with a usable binding the module IS instantiated,
+        # so the start function runs and traps. Without this the test
+        # below would pass against a module that never executes for
+        # some unrelated reason.
+        with self.assertRaises(Exception) as ctx:
+            WasmHost().run_main(blob)
+        self.assertNotIsInstance(ctx.exception, CapBindingError)
+
+        forged = bytearray(blob)
+        _rename_binding_export(forged)
+        with self.assertRaises(CapBindingError):
+            WasmHost().run_main(bytes(forged))
+
     def test_no_handle_is_granted_when_the_binding_is_unusable(self):
         # T3's "grants nothing" half, and T4's guard against a future
         # default: whatever shape the failure takes, ``main`` must
@@ -452,6 +555,7 @@ class TestCoreHostBinding(unittest.TestCase):
                 with self.assertRaises(CapBindingError):
                     host._invoke_main(
                         main, 1, cap_types, artifact="module",
+                        carrier=CARRIER_WASM_EXPORT,
                     )
                 self.assertEqual(
                     main.calls, [],
@@ -462,39 +566,291 @@ class TestCoreHostBinding(unittest.TestCase):
 
 
 @unittest.skipUnless(_has_wasmtime(), "wasmtime-py not installed")
-class TestClockQueriesRequireAClockHandle(unittest.TestCase):
-    """R6. ``now_secs`` / ``now_monotonic`` looked their receiver up and
-    DISCARDED the result, while their comment claimed a bogus handle
-    "surfaces here rather than silently returning a real clock
-    reading". The guard the comment described did not exist: the
-    lookup helper swallowed the error and returned ``None``, which
-    nothing then read.
+class TestForgedBindingIsContainedOnEveryBridge(unittest.TestCase):
+    """A rewritten binding hands a slot the WRONG root capability. The
+    handle table's TYPED LOOKUP is what contains that: the op fails
+    ``lookup(handle, Env)`` and denies. Containment is only as good as
+    its coverage, and three bridges had none.
 
-    Driven by rewriting a real module's binding so the ``Clock`` slot
-    receives the ``Fs`` root, which is exactly the substitution the
-    name-matching binding used to perform by accident."""
+    ``now_secs``, ``now_monotonic`` and ``env_args``, on BOTH hosts,
+    performed the lookup and discarded the result, each with a comment
+    claiming a bogus handle failed loudly there. Measured 2026-07-23
+    with the binding rewritten so the slot held the Fs root: the core
+    host returned the real process argv (``argc=2``) and the component
+    host returned a real clock reading (``positive=true``), both exit
+    0, no diagnostic. Meanwhile ``fs.allows`` on the same forged run
+    correctly answered ``false``, which is what identified the typed
+    lookup as the wall being bypassed.
 
-    _SRC = (
-        'fun main(clock: Clock, fs: Fs, stdio: Stdio)\n'
-        '    let ok = fs.allows("/tmp")\n'
-        '    let t = clock.now_secs()\n'
-        '    stdio.println("positive=${t > 0.0} fs=${ok}")\n'
-    )
+    Every case here runs on the core host AND the Component host,
+    because the first round of this fix corrected only the core one and
+    shipped a host-to-host divergence on its own new guard."""
 
-    def test_an_honest_binding_still_reads_the_clock(self):
+    # (label, source, binding as emitted, binding rewritten, expected
+    # honest output). Each program uses BOTH caps so the analyzer
+    # accepts the signature, and prints the fs probe so a forged run
+    # that is contained looks different from one that is honoured.
+    _CASES = [
+        (
+            "now_secs",
+            'fun main(clock: Clock, fs: Fs, stdio: Stdio)\n'
+            '    let ok = fs.allows("/tmp")\n'
+            '    let t = clock.now_secs()\n'
+            '    stdio.println("positive=${t > 0.0} fs=${ok}")\n',
+            "clock,fs", "fs,clock", "positive=true fs=true\n",
+        ),
+        (
+            "now_monotonic",
+            'fun main(clock: Clock, fs: Fs, stdio: Stdio)\n'
+            '    let ok = fs.allows("/tmp")\n'
+            '    let t = clock.now_monotonic()\n'
+            '    stdio.println("mono=${t >= 0.0} fs=${ok}")\n',
+            "clock,fs", "fs,clock", "mono=true fs=true\n",
+        ),
+        (
+            "env_args",
+            'fun main(env: Env, fs: Fs, stdio: Stdio)\n'
+            '    let ok = fs.allows("/tmp")\n'
+            '    let a = env.args()\n'
+            '    stdio.println("argc=${a.length()} fs=${ok}")\n',
+            "env,fs", "fs,env", "argc=2 fs=true\n",
+        ),
+    ]
+
+    # Non-empty, so a bridge that leaks argv leaks something visible.
+    _ARGV = ["SECRET-ARG-1", "SECRET-ARG-2"]
+
+    def _run_core(self, blob):
         from capa.runtime._wasm_host import WasmHost
-        blob = _wasm_blob(self._SRC)
-        out = _capture_stdout(lambda: WasmHost().run_main(blob))
-        self.assertEqual(out, "positive=true fs=true\n")
+        return _capture_stdout(
+            lambda: WasmHost(args=self._ARGV).run_main(bytes(blob))
+        )
 
-    def test_a_non_clock_receiver_traps_instead_of_reading_the_clock(self):
+    def _run_component(self, src, relabel=None):
+        from capa.cli import _wrap_as_component
+        from capa.ir import compile_wit
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        module, result = _parse_and_analyze(src)
+        core = compile_wasm(module, types=result.types)
+        wit = compile_wit(module, types=result.types)
+        if relabel is not None:
+            before, after = relabel
+            self.assertIn(before, wit)
+            wit = wit.replace(before, after)
+        component = _wrap_as_component(core, wit)
+        return _capture_stdout(
+            lambda: WasmComponentHost(args=self._ARGV).run_main(component)
+        )
+
+    @staticmethod
+    def _slot_labels(kinds: str) -> str:
+        """The WIT parameter list for a comma-separated kind list."""
+        return ", ".join(
+            f"{wit_cap_slot_name(i, k)}: u32"
+            for i, k in enumerate(kinds.split(","))
+        )
+
+    def test_an_honest_binding_works_on_both_hosts(self):
+        # Guards the refusals below against passing for the wrong
+        # reason: a program that cannot run at all also never leaks.
+        for label, src, _emitted, _forged, expected in self._CASES:
+            with self.subTest(bridge=label, host="core"):
+                self.assertEqual(self._run_core(_wasm_blob(src)), expected)
+            if not _has_wasm_tools():
+                continue
+            with self.subTest(bridge=label, host="component"):
+                self.assertEqual(self._run_component(src), expected)
+
+    def test_core_host_refuses_a_slot_holding_the_wrong_root(self):
+        from capa.runtime._cap_handles import CapHandleError
+        for label, src, emitted, forged, _expected in self._CASES:
+            with self.subTest(bridge=label):
+                blob = bytearray(_wasm_blob(src))
+                _retype_binding_export(
+                    blob, emitted.encode(), forged.encode(),
+                )
+                with self.assertRaises(CapHandleError) as ctx:
+                    self._run_core(blob)
+                self.assertIn("resolves to Fs", str(ctx.exception))
+
+    @unittest.skipUnless(_has_wasm_tools(), "wasm-tools not installed")
+    def test_component_host_refuses_a_slot_holding_the_wrong_root(self):
+        from capa.runtime._cap_handles import CapHandleError
+        for label, src, emitted, forged, _expected in self._CASES:
+            with self.subTest(bridge=label):
+                relabel = (
+                    self._slot_labels(emitted), self._slot_labels(forged),
+                )
+                with self.assertRaises(CapHandleError) as ctx:
+                    self._run_component(src, relabel=relabel)
+                self.assertIn("resolves to Fs", str(ctx.exception))
+
+    def test_aot_header_rewrite_cannot_grant_an_authority(self):
+        # The AOT container header is unauthenticated JSON: it is a
+        # local build artifact and nothing signs it. That is tolerable
+        # only as long as rewriting it can only ever DENY. Every kind
+        # it could name hands the slot a root of the wrong type, and
+        # the typed lookup then refuses every op on it. Before this
+        # fix an `env` -> `fs` rewrite still returned the real argv.
+        import json
+        import struct
+        from capa.runtime import _aot
         from capa.runtime._cap_handles import CapHandleError
         from capa.runtime._wasm_host import WasmHost
-        blob = bytearray(_wasm_blob(self._SRC))
-        _retype_binding_export(blob, b"clock,fs", b"fs,clock")
+        _label, src, _emitted, _forged, _expected = self._CASES[2]
+        artifact = _aot.build_aot(_wasm_blob(src), capa_version="t")
+        fmt, hlen = struct.unpack("<II", artifact[4:12])
+        header = json.loads(artifact[12:12 + hlen])
+        self.assertEqual(header["main_cap_types"], ["env", "fs"])
+        header["main_cap_types"] = ["fs", "fs"]
+        raw = json.dumps(header).encode("utf-8")
+        forged = (
+            b"CPAO" + struct.pack("<II", fmt, len(raw)) + raw
+            + artifact[12 + hlen:]
+        )
+        host = WasmHost(args=self._ARGV)
+        module, hdr = _aot.load_aot(forged, host.engine)
         with self.assertRaises(CapHandleError) as ctx:
-            _capture_stdout(lambda: WasmHost().run_main(bytes(blob)))
-        self.assertIn("invalid Clock capability handle", str(ctx.exception))
+            _capture_stdout(lambda: host.run_main_aot(module, hdr))
+        self.assertIn("expected Env", str(ctx.exception))
+
+    def test_aot_header_without_a_binding_is_refused(self):
+        # The AOT path resolves the binding from the header BEFORE
+        # instantiating, symmetrically with ``run_main``, so a header
+        # stripped of ``main_cap_types`` (what a pre-binding build
+        # produced) is refused rather than run against a guessed
+        # binding. Uses the JSON key carrier, not the export carrier.
+        import json
+        import struct
+        from capa.runtime import _aot
+        from capa.runtime._wasm_host import WasmHost
+        _label, src, _emitted, _forged, _expected = self._CASES[2]
+        artifact = _aot.build_aot(_wasm_blob(src), capa_version="t")
+        fmt, hlen = struct.unpack("<II", artifact[4:12])
+        header = json.loads(artifact[12:12 + hlen])
+        del header["main_cap_types"]
+        raw = json.dumps(header).encode("utf-8")
+        forged = (
+            b"CPAO" + struct.pack("<II", fmt, len(raw)) + raw
+            + artifact[12 + hlen:]
+        )
+        host = WasmHost(args=self._ARGV)
+        module, hdr = _aot.load_aot(forged, host.engine)
+        with self.assertRaises(CapBindingError) as ctx:
+            host.run_main_aot(module, hdr)
+        self.assertIn("container header", str(ctx.exception))
+
+
+def _tests_for_none(fn: ast.AST, var: str) -> bool:
+    """True when ``fn`` compares ``var`` against None or negates it
+    (``not var``). Those are the two shapes the fail-closed host
+    bridges use to react to a bad handle."""
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Compare):
+            if isinstance(node.left, ast.Name) and node.left.id == var:
+                if any(isinstance(op, ast.Is) for op in node.ops):
+                    return True
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            if isinstance(node.operand, ast.Name):
+                if node.operand.id == var:
+                    return True
+    return False
+
+
+class TestEveryBridgeRequiresItsReceiver(unittest.TestCase):
+    """The structural half of the class above: a FOURTH bridge that
+    performs the typed lookup without consulting it must not be able
+    to appear.
+
+    Both hosts expose a SWALLOWING resolver (``_lookup_*`` on the core
+    host, ``_lookup_or`` on the Component host) returning ``None`` on a
+    bad handle so its caller can answer fail-closed, and a RAISING one
+    (``_require_receiver``) for bridges with no fail-closed answer to
+    give. The rule enforced here is that a swallowing lookup's result
+    is always read. Discarded as a bare statement, and bound to a name
+    nothing ever tests, are the two shapes the hole can take."""
+
+    _HOSTS = [
+        "capa/runtime/_wasm_host.py",
+        "capa/runtime/_wasm_component_host.py",
+    ]
+
+    @staticmethod
+    def _swallowing_call(node):
+        """The name of the swallowing resolver ``node`` calls, if any.
+        Matched by NAME PREFIX rather than an allow-list, so a new
+        per-cap variant is policed the day it is written."""
+        if not isinstance(node, ast.Call):
+            return None
+        func = node.func
+        if isinstance(func, ast.Name) and func.id.startswith("_lookup"):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            if func.attr.startswith("_lookup"):
+                return func.attr
+        return None
+
+    def _trees(self):
+        root = Path(__file__).resolve().parent.parent
+        for rel in self._HOSTS:
+            path = root / rel
+            yield rel, ast.parse(path.read_text(encoding="utf-8"))
+
+    def test_the_rule_can_find_the_calls_it_polices(self):
+        # A guard that matches nothing passes forever. Both hosts must
+        # actually contain swallowing lookups for the two rules below
+        # to mean anything.
+        for rel, tree in self._trees():
+            with self.subTest(module=rel):
+                calls = [
+                    n for n in ast.walk(tree) if self._swallowing_call(n)
+                ]
+                self.assertGreater(len(calls), 5, rel)
+
+    def test_no_swallowing_lookup_is_discarded(self):
+        for rel, tree in self._trees():
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Expr):
+                    continue
+                name = self._swallowing_call(node.value)
+                if name is None:
+                    continue
+                self.fail(
+                    f"{rel}:{node.lineno} calls {name}() and throws the "
+                    f"result away. That resolver SWALLOWS a bad handle "
+                    f"and returns None, so calling it without reading "
+                    f"it checks nothing and a slot holding the wrong "
+                    f"root is honoured. Use _require_receiver(), which "
+                    f"raises."
+                )
+
+    def test_no_swallowing_lookup_is_bound_and_ignored(self):
+        # The same hole with one extra step: `cap = self._lookup_or(...)`
+        # and then nothing ever asks whether `cap` is None.
+        for rel, tree in self._trees():
+            fns = [
+                n for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ]
+            for fn in fns:
+                for node in ast.walk(fn):
+                    if not isinstance(node, ast.Assign):
+                        continue
+                    if len(node.targets) != 1:
+                        continue
+                    target = node.targets[0]
+                    if not isinstance(target, ast.Name):
+                        continue
+                    name = self._swallowing_call(node.value)
+                    if name is None:
+                        continue
+                    self.assertTrue(
+                        _tests_for_none(fn, target.id),
+                        f"{rel}:{node.lineno} binds {name}() to "
+                        f"{target.id!r} but never tests it for None. A "
+                        f"bad handle resolves to None there, so the op "
+                        f"would proceed on a receiver it never got.",
+                    )
 
 
 @unittest.skipUnless(
@@ -731,6 +1087,84 @@ class TestNoDefaultCapabilityPath(unittest.TestCase):
                         f"artifact's declaration and the capability "
                         f"registry, never by a hardcoded cap name",
                     )
+
+
+@unittest.skipUnless(
+    _has_wasmtime() and _has_wasm_tools(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestPreferWasmDoesNotFailOpen(unittest.TestCase):
+    """``--prefer-wasm`` wrapped BOTH the compile and the run in one
+    bare ``except Exception: pass`` and re-ran the program on the
+    Python pipeline, which has full authority and no handle table.
+
+    A capability refusal is exactly the thing that must not be
+    absorbed there: the Wasm backend saying "this artifact's binding
+    is unusable" was answered by running it somewhere the question is
+    never asked. The fallback now covers the COMPILE only, which is
+    what it was documented to be for (programs outside the Phase-6
+    subset), and is safe because nothing has executed yet."""
+
+    def test_a_capability_refusal_is_not_absorbed_into_a_python_rerun(self):
+        from capa.ir._cap_binding import CapBindingError
+        from capa.runtime._wasm_host import WasmHost
+        import capa.cli as cli
+
+        src = (
+            'fun main(net: Net, stdio: Stdio)\n'
+            '    stdio.println("ran=${net.allows("example.com")}")\n'
+        )
+
+        def _refuse(self, blob):
+            raise CapBindingError("simulated unusable binding")
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "p.capa"
+            path.write_text(src, encoding="utf-8")
+            with unittest.mock.patch.object(WasmHost, "run_main", _refuse):
+                out = io.StringIO()
+                err = io.StringIO()
+                saved = sys.stdout, sys.stderr, sys.argv
+                sys.stdout, sys.stderr = out, err
+                sys.argv = ["capa", "--run", "--prefer-wasm", str(path)]
+                try:
+                    with self.assertRaises(CapBindingError):
+                        cli.main()
+                finally:
+                    sys.stdout, sys.stderr, sys.argv = saved
+            self.assertNotIn(
+                "ran=", out.getvalue(),
+                "the program was re-run on the Python pipeline after "
+                "the Wasm host refused its capability binding, which "
+                "is fail-open in the mode whose point is fail-closed",
+            )
+
+    def test_a_compile_gap_still_falls_back_silently(self):
+        # The documented contract, and the reason the fallback exists.
+        # It must survive the narrowing above.
+        import capa.cli as cli
+        import capa.ir as ir
+
+        def _explode(*a, **kw):
+            raise RuntimeError("simulated Phase-6 coverage gap")
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "p.capa"
+            path.write_text(
+                'fun main(stdio: Stdio)\n    stdio.println("Hi")\n',
+                encoding="utf-8",
+            )
+            with unittest.mock.patch.object(ir, "compile_wasm", _explode):
+                out = io.StringIO()
+                saved = sys.stdout, sys.argv
+                sys.stdout = out
+                sys.argv = ["capa", "--run", "--prefer-wasm", str(path)]
+                try:
+                    rc = cli.main()
+                finally:
+                    sys.stdout, sys.argv = saved
+        self.assertEqual(rc, 0)
+        self.assertIn("Hi", out.getvalue())
 
 
 # ---- blob surgery helpers ---------------------------------------

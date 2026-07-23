@@ -32,9 +32,9 @@ all reproduced, all exiting 0:
 - `wasm-tools strip --all` deletes the `name` section, after which
   every slot fell to `Fs`.
 
-WASI's first design principle is that handles are unforgeable and
-there are no ambient authorities; Capa's is that the type is the
-contract. Neither survives a binding decided by a strippable string.
+Capa's claim is that the type is the contract and the capability is in
+the signature. That does not survive a binding decided by a strippable
+string.
 
 The binding is now derived from the DECLARED capability type, in
 declaration order, and is carried where two separate classes of
@@ -62,14 +62,53 @@ Two criteria drove that choice, not one:
    space.
 
 There is **no fallback and no compatibility mode**. A slot whose
-capability the host cannot determine grants nothing and the run is
-refused with a diagnostic naming the problem. An artifact built by
-1.19.0 or earlier carries no binding and is refused for the same
-reason: accepting it would mean reinstating the name matching, which
-is the vulnerability. The encoding and its inverse live in
+capability the host cannot determine grants nothing, and the artifact
+is refused before it is instantiated, so a module with a `start`
+function does not get to run first. An artifact that predates the
+binding is refused for the same reason: accepting it would mean
+reinstating the name matching, which is the vulnerability. The
+encoding and its inverse live in
 [`capa/ir/_cap_binding.py`](../../capa/ir/_cap_binding.py) so the two
 emitters and the two hosts cannot drift; the tests are
 [`tests/test_wasm_cap_binding.py`](../../tests/test_wasm_cap_binding.py).
+
+### What contains a binding that IS forged
+
+Rewriting the binding in an artifact you already control is not an
+escalation on its own: every kind it can name hands the slot a root of
+the wrong TYPE, and `CapHandleTable.lookup(handle, Fs)` then refuses
+every op on it. The typed lookup, not the binding, is the wall.
+
+That only holds where the bridges consult it. Three did not
+(`now_secs`, `now_monotonic`, `env_args`, on both hosts): they
+performed the lookup and discarded the result, each under a comment
+claiming a bad handle failed loudly there. With the binding rewritten
+so an `Env` slot held the `Fs` root, `env.args()` returned the real
+process argv, exit 0, no diagnostic, while `fs.allows` on the same run
+correctly answered `false`. They now use `_require_receiver`, which
+raises, and `TestEveryBridgeRequiresItsReceiver` fails if a fourth
+appears.
+
+### What this does NOT give you
+
+This work delivers three properties and no more: the binding follows
+the declared TYPE, it is not carried anywhere ordinary tooling strips
+or the guest can write, and it cannot be silently defaulted.
+
+It does **not** deliver WASI's "handles are unforgeable, no ambient
+authorities", and an earlier draft of this section wrongly implied it
+did. Two reasons, both pre-dating this change and both out of its
+scope:
+
+- root handles are small sequential integers, so a guest can name a
+  handle it was never given by writing the integer down;
+- `WasmHost`'s linker defines every `capa:host/*` import regardless of
+  what the artifact declares, so a hand-written module declaring only
+  `net` can call `capa:host/fs.exists(2, ".")` and read the
+  filesystem. Confirmed against `6321246` as well, so it is not a
+  regression from this work.
+
+Closing that is separate, tracked work.
 
 ## Problem (audit slice 25 F1)
 

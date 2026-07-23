@@ -17,11 +17,9 @@ Component host read the WIT parameter labels, and both fell back to the
 * ``wasm-tools strip --all`` removes the ``name`` section, after which
   EVERY slot fell to the ``Fs`` root. A release step changed behaviour.
 
-That contradicts both Capa's own claim (the type is the contract) and
-the first WASI design principle (handles are unforgeable, there are no
-ambient authorities). So the binding is now driven by the declared
-capability TYPE, carried in structure that ordinary Wasm tooling cannot
-strip:
+That contradicts Capa's own claim that the type is the contract. So the
+binding is now driven by the declared capability TYPE, carried in
+structure that ordinary Wasm tooling cannot strip:
 
 * **Core modules** (``capa --wasm``, run by ``WasmHost``) carry an
   exported global whose EXPORT NAME is
@@ -55,6 +53,40 @@ Neither host falls back. A module that carries no binding is refused
 with :class:`CapBindingError`; there is no name-matching compatibility
 mode, because that path IS the vulnerability.
 
+What this DOES and DOES NOT claim
+---------------------------------
+
+Exactly three properties, all of them mechanically checked in
+``tests/test_wasm_cap_binding.py``:
+
+1. Which root capability a ``main`` slot receives is decided by the
+   parameter's DECLARED TYPE, never by its name.
+2. The information that drives that decision is not in a section
+   ordinary tooling strips, and not in memory the guest can write.
+3. It can never be silently defaulted: an artifact the host cannot
+   read a binding out of grants nothing and does not run.
+
+It does NOT deliver WASI's "handles are unforgeable, no ambient
+authorities". Two independent reasons, both PRE-DATING this module and
+both out of its scope:
+
+* root handles are small sequential integers, so a guest can name a
+  handle it was never given by writing the integer down;
+* ``WasmHost``'s linker defines EVERY ``capa:host/*`` import
+  regardless of what the artifact declares, so a hand-written module
+  that declares only ``net`` can still call ``capa:host/fs.exists``
+  and read the filesystem.
+
+The handle TABLE's typed lookup is what actually contains a forged or
+rewritten binding: a slot handed the wrong root fails
+``lookup(handle, Fs)`` and the op denies. That containment is only as
+good as its coverage, which is why every host bridge must CONSULT the
+lookup rather than merely perform it. Three bridges (``now_secs``,
+``now_monotonic``, ``env_args``, on both hosts) called it and threw the
+result away, so a forged binding was honoured there; they now require
+it, and ``TestEveryBridgeRequiresItsReceiver`` fails if a fourth
+appears. Unforgeability itself is separate, tracked work.
+
 This module owns nothing but the encoding and its inverse, so the
 emitters and the two hosts cannot drift apart on the wire format.
 """
@@ -82,6 +114,14 @@ MAIN_CAP_TYPES_EXPORT_PREFIX = "capa:main-cap-types="
 MAIN_CAP_TYPES_GLOBAL = "__capa_main_cap_types"
 
 
+# Where each artifact shape is supposed to carry the binding, phrased
+# for a diagnostic. A ``.wasm`` has an export name; the AOT container
+# is a JSON header and has no sections at all, so pointing its operator
+# at an export name sends them looking for something that cannot exist.
+CARRIER_WASM_EXPORT = f"no `{MAIN_CAP_TYPES_EXPORT_PREFIX}` export"
+CARRIER_AOT_HEADER = "no `main_cap_types` key in the container header"
+
+
 # The lowercase spellings the wire format accepts, derived from the
 # capability registry so a cap reclassified as handle-bearing cannot
 # leave this behind.
@@ -99,12 +139,19 @@ class CapBindingError(Exception):
 
 # The diagnostic every refusal ends with. Kept in one place so both
 # hosts tell the operator the same thing.
+#
+# Deliberately does NOT say "built by 1.19.0 or earlier". The binding
+# landed after the 1.19.0 RELEASE, so a toolchain reporting 1.19.0 is
+# either that release (no binding) or a development build past this
+# commit (binding present), and naming the version tells half of those
+# operators that the version they are running is the broken one.
 REBUILD_HINT = (
     "rebuild the artifact with this Capa toolchain (`capa --wasm` / "
-    "`capa build`) and re-run; artifacts built by Capa 1.19.0 or "
-    "earlier carry no capability binding and are refused deliberately, "
-    "because the old host guessed the binding from parameter names in "
-    "the strippable debug `name` section"
+    "`capa build`) and re-run. The artifact predates the capability "
+    "binding, which was introduced after the 1.19.0 release. There is "
+    "deliberately no compatibility mode: the older host inferred the "
+    "binding from parameter names in the strippable debug `name` "
+    "section, and honouring that inference is the defect"
 )
 
 
@@ -176,20 +223,23 @@ def resolve_cap_types(
     n_slots: int,
     *,
     artifact: str,
+    carrier: str,
 ) -> list[str]:
     """Validate a decoded binding against the arity ``main`` actually
     declares, raising :class:`CapBindingError` with a diagnostic naming
     the problem. Returns ``cap_types`` unchanged when it is usable.
 
-    ``artifact`` describes what was loaded (``"module"`` /
-    ``"component"``), so the message tells the operator which file to
-    rebuild."""
+    ``artifact`` describes what was loaded (``"module"`` / ``"AOT
+    artifact"``), so the message tells the operator which file to
+    rebuild. ``carrier`` names where the binding SHOULD have been, and
+    differs per artifact: the ``.wasm`` carries an export name, the AOT
+    container a JSON key. Naming the export in an AOT diagnostic sent
+    the operator looking for a section its format does not have."""
     if cap_types is None:
         raise CapBindingError(
             f"this {artifact} declares no capability binding for `main` "
-            f"(no `{MAIN_CAP_TYPES_EXPORT_PREFIX}` export), so the host "
-            f"cannot tell which root capability each of `main`'s handle "
-            f"slots is entitled to; {REBUILD_HINT}"
+            f"({carrier}), so the host cannot tell which root capability "
+            f"each of `main`'s handle slots is entitled to; {REBUILD_HINT}"
         )
     if len(cap_types) != n_slots:
         raise CapBindingError(

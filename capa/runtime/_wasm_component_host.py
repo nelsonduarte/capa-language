@@ -689,11 +689,30 @@ class WasmComponentHost:
         ``default`` (``None``) on any failure. The core host has
         per-cap variants; the CM host uses one shared helper because
         the indirect-return canonical-ABI plumbing isn't needed
-        here (errors are surfaced through Python type dispatch)."""
+        here (errors are surfaced through Python type dispatch).
+
+        Every caller MUST consult the result. Three did not (see
+        :meth:`_require_receiver`)."""
         try:
             return self._cap_handles.lookup(handle, expected_cls)
         except CapHandleError:
             return default
+
+    def _require_receiver(self, handle: int, expected_cls):
+        """Resolve ``handle`` to a cap of ``expected_cls``, or RAISE
+        ``CapHandleError``. Mirrors ``WasmHost._require_receiver``;
+        see that docstring for why the swallowing helper above is the
+        wrong tool for a bridge with no fail-closed answer to give.
+
+        ``now_secs``, ``now_monotonic`` and ``env_args`` called
+        ``_lookup_or`` and DISCARDED the result, each with a comment
+        saying the lookup was there for "wire uniformity". Measured
+        2026-07-23 with the component's WIT slot labels swapped so the
+        Clock slot held the Fs root: ``positive=true``, exit 0, no
+        diagnostic, while the core host raised. The typed lookup is
+        what contains a forged binding, so performing one without
+        reading it contains nothing."""
+        return self._cap_handles.lookup(handle, expected_cls)
 
     def _register_clock(self, root: wc.LinkerInstance) -> None:
         """Register the ``capa:host/clock`` interface.
@@ -708,14 +727,15 @@ class WasmComponentHost:
         clock = root.add_instance("capa:host/clock")
         import time
 
+        # A pure query that ignores the cap's deadline, but still a
+        # Clock op: the receiver must BE a Clock. See
+        # ``_require_receiver``.
         def now_secs(_store, handle: int) -> float:
-            # Cap looked up for wire uniformity; the now_* family
-            # is a pure query that ignores the cap's deadline.
-            self._lookup_or(handle, Clock)
+            self._require_receiver(handle, Clock)
             return time.time()
 
         def now_monotonic(_store, handle: int) -> float:
-            self._lookup_or(handle, Clock)
+            self._require_receiver(handle, Clock)
             return time.monotonic()
 
         def clock_sleep(_store, handle: int, secs: float):
@@ -761,10 +781,11 @@ class WasmComponentHost:
         env_ifc = root.add_instance("capa:host/env")
 
         def env_args(_store, handle: int):
-            # Cap looked up for wire uniformity; args themselves
-            # don't depend on the cap's allow-list (matches the
-            # Python runtime's Env.args()).
-            self._lookup_or(handle, Env)
+            # argv is not restriction-bearing (matches the Python
+            # runtime's Env.args()), but the receiver must BE an Env.
+            # This discarded the lookup until 2026-07-23, so a slot
+            # holding the Fs root returned the real process argv.
+            self._require_receiver(handle, Env)
             return list(self._args)
 
         def env_get(_store, handle: int, name: str):
