@@ -327,14 +327,24 @@ class TestForeignResourceCeiling(unittest.TestCase):
             # Clamped well under the huge requested duration and the timeout.
             self.assertLess(elapsed, 60)
 
-    def test_net_closures_have_a_socket_timeout(self):
-        # The net closures reach an external server; assert a socket
-        # timeout is configured so a slow/hanging allowlisted host cannot
-        # block the host thread indefinitely.
+    def test_net_closures_have_a_wall_clock_bound(self):
+        # The net closures reach an external server; assert the request is
+        # bounded so a slow / hanging allowlisted host cannot block the
+        # host thread indefinitely. The bound is WALL CLOCK over the whole
+        # request (``_Deadline``), not the per-socket-operation
+        # ``urlopen(timeout=)`` it replaced: that one is reset by every
+        # byte, so a dribbling server defeated it. ``get`` and ``post``
+        # share ``_fetch``, so the bound cannot hold for one and not the
+        # other. Behaviour is asserted in tests/test_net_hop_gate.py
+        # (TestWallClockBound); this is the cheap structural guard.
         import inspect
         from capa.runtime import _capabilities
-        self.assertIn("timeout=", inspect.getsource(_capabilities.Net.get))
-        self.assertIn("timeout=", inspect.getsource(_capabilities.Net.post))
+        self.assertGreater(_capabilities._NET_TIMEOUT_SECS, 0)
+        source = inspect.getsource(_capabilities.Net._fetch)
+        self.assertIn("_Deadline(_NET_TIMEOUT_SECS)", source)
+        self.assertIn("timeout=", source)
+        for method in (_capabilities.Net.get, _capabilities.Net.post):
+            self.assertIn("self._fetch(", inspect.getsource(method))
 
     def test_db_query_deadline_aborts_runaway_sql(self):
         # A granted db.query running a non-terminating recursive CTE must

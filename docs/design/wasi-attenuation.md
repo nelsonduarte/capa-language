@@ -330,12 +330,17 @@ The status gate is FAIL-CLOSED on any non-2xx: only `200..=299` yields
 `Ok(body)`; ANY other status (3xx redirects, <200, 4xx, 5xx) is `Err`
 WITHOUT reading the body, and the guest does NOT follow redirects. This is
 a DELIBERATE, more-restrictive DIVERGENCE from the urllib oracle /
-`capa:host` (which FOLLOW redirects and surface only 4xx/5xx as errors):
-following a redirect implicitly would let an allowed host redirect to a
-host outside the Net ceiling + allow-list (an SSRF / host-authority
-bypass), so refusing 3xx preserves the host/capability guarantee
-(secure-by-default; CRA / NIS2 aligned). See `docs/design/wasi_mode.md`,
-"Redirects are fail-closed (anti-SSRF)".
+`capa:host` (which follow a redirect whose target host the SAME capability
+permits, and surface only 4xx/5xx as errors): following a redirect
+UNCHECKED would let an allowed host redirect to a host outside the Net
+ceiling + allow-list (an SSRF / host-authority bypass), so refusing 3xx
+preserves the host/capability guarantee (secure-by-default; CRA / NIS2
+aligned). The Python / `capa:host` side closed the same bypass in 2026-07
+by re-checking the capability (host AND scheme) on EVERY hop, so all three
+backends now agree on a FORBIDDEN hop; they differ only on a PERMITTED
+one, which `--wasi` cannot follow because its request parts come from a
+compile-time literal URL. See `docs/design/wasi_mode.md`, "Redirects are
+fail-closed (anti-SSRF)".
 The ASYMMETRY with Fs / Env is the load-bearing honesty here: the static Net
 CEILING is the set of HOSTS the program names as a string LITERAL in
 `net.get` / `net.post` (the static `NetCeiling`,

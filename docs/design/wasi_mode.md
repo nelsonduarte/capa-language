@@ -888,9 +888,10 @@ authority / path:
    `3xx` / `4xx` / `5xx` as `some(ok(ok(resp)))` with that status (NOT an
    `error-code`), so the wrapper checks the status and converts. This is
    a **deliberate, more-restrictive divergence** from the urllib oracle /
-   `capa:host` (which **follow** redirects via urllib and surface only
-   `4xx` / `5xx` as errors): the guest does **not** follow redirects. See
-   "Redirects are fail-closed (anti-SSRF)" below.
+   `capa:host` (which follow a redirect **whose target host the same
+   capability permits**, and surface only `4xx` / `5xx` as errors): the
+   guest does **not** follow redirects at all. See "Redirects are
+   fail-closed (anti-SSRF)" below.
 7. `incoming-response.consume()` -> `incoming-body.stream()` -> a
    **loop** of `input-stream.blocking-read(chunk)` over `wasi:io/streams`,
    accumulating each chunk into a geometrically-grown heap buffer until
@@ -982,10 +983,10 @@ its body, and **no** redirect `Location` is fetched. The status gate in
 
 **This is a deliberate divergence from the oracle, in the more
 restrictive direction.** The Python oracle and the `capa:host` bridge use
-`urllib`, which **transparently follows** `3xx` redirects (and raises for
-a `3xx` without a `Location`), so neither ever hands a `3xx` back to the
-program -- they either follow it or raise. The `--wasi` guest instead
-**refuses** it. This is **not a bug**; it is a documented security choice
+`urllib`, which **follows** `3xx` redirects (and raises for a `3xx`
+without a `Location`), so neither ever hands a `3xx` back to the program
+-- they either follow it or raise. The `--wasi` guest instead **refuses**
+it. This is **not a bug**; it is a documented security choice
 ("option B").
 
 **Why fail-closed and not follow.** Following a redirect implicitly would
@@ -1004,9 +1005,24 @@ and gives **predictable, auditable** behaviour, aligned with **CRA**
 A program that genuinely needs to follow a redirect must do so
 **explicitly** -- read the (non-2xx) `Err`, derive the new URL itself, and
 issue a fresh `net.get` against it, which then passes through the host
-ceiling + allow-list gates like any other request. On the default
-`capa:host` backend the urllib auto-follow behaviour is unchanged; this
-divergence is **`--wasi`-only**.
+ceiling + allow-list gates like any other request.
+
+**The Python oracle / `capa:host` used to have exactly the bypass this
+section describes** (2026-07): urllib followed a `Location` to a host the
+capability forbade, with no check on the hop, so a program restricted to
+`127.0.0.1` reached `localhost` while `--manifest` recorded only the
+narrow `restrict_to`. It no longer does: `Net` now runs its requests
+through an opener that **re-checks the same capability on every hop**
+(host **and** scheme), so a hop to a forbidden host or to a non-`http(s)`
+scheme is `Err` and the forbidden peer is never contacted
+(`tests/test_net_hop_gate.py`). **What still differs between the
+backends is only the PERMITTED hop**: `--wasi` refuses it too, because
+its request parts (scheme / authority / path) are resolved from a
+**literal** URL at compile time and a `Location` header is only known at
+run time, so the guest has nothing to build the next request from. The
+divergence is therefore **`--wasi` is strictly more restrictive on a
+redirect whose target the capability permits**, and the three backends
+**agree** on every hop the capability forbids.
 
 This is covered by `TestWasiNetRedirectFailClosed` in
 `tests/test_wasi_mode.py` (a local server returning `301` / `302` / `307`

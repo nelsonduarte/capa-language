@@ -5678,25 +5678,41 @@ class TestWasmComponentHost(unittest.TestCase):
             self._run_capturing_stdout(src), "positive\n",
         )
 
-    def test_net_get_file_url_under_component_host(self):
+    def test_net_get_under_component_host(self):
         # Slice 3: ``Net.get`` through the Component Model bridge.
-        # Same hermetic ``file://`` round-trip as the core-host
-        # test; the component host lifts result<string, io-error>
-        # via Python type dispatch (str -> Ok, IoErrorRecord ->
-        # Err) and must agree on the Ok-arm bytes.
-        import os
-        import tempfile
-        from pathlib import Path
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8",
-        ) as f:
-            f.write("body bytes from a fixture")
-            fixture = f.name
+        # Same hermetic loopback round-trip as the core-host test;
+        # the component host lifts result<string, io-error> via
+        # Python type dispatch (str -> Ok, IoErrorRecord -> Err)
+        # and must agree on the Ok-arm bytes.
+        #
+        # This used to fetch a ``file://`` URL, which was hermetic but
+        # asked ``Net`` to reach urllib's FileHandler: a capability whose
+        # API is HTTP GET / POST reading the local filesystem. ``Net``
+        # now bounds the scheme to http / https, so the fixture is served
+        # over 127.0.0.1 instead -- equally hermetic, no external
+        # network.
+        import http.server
+        import threading
+        payload = b"body bytes from a fixture"
+
+        class BodyHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args, **kwargs):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), BodyHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
         try:
-            uri = Path(fixture).as_uri()
             src = (
                 "fun main(stdio: Stdio, net: Net)\n"
-                f"    match net.get(\"{uri}\")\n"
+                f"    match net.get(\"http://127.0.0.1:{port}/body\")\n"
                 "        Ok(text) -> stdio.println(\"got: ${text}\")\n"
                 "        Err(_) -> stdio.eprintln(\"BUG: read failed\")\n"
             )
@@ -5705,7 +5721,9 @@ class TestWasmComponentHost(unittest.TestCase):
                 "got: body bytes from a fixture\n",
             )
         finally:
-            os.unlink(fixture)
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_net_post_under_component_host(self):
         # Slice 8 (2026-05): ``Net.post`` parallels ``Net.get`` on
@@ -7990,37 +8008,49 @@ class TestWasmNetExecutes(unittest.TestCase):
             sys.stdout = saved
         return out.getvalue()
 
-    def test_net_get_file_url_round_trip(self):
-        # Hermetic round-trip via a ``file://`` URL. Both backends
-        # call ``urllib.request.urlopen`` against the same on-disk
+    def test_net_get_round_trip(self):
+        # Hermetic round-trip over a 127.0.0.1 server (no external
+        # network). Both backends call ``Net.get`` against the same
         # bytes; the Wasm host's ``errors="replace"`` UTF-8 decode
-        # path agrees with the Python runtime's. We pre-stage the
-        # fixture from the test (rather than from the Capa source)
-        # so the assertion isolates the Net path from the Fs path.
-        import os
-        import tempfile
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8",
-        ) as f:
-            f.write("body bytes from a fixture")
-            fixture = f.name
+        # path agrees with the Python runtime's. The fixture is
+        # served rather than written to disk so the assertion
+        # isolates the Net path from the Fs path.
+        #
+        # This used to fetch a ``file://`` URL, which was hermetic but
+        # asked ``Net`` to reach urllib's FileHandler: a capability whose
+        # API is HTTP GET / POST reading the local filesystem. ``Net``
+        # now bounds the scheme to http / https.
+        import http.server
+        import threading
+        payload = b"body bytes from a fixture"
+
+        class BodyHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args, **kwargs):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), BodyHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
         try:
-            # ``file://`` URL needs forward slashes regardless of
-            # the host OS. ``pathlib.Path.as_uri`` does the right
-            # thing on Windows (where ``tempfile`` returns a
-            # backslash-form path) and on POSIX (no-op).
-            from pathlib import Path
-            uri = Path(fixture).as_uri()
             src = (
                 "fun main(stdio: Stdio, net: Net)\n"
-                f"    match net.get(\"{uri}\")\n"
+                f"    match net.get(\"http://127.0.0.1:{port}/body\")\n"
                 "        Ok(text) -> stdio.println(\"got: ${text}\")\n"
                 "        Err(_) -> stdio.eprintln(\"BUG: read failed\")\n"
             )
             out = self._run_capturing_stdout(src)
             self.assertEqual(out, "got: body bytes from a fixture\n")
         finally:
-            os.unlink(fixture)
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_net_get_restrict_denies_outside_host(self):
         # Inline attenuation check (audit C2): a Net cap scoped to a
