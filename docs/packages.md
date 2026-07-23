@@ -658,7 +658,20 @@ does, so a package that declares one and cannot name it has no
 satisfiable ceiling at all: omitting the name fails the ceiling
 check, and naming it used to fail the parse. The accepted names
 are read off the package's own source tree, `vendor/` included,
-so a consumer can name a capability its dependency defines.
-Anything else is still refused by name, and `Unsafe` is not
-nameable under any spelling: crossing it composes as
-authority-unknown, which is what `allow_unknown` is for.
+so a consumer can name a capability its dependency defines. The
+names come from the lexer, so a `capability` mention in a comment
+is not one, and a Unicode-named capability is. Anything else is
+still refused by name, and `Unsafe` is not nameable under any
+spelling: crossing it composes as authority-unknown, which is
+what `allow_unknown` is for.
+
+One qualification on "refused by name": the name check needs a
+dependency's source to know that dependency's capabilities, so it
+runs only once every declared dependency is on disk. Before `capa
+install` has vendored them, an unrecognised name is carried
+rather than refused, because `install` reads the very manifest it
+is about to satisfy and a package that names a not-yet-vendored
+dependency's capability must not be unfixable. Nothing is waved
+through: a package with an unvendored dependency composes as
+authority-unknown and its ceiling fails closed at
+`--check-capabilities` time unless it sets `allow_unknown`.

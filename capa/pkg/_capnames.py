@@ -28,17 +28,34 @@ diagnostic where the mistake is (the manifest, named by path, on every
 command that reads it) instead of turning a config typo into a ceiling
 violation that only surfaces under one flag.
 
-WHY A LEXICAL SCAN IS ENOUGH. This vocabulary is an ALLOW-LIST FOR
+WHY A LEXER SCAN, NOT A REGEX. This vocabulary is an ALLOW-LIST FOR
 NAMES, not an authority computation. A name in ``max`` grants nothing
 by itself: the ceiling check compares the COMPOSED capability set
 against ``max``, so a name no package ever introduces permits nothing.
-The check exists to stop a typo from silently widening the ceiling, and
-for that a top-level ``capability <Name>`` scan over the package tree is
-the right weight. Running the real parser here would be worse than
-imprecise: ``capa.manifest._compose`` reports a dependency whose
-``capa.toml`` raises as authority-unknown, so a syntax error in a
-dependency's ``.capa`` file would start masquerading as a broken
-manifest.
+The check exists to stop a typo from silently widening the ceiling. It
+is tempting to answer "which capabilities does this package declare?"
+with a regex over the raw source, and a first cut did; a regex gets two
+things wrong that the lexer already gets right, so this reuses the
+lexer's TOKEN STREAM. A capability is a ``capability`` KEYWORD token
+followed by an IDENT token, read straight off ``Lexer.lex()``:
+
+  * comments are stripped by the lexer, so a ``capability Ghost`` inside
+    a ``/* ... */`` block comment (or a ``//`` line comment) contributes
+    NOTHING, where a text regex would have to re-implement every comment
+    form to avoid a phantom name in the vocabulary;
+  * identifier tokens follow the real IDENT grammar (the lexer accepts
+    any ``str.isalpha`` / ``isalnum`` start/continue, Unicode included),
+    so a ``capability Café`` is seen exactly as the parser sees it,
+    where an ASCII-only regex would silently drop it and reintroduce the
+    unsatisfiable trap this module exists to remove.
+
+Running the full PARSER here would be a step too far the other way:
+``capa.manifest._compose`` reports a dependency whose ``capa.toml``
+raises as authority-unknown, and a per-declaration parse of a
+dependency's ``.capa`` would couple manifest reading to that file's full
+grammar. The lexer is the right rung: it settles comments and the
+identifier grammar (the two things a regex botched) without taking a
+position on statement or item structure.
 
 THE NOT-YET-INSTALLED CASE. A consumer may legitimately name a
 capability its DEPENDENCY declares (capa_claimdesk names ``Logger``,
@@ -56,33 +73,78 @@ declared ``allow_unknown = true``.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
+
+from ..errors import LexerError
+from ..lexer import Lexer
+from ..tokens import TokenKind
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ._manifest import Dependency
 
-# A ``max`` entry that is not a built-in is a candidate USER-DEFINED
-# capability name, so it must at least be shaped like one. Capability
-# declarations take a plain identifier (``_parse_trait_or_capability``
-# accepts any ``IDENT``), so this is deliberately the identifier shape
-# and not an initial-capital convention.
-CAPABILITY_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Structural tokens the lexer inserts around content: newlines and the
+# indentation frame, plus the end marker. Filtered out when checking that
+# a candidate name is a lone identifier.
+_STRUCTURAL_TOKENS = frozenset({
+    TokenKind.NEWLINE,
+    TokenKind.INDENT,
+    TokenKind.DEDENT,
+    TokenKind.EOF,
+})
 
-# A top-level ``capability <Name>`` declaration. Anchored at column zero
-# because top-level items are the only place a capability can be
-# declared, which also means a ``//``-commented or string-embedded
-# mention does not match.
-_CAP_DECL_RE = re.compile(
-    r"^(?:pub[ \t]+)?capability[ \t]+([A-Za-z_][A-Za-z0-9_]*)",
-    re.MULTILINE,
-)
-
-# Cap on how much source the scan reads, so a package tree with a large
+# Cap on how many files the scan reads, so a package tree with a large
 # vendored blob cannot turn a manifest read into an unbounded one. The
 # scan only runs when a ceiling actually names a non-built-in.
 _MAX_SCANNED_FILES = 20000
+
+
+def is_capability_name(candidate: str) -> bool:
+    """True when ``candidate`` is a single identifier under the LEXER's
+    real IDENT grammar, i.e. something that could name a capability.
+
+    Used to separate a malformed ``max`` entry (``"Net Fs"``, ``""``,
+    ``"1cap"``) from a well-formed name whose existence is then checked
+    against the package's declarations. Delegating to the lexer rather
+    than an ASCII regex is what lets a Unicode-named capability
+    (``capability Café``) be named in a ceiling at all: the lexer accepts
+    the same ``str.isalpha`` / ``isalnum`` identifier the parser does.
+
+    A keyword (``capability``), a wildcard (``_``), or anything that
+    lexes to more than one significant token is not a capability name."""
+    try:
+        tokens = Lexer(candidate).lex()
+    except LexerError:
+        return False
+    significant = [t for t in tokens if t.kind not in _STRUCTURAL_TOKENS]
+    return (
+        len(significant) == 1
+        and significant[0].kind == TokenKind.IDENT
+        and significant[0].text == candidate
+    )
+
+
+def _capabilities_in_source(text: str) -> set[str]:
+    """The capability names declared in one ``.capa`` source, read off the
+    lexer's token stream: each ``capability`` keyword token immediately
+    followed by an IDENT names a declaration.
+
+    Comments never reach the token stream, so a ``capability`` mention in
+    a ``//`` or ``/* */`` comment contributes nothing. A source that does
+    not lex declares nothing this scan can trust; such a package will not
+    compile, and its ceiling fails at analysis, so it is not the
+    unsatisfiable-name case this vocabulary guards."""
+    try:
+        tokens = Lexer(text).lex()
+    except LexerError:
+        return set()
+    names: set[str] = set()
+    for i, tok in enumerate(tokens):
+        if tok.kind is TokenKind.KW_CAPABILITY and i + 1 < len(tokens):
+            nxt = tokens[i + 1]
+            if nxt.kind is TokenKind.IDENT:
+                names.add(nxt.text)
+    return names
 
 
 def _scan_dir(pkg_dir: Path) -> frozenset[str]:
@@ -102,7 +164,7 @@ def _scan_dir(pkg_dir: Path) -> frozenset[str]:
                 text = src.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            names.update(_CAP_DECL_RE.findall(text))
+            names.update(_capabilities_in_source(text))
     except OSError:  # pragma: no cover - defensive
         pass
     return frozenset(names)

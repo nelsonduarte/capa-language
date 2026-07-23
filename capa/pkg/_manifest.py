@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..typesys import CAPABILITY_NAMES
-from ._capnames import CAPABILITY_NAME_RE, ceiling_vocabulary
+from ._capnames import ceiling_vocabulary, is_capability_name
 
 if sys.version_info >= (3, 11):
     import tomllib as _toml
@@ -401,16 +401,17 @@ def _parse_capability_ceiling(
                 f"is deliberate."
             )
         # A name that is not a built-in is a candidate USER-DEFINED
-        # capability. It must at least be shaped like a capability name;
-        # whether it actually exists is settled below, against the
-        # package's source tree.
-        malformed = [c for c in raw_max if not CAPABILITY_NAME_RE.match(c)]
+        # capability. It must at least be shaped like one under the
+        # lexer's real identifier grammar (Unicode included, so a
+        # ``capability Café`` stays nameable); whether it actually exists
+        # is settled below, against the package's source tree.
+        malformed = [c for c in raw_max if not is_capability_name(c)]
         if malformed:
             raise ManifestError(
                 f"{path}: [capabilities].max names unknown capabilit"
-                f"y(ies): {sorted(set(malformed))}; a capability name is an "
-                f"identifier (matching {CAPABILITY_NAME_RE.pattern}). The "
-                f"built-in capabilities are {sorted(_CEILING_CAP_NAMES)}."
+                f"y(ies): {sorted(set(malformed))}; a capability name must "
+                f"be a single identifier. The built-in capabilities are "
+                f"{sorted(_CEILING_CAP_NAMES)}."
             )
         max_set = frozenset(raw_max)
     else:

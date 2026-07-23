@@ -222,7 +222,7 @@ class TestUnknownNamesAreStillRefused(_TmpTree):
         self.assertIn("Notifier", str(cm.exception))
         self.assertIn("none declared", str(cm.exception))
 
-    def test_a_commented_out_declaration_does_not_widen_the_vocabulary(self):
+    def test_a_line_commented_declaration_does_not_widen_the_vocabulary(self):
         root = self.tmp / "commented"
         _write(root, "capa.toml", (
             '[package]\nname = "commented"\nversion = "0.1.0"\n\n'
@@ -233,6 +233,60 @@ class TestUnknownNamesAreStillRefused(_TmpTree):
                "pub fun f() -> Unit\n    return\n")
         with self.assertRaises(ManifestError):
             read_manifest(root / "capa.toml")
+
+    def test_a_block_commented_declaration_does_not_widen_the_vocabulary(self):
+        # The vocabulary comes from the lexer's token stream, which strips
+        # comments, so a ``capability`` inside a ``/* */`` block comment is
+        # not a declaration and cannot be named. A raw-text regex missed
+        # this and accepted the phantom name.
+        root = self.tmp / "block"
+        _write(root, "capa.toml", (
+            '[package]\nname = "block"\nversion = "0.1.0"\n\n'
+            '[capabilities]\nmax = ["Ghost"]\n'
+        ))
+        _write(root, "main.capa",
+               "/*\ncapability Ghost\n*/\n"
+               "pub fun f() -> Unit\n    return\n")
+        with self.assertRaises(ManifestError) as cm:
+            read_manifest(root / "capa.toml")
+        self.assertIn("Ghost", str(cm.exception))
+
+    def test_a_unicode_named_capability_is_nameable(self):
+        # The lexer accepts non-ASCII identifiers, so a Unicode-named
+        # capability is a real declaration and must be nameable in max.
+        # An ASCII-only name check rejected it before the scan, which
+        # reintroduced the unsatisfiable-ceiling trap this fix removes.
+        root = self.tmp / "unicode"
+        _write(root, "capa.toml", (
+            '[package]\nname = "unicode"\nversion = "0.1.0"\n\n'
+            '[capabilities]\nmax = ["Stdio", "Café"]\n'
+        ))
+        _write(root, "notify.capa",
+               "pub capability Café\n"
+               "    fun announce(self, msg: String) -> Unit\n"
+               "\n"
+               "type StdioCafe {\n    out: Stdio\n}\n"
+               "\n"
+               "impl Café for StdioCafe\n"
+               "    fun announce(self, msg: String) -> Unit\n"
+               "        self.out.println(msg)\n"
+               "        return\n"
+               "\n"
+               "pub fun make(io: Stdio) -> StdioCafe\n"
+               "    return StdioCafe { out: io }\n"
+               "\n"
+               "pub fun run(c: Café) -> Unit\n"
+               "    c.announce(\"x\")\n"
+               "    return\n")
+        m = read_manifest(root / "capa.toml")
+        self.assertEqual(
+            m.capability_ceiling.max, frozenset({"Stdio", "Café"}),
+        )
+        _manifest, composed = _compose(root, "notify.capa")
+        self.assertTrue(
+            composed["capability_ceilings"]["pass"],
+            composed["capability_ceilings"]["violations"],
+        )
 
     def test_malformed_names_are_refused_before_any_source_is_read(self):
         root = self.tmp / "bad"
