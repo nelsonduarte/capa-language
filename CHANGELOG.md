@@ -9,6 +9,67 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.21.0], 2026-07-24
+
+**Added.**
+
+- *The `borrow` parameter modifier: an invoke-only inlet for a
+  `Fun`-typed parameter.* A parameter written `borrow handler:
+  Fun(Request) -> Response` promises that the function only INVOKES the
+  callback and never retains it, and the compiler verifies that promise
+  before it is trusted. `borrow` parses in the same leading position as
+  `consume` (stored as `Param.borrowing`) and is only valid on a
+  directly `Fun`-typed parameter; the analyzer rejects it on any other
+  type. The invoke-only check is local, syntactic, and fails closed: the
+  only accepted occurrence of the parameter is as the direct callee of a
+  top-level call, `handler(...)`. Every other occurrence is an escape and
+  is rejected with the parameter name and the exact site, including
+  returning it, binding it (`let f = handler`), placing it in a struct /
+  list / tuple literal, passing it to another call, using it as a
+  receiver or field access, and ANY occurrence inside a lambda body.
+
+  The point is the package ceiling. Before `borrow`, a higher-order
+  function that takes a `Fun` parameter could not state an honest `max`
+  ceiling, because a caller can inject authority the callee's own types
+  never named. A verified `borrow` inlet closes that gap: the callback's
+  authority is charged at the closure's creation site (the caller that
+  built the closure captured that authority as a named parameter) and
+  still reaches the product SBOM, so `serve_once(serve: Serve, borrow
+  handler: Fun(Request) -> Response)` can carry `max = ["Serve"]` while
+  every capability the handler exercises still appears in the composed
+  SBOM. The modifier is compile-time only; codegen is untouched and both
+  backends emit identical output with and without it.
+
+**Changed.**
+
+- ***Source-breaking:*** `borrow` is now a RESERVED KEYWORD. Any program
+  that used `borrow` as an identifier must rename it. This is why the
+  release is a minor bump, not a patch. In this repository the single
+  collision was the illustrative function named `borrow` in
+  [`examples/consume.capa`](examples/consume.capa), renamed to `peek`.
+
+**Notes.**
+
+- The `borrow` relaxation is CEILING-ONLY. The strict signal
+  `authority_provable_from_types` is unchanged and still gates
+  `provably_excluded_capabilities`, so a `borrow` inlet does NOT let a
+  function claim to EXCLUDE the handler's capabilities. `borrow` makes
+  the package's own ceiling provable; it does not make the function pure
+  or capability-free, and the handler's authority still reaches the
+  product. A separate ceiling-only signal `ceiling_authority_provable`
+  (per-function schema bumped to 3, with the new per-parameter
+  `borrowing` flag) is read ONLY by the self-scoped ceiling check in the
+  composed SBOM (composed schema bumped to 6), with a fail-closed
+  fallback to the strict flag for older manifests.
+
+- Known limitation, deliberate conservatism: reusing a `borrow`
+  parameter's NAME as a lambda parameter inside the same function is
+  rejected as an escape. The invoke-only check is name-based and treats
+  any occurrence of the name inside a lambda body as a capture, so a
+  shadowing lambda parameter of the same name is a fail-restrictive false
+  positive. It is sound (it never under-rejects); rename the lambda
+  parameter to work around it.
+
 ## [1.20.0], 2026-07-24
 
 **Security.**
