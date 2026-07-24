@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import capa_ast as A
+from .._borrow import borrow_escapes, is_fun_typed_param
 from .._declassify import FUNCTION_KINDS, module_expression_roots
 from ..lexer import SYNTHETIC_FILENAME
 from ..typesys import CAPABILITY_NAMES
@@ -35,7 +36,13 @@ from ._strings import _contains_fun_type, _root_type_name, _ty_text
 #       per-package ceiling check can require a DECLARING package's own
 #       authority to be provable from its types (a caller can inject
 #       authority into a higher-order function the types never named).
-SCHEMA_VERSION = 2
+#   3 - per-function ``ceiling_authority_provable`` signal and per-parameter
+#       ``borrowing`` flag: the ceiling-scoped relaxation of the strict
+#       signal above that ignores a ``Fun`` parameter marked ``borrow`` and
+#       verified invoke-only. ``authority_provable_from_types`` stays STRICT
+#       (still gates ``provably_excluded_capabilities``); only the ceiling
+#       check reads the new signal.
+SCHEMA_VERSION = 3
 
 
 # Loader-generated mangle prefix on non-pub items imported from
@@ -751,6 +758,7 @@ def _fun_record(
             "name": p.name,
             "type": ty_text,
             "consuming": p.consuming,
+            "borrowing": p.borrowing,
             "is_capability": is_cap,
             "is_linear": is_linear,
         })
@@ -806,6 +814,29 @@ def _fun_record(
         _contains_fun_type(p.type_expr) for p in fn.params if p.type_expr
     ) or _contains_fun_type(fn.return_type)
 
+    # A ``Fun`` parameter marked ``borrow`` whose body only ever INVOKES
+    # it (verified invoke-only, escapes rejected by the analyzer) does not
+    # make the enclosing function's CEILING unprovable: the closure's
+    # authority is charged at its creation site, not here. Recompute the
+    # invoke-only verdict from the body in hand so the ceiling signal never
+    # trusts an unverified marker; require a body to prove it. The STRICT
+    # ``has_fun_in_sig`` / ``sig_unprovable`` above stay unchanged, so
+    # ``provably_excluded_capabilities`` keeps its full guarantee: a borrow
+    # inlet still cannot claim to EXCLUDE the handler's caps.
+    verified_borrow_params = frozenset(
+        p.name
+        for p in fn.params
+        if p.borrowing
+        and is_fun_typed_param(p.type_expr)
+        and fn.body is not None
+        and not borrow_escapes(fn.body, p.name)
+    )
+    has_fun_in_sig_ceiling = any(
+        _contains_fun_type(p.type_expr)
+        for p in fn.params
+        if p.type_expr and p.name not in verified_borrow_params
+    ) or _contains_fun_type(fn.return_type)
+
     # 3. Audit slice 21 closure (2026-05-29): walk the function's
     #    signature through the per-impl reachability map. A
     #    function ``use_logger(lg: FileLogger)`` where
@@ -822,6 +853,14 @@ def _fun_record(
     #    see *why* a cap is or isn't excluded.
     extra_caps, sig_unprovable = caps_reachable_via_sig(
         fn, container=container, reachable=reachable, unprovable=unprovable,
+    )
+    # The ceiling-scoped counterpart: identical to ``sig_unprovable`` except
+    # a verified invoke-only ``borrow`` param's Fun arrow is withheld from
+    # the downgrade. ``extra_caps`` is unchanged (a bare Fun reaches no
+    # caps), so ``transitively_reachable`` below stays exact.
+    _ceil_extra, sig_unprovable_ceiling = caps_reachable_via_sig(
+        fn, container=container, reachable=reachable, unprovable=unprovable,
+        skip_fun_params=verified_borrow_params,
     )
     extra_caps_demangled = {_demangle(c)[0] for c in extra_caps}
     if "Unsafe" in extra_caps_demangled:
@@ -843,6 +882,16 @@ def _fun_record(
     # provable from its types before it trusts the ceiling claim.
     authority_provable_from_types = not (
         has_unsafe or has_fun_in_sig or sig_unprovable
+    )
+    # The ceiling-only signal (schema 3). Same disjunction as the strict
+    # flag, but a verified invoke-only ``borrow`` inlet does NOT count as a
+    # Fun in the signature: the function's own authority is provable even
+    # though it invokes a caller-supplied handler. Consumed ONLY by the
+    # self-scoped ceiling check in ``_compose``; it deliberately does not
+    # feed ``provably_excluded_capabilities`` (which stays on the strict
+    # flag) or the product roll-up.
+    ceiling_authority_provable = not (
+        has_unsafe or has_fun_in_sig_ceiling or sig_unprovable_ceiling
     )
     if not authority_provable_from_types:
         provably_excluded_caps: list[str] = []
@@ -982,6 +1031,14 @@ def _fun_record(
         # ceiling-declaring package OWNS means a caller can inject authority
         # the package's types never named, making the ceiling unverifiable.
         "authority_provable_from_types": authority_provable_from_types,
+        # The ceiling-scoped relaxation of the flag above (schema 3): True
+        # when the only reason authority would be unprovable is a ``Fun``
+        # parameter marked ``borrow`` and verified invoke-only. Consumed
+        # ONLY by the self-scoped ceiling check in the composed SBOM; a
+        # False here still fails the ceiling exactly as before. It does NOT
+        # relax ``provably_excluded_capabilities`` (still strict) or the
+        # product capability roll-up.
+        "ceiling_authority_provable": ceiling_authority_provable,
         # Feature #4 (F1): the function invokes a typed foreign component,
         # so its composed authority is TOP / unproven until F2 enforces
         # the bound. ``foreign_component_calls`` names the boundaries.

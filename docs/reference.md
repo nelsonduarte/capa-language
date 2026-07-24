@@ -57,7 +57,7 @@ let r = xs
 ```
 fun pub let var if then elif else match while for in
 break continue return import const type trait impl
-capability true false and or not consume
+capability true false and or not consume borrow
 ```
 
 ### 1.6. Literals

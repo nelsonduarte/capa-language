@@ -89,6 +89,7 @@ class TokenKind(Enum):
     KW_WHERE = auto()
     KW_MUT = auto()
     KW_CONSUME = auto()
+    KW_BORROW = auto()
 
     # Arithmetic operators
     PLUS = auto()
@@ -190,6 +191,7 @@ KEYWORDS: dict[str, TokenKind] = {
     "where":      TokenKind.KW_WHERE,
     "mut":        TokenKind.KW_MUT,
     "consume":    TokenKind.KW_CONSUME,
+    "borrow":     TokenKind.KW_BORROW,
 }
 
 

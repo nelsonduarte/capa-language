@@ -26,6 +26,8 @@ from typing import Optional
 
 from .. import capa_ast as A
 
+from ._emit_exprs import _param_modifier_prefix
+
 
 class _ItemsEmitterMixin:
     # ------------------------------------------------------------
@@ -327,7 +329,7 @@ class _ItemsEmitterMixin:
             if p.name == "self" and p.type_expr is None:
                 out.append("self")
                 continue
-            prefix = "consume " if p.consuming else ""
+            prefix = _param_modifier_prefix(p)
             if p.type_expr is None:
                 # Defensive: not expected for non-self parameters,
                 # but emit a bare name rather than crashing.

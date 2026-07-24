@@ -401,6 +401,7 @@ def caps_reachable_via_sig(
     container: Optional[str],
     reachable: dict[str, set[str]],
     unprovable: set[str],
+    skip_fun_params: frozenset[str] = frozenset(),
 ) -> tuple[set[str], bool]:
     """Return ``(extra_caps, sig_unprovable)`` for one function.
 
@@ -411,7 +412,13 @@ def caps_reachable_via_sig(
     ``sig_unprovable`` is True if any sig element touches an
     unprovable type (transitive Fun) or has its own ``FunType``.
     Caller treats this the same as ``has_fun_in_sig`` /
-    ``has_unsafe`` - downgrade ``provably_excluded`` to empty."""
+    ``has_unsafe`` - downgrade ``provably_excluded`` to empty.
+
+    ``skip_fun_params`` names parameters whose ``Fun`` arrow must NOT
+    contribute to ``sig_unprovable``: a ``borrow`` parameter the body
+    only ever invokes (verified invoke-only). This is used ONLY for the
+    ceiling-scoped signal; the strict call (empty set) is unchanged, so
+    ``provably_excluded_capabilities`` keeps its full guarantee."""
     extra: set[str] = set()
     sig_unprovable = False
 
@@ -420,6 +427,13 @@ def caps_reachable_via_sig(
             continue
         cs, hf = _caps_via_type(p.type_expr, reachable)
         extra |= cs
+        if p.name in skip_fun_params:
+            # A verified invoke-only ``borrow`` inlet: its Fun arrow does
+            # not make the enclosing signature unprovable. Its reachable
+            # caps are still unioned in above (a bare Fun contributes
+            # none), but the Fun-arrow / unprovable-mention downgrade is
+            # withheld for this parameter.
+            continue
         if hf:
             sig_unprovable = True
         if _type_mentions_any(p.type_expr, unprovable):

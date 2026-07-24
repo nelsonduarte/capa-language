@@ -61,9 +61,11 @@ def _analysed(source: str):
 
 
 class TestSchemaVersion(unittest.TestCase):
-    def test_schema_version_is_two(self):
+    def test_schema_version_is_three(self):
         # Bumped to 2: per-function ``authority_provable_from_types``.
-        self.assertEqual(SCHEMA_VERSION, 2)
+        # Bumped to 3: per-function ``ceiling_authority_provable`` and the
+        # per-parameter ``borrowing`` flag (the ``borrow`` modifier).
+        self.assertEqual(SCHEMA_VERSION, 3)
 
     def test_schema_version_in_manifest(self):
         m = build_manifest(_analysed("fun f()\n    return\n"))
@@ -329,8 +331,11 @@ class TestTopLevelShape(unittest.TestCase):
             "linear_obligations",
             "has_unsafe",
             # Whether the function's authority is provable from its own
-            # types (drives the composed per-package ceiling check).
+            # types (drives ``provably_excluded_capabilities``).
             "authority_provable_from_types",
+            # The ceiling-scoped relaxation: a verified invoke-only
+            # ``borrow`` inlet does not void the ceiling.
+            "ceiling_authority_provable",
             "attributes", "calls",
             # Feature #4 (F1): whether the function invokes a typed
             # foreign component (composes as TOP), and which boundaries.

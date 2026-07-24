@@ -96,7 +96,12 @@ if TYPE_CHECKING:
 #       a higher-order function the package invokes, an Unsafe crossing, or a
 #       signature reaching a Fun through an impl). Self-scoped; feeds ONLY the
 #       ceiling check, so the product roll-up is byte-identical.
-COMPOSED_SCHEMA_VERSION = 5
+#   6 - the same self-scoped ceiling check reads the per-function
+#       ``ceiling_authority_provable`` signal instead of the strict
+#       ``authority_provable_from_types``, so a ``Fun`` parameter marked
+#       ``borrow`` and verified invoke-only no longer voids the ceiling. The
+#       product roll-up stays byte-identical (the relaxation is ceiling-only).
+COMPOSED_SCHEMA_VERSION = 6
 
 
 # The per-program manifest ``schema_version`` that first carries the
@@ -192,10 +197,12 @@ class PackageNode:
     attributed_caps: frozenset[str] = frozenset()
     crosses_unsafe: bool = False
     # A function ATTRIBUTED to this package exposes authority its OWN types
-    # cannot prove: the manifest's ``authority_provable_from_types`` is False
+    # cannot prove: the manifest's ``ceiling_authority_provable`` is False
     # for it (``has_unsafe or has_fun_in_sig or sig_unprovable`` -- it invokes
     # a caller-supplied Fun, crosses Unsafe, or takes a type reaching a Fun
-    # through an impl). Consumed ONLY by the per-package CEILING check
+    # through an impl -- EXCEPT a ``Fun`` parameter marked ``borrow`` and
+    # verified invoke-only, whose authority is charged at the closure's
+    # creation site, not here). Consumed ONLY by the per-package CEILING check
     # (SELF-SCOPED, ``_ceiling_violations``): a ceiling is a claim about THIS
     # package's subtree, into which a caller can inject authority the types
     # never named, so a declaring package whose own authority is not provable
@@ -558,13 +565,17 @@ def _attribute(
         if rec["has_unsafe"]:
             unsafe[owner] = True
         # Self-scoped ceiling signal (feeds ONLY the ceiling check below, not
-        # the roll-up). Read DIRECTLY, not via a defaulting .get(): the
-        # compose entry point already refused any manifest below schema
-        # ``_MIN_MANIFEST_SCHEMA_FOR_CEILING``, so the key is guaranteed
-        # present. A KeyError here would mean a corrupt schema->=2 manifest
-        # and must fail loud, never silently default to "provable" (which
-        # would be fail-open on the very evidence this check needs).
-        if not rec["authority_provable_from_types"]:
+        # the roll-up). The strict ``authority_provable_from_types`` is read
+        # DIRECTLY (guaranteed present by the schema-``>=2`` gate); the
+        # ceiling-scoped relaxation ``ceiling_authority_provable`` (schema 3)
+        # is read with a fallback to the strict flag. That fallback is
+        # fail-CLOSED, not fail-open: a pre-borrow (schema-2) manifest has no
+        # ``borrow`` inlets, so the ceiling signal equals the strict flag,
+        # which is the MORE restrictive value. Only a verified invoke-only
+        # ``borrow`` inlet can make this True while the strict flag is False.
+        if not rec.get(
+            "ceiling_authority_provable", rec["authority_provable_from_types"]
+        ):
             unprovable_ceiling[owner] = True
         # Feature #6 (P2): attribute each audited @secret -> @public
         # declassification site to the SAME owner. The manifest records the

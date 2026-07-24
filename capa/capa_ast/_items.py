@@ -167,10 +167,16 @@ class Param(Node):
 
     For `self`, name='self' and type_expr=None.
     `consuming=True` indicates that the function consumes the argument (moves ownership).
+    `borrowing=True` marks a `Fun`-typed parameter as invoke-only: the
+    function may call it but may not store, return, alias, pass on, or
+    capture it. It lets a higher-order function keep its own package
+    ceiling honest (the handler's authority belongs to its caller), and
+    is only meaningful on a `Fun(...) -> ...` parameter.
     """
     name: str
     type_expr: Optional[TypeExpr] = None
     consuming: bool = False
+    borrowing: bool = False
     name_pos: Optional[Pos] = None
 
 

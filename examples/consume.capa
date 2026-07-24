@@ -5,15 +5,15 @@
 fun adopt(consume stdio: Stdio)
     stdio.println("kept forever")
 
-// borrow (default): caller can keep using the capability afterwards.
-fun borrow(stdio: Stdio)
+// peek (does not consume): caller can keep using the capability afterwards.
+fun peek(stdio: Stdio)
     stdio.println("temporary")
 
 // ============================================================
 // 1. Correct use: adopt at the end
 fun use_then_adopt(stdio: Stdio)
-    borrow(stdio)
-    borrow(stdio)
+    peek(stdio)
+    peek(stdio)
     adopt(stdio)
     // OK: stdio was consumed on the last call.
 
@@ -27,7 +27,7 @@ fun error_use_after_consume(stdio: Stdio)
 // 3. ERROR: pass to another function after consume
 fun error_repass(stdio: Stdio)
     adopt(stdio)
-    borrow(stdio)
+    peek(stdio)
 
 // ============================================================
 // 4. ERROR in branch: consumed inside an if
@@ -36,7 +36,7 @@ fun error_after_if(stdio: Stdio, cond: Bool)
         adopt(stdio)
     // After the if, stdio may have been consumed (in the then-branch),
     // so we cannot use it below (conservative rule).
-    borrow(stdio)
+    peek(stdio)
 
 // ============================================================
 // 5. OK: both branches consume and nothing follows

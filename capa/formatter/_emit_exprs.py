@@ -301,7 +301,7 @@ class _ExprsEmitterMixin:
             if p.name == "self" and p.type_expr is None:
                 out.append("self")
                 continue
-            prefix = "consume " if p.consuming else ""
+            prefix = _param_modifier_prefix(p)
             if p.type_expr is None:
                 out.append(f"{prefix}{p.name}")
             else:
@@ -447,6 +447,18 @@ class _ExprsEmitterMixin:
 # ----------------------------------------------------------------
 # Free helpers
 # ----------------------------------------------------------------
+def _param_modifier_prefix(p: A.Param) -> str:
+    """Render the leading ``consume`` / ``borrow`` modifiers for a
+    parameter, in the order the parser accepts them, with a trailing
+    space when present (empty string when the parameter has neither)."""
+    prefix = ""
+    if p.consuming:
+        prefix += "consume "
+    if p.borrowing:
+        prefix += "borrow "
+    return prefix
+
+
 def _escape_for_string(value: str) -> str:
     """Escape ``value`` for inclusion in a Capa double-quoted string.
 

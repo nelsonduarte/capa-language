@@ -398,8 +398,10 @@ class TestNonRegression(_TmpTree):
         # rollup); to 4 in feature #6 B1 (per-package un-audited
         # secret->egress-sink rollup); to 5 when the per-package ceiling
         # check additionally fails closed on a declaring package whose OWN
-        # authority is not provable from its types (self-scoped).
-        self.assertEqual(COMPOSED_SCHEMA_VERSION, 5)
+        # authority is not provable from its types (self-scoped); to 6 when
+        # that same ceiling check reads ``ceiling_authority_provable`` so a
+        # verified invoke-only ``borrow`` inlet no longer voids the ceiling.
+        self.assertEqual(COMPOSED_SCHEMA_VERSION, 6)
 
     def test_find_package_root(self):
         root = self.tmp / "prod"
@@ -475,7 +477,7 @@ class TestDeclassificationRollup(_TmpTree):
             "    return\n"
         ))
         composed, _ = _compose(root, "main.capa")
-        self.assertEqual(composed["composed_schema_version"], 5)
+        self.assertEqual(composed["composed_schema_version"], 6)
 
         lib = self._find(composed, "lib")
         self.assertEqual(lib["attributed_declassification_sites"], 1)

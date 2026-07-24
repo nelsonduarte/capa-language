@@ -774,11 +774,18 @@ class _ItemsMixin:
         # receiver, the way a linear type's ``close(consume self)``
         # releases the handle (roadmap S1).
         consuming = bool(self._match(T.KW_CONSUME))
+        # Optional `borrow`: marks a ``Fun``-typed parameter as
+        # invoke-only (the function may call it but not store, return,
+        # alias, pass on, or capture it). Parsed in the same leading
+        # position as ``consume`` so ``borrow handler: Fun(...) -> ...``
+        # reads left-to-right; the analyzer verifies the invoke-only
+        # property and rejects a non-``Fun`` target or any escape.
+        borrowing = bool(self._match(T.KW_BORROW))
         # `self` is a special case: no type.
         if self._match(T.KW_SELF):
             return A.Param(
                 pos=ppos, name="self", name_pos=ppos, type_expr=None,
-                consuming=consuming,
+                consuming=consuming, borrowing=borrowing,
             )
         name_tok = self._expect(T.IDENT, "expected parameter name")
         name = name_tok.text
@@ -787,11 +794,11 @@ class _ItemsMixin:
             # to be inferred from the lambda's expected type.
             return A.Param(
                 pos=ppos, name=name, name_pos=name_tok.start,
-                type_expr=None, consuming=consuming,
+                type_expr=None, consuming=consuming, borrowing=borrowing,
             )
         self._expect(T.COLON, f"expected ':' after parameter name {name!r}")
         type_expr = self._parse_type()
         return A.Param(
             pos=ppos, name=name, name_pos=name_tok.start,
-            type_expr=type_expr, consuming=consuming,
+            type_expr=type_expr, consuming=consuming, borrowing=borrowing,
         )

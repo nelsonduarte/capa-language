@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from .. import capa_ast as A
 from .. import _labels as L
+from .._borrow import borrow_escapes, is_fun_typed_param
 from ..typesys import (
     CAPABILITY_NAMES,
     Ty, TyFun, TyName, TyUnit, TyUnknown, TyVar,
@@ -214,6 +215,32 @@ class _ItemsMixin:
                     f"duplicate parameter name {p.name!r}", p.pos,
                 )
             self.scope.define(psym)
+
+        # ``borrow`` parameter discipline: a ``borrow`` marker is only
+        # meaningful on a ``Fun``-typed parameter, and that parameter may
+        # be INVOKED but never retained. Verify both here so the checked
+        # contract an auditor reads in the SBOM (the honest ceiling) is
+        # actually enforced, and reject any escape naming the exact site.
+        for p in fn.params:
+            if not p.borrowing:
+                continue
+            if not is_fun_typed_param(p.type_expr):
+                self._err(
+                    "borrow applies only to a function-typed parameter "
+                    "(a `Fun(...) -> ...` type); "
+                    f"parameter {p.name!r} is not one",
+                    p.pos,
+                )
+                continue
+            for esc_pos in borrow_escapes(fn.body, p.name):
+                self._err(
+                    f"borrow parameter {p.name!r} may only be invoked "
+                    f"(called as `{p.name}(...)`); it escapes here. A "
+                    "borrow function must not be stored, returned, "
+                    "aliased, passed to another function, or captured "
+                    "by a lambda.",
+                    esc_pos,
+                )
 
         # Snapshot bindings to detect unused capability params.
         bindings_before = set(self.bindings.keys())
