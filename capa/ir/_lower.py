@@ -53,8 +53,20 @@ class Lowerer(
     _LowerStmtMixin,
     _LowerPatternMixin,
 ):
-    def __init__(self, types: Optional[dict] = None):
+    def __init__(
+        self, types: Optional[dict] = None, bindings: Optional[dict] = None,
+    ):
         self.types = types or {}
+        # The analyzer's ``id(Ident) -> Symbol`` binding map
+        # (``AnalysisResult.bindings``), threaded through so the
+        # declassify lowering can resolve the callee by BINDING
+        # identity rather than by name (see ``_lower_call``). Kept as
+        # ``None`` (not ``{}``) when the caller has no analysis in hand:
+        # the shared ``is_declassify_call`` predicate treats ``None`` as
+        # the name-only floor but an empty dict as "no binding here is
+        # the builtin", which would wrongly turn even the BUILT-IN
+        # ``declassify`` into a call to a function that does not exist.
+        self._bindings = bindings
         # Per-function state, reset on entry to each FunDecl.
         self._counter: dict = {"n": 0}
         self._instrs: list[Instr] = []

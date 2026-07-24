@@ -16,6 +16,7 @@ Audit P1 refactor: split per AST family.
 from __future__ import annotations
 
 from .. import capa_ast as A
+from .._declassify import is_declassify_call
 from ._capa_types import BUILTIN_CAPS
 from ._lower_helpers import (
     _type_name, _ty_to_str, _unwrap_try_payload_ty, UnsupportedInIR,
@@ -603,7 +604,19 @@ class _LowerExprMixin:
         # SBOM audit record are compile-time only; the reason literal
         # is dropped from the IR. (The Python backend keeps a real
         # runtime ``declassify`` identity call via the transpiler.)
-        if callee_name == "declassify" and len(e.args) == 2:
+        #
+        # The gate keys on the callee's BINDING identity, not its name:
+        # a user-defined ``fun declassify(value, reason)`` shadows the
+        # built-in and must be lowered as an ordinary call and actually
+        # invoked. ``is_declassify_call`` is the one predicate the
+        # analyzer and the manifest already share; with the analyzer's
+        # bindings threaded in (``self._bindings``) it resolves the
+        # built-in by ``BUILTIN_POS`` and rejects the shadow. Without
+        # bindings (internal ceiling lowerings) it falls back to the
+        # name-only floor, matching the prior behaviour. The extra
+        # arity guard preserves the historical name-only path exactly
+        # (a genuine built-in call is always two-argument).
+        if is_declassify_call(e, self._bindings) and len(e.args) == 2:
             return self._lower_expr(e.args[0])
         args = [self._lower_expr(arg) for arg in e.args]
         result_ty = "Unknown"

@@ -731,6 +731,7 @@ def _dispatch_build(argv: list[str]) -> int:
     try:
         blob = compile_wasm(
             linked.module, types=result.types,
+            bindings=result.bindings,
             memory_cap_pages=memory_cap,
             filename=filename,
         )
@@ -2490,6 +2491,7 @@ def _main_dispatch() -> int:
         try:
             blob = compile_wasm(
                 module, types=result.types,
+                bindings=result.bindings,
                 memory_cap_pages=wasm_memory_cap,
                 filename=filename,
             )
@@ -2630,6 +2632,7 @@ def _main_dispatch() -> int:
             if args.transpile:
                 wat = compile_wat(
                     module, types=result.types,
+                    bindings=result.bindings,
                     memory_cap_pages=wasm_memory_cap,
                     filename=filename,
                     wasi=wasi_mode,
@@ -2640,6 +2643,7 @@ def _main_dispatch() -> int:
                 return 0
             blob = compile_wasm(
                 module, types=result.types,
+                bindings=result.bindings,
                 memory_cap_pages=wasm_memory_cap,
                 filename=filename,
                 wasi=wasi_mode,
@@ -2875,6 +2879,7 @@ def _main_dispatch() -> int:
                 code = compile_program(
                     module, filename=filename,
                     types=result.types if result is not None else None,
+                    bindings=result.bindings if result is not None else None,
                 )
             except UnsupportedInIR as e:
                 msg = f"capa: --ir: falling back to legacy transpiler ({e})"

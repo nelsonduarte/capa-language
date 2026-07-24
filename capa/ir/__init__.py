@@ -94,14 +94,25 @@ __all__ = [
 ]
 
 
-def lower(module: A.Module, types: dict | None = None) -> Module:
+def lower(
+    module: A.Module,
+    types: dict | None = None,
+    bindings: dict | None = None,
+) -> Module:
     """Lower a typed AST module to CIR.
 
     Raises ``UnsupportedInIR`` if the module contains constructs the
     Phase 1 lowering does not yet handle. Caller is expected to catch
     and fall back to the legacy transpiler in that case.
+
+    ``bindings`` is the analyzer's ``id(Ident) -> Symbol`` map
+    (``AnalysisResult.bindings``). When supplied it lets the declassify
+    lowering resolve the callee by binding identity, so a user-defined
+    ``fun declassify`` is compiled as an ordinary call rather than
+    stripped to identity like the built-in. Left ``None`` by the
+    internal ceiling lowerings, which fall back to the name-only floor.
     """
-    return Lowerer(types=types or {}).lower_module(module)
+    return Lowerer(types=types or {}, bindings=bindings).lower_module(module)
 
 
 def emit_python(ir_module: Module) -> str:
@@ -118,6 +129,7 @@ def compile_program(
     module: A.Module,
     filename: str = "<input>",
     types: dict | None = None,
+    bindings: dict | None = None,
 ) -> str:
     """End-to-end AST -> CIR -> runnable Python program.
 
@@ -136,7 +148,7 @@ def compile_program(
     exception path is never reached.
     """
     from ..transpiler import _PRELUDE
-    ir_mod = lower(module, types=types)
+    ir_mod = lower(module, types=types, bindings=bindings)
     body = emit_python(ir_mod)
     # Identify the main function from the IR so the bootstrap
     # instantiates its capability params correctly.
@@ -192,6 +204,7 @@ def compile_wat(
     module: A.Module,
     types: dict | None = None,
     *,
+    bindings: dict | None = None,
     memory_cap_pages: int | None = ...,  # type: ignore[assignment]
     filename: str = "<input>",
     embed_manifest: bool = True,
@@ -250,7 +263,7 @@ def compile_wat(
         # captured the original surface.
         from ._wasi_const_prop import substitute_resolved_sink_literals
         substitute_resolved_sink_literals(module, types=types)
-    ir_mod = lower(module, types=types)
+    ir_mod = lower(module, types=types, bindings=bindings)
     inject_into(ir_mod)
     # Specialise every generic free function per concrete
     # instantiation reached from a non-generic caller. The Wasm
@@ -374,6 +387,7 @@ def compile_wasm(
     types: dict | None = None,
     wasm_tools_path: str = "wasm-tools",
     *,
+    bindings: dict | None = None,
     memory_cap_pages: int | None = ...,  # type: ignore[assignment]
     filename: str = "<input>",
     embed_manifest: bool = True,
@@ -397,6 +411,7 @@ def compile_wasm(
     import subprocess
     wat = compile_wat(
         module, types=types,
+        bindings=bindings,
         memory_cap_pages=memory_cap_pages,
         filename=filename,
         embed_manifest=embed_manifest,
