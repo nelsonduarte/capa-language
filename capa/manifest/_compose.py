@@ -90,7 +90,13 @@ if TYPE_CHECKING:
 #       secret-to-sink flows the IFC analysis surfaced, attributed to the
 #       package that owns the leaking code, so ``no-secret-egress`` catches
 #       an un-audited leak to a declared egress capability (feature #6, B1).
-COMPOSED_SCHEMA_VERSION = 4
+#   5 - per-package ceiling check additionally FAILS CLOSED (authority_unknown)
+#       when a ceiling-DECLARING package's OWN attributed functions are not
+#       provable from their types (``authority_provable_from_types`` False:
+#       a higher-order function the package invokes, an Unsafe crossing, or a
+#       signature reaching a Fun through an impl). Self-scoped; feeds ONLY the
+#       ceiling check, so the product roll-up is byte-identical.
+COMPOSED_SCHEMA_VERSION = 5
 
 
 class ComposeError(Exception):
@@ -173,6 +179,19 @@ class PackageNode:
     dep_edges: list[DepEdge] = field(default_factory=list)
     attributed_caps: frozenset[str] = frozenset()
     crosses_unsafe: bool = False
+    # A function ATTRIBUTED to this package exposes authority its OWN types
+    # cannot prove: the manifest's ``authority_provable_from_types`` is False
+    # for it (``has_unsafe or has_fun_in_sig or sig_unprovable`` -- it invokes
+    # a caller-supplied Fun, crosses Unsafe, or takes a type reaching a Fun
+    # through an impl). Consumed ONLY by the per-package CEILING check
+    # (SELF-SCOPED, ``_ceiling_violations``): a ceiling is a claim about THIS
+    # package's subtree, into which a caller can inject authority the types
+    # never named, so a declaring package whose own authority is not provable
+    # cannot have a verifiable ceiling. It DELIBERATELY does NOT feed the
+    # product roll-up (``_own_authority`` / ``_compose_node`` stay
+    # byte-identical): a closure's authority is accounted at its CREATION
+    # site, so a higher-order-TAKING package gains no authority of its own.
+    authority_unprovable: bool = False
     # Feature #4 (F1/F2a): a function in this package INVOKES a typed
     # foreign component. Under the DEFAULT (backend-agnostic / Python)
     # posture the boundary composes as authority-unknown TOP -- claiming
@@ -472,6 +491,11 @@ def _attribute(
 
     caps: dict[Path, set[str]] = {d: set() for d in nodes}
     unsafe: dict[Path, bool] = {d: False for d in nodes}
+    # Self-scoped ceiling signal: a function attributed here whose authority
+    # is NOT provable from its own types. Attributed exactly like
+    # ``crosses_unsafe`` but consumed ONLY by the ceiling check, never the
+    # roll-up.
+    unprovable_ceiling: dict[Path, bool] = {d: False for d in nodes}
     foreign: dict[Path, bool] = {d: False for d in nodes}
     foreign_caps: dict[Path, set[str]] = {d: set() for d in nodes}
     # Feature #6 (P2): the audited declassification sites attributed to each
@@ -521,6 +545,12 @@ def _attribute(
         caps[owner] |= set(rec["transitively_reachable_capabilities"])
         if rec["has_unsafe"]:
             unsafe[owner] = True
+        # Self-scoped ceiling signal (feeds ONLY the ceiling check below, not
+        # the roll-up). Defensive default True (provable): a manifest
+        # serialised before schema 2 has no key, and the CLI always pairs a
+        # fresh manifest with the compose, so real runs carry it.
+        if not rec.get("authority_provable_from_types", True):
+            unprovable_ceiling[owner] = True
         # Feature #6 (P2): attribute each audited @secret -> @public
         # declassification site to the SAME owner. The manifest records the
         # site position as ``<line>:<col>`` (function-local); prepend the
@@ -597,6 +627,7 @@ def _attribute(
     for d, node in nodes.items():
         node.attributed_caps = frozenset(caps[d])
         node.crosses_unsafe = unsafe[d]
+        node.authority_unprovable = unprovable_ceiling[d]
         node.calls_foreign_component = foreign[d]
         node.foreign_declared_caps = (
             frozenset(foreign_caps[d]) if foreign[d] else frozenset()
@@ -747,10 +778,10 @@ def _own_authority(node: PackageNode, enforcement: str = "none") -> Authority:
     over-claim). NOTE: this bounds the cap SET (host-enforced); composing
     WITHIN-cap host-granular attenuation across the boundary is feature #6.
 
-    The TOP trigger for an ANALYZED package is ``has_unsafe`` ONLY, even
-    though the single-program manifest drops ``provably_excluded`` on
-    ``has_unsafe OR has_fun_in_sig OR sig_unprovable``. This is a
-    deliberate, sound choice, NOT an oversight:
+    The TOP trigger for an ANALYZED package's ROLL-UP is ``has_unsafe``
+    ONLY, even though the single-program manifest drops ``provably_excluded``
+    on ``has_unsafe OR has_fun_in_sig OR sig_unprovable``. For the ROLL-UP
+    this is a deliberate, sound choice, NOT an oversight:
 
     - ``Unsafe`` is a genuine escape to unanalyzable (FFI) code that can
       exercise authority the type system never sees, so a package that
@@ -764,10 +795,25 @@ def _own_authority(node: PackageNode, enforcement: str = "none") -> Authority:
       exposing ``invoke(f: Fun() -> Unit)`` gains no authority of its own;
       when the root passes it a ``Stdio``-capturing closure, ``Stdio`` is
       attributed to the ROOT (the creator) and composes up into the
-      product regardless. Marking every higher-order-taking package TOP
-      would therefore be an unsound-for-usability over-approximation: it
-      would flag most real packages authority-unknown for zero soundness
-      gain. (Pinned by ``test_invoke_closure_product_is_sound_without_top``.)"""
+      product regardless. Marking every higher-order-taking package TOP in
+      the roll-up would therefore be an unsound-for-usability
+      over-approximation: it would flag most real packages authority-unknown
+      for zero soundness gain. (Pinned by
+      ``test_invoke_closure_product_is_sound_without_top``.)
+
+    The per-package CEILING check is DIFFERENT, and does NOT rely on this
+    roll-up value. A ceiling is a CLAIM about the declaring package's own
+    subtree, and a caller can inject authority the package's types never
+    named into a higher-order function it exposes -- exactly the case the
+    roll-up correctly attributes ELSEWHERE (the creator). So a package that
+    DECLARES a ceiling must ADDITIONALLY have its own authority provable
+    from its types: ``_ceiling_violations`` fails such a package closed
+    (``authority_unknown``) on the full ``has_unsafe OR has_fun_in_sig OR
+    sig_unprovable`` signal, SELF-SCOPED to the declaring package. This
+    tighter rule lives in the ceiling check alone; feeding it into this
+    roll-up value would corrupt the product join (one Authority value per
+    node feeds BOTH), which is why the roll-up keeps the ``has_unsafe``-only
+    trigger and the ceiling reads the per-package flag separately."""
     reasons: tuple[tuple[str, str, str], ...] = ()
     if node.crosses_unsafe:
         reasons = reasons + ((node.name, node.name, (
@@ -985,6 +1031,39 @@ def _ceiling_violations(
                 package=node.name, kind="authority_unknown", capability=None,
                 introduced_by=dependency, path=path, detail=detail,
             ))
+
+    # 3. SELF-SCOPED CEILING-UNPROVABLE (fail closed). A ceiling is a claim
+    #    about the DECLARING package's OWN subtree; when THIS package's own
+    #    attributed functions expose authority its types cannot prove -- it
+    #    invokes a caller-supplied Fun, crosses Unsafe, or takes a type that
+    #    reaches a Fun through an impl -- a caller can inject authority the
+    #    package's types never named, so the ceiling is UNVERIFIABLE. It is
+    #    SELF-scoped, NOT closure-scoped: it fires only on the declaring
+    #    package's own functions, never on a dependency that merely HANDS OUT
+    #    an effectful closure (that package has a provable ceiling of its own;
+    #    a consumer that vendors an unprovable-ceiling package still surfaces
+    #    the breach through the product-wide pass). Suppressed when the
+    #    package is ALREADY authority-unknown TOP (handled by check 2) so a
+    #    self-Unsafe crossing is not double-reported, and waived by
+    #    ``allow_unknown`` exactly like the TOP rule -- a package that opts
+    #    out of the fail-closed rule accepts the weaker ceiling claim.
+    if (
+        node.authority_unprovable
+        and not composed.unknown
+        and not ceiling.allow_unknown
+    ):
+        detail = (
+            f"package {node.name!r} declares a capability ceiling but its "
+            f"own code exposes authority its types cannot prove (it invokes "
+            f"a caller-supplied Fun, crosses Unsafe, or takes a type that "
+            f"reaches a Fun through an impl); a caller can inject authority "
+            f"the package's types never named, so the ceiling claim is "
+            f"unverifiable"
+        )
+        violations.append(CeilingViolation(
+            package=node.name, kind="authority_unknown", capability=None,
+            introduced_by=node.name, path=(node.name,), detail=detail,
+        ))
 
     violations.sort(key=lambda v: v.sort_key())
     return violations

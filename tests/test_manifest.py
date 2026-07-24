@@ -61,8 +61,9 @@ def _analysed(source: str):
 
 
 class TestSchemaVersion(unittest.TestCase):
-    def test_schema_version_is_one(self):
-        self.assertEqual(SCHEMA_VERSION, 1)
+    def test_schema_version_is_two(self):
+        # Bumped to 2: per-function ``authority_provable_from_types``.
+        self.assertEqual(SCHEMA_VERSION, 2)
 
     def test_schema_version_in_manifest(self):
         m = build_manifest(_analysed("fun f()\n    return\n"))
@@ -326,7 +327,11 @@ class TestTopLevelShape(unittest.TestCase):
             "transitively_reachable_capabilities",
             "provably_excluded_capabilities",
             "linear_obligations",
-            "has_unsafe", "attributes", "calls",
+            "has_unsafe",
+            # Whether the function's authority is provable from its own
+            # types (drives the composed per-package ceiling check).
+            "authority_provable_from_types",
+            "attributes", "calls",
             # Feature #4 (F1): whether the function invokes a typed
             # foreign component (composes as TOP), and which boundaries.
             "calls_foreign_component", "foreign_component_calls",

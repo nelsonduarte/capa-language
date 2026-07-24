@@ -28,7 +28,14 @@ from ._reachability import caps_reachable_via_sig, compute_reachability
 from ._strings import _contains_fun_type, _root_type_name, _ty_text
 
 
-SCHEMA_VERSION = 1
+#   1 - initial per-function manifest record.
+#   2 - per-function ``authority_provable_from_types`` flag: the same
+#       ``has_unsafe or has_fun_in_sig or sig_unprovable`` signal that voids
+#       ``provably_excluded_capabilities``, exported so the composed SBOM's
+#       per-package ceiling check can require a DECLARING package's own
+#       authority to be provable from its types (a caller can inject
+#       authority into a higher-order function the types never named).
+SCHEMA_VERSION = 2
 
 
 # Loader-generated mangle prefix on non-pub items imported from
@@ -826,7 +833,18 @@ def _fun_record(
         set(declared_caps) | extra_caps_demangled
     )
 
-    if has_unsafe or has_fun_in_sig or sig_unprovable:
+    # The exact "authority not provable from the function's OWN declared
+    # types" signal: Unsafe in scope, a Fun in the signature (the caller
+    # injects authority the types never named), or a signature type that
+    # reaches a Fun through an impl. It is the same disjunction that voids
+    # ``provably_excluded_capabilities`` below; exported on the record
+    # (``authority_provable_from_types``) so the composed SBOM's per-package
+    # ceiling check can require a DECLARING package's own authority to be
+    # provable from its types before it trusts the ceiling claim.
+    authority_provable_from_types = not (
+        has_unsafe or has_fun_in_sig or sig_unprovable
+    )
+    if not authority_provable_from_types:
         provably_excluded_caps: list[str] = []
     else:
         # Compare in the demangled namespace so non-pub imported
@@ -956,6 +974,14 @@ def _fun_record(
             "produces_linear": return_is_linear,
         },
         "has_unsafe": has_unsafe,
+        # Whether this function's authority is PROVABLE from its own declared
+        # types. False exactly when ``has_unsafe or has_fun_in_sig or
+        # sig_unprovable`` (the same signal that drops
+        # ``provably_excluded_capabilities`` above). A composed ceiling is a
+        # claim about a package's subtree; a False here on any function a
+        # ceiling-declaring package OWNS means a caller can inject authority
+        # the package's types never named, making the ceiling unverifiable.
+        "authority_provable_from_types": authority_provable_from_types,
         # Feature #4 (F1): the function invokes a typed foreign component,
         # so its composed authority is TOP / unproven until F2 enforces
         # the bound. ``foreign_component_calls`` names the boundaries.

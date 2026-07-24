@@ -394,8 +394,10 @@ class TestNonRegression(_TmpTree):
         # ceiling_violations + the product-level capability_ceilings block);
         # to 3 in feature #6 P2 (per-package + product declassification
         # rollup); to 4 in feature #6 B1 (per-package un-audited
-        # secret->egress-sink rollup).
-        self.assertEqual(COMPOSED_SCHEMA_VERSION, 4)
+        # secret->egress-sink rollup); to 5 when the per-package ceiling
+        # check additionally fails closed on a declaring package whose OWN
+        # authority is not provable from its types (self-scoped).
+        self.assertEqual(COMPOSED_SCHEMA_VERSION, 5)
 
     def test_find_package_root(self):
         root = self.tmp / "prod"
@@ -471,7 +473,7 @@ class TestDeclassificationRollup(_TmpTree):
             "    return\n"
         ))
         composed, _ = _compose(root, "main.capa")
-        self.assertEqual(composed["composed_schema_version"], 4)
+        self.assertEqual(composed["composed_schema_version"], 5)
 
         lib = self._find(composed, "lib")
         self.assertEqual(lib["attributed_declassification_sites"], 1)
@@ -674,6 +676,213 @@ class TestOutOfTreePathDep(_TmpTree):
         ca, _ = _compose(a, "main.capa")
         cb, _ = _compose(b, "main.capa")
         self.assertEqual(manifest_digest(ca), manifest_digest(cb))
+
+
+class TestCeilingSelfScopeUnprovable(_TmpTree):
+    """A package that DECLARES a ceiling (``pure = true`` or ``max = [...]``)
+    but whose OWN attributed functions expose authority its types cannot
+    prove -- it invokes a caller-supplied ``Fun``, crosses ``Unsafe``, or
+    takes a type that reaches a ``Fun`` through an impl -- cannot have a
+    VERIFIABLE ceiling: a caller can inject authority the package's types
+    never named.
+
+    The product ROLL-UP stays byte-identical (a closure's authority is
+    accounted at its CREATION site, so the higher-order-TAKING package
+    gains no authority of its own). Only the per-package CEILING check
+    newly fails, with the ``authority_unknown`` kind (the ceiling is
+    UNVERIFIABLE, distinct from a KNOWN capability that exceeds a bound).
+    """
+
+    # A root that hands ``hof.invoke`` a Stdio-capturing closure: the
+    # injected effect is an ordinary CAPABILITY effect.
+    _STDIO_MAIN = (
+        "import hof.api\n\n"
+        "pub fun run(io: Stdio)\n"
+        '    let l = fun () => io.println("x")\n'
+        "    invoke(l)\n"
+        "    return\n"
+    )
+    # A root that hands ``hof.invoke`` an Unsafe-capturing closure: the
+    # injected effect drives an Unsafe FFI (a filesystem write, in a real
+    # program). The Unsafe crossing is the ROOT's; hof stays higher-order.
+    _UNSAFE_MAIN = (
+        "import hof.api\n\n"
+        "pub fun sink(_u: Unsafe)\n    return\n"
+        "pub fun run(u: Unsafe)\n"
+        "    let l = fun () => sink(u)\n"
+        "    invoke(l)\n"
+        "    return\n"
+    )
+
+    def _hof_app(self, main_src: str, cap_section: str) -> Path:
+        """Root ``app`` depending on a vendored ``hof`` that declares
+        ``cap_section`` and exports ``invoke(f: Fun() -> Unit)``. ``main_src``
+        is the root module that calls ``invoke`` with some closure."""
+        root = self.tmp / "app"
+        _write(root, "capa.toml", (
+            '[package]\nname = "app"\nversion = "0.1.0"\n\n'
+            '[dependencies.hof]\n'
+            'git = "https://github.com/example/hof"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa", main_src)
+        _write(root, "vendor/hof/capa.toml",
+               '[package]\nname = "hof"\nversion = "0.1.0"\n\n' + cap_section)
+        _write(root, "vendor/hof/api.capa",
+               "pub fun invoke(f: Fun() -> Unit)\n    f()\n    return\n")
+        return root
+
+    def test_pure_hof_invoking_caller_fun_fails_ceiling(self):
+        # THE DEFECT: pure = true, only export invokes a caller-supplied
+        # Fun. At 5611b79 the ceiling PASSED; it must now fail closed.
+        root = self._hof_app(self._STDIO_MAIN, '[capabilities]\npure = true\n')
+        composed, _ = _compose(root, "main.capa")
+        hof = _pkg(composed, "hof")
+        # The ROLL-UP is untouched: hof is authority-KNOWN and empty.
+        self.assertFalse(hof["authority_unknown"])
+        self.assertFalse(hof["composed_authority_unknown"])
+        self.assertEqual(hof["composed_capabilities"], [])
+        # But its CEILING is now UNVERIFIABLE (authority_unknown, not
+        # exceeds -- we did not positively observe a cap outside a bound).
+        kinds = [v["kind"] for v in hof["ceiling_violations"]]
+        self.assertIn("authority_unknown", kinds)
+        self.assertNotIn("exceeds", kinds)
+        self.assertFalse(composed["capability_ceilings"]["pass"])
+
+    def test_unsafe_ffi_variant_of_hof_shape_fails_ceiling(self):
+        # Same hof (pure, invoke Fun); the injected closure drives an
+        # Unsafe FFI effect instead of a capability effect. hof still
+        # carries only has_fun_in_sig (the Unsafe crossing is the ROOT's),
+        # so at 5611b79 its ceiling PASSED; it must now fail closed.
+        root = self._hof_app(self._UNSAFE_MAIN, '[capabilities]\npure = true\n')
+        composed, _ = _compose(root, "main.capa")
+        hof = _pkg(composed, "hof")
+        self.assertFalse(hof["authority_unknown"])
+        self.assertFalse(hof["composed_authority_unknown"])
+        kinds = [v["kind"] for v in hof["ceiling_violations"]]
+        self.assertIn("authority_unknown", kinds)
+        self.assertFalse(composed["capability_ceilings"]["pass"])
+
+    def test_max_ceiling_hof_shape_fails_ceiling(self):
+        # A max = [...] ceiling (not just pure) on the hof shape fails too.
+        root = self._hof_app(self._STDIO_MAIN, '[capabilities]\nmax = ["Fs"]\n')
+        composed, _ = _compose(root, "main.capa")
+        hof = _pkg(composed, "hof")
+        kinds = [v["kind"] for v in hof["ceiling_violations"]]
+        self.assertIn("authority_unknown", kinds)
+        self.assertFalse(composed["capability_ceilings"]["pass"])
+
+    def test_provable_ceiling_still_passes(self):
+        # The common case: a package whose authority IS provable from its
+        # own types keeps passing -- no new false alarm.
+        root = self.tmp / "lib"
+        _write(root, "capa.toml", (
+            '[package]\nname = "lib"\nversion = "0.1.0"\n\n'
+            '[capabilities]\nmax = ["Stdio"]\n'
+        ))
+        _write(root, "main.capa",
+               'pub fun log(io: Stdio)\n    io.println("x")\n    return\n')
+        composed, _ = _compose(root, "main.capa")
+        self.assertTrue(composed["capability_ceilings"]["pass"])
+        self.assertEqual(_pkg(composed, "lib")["ceiling_violations"], [])
+
+    def test_pure_ceiling_with_no_higher_order_still_passes(self):
+        # A genuinely pure package (no Fun, no Unsafe, no reaching impl)
+        # keeps passing under pure = true.
+        root = self.tmp / "calc"
+        _write(root, "capa.toml", (
+            '[package]\nname = "calc"\nversion = "0.1.0"\n\n'
+            '[capabilities]\npure = true\n'
+        ))
+        _write(root, "main.capa",
+               "pub fun add(a: Int, b: Int) -> Int\n    return a + b\n")
+        composed, _ = _compose(root, "main.capa")
+        self.assertTrue(composed["capability_ceilings"]["pass"])
+        self.assertEqual(_pkg(composed, "calc")["ceiling_violations"], [])
+
+    def _rollup(self, composed):
+        """The roll-up-only projection of a composed SBOM: the product
+        ``composed`` block plus each package's attribution / composition
+        fields, EXCLUDING the ceiling fields the new signal feeds."""
+        return {
+            "composed": composed["composed"],
+            "packages": {
+                p["name"]: {
+                    "attributed_capabilities": p["attributed_capabilities"],
+                    "authority_unknown": p["authority_unknown"],
+                    "authority_unknown_reasons": p["authority_unknown_reasons"],
+                    "composed_capabilities": p["composed_capabilities"],
+                    "composed_authority_unknown": p["composed_authority_unknown"],
+                }
+                for p in composed["packages"]
+            },
+        }
+
+    def test_rollup_byte_identical_with_and_without_ceiling(self):
+        # The new signal feeds ONLY the ceiling check. The product roll-up
+        # (composed block + every package's attribution/composition fields)
+        # must be byte-identical whether or not hof declares a ceiling --
+        # exactly the same hof-invoking program, with the ceiling toggled.
+        with_ceiling = self._hof_app(
+            self._STDIO_MAIN, '[capabilities]\npure = true\n',
+        )
+        c_with, _ = _compose(with_ceiling, "main.capa")
+        # Rebuild the identical tree without the [capabilities] section.
+        shutil.rmtree(self.tmp / "app", ignore_errors=True)
+        without = self._hof_app(self._STDIO_MAIN, "")
+        c_without, _ = _compose(without, "main.capa")
+        self.assertEqual(self._rollup(c_with), self._rollup(c_without))
+
+    def test_fun_bearing_user_capability_in_max_is_unprovable(self):
+        # Once max can name a user-defined capability (1.20.0), a
+        # Fun-BEARING user capability named in max makes the ceiling
+        # UNVERIFIABLE: taking it drags in authority the types cannot
+        # prove. No fleet cost today (no fleet user cap is Fun-bearing);
+        # this pins the interaction so a later change to the self-scope
+        # signal is caught.
+        root = self.tmp / "ucap"
+        _write(root, "capa.toml", (
+            '[package]\nname = "ucap"\nversion = "0.1.0"\n\n'
+            '[capabilities]\nmax = ["Runner"]\n'
+        ))
+        _write(root, "main.capa", (
+            "capability Runner\n"
+            "    fun go(self)\n"
+            "type Job { task: Fun() -> Unit }\n"
+            "impl Runner for Job\n"
+            "    fun go(self)\n"
+            "        let t = self.task\n"
+            "        t()\n"
+            "pub fun use_runner(r: Runner)\n"
+            "    r.go()\n"
+        ))
+        composed, _ = _compose(root, "main.capa")
+        ucap = _pkg(composed, "ucap")
+        kinds = [v["kind"] for v in ucap["ceiling_violations"]]
+        self.assertIn("authority_unknown", kinds)
+        self.assertFalse(composed["capability_ceilings"]["pass"])
+
+    def test_non_fun_bearing_user_capability_in_max_still_passes(self):
+        # The counterpart the fleet actually has today: a user capability
+        # named in max whose impls reach only PROVABLE authority keeps
+        # passing -- the interaction bites ONLY the Fun-bearing shape.
+        root = self.tmp / "ucap2"
+        _write(root, "capa.toml", (
+            '[package]\nname = "ucap2"\nversion = "0.1.0"\n\n'
+            '[capabilities]\nmax = ["Logger", "Stdio"]\n'
+        ))
+        _write(root, "main.capa", (
+            "capability Logger\n"
+            "    fun log(self, msg: String)\n"
+            "type FileLogger { out: Stdio }\n"
+            "impl Logger for FileLogger\n"
+            "    fun log(self, msg: String)\n"
+            "        self.out.println(msg)\n"
+            "pub fun use_logger(lg: Logger)\n"
+            '    lg.log("x")\n'
+        ))
+        composed, _ = _compose(root, "main.capa")
+        self.assertTrue(composed["capability_ceilings"]["pass"])
+        self.assertEqual(_pkg(composed, "ucap2")["ceiling_violations"], [])
 
 
 if __name__ == "__main__":

@@ -25,10 +25,12 @@ What the widened vocabulary must NOT cost, and what each test here pins:
   until somebody names it, which is the whole reviewability point;
 - a built-in-only ceiling behaves exactly as it did before.
 
-The last class pins an interaction rather than fixing one: a user
-capability whose method signature carries a ``Fun`` is marked
-authority-not-provable by the reachability pass, and naming such a
-capability in ``max`` is only now reachable at all.
+The last class pins the interaction with the self-scoped ceiling rule: a
+user capability whose method signature carries a ``Fun`` is marked
+authority-not-provable by the reachability pass, so a package that takes
+it and DECLARES a ceiling fails closed with ``authority_unknown`` (its own
+types cannot prove its authority), whether or not the capability is named
+in ``max``.
 """
 
 import shutil
@@ -507,21 +509,25 @@ class TestBuiltinOnlyCeilingUnchanged(_TmpTree):
 
 
 class TestFunBearingUserCapability(_TmpTree):
-    """PINNED, NOT FIXED. A user capability whose method signature carries
-    a ``Fun`` is authority-NOT-PROVABLE: a closure can launder any
-    capability the caller captured into it, so the reachability pass
-    refuses to make an exclusion claim for anything that touches it.
+    """A user capability whose method signature carries a ``Fun`` is
+    authority-NOT-PROVABLE: a closure can launder any capability the caller
+    captured into it, so the reachability pass refuses to make an exclusion
+    claim for anything that touches it (``provably_excluded_capabilities``
+    is voided and the function's ``authority_provable_from_types`` is False).
 
-    Naming such a capability in ``max`` was unreachable before this
-    change, because no user-defined name could be written there at all.
-    It is reachable now, and today the two facts sit side by side: the
-    exclusion proof is voided (``provably_excluded_capabilities`` is
-    empty) while the ATTRIBUTED set stays exactly the named ones, so the
-    ceiling passes. If the unprovability is ever widened into the
-    attributed set (crediting a Fun-bearing capability with every
-    capability it might launder, the sound-but-wider reading), the
-    ceiling here starts failing with ``exceeds``. This test is what
-    catches that, so the change is a decision rather than a surprise."""
+    Naming such a capability in ``max`` was unreachable before user names
+    could be written there at all. It is reachable now, and a package that
+    DECLARES a ceiling while its own code takes such a capability cannot
+    have a VERIFIABLE ceiling: the ceiling is a claim about the package's
+    own subtree, into which a caller can inject authority the package's
+    types never named. So the ceiling check fails closed with
+    ``authority_unknown`` (the self-scoped rule), whether or not the
+    capability is itself named in ``max``. The exclusion proof being voided
+    (below) is the per-function half of the same signal.
+
+    Neither fleet user capability is Fun-bearing today, so this has no
+    fleet cost; the tests here pin the interaction so a later change to the
+    self-scoped signal is caught."""
 
     def _runner_pkg(self, ceiling_block: str) -> Path:
         root = self.tmp / "runner"
@@ -540,23 +546,40 @@ class TestFunBearingUserCapability(_TmpTree):
         self.assertEqual(
             go["transitively_reachable_capabilities"], ["Runner", "Stdio"],
         )
+        # The per-function half of the same signal, now exported for the
+        # composed ceiling check.
+        self.assertFalse(go["authority_provable_from_types"])
 
-    def test_fun_bearing_capability_named_in_the_ceiling_passes_today(self):
+    def test_fun_bearing_capability_named_in_the_ceiling_is_unverifiable(self):
+        # Even naming Runner in max cannot make the ceiling verifiable: the
+        # package's OWN types cannot prove its authority (it takes a
+        # Fun-bearing capability), so a caller can inject authority the
+        # types never named. Fails closed with authority_unknown, NOT
+        # exceeds (the attributed set is unchanged -- exactly the named
+        # ones).
         root = self._runner_pkg('[capabilities]\nmax = ["Stdio", "Runner"]\n')
         _manifest, composed = _compose(root, "main.capa")
         ceilings = composed["capability_ceilings"]
-        self.assertTrue(ceilings["pass"], ceilings["violations"])
+        self.assertFalse(ceilings["pass"], ceilings["violations"])
+        kinds = {v["kind"] for v in ceilings["violations"]}
+        self.assertEqual(kinds, {"authority_unknown"})
+        # The ATTRIBUTED set is still exactly the named caps: the roll-up is
+        # untouched, only the ceiling claim is voided.
         self.assertEqual(
             composed["packages"][0]["attributed_capabilities"],
             ["Runner", "Stdio"],
         )
 
     def test_fun_bearing_capability_omitted_from_the_ceiling_fails(self):
+        # Omitting Runner adds an EXCEEDS violation on top of the
+        # authority_unknown one; either way the package fails.
         root = self._runner_pkg('[capabilities]\nmax = ["Stdio"]\n')
         _manifest, composed = _compose(root, "main.capa")
         ceilings = composed["capability_ceilings"]
         self.assertFalse(ceilings["pass"])
         self.assertTrue(any(v["capability"] == "Runner"
+                            for v in ceilings["violations"]))
+        self.assertTrue(any(v["kind"] == "authority_unknown"
                             for v in ceilings["violations"]))
 
 

@@ -229,7 +229,7 @@ class TestManifest(unittest.TestCase):
             'fun main(stdio: Stdio)\n'
             '    stdio.println("hi")\n'
         )
-        self.assertEqual(m["schema_version"], 1)
+        self.assertEqual(m["schema_version"], 2)
         self.assertEqual(m["summary"]["total_functions"], 1)
         self.assertEqual(m["summary"]["functions_with_capabilities"], 1)
         self.assertEqual(m["summary"]["functions_with_attributes"], 0)
