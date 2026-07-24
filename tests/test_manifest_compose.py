@@ -25,6 +25,7 @@ The acceptance rows from the S2 design, in order:
   it is handed.
 """
 
+import copy
 import os
 import shutil
 import tempfile
@@ -35,6 +36,7 @@ from capa import analyze
 from capa.loader import ModuleLoader
 from capa.manifest import (
     COMPOSED_SCHEMA_VERSION,
+    ComposeError,
     build_composed_sbom,
     build_manifest,
     build_package_dag,
@@ -883,6 +885,53 @@ class TestCeilingSelfScopeUnprovable(_TmpTree):
         composed, _ = _compose(root, "main.capa")
         self.assertTrue(composed["capability_ceilings"]["pass"])
         self.assertEqual(_pkg(composed, "ucap2")["ceiling_violations"], [])
+
+    def _link_and_manifest(self, root_dir: Path, root_file: str):
+        """Link + analyze + build_manifest for ``root_file`` WITHOUT
+        composing, so a test can mutate the manifest before it reaches
+        build_composed_sbom (mirrors the CLI's fresh-manifest-then-compose
+        pipeline)."""
+        root_dir = root_dir.resolve()
+        search = [root_dir]
+        for vendor in root_dir.rglob("vendor"):
+            if vendor.is_dir():
+                search.append(vendor)
+        filename = str(root_dir / root_file)
+        source = Path(filename).read_text(encoding="utf-8")
+        loader = ModuleLoader(search_paths=search)
+        linked = loader.load_root(source, filename)
+        result = analyze(
+            linked.module, source=source, filename=filename,
+            sources=linked.sources, module_privates=linked.module_privates,
+        )
+        self.assertTrue(result.ok, result.errors)
+        manifest = build_manifest(
+            linked.module, filename=filename, expr_labels=result.expr_labels,
+            unaudited_secret_sinks=result.unaudited_secret_sinks,
+        )
+        return linked.module, manifest, root_dir
+
+    def test_stale_pre_signal_manifest_is_refused_not_trusted(self):
+        # FAIL CLOSED on missing evidence. A per-program manifest serialised
+        # before schema 2 lacks authority_provable_from_types. Composing it
+        # must NOT default the missing key to "provable" and silently PASS
+        # the hof ceiling (fail-open, the very defect this subsystem closes);
+        # the single choke point refuses the stale artifact outright.
+        root = self._hof_app(self._STDIO_MAIN, '[capabilities]\npure = true\n')
+        module, manifest, root_dir = self._link_and_manifest(root, "main.capa")
+        # A CURRENT (schema 2) manifest composes and fails the hof ceiling.
+        composed = build_composed_sbom(module, manifest, root_dir)
+        self.assertFalse(composed["capability_ceilings"]["pass"])
+        # Downgrade to a pre-signal (schema 1) shape: drop the key from every
+        # record and roll schema_version back.
+        stale = copy.deepcopy(manifest)
+        stale["schema_version"] = 1
+        for rec in stale["functions"]:
+            rec.pop("authority_provable_from_types", None)
+        # It must be REFUSED, never trusted into a silent pass.
+        with self.assertRaises(ComposeError) as ctx:
+            build_composed_sbom(module, stale, root_dir)
+        self.assertIn("schema_version", str(ctx.exception))
 
 
 if __name__ == "__main__":

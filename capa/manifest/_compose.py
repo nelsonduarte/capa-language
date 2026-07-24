@@ -99,6 +99,18 @@ if TYPE_CHECKING:
 COMPOSED_SCHEMA_VERSION = 5
 
 
+# The per-program manifest ``schema_version`` that first carries the
+# per-function ``authority_provable_from_types`` signal the SELF-SCOPED
+# ceiling check needs. A manifest below this is missing that evidence, and a
+# security check must FAIL CLOSED on the absence of the evidence it needs:
+# rather than silently trust an older per-package manifest (which would
+# re-introduce the higher-order ceiling hole schema 2 closed), the compose
+# entry point REFUSES it outright with an actionable diagnostic. The number
+# is fixed at 2 (where the key was added) and does NOT track the current
+# ``SCHEMA_VERSION``: the key persists across later bumps.
+_MIN_MANIFEST_SCHEMA_FOR_CEILING = 2
+
+
 class ComposeError(Exception):
     """Raised when the composed SBOM cannot be produced soundly.
 
@@ -546,10 +558,13 @@ def _attribute(
         if rec["has_unsafe"]:
             unsafe[owner] = True
         # Self-scoped ceiling signal (feeds ONLY the ceiling check below, not
-        # the roll-up). Defensive default True (provable): a manifest
-        # serialised before schema 2 has no key, and the CLI always pairs a
-        # fresh manifest with the compose, so real runs carry it.
-        if not rec.get("authority_provable_from_types", True):
+        # the roll-up). Read DIRECTLY, not via a defaulting .get(): the
+        # compose entry point already refused any manifest below schema
+        # ``_MIN_MANIFEST_SCHEMA_FOR_CEILING``, so the key is guaranteed
+        # present. A KeyError here would mean a corrupt schema->=2 manifest
+        # and must fail loud, never silently default to "provable" (which
+        # would be fail-open on the very evidence this check needs).
+        if not rec["authority_provable_from_types"]:
             unprovable_ceiling[owner] = True
         # Feature #6 (P2): attribute each audited @secret -> @public
         # declassification site to the SAME owner. The manifest records the
@@ -1034,19 +1049,24 @@ def _ceiling_violations(
 
     # 3. SELF-SCOPED CEILING-UNPROVABLE (fail closed). A ceiling is a claim
     #    about the DECLARING package's OWN subtree; when THIS package's own
-    #    attributed functions expose authority its types cannot prove -- it
-    #    invokes a caller-supplied Fun, crosses Unsafe, or takes a type that
-    #    reaches a Fun through an impl -- a caller can inject authority the
-    #    package's types never named, so the ceiling is UNVERIFIABLE. It is
-    #    SELF-scoped, NOT closure-scoped: it fires only on the declaring
-    #    package's own functions, never on a dependency that merely HANDS OUT
-    #    an effectful closure (that package has a provable ceiling of its own;
-    #    a consumer that vendors an unprovable-ceiling package still surfaces
-    #    the breach through the product-wide pass). Suppressed when the
-    #    package is ALREADY authority-unknown TOP (handled by check 2) so a
-    #    self-Unsafe crossing is not double-reported, and waived by
-    #    ``allow_unknown`` exactly like the TOP rule -- a package that opts
-    #    out of the fail-closed rule accepts the weaker ceiling claim.
+    #    attributed functions expose authority its types cannot prove -- a
+    #    Fun in a signature (the ``has_fun_in_sig`` trigger, which fires on a
+    #    Fun TAKEN or RETURNED whether or not it is invoked), an Unsafe
+    #    crossing, or a type that reaches a Fun through an impl -- a caller
+    #    can inject authority the package's types never named, so the ceiling
+    #    is UNVERIFIABLE. It is SELF-scoped, NOT closure-scoped: it fires only
+    #    on the declaring package's own functions, never on a dependency that
+    #    merely HANDS OUT an effectful closure (that package has a provable
+    #    ceiling of its own; a consumer that vendors an unprovable-ceiling
+    #    package still surfaces the breach through the product-wide pass).
+    #    Suppressed when the package is ALREADY authority-unknown TOP (handled
+    #    by check 2) so a self-Unsafe crossing is not double-reported, and
+    #    waived by ``allow_unknown`` exactly like the TOP rule -- a package
+    #    that opts out of the fail-closed rule accepts the weaker ceiling
+    #    claim. A genuinely pure combinator (``compose(f, g) -> Fun`` that
+    #    only RETURNS a closure, never calling it) is flagged too: that is a
+    #    deliberate, sound fail-closed over-approximation, not a bug -- the
+    #    types still cannot rule out that the returned Fun carries authority.
     if (
         node.authority_unprovable
         and not composed.unknown
@@ -1054,11 +1074,13 @@ def _ceiling_violations(
     ):
         detail = (
             f"package {node.name!r} declares a capability ceiling but its "
-            f"own code exposes authority its types cannot prove (it invokes "
-            f"a caller-supplied Fun, crosses Unsafe, or takes a type that "
-            f"reaches a Fun through an impl); a caller can inject authority "
-            f"the package's types never named, so the ceiling claim is "
-            f"unverifiable"
+            f"own code exposes authority its types cannot prove (a Fun in a "
+            f"signature -- taken or returned, whether or not it is invoked "
+            f"-- an Unsafe crossing, or a type that reaches a Fun through an "
+            f"impl); a caller can inject authority the package's types never "
+            f"named, so the ceiling claim is unverifiable. A pure combinator "
+            f"that only returns a Fun is included by this fail-closed "
+            f"over-approximation by design"
         )
         violations.append(CeilingViolation(
             package=node.name, kind="authority_unknown", capability=None,
@@ -1112,9 +1134,32 @@ def build_composed_sbom(
     The result is JSON-serialisable, timestamp-free, and canonicalisable
     with the S1 :func:`._canonical.canonical_manifest`. Every path is
     root-relative POSIX, so the artifact is byte-reproducible across
-    machines and working directories."""
+    machines and working directories.
+
+    FAIL CLOSED on stale evidence. The self-scoped ceiling check reads the
+    per-function ``authority_provable_from_types`` signal that manifest
+    ``schema_version`` 2 introduced. A manifest below that lacks the signal,
+    so trusting it would silently re-open the higher-order ceiling hole this
+    subsystem exists to close (an unprovable package would compose as
+    authority-known-and-empty and PASS). Rather than default a missing key
+    to "provable" (fail-open), the single choke point REFUSES an older
+    manifest with a :class:`ComposeError` telling the operator to
+    regenerate it. Every CLI path already reports ``ComposeError`` and
+    exits non-zero."""
     if capa_version is None:
         from .. import __version__ as capa_version
+
+    schema = manifest.get("schema_version")
+    if not isinstance(schema, int) or schema < _MIN_MANIFEST_SCHEMA_FOR_CEILING:
+        raise ComposeError(
+            f"per-program manifest schema_version {schema!r} is too old to "
+            f"compose a ceiling-checked SBOM: the per-function "
+            f"'authority_provable_from_types' signal the self-scoped ceiling "
+            f"check requires was added in schema "
+            f"{_MIN_MANIFEST_SCHEMA_FOR_CEILING}. Regenerate the manifest "
+            f"with a current capa build (a security check fails closed on "
+            f"missing evidence rather than trust a stale artifact)."
+        )
 
     nodes, root = build_package_dag(root_dir)
     _attribute(module, manifest, nodes, root.manifest_dir)
