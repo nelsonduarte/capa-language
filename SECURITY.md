@@ -203,6 +203,23 @@ The 2026-05-25 audit record lives at the repository root in
   `install`, `migrate`, `repl` and every file-based invocation. Both
   shipped in `1.19.0` under a single invocation of the security
   exception.
+- [`docs/advisories/2026-07-24-net-scheme-confinement.md`](docs/advisories/2026-07-24-net-scheme-confinement.md):
+  an unrestricted `Net` capability could read local files and reach
+  non-HTTP schemes, because `Net.get` / `Net.post` handed the URL to
+  Python's default `urllib` opener, which registers `FileHandler`,
+  `DataHandler` and `FTPHandler`. A program holding only `Net`, with no
+  `Fs` parameter, read a local file over `file://` and returned its
+  contents while `--manifest` certified `Fs` in
+  `provably_excluded_capabilities`; `data:` returned its decoded payload
+  and `ftp:` opened a control connection. Separately, an HTTP redirect
+  could steer a request to a host the capability did not permit, because
+  the host check ran only on the initial URL. This is a
+  capability-confinement bypass: one capability exercised another's
+  authority (filesystem read and arbitrary-scheme egress). `Net` now
+  speaks `http` / `https` only, on the first request and every redirect
+  hop, with the opener built without the file/data/ftp handlers, which
+  refuses schemes a previous version accepted. Affected `v0.2.0-alpha`
+  through `v1.19.0`, shipped in `1.20.0` under the security exception.
 
 ## Public disclosure
 
