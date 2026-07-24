@@ -9,7 +9,52 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.20.0], 2026-07-24
+
 **Security.**
+
+- *An HTTP redirect could steer a `Net` request to a host the
+  capability does not permit, and a redirect to a `file:` / `data:` /
+  `ftp:` URL reached a handler the capability never intended.* `Net.get`
+  and `Net.post` parsed the URL, checked `allows(host)` once, then handed
+  the request to urllib, which follows redirects with nothing
+  re-checking the target of a hop. A program restricted to `127.0.0.1`
+  reported `allows(localhost) = false` and, on the next line, served a
+  body fetched from `localhost`; the forbidden server's own log showed
+  the request arrive, and `--manifest` recorded only the narrow
+  `restrict_to`. The scheme was unbounded too: a measured
+  `302 Location: ftp://...` opened a control connection through urllib's
+  FTP handler, and an unrestricted `Net` could read a local file over
+  `file://` with no `Fs` capability at all.
+
+  Both methods now run through an opener whose redirect handler
+  re-checks the SAME capability on every hop, so a hop to a permitted
+  host is followed as before and any other hop returns the ordinary
+  host-deny `Err`. The scheme is bounded to http / https on the first
+  request and on every hop, and the opener is built by hand without
+  urllib's `FTPHandler` / `FileHandler` / `DataHandler`, so `file:` /
+  `data:` / `ftp:` are unreachable. The Python pipeline and the
+  `capa:host` bridge share one `Net` object and behave identically; a
+  residual on a PERMITTED-host redirect, which a `--wasi` guest cannot
+  reach because its scheme, authority and path come from a compile-time
+  literal, is stated in the two design docs rather than left silent.
+
+- *A `Net` request had no wall-clock or response-size bound, so a slow
+  or oversized endpoint could hold or exhaust the host.*
+  `urlopen(timeout=...)` bounds a single socket operation, not the
+  request, so a server emitting one byte every few seconds kept a call
+  alive indefinitely (measured still running at 75s under a nominal 10s
+  timeout), and the body had no ceiling (measured: 512 MB received in
+  full). Each body read (intermediate 3xx bodies and the final body)
+  is now held to a wall-clock deadline that re-arms the remaining budget
+  on the socket, using `read1` so one blocking read cannot swallow it,
+  and to a default 32 MiB ceiling: over-cap under the default returns
+  `Err(IoError)`, while an explicit larger `max_bytes` that is exceeded
+  raises `ResultCapExceeded` (the foreign sandbox turns that into a
+  clean exit 1). The connect / header phase is a stated residual: it
+  gets a per-operation timeout equal to the remaining budget, which a
+  slow-header server can still reset, so it is NOT held to the wall
+  clock. This is documented on the `Net` class rather than claimed away.
 
 - *The Wasm hosts decided which capability a program received by
   matching a string in a strippable debug section.* Both hosts bound
@@ -175,6 +220,41 @@ breaking changes and the discipline is still being shaped.
   fail-closed these raise. Reachable only from an artifact whose
   binding disagrees with its own code, which a Capa build cannot
   produce.
+
+**Fixed.**
+
+- *A package that declared its own capability had no satisfiable
+  `[capabilities].max` ceiling.* A `capability <Name>` declaration
+  composes as introduced authority exactly like a built-in, so it turns
+  up in a package's composed capability set, but the ceiling vocabulary
+  was the built-in set minus `Unsafe` and nothing else. Omitting the
+  name failed the ceiling check with an `exceeds` violation; naming it
+  failed one layer earlier at parse time with "names unknown
+  capability(ies)". Both spellings were red. The accepted `max`
+  vocabulary now also includes the names found by a top-level
+  `capability <Name>` scan of the package's own source tree (vendor/
+  included), in the new `capa/pkg/_capnames.py`. A name that is neither
+  a built-in nor a declared capability is still refused, `Unsafe` is
+  still refused outright ahead of the scan, and a capability arriving
+  from a dependency and not named still breaks the build. The check is
+  armed only when every declared product dependency is on disk, so a
+  not-yet-vendored dependency does not make its consumer impossible to
+  install.
+
+- *A user-defined `fun declassify` was silently bypassed on the Wasm
+  backend.* The CIR lowerer stripped any two-argument call named
+  `declassify` to its first argument, matching by NAME, so a
+  user-defined `fun declassify(value, reason)` was replaced by its first
+  argument instead of being invoked. The same source printed the user
+  function's result under `--run` (the Python transpiler, where the
+  generated `def declassify` shadows the runtime import) and the
+  untouched first argument under `--run --wasm`, both exit 0, no
+  diagnostic. The gate now keys on the callee's binding identity via the
+  shared `capa._declassify.is_declassify_call` predicate (the one the
+  analyzer and the manifest already use), with the analyzer's bindings
+  threaded into the lowerer, so only the built-in is stripped and a
+  shadowing user function lowers as an ordinary call. This is the
+  codegen twin of the manifest name-matching defect fixed above.
 
 ## [1.19.0], 2026-07-20
 
