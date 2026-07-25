@@ -1164,11 +1164,35 @@ class _IfcMixin:
         if isinstance(e, A.LambdaExpr):
             return self._lambda_capture_labels.get(id(e), L.PUBLIC)
 
-        # Anything else is public by default. Mutable containers are
-        # handled separately: a secret put into one via push / add / set
-        # taints the receiver binding (see ``_check_ifc_container_mutation``),
-        # so the read rules above inherit the now-secret receiver label.
-        return L.PUBLIC
+        # A range ``a..b`` (or ``a..=b``) carries the JOIN of its endpoint
+        # labels: a range with a @secret bound (``0..secret``) is @secret,
+        # so a later ``.length()`` or a loop over it that reveals the bound
+        # cannot launder the secret to public. Mirrors the aggregate join --
+        # the range is a value derived from its endpoints.
+        if isinstance(e, A.RangeExpr):
+            return L.join(self._label_of(e.start), self._label_of(e.end))
+
+        # ``become(value, State)`` re-types a typestate value in place; the
+        # value it carries keeps its label (identity is preserved, only the
+        # state changes). Reached by legitimate typestate programs, so it
+        # needs a real case rather than the terminal default below.
+        if isinstance(e, A.Become):
+            return self._label_of(e.value)
+
+        # The label function is TOTAL over the expression node kinds: every
+        # ``A.Expr`` subclass has a real case above. A node that reaches here
+        # is a compiler bug -- a new expression form added without a label
+        # rule -- and must fail LOUD rather than silently default to PUBLIC,
+        # which would let a future unhandled node launder a secret to a
+        # public sink (the range-expression hole this guard replaced).
+        # Mutable containers are NOT this fallthrough: a secret put into one
+        # via push / add / set taints the receiver binding (see
+        # ``_check_ifc_container_mutation``), so the read rules above inherit
+        # the now-secret receiver label.
+        raise AssertionError(
+            "IFC label function is not total: no rule for expression node "
+            f"{type(e).__name__}"
+        )
 
     def _join_pc_if_strict_with(self, label: str, cond: A.Expr) -> str:
         """Join ``cond``'s label into ``label`` only under ``@strict_ifc``
