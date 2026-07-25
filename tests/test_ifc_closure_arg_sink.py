@@ -182,6 +182,66 @@ class TestClosureArgSinkStaysClean(unittest.TestCase):
         self.assertEqual(_crossfn_errors(r), [])
 
 
+class TestReassignedVarHoldsSecretIsFlagged(unittest.TestCase):
+    """A reassigned ``var`` that holds a secret-returning closure on EVERY
+    path -- every closure assigned to it is secret-returning -- is sunk
+    through a public ``Fun`` parameter and must be flagged. Previously the
+    reassignment poisoned the by-name record and the sink check skipped it
+    (a measured fail-open: --run printed the secret, clean under strict).
+    Each shape below was clean in both tiers before this change."""
+
+    def test_A1_inferred_secret_reassign_flagged(self):
+        src = (
+            _INVOKE
+            + "fun main(stdio: Stdio, s: @secret String)\n"
+            "    var f = fun () -> String => s\n"
+            "    f = fun () -> String => s\n"
+            "    invoke(f, stdio)\n"
+        )
+        r = _analyze(src)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+        rs = _strict(src)
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_crossfn_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_A2_typed_secret_reassign_flagged(self):
+        src = (
+            _INVOKE
+            + "fun main(stdio: Stdio, s: @secret String)\n"
+            "    var f: Fun() -> @secret String = fun () => s\n"
+            "    f = fun () => s\n"
+            "    invoke(f, stdio)\n"
+        )
+        r = _analyze(src)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+        rs = _strict(src)
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_crossfn_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_A3_reassign_to_secret_call_result_flagged(self):
+        src = (
+            _HONEST_FACTORY + _INVOKE
+            + "fun main(env: Env, stdio: Stdio, s: @secret String)\n"
+            "    var f = fun () -> String => s\n"
+            "    f = make(env)\n"
+            "    invoke(f, stdio)\n"
+        )
+        r = _analyze(src)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_crossfn_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+        rs = _strict(src)
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_crossfn_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+
 class TestExistingClosureShapesStillFlagged(unittest.TestCase):
     """The already-working precise shapes stay flagged (no regression)."""
 

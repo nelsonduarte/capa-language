@@ -356,6 +356,11 @@ class _StatementsMixin:
         # ``_check_assign`` poisons it (the denotation becomes ambiguous),
         # so only a never-reassigned ``var`` stays precise.
         self._record_binding_lambda(sym, s.value, fresh=True)
+        # Roadmap S2 (reassigned-var sink recovery): note whether this Fun
+        # ``var``'s INTRODUCTION value is a public-returning closure, so a
+        # later reassigned-var sink check flags it only when every assigned
+        # closure is secret-returning.
+        self._note_fun_var_assignment(sym, s.value)
         # Aliasing (``var b2 = b``): link into the source's alias group
         # so a later field store through either taints both.
         if isinstance(s.value, (A.Ident, A.FieldAccess)):
@@ -432,6 +437,12 @@ class _StatementsMixin:
             # over-approximating join, hence never a false positive).
             if sym is not None:
                 self._record_binding_lambda(sym, s.value, fresh=False)
+            # Roadmap S2 (reassigned-var sink recovery): a reassignment to a
+            # public-returning closure marks the ``var`` so the invoke-sink
+            # boundary check no longer flags it (its current value may be
+            # public). A reassignment to a secret closure leaves it flaggable.
+            if sym is not None:
+                self._note_fun_var_assignment(sym, s.value)
             if sym is not None and sym.kind == SymbolKind.LOCAL:
                 self._err(
                     f"cannot assign to immutable binding {sym.name!r} "

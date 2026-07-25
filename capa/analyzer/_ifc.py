@@ -1418,14 +1418,28 @@ class _IfcMixin:
         """The declassify-aware RETURN label of a Fun argument that does not
         resolve to a single certain lambda literal, recovered from its
         resolved ``TyFun`` type for the sink-path boundary check. ``None``
-        when the type is not a resolved ``TyFun`` (nothing to test) or when
-        the argument is a REASSIGNED ``var`` (an ambiguous denotation whose
-        joined type could read ``secret`` for a now-public closure -- kept
-        as the one documented skip to preserve zero false positive)."""
+        when the type is not a resolved ``TyFun`` (nothing to test).
+
+        A REASSIGNED ``var`` has an ambiguous denotation, so its joined
+        resolved type could read ``secret`` even when the name currently
+        holds a PUBLIC closure. It is recovered SOUNDLY: the resolved label
+        is returned only when EVERY closure ever assigned to the ``var`` is
+        secret-returning (``_var_ever_public_fun`` does not hold its id) --
+        the ``var`` then holds a secret-returning closure on every path and
+        at every point, so flagging is never a false positive. Once a
+        public-returning closure has been assigned the current value MAY be
+        public, so the check skips (``None``): a narrower residual fail-open
+        than the old blanket skip, and a public-then-secret reassignment
+        into a PUBLIC slot is already caught at the store site
+        (``_check_closure_ret_flow`` at ``_check_assign``)."""
         from ..typesys import TyFun
         if isinstance(arg, A.Ident):
             sym = self.bindings.get(id(arg))
-            if sym is not None and self._binding_reassigned(sym):
+            if (
+                sym is not None
+                and self._binding_reassigned(sym)
+                and id(sym) in self._var_ever_public_fun
+            ):
                 return None
         arg_ty = self.types.get(id(arg))
         if isinstance(arg_ty, TyFun):
@@ -1443,6 +1457,32 @@ class _IfcMixin:
             id(sym) in self._binding_lambdas
             and self._binding_lambdas[id(sym)] is None
         )
+
+    def _note_fun_var_assignment(self, sym, value: A.Expr) -> None:
+        """Record that a ``var`` was assigned a PUBLIC-returning closure, at
+        its introduction or a reassignment (``_var_ever_public_fun``). Once
+        set, the reassigned-var sink recovery skips the binding (its current
+        closure may be public); a ``var`` all of whose assigned closures are
+        secret-returning is never marked and stays flaggable. A non-Fun RHS
+        contributes nothing. Monotonic: only ever adds."""
+        if sym is None:
+            return
+        ret = self._closure_value_ret_label(value)
+        if ret is not None and L.normalize(ret) == L.PUBLIC:
+            self._var_ever_public_fun.add(id(sym))
+
+    def _closure_value_ret_label(self, value: A.Expr):
+        """The RETURN label of a Fun-valued RHS: a lambda literal's own
+        RESULT label (declassify-aware, so an in-body declassify reads
+        public), else the resolved ``TyFun`` type's ``ret_label``. ``None``
+        when the value is not a Fun (nothing to contribute)."""
+        from ..typesys import TyFun
+        if isinstance(value, A.LambdaExpr):
+            return self._lambda_result_labels.get(id(value))
+        t = self.types.get(id(value))
+        if isinstance(t, TyFun):
+            return getattr(t, "ret_label", None)
+        return None
 
     def _record_binding_lambda(self, sym, value: A.Expr, fresh: bool) -> None:
         """Record, for the closure-by-name boundary check, the SINGLE
