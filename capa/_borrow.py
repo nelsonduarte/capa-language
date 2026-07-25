@@ -105,11 +105,13 @@ def borrow_escapes(
     every argument occurrence stays an escape, exactly as before.
 
     ``local_names`` names the enclosing function's own parameters. Along
-    with the ``let`` / ``var`` / ``for`` / lambda bindings collected from
-    the body, they form the set of names that could SHADOW a same-module
-    function at a call site; a callee whose name is shadowed is not
-    resolved (fail closed), so a local ``Fun``-typed value that happens to
-    share a top-level function's name is never mistaken for it.
+    with every binding introduced in the body (``let`` / ``var`` / ``for``
+    and match-arm pattern binders, including struct-pattern shorthand, plus
+    lambda / nested parameters -- see ``_collect_bound_names``), they form
+    the set of names that could SHADOW a same-module function at a call
+    site; a callee whose name is shadowed is not resolved (fail closed), so
+    a local ``Fun``-typed value that happens to share a top-level
+    function's name is never mistaken for it.
     """
     escapes: list[Pos] = []
     shadowed: set[str] = set()
@@ -127,10 +129,23 @@ def borrow_escapes(
 def _collect_bound_names(node, acc: set[str]) -> None:
     """Collect every name a binding introduces anywhere under ``node``.
 
-    Conservative and position-insensitive: it gathers pattern binders
-    (``let`` / ``for`` / ``var`` and match arms) and lambda/nested
-    parameters regardless of scope, so any name that could shadow a
-    same-module function is excluded from resolution.
+    Conservative and position-insensitive: it gathers every pattern binder
+    in ``let`` / ``for`` / ``var`` bindings and in match arms, plus every
+    lambda / nested parameter, regardless of scope, so any name that could
+    shadow a same-module function is excluded from resolution.
+
+    Binders take three syntactic shapes and ALL must be caught, since a
+    missed one lets a local shadow a top-level ``borrow`` function and the
+    resolver would then trust a signature the real call never binds to:
+
+    - an :class:`~capa.capa_ast.IdentPat` (``let x = ...``, ``Some(x)``,
+      ``(x, y)``) -- an AST node, reached below;
+    - a bare ``str`` field on a struct-pattern SHORTHAND (``let Box { inner
+      } = b`` and the same inside a match arm bind ``inner``), which is NOT
+      an ``IdentPat`` and would be skipped by the node-only walk, so it is
+      collected explicitly here;
+    - the name of a :class:`~capa.capa_ast.VarStmt` or
+      :class:`~capa.capa_ast.Param`, likewise plain strings.
     """
     if node is None:
         return
@@ -140,6 +155,16 @@ def _collect_bound_names(node, acc: set[str]) -> None:
         acc.add(node.name)
     elif isinstance(node, A.Param):
         acc.add(node.name)
+    elif isinstance(node, A.StructPat):
+        # A struct-pattern field ``(fname, sub)`` binds ``fname`` itself
+        # ONLY when it is shorthand (``sub is None``: ``{ inner }``). An
+        # explicit ``{ inner: p }`` binds the names inside ``p`` (reached
+        # by the generic recursion below), and ``fname`` is the matched
+        # field, not a binder -- collecting it there would over-reject an
+        # ordinary rename destructuring.
+        for fname, sub in node.fields:
+            if sub is None:
+                acc.add(fname)
     if isinstance(node, A.Node):
         for f in node.__dataclass_fields__.values():
             if f.name == "pos":

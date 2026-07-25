@@ -561,6 +561,116 @@ class TestBorrowForwarding(unittest.TestCase):
         )
 
 
+class TestBorrowForwardingStructShadow(unittest.TestCase):
+    """A struct-pattern SHORTHAND binder (``let Box { inner } = b``, and the
+    same inside a match arm) introduces a LOCAL named ``inner``. The real
+    call ``inner(cb)`` binds to that local, so the borrow resolver must NOT
+    trust a same-named top-level ``borrow`` signature. The shorthand binder
+    is a bare ``str`` field on the pattern, not an ``IdentPat`` node, so a
+    node-only shadow scan misses it; a miss would let the local (a bare Fun
+    that may retain or return the callback) pass as a verified invoke-only
+    forward, defeating the guarantee the relaxation composes on.
+    """
+
+    def _reject(self, src: str) -> list[str]:
+        r = _analyze(src)
+        self.assertFalse(r.ok, "expected the shadowed forward to be rejected")
+        return [e.message for e in r.errors]
+
+    def _ceiling_provable(self, src: str, fn_name: str) -> bool:
+        # Pin the per-function ceiling signal directly. ``build_manifest``
+        # recomputes the invoke-only verdict from the body in hand, so it is
+        # meaningful even when the analyzer rejected the program.
+        tokens = Lexer(src).lex()
+        module = Parser(tokens, source=src).parse_module()
+        result = analyze(module, source=src)
+        m = build_manifest(
+            module, filename="m.capa", expr_labels=result.expr_labels,
+        )
+        return _func(m, fn_name)["ceiling_authority_provable"]
+
+    _BOX = (
+        "type Box {\n"
+        "    inner: Fun(Fun() -> Unit) -> Unit\n"
+        "}\n"
+        "\n"
+    )
+    _INNER = (
+        "pub fun inner(borrow cb: Fun() -> Unit) -> Unit\n"
+        "    cb()\n"
+        "    return\n"
+        "\n"
+    )
+
+    def test_let_struct_shorthand_shadow_is_rejected(self):
+        src = (
+            self._BOX
+            + "fun make_box() -> Box\n"
+            "    return Box { inner: fun (f: Fun() -> Unit) -> Unit => f() }\n"
+            "\n"
+            + self._INNER
+            + "pub fun outer(borrow cb: Fun() -> Unit) -> Unit\n"
+            "    let b = make_box()\n"
+            "    let Box { inner } = b\n"
+            "    inner(cb)\n"
+            "    return\n"
+        )
+        msgs = self._reject(src)
+        self.assertTrue(
+            any("borrow parameter 'cb'" in m and "escapes" in m for m in msgs),
+            msgs,
+        )
+        # The per-function ceiling signal must NOT be provable either: the
+        # forward is a genuine escape, not a verified invoke-only inlet.
+        self.assertFalse(self._ceiling_provable(src, "outer"))
+
+    def test_match_arm_struct_shorthand_shadow_is_rejected(self):
+        src = (
+            self._BOX
+            + "fun make_opt() -> Option<Box>\n"
+            "    return Some("
+            "Box { inner: fun (f: Fun() -> Unit) -> Unit => f() })\n"
+            "\n"
+            + self._INNER
+            + "pub fun outer(borrow cb: Fun() -> Unit) -> Unit\n"
+            "    match make_opt()\n"
+            "        Some(Box { inner }) ->\n"
+            "            inner(cb)\n"
+            "        None ->\n"
+            "            return\n"
+            "    return\n"
+        )
+        msgs = self._reject(src)
+        self.assertTrue(
+            any("borrow parameter 'cb'" in m and "escapes" in m for m in msgs),
+            msgs,
+        )
+        self.assertFalse(self._ceiling_provable(src, "outer"))
+
+    def test_struct_shorthand_that_does_not_shadow_still_compiles(self):
+        # An ordinary destructure whose binder does NOT collide with the
+        # forwarded borrow function must keep compiling: the shadow scan is
+        # precise, never a blanket ban on destructuring near a forward.
+        src = (
+            "type Pair {\n"
+            "    left: Int\n"
+            "}\n"
+            "\n"
+            "fun make_pair() -> Pair\n"
+            "    return Pair { left: 5 }\n"
+            "\n"
+            + self._INNER
+            + "pub fun outer(borrow cb: Fun() -> Unit) -> Unit\n"
+            "    let Pair { left } = make_pair()\n"
+            "    let _keep = left\n"
+            "    inner(cb)\n"
+            "    return\n"
+        )
+        r = _analyze(src)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertTrue(self._ceiling_provable(src, "outer"))
+
+
 class TestBorrowForwardingCrossModule(unittest.TestCase):
     """Scope trap: the relaxation is intra-module only. A forward whose
     callee resolves in ANOTHER package is rejected, because ``borrow``-ness
