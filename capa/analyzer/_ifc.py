@@ -1380,22 +1380,26 @@ class _IfcMixin:
           while STILL seeing through an in-body declassify: a let-bound
           declassifying closure stays public and is not a false positive.
 
-        KNOWN LIMITATIONS (documented false NEGATIVES that REMAIN). When
-        the argument is a Fun-typed name whose PRECISE result label
-        cannot be recovered with CERTAINTY, the check is SKIPPED
-        (``None``) rather than falling back to the whole-value CAPTURE
-        label -- the capture label cannot see through an in-body
-        declassify and would raise a FALSE POSITIVE, the worst outcome.
-        The skip stands for: a closure borne in a STRUCT FIELD
-        (``s.thunk``); a Fun PARAMETER of the enclosing function re-passed
-        onward; a binding whose RHS is NOT a lambda literal (e.g. the
-        result of a call); and any ``var`` that is EVER REASSIGNED (even
-        to another lambda literal) -- reassignment makes the denotation
-        ambiguous, so it is skipped rather than joined, deliberately
-        trading a residual false negative for ZERO false positive. Only
-        the inline and the SINGLE-ASSIGNMENT ``let`` / ``var`` lambda-
-        literal shapes -- the common and most dangerous ones -- are
-        precise.
+        For any OTHER Fun argument -- one whose binding RHS is a call
+        result (``let f = make(env); invoke(f)``), a by-name alias, a fresh
+        ``var`` bound to a non-lambda, a struct field (``b.thunk``), a
+        re-passed Fun parameter, or a call result passed inline
+        (``invoke(make(env))``) -- the argument's declassify-aware RETURN
+        label is recovered from its RESOLVED ``TyFun`` type
+        (``_fun_arg_ret_label``). This is sound precisely because it runs on
+        the SINK path (it only matters when the callee actually sinks the
+        argument's result), and ``TyFun.ret_label`` already sees THROUGH an
+        in-body declassify: a factory that declassifies internally has a
+        public return type, so its result binding is not flagged. It closes
+        the call-result-binding false negative (a honestly-secret-returning
+        factory whose result is later sunk by a public-``Fun`` callee).
+
+        ONE residual skip (``None``) REMAINS, to keep ZERO false positive:
+        a ``var`` that is EVER REASSIGNED. Its resolved type is the JOIN
+        over every assigned closure, so it can read ``secret`` even when the
+        name currently denotes a PUBLIC closure -- recovering the ret_label
+        there would be a false positive, so the ambiguous denotation is
+        skipped (a residual false negative, deliberately preferred).
 
         The parameter kind is told apart by its declared TYPE: a ``TyFun``
         parameter is the invoke case, anything else the data case."""
@@ -1404,9 +1408,41 @@ class _IfcMixin:
             if isinstance(arg, A.LambdaExpr):
                 return self._lambda_result_labels.get(id(arg), L.PUBLIC)
             if isinstance(arg, A.Ident):
-                return self._binding_result_label(arg)
-            return None
+                precise = self._binding_result_label(arg)
+                if precise is not None:
+                    return precise
+            return self._fun_arg_ret_label(arg)
         return self._label_of(arg)
+
+    def _fun_arg_ret_label(self, arg: A.Expr):
+        """The declassify-aware RETURN label of a Fun argument that does not
+        resolve to a single certain lambda literal, recovered from its
+        resolved ``TyFun`` type for the sink-path boundary check. ``None``
+        when the type is not a resolved ``TyFun`` (nothing to test) or when
+        the argument is a REASSIGNED ``var`` (an ambiguous denotation whose
+        joined type could read ``secret`` for a now-public closure -- kept
+        as the one documented skip to preserve zero false positive)."""
+        from ..typesys import TyFun
+        if isinstance(arg, A.Ident):
+            sym = self.bindings.get(id(arg))
+            if sym is not None and self._binding_reassigned(sym):
+                return None
+        arg_ty = self.types.get(id(arg))
+        if isinstance(arg_ty, TyFun):
+            return L.normalize(getattr(arg_ty, "ret_label", None))
+        return None
+
+    def _binding_reassigned(self, sym) -> bool:
+        """True when ``sym`` names a ``var`` that was REASSIGNED after its
+        introduction -- recorded by ``_record_binding_lambda`` poisoning the
+        binding-lambda record to the ``None`` sentinel. Distinguished from a
+        binding that was simply never a lambda literal (absent from the
+        record), which is NOT ambiguous and does carry a sound resolved
+        type."""
+        return (
+            id(sym) in self._binding_lambdas
+            and self._binding_lambdas[id(sym)] is None
+        )
 
     def _record_binding_lambda(self, sym, value: A.Expr, fresh: bool) -> None:
         """Record, for the closure-by-name boundary check, the SINGLE
@@ -1438,10 +1474,13 @@ class _IfcMixin:
         """The RESULT label of the single lambda literal the name ``arg``
         denotes with certainty, or ``None`` when it cannot be recovered
         precisely (unknown binding, a reassigned/poisoned ``var``, or a
-        binding whose RHS was not a lambda literal). Returning ``None``
-        keeps the boundary check's documented skip -- it never falls back
-        to a capture label, so a declassifying let-bound closure is not a
-        false positive."""
+        binding whose RHS was not a lambda literal). Precise by
+        construction: it reads the recorded lambda's own RESULT label, so a
+        declassifying let-bound closure stays public. ``None`` is the caller
+        of this helper (``_sink_param_arg_label``) then handing off to
+        ``_fun_arg_ret_label``, which recovers the argument's declassify-
+        aware ``TyFun.ret_label`` for every non-lambda-literal shape except
+        the ambiguous reassigned ``var``."""
         sym = self.bindings.get(id(arg))
         if sym is None:
             return None
