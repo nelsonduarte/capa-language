@@ -221,6 +221,23 @@ class _ItemsMixin:
         # be INVOKED but never retained. Verify both here so the checked
         # contract an auditor reads in the SBOM (the honest ceiling) is
         # actually enforced, and reject any escape naming the exact site.
+        # Intra-module forwarding resolver: a ``borrow`` parameter may be
+        # forwarded into a same-file callee position that is itself
+        # ``borrow`` (see ``_borrow``). Backed by the Phase-1 symbol table,
+        # so a callee declared later in the file still resolves; scoped to
+        # this function's own source file, since ``borrow``-ness is not
+        # carried across the module boundary.
+        owner_file = fn.pos.filename or ""
+
+        def _resolve_borrow_params(callee_name: str):
+            sym = self.global_scope.lookup(callee_name)
+            if sym is None or sym.kind is not SymbolKind.FUNCTION:
+                return None
+            if (sym.pos.filename or "") != owner_file:
+                return None
+            return list(zip(sym.param_names, sym.borrowing_params))
+
+        local_names = [q.name for q in fn.params]
         for p in fn.params:
             if not p.borrowing:
                 continue
@@ -232,7 +249,11 @@ class _ItemsMixin:
                     p.pos,
                 )
                 continue
-            for esc_pos in borrow_escapes(fn.body, p.name):
+            for esc_pos in borrow_escapes(
+                fn.body, p.name,
+                resolve_borrow_params=_resolve_borrow_params,
+                local_names=local_names,
+            ):
                 self._err(
                     f"borrow parameter {p.name!r} may only be invoked "
                     f"(called as `{p.name}(...)`); it escapes here. A "

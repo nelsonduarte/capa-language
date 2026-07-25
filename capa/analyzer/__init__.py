@@ -178,6 +178,12 @@ class Symbol:
     # For FUNCTION: list parallel to params indicating whether each parameter
     # consumes the argument (ownership move). For use in flow analysis.
     consuming_params: list[bool] = field(default_factory=list)
+    # For FUNCTION: list parallel to params indicating whether each parameter
+    # is declared ``borrow`` (invoke-only). Mirrors ``consuming_params`` and
+    # feeds the intra-module ``borrow`` forwarding relaxation: a caller may
+    # forward its own ``borrow`` parameter into a callee position that is
+    # itself ``borrow`` without it counting as an escape (see ``_borrow``).
+    borrowing_params: list[bool] = field(default_factory=list)
     # For FUNCTION: parameter names parallel to the TyFun's `params`.
     # Used to resolve named arguments (`f(age: 30)`) and to give nicer
     # error messages. Empty when the function comes from a builtin and

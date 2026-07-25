@@ -480,6 +480,16 @@ def build_manifest(
     # parameter has the trait's type. Without this, the
     # ineligibility proof would falsely exclude the trait from
     # the methods that actually implement it.
+    # Top-level free functions keyed by name, for the intra-module
+    # ``borrow`` forwarding resolver. The resolver additionally gates on
+    # the callee's source file, so a same-named function in another
+    # module (source-merged by the loader) is not mistaken for a local one.
+    top_funs: dict[str, A.FunDecl] = {
+        item.name: item
+        for item in module.items
+        if isinstance(item, A.FunDecl)
+    }
+
     functions: list[dict[str, Any]] = []
     for item in module.items:
         if isinstance(item, A.FunDecl):
@@ -492,6 +502,7 @@ def build_manifest(
                 expr_labels=expr_labels,
                 foreign_names=foreign_names,
                 unaudited_secret_sinks=unaudited_secret_sinks,
+                top_funs=top_funs,
             ))
         elif isinstance(item, A.ImplBlock):
             implicit = (
@@ -510,6 +521,7 @@ def build_manifest(
                     expr_labels=expr_labels,
                     foreign_names=foreign_names,
                     unaudited_secret_sinks=unaudited_secret_sinks,
+                    top_funs=top_funs,
                 ))
 
     # Roadmap S2.5: declassification sites OUTSIDE any function body --
@@ -730,9 +742,12 @@ def _fun_record(
     expr_labels: Optional[dict[int, str]] = None,
     foreign_names: Optional[set[str]] = None,
     unaudited_secret_sinks: Optional[dict] = None,
+    top_funs: Optional[dict[str, A.FunDecl]] = None,
 ) -> dict[str, Any]:
     if reachable is None:
         reachable = {}
+    if top_funs is None:
+        top_funs = {}
     if unprovable is None:
         unprovable = set()
     if linear_types is None:
@@ -823,13 +838,35 @@ def _fun_record(
     # ``has_fun_in_sig`` / ``sig_unprovable`` above stay unchanged, so
     # ``provably_excluded_capabilities`` keeps its full guarantee: a borrow
     # inlet still cannot claim to EXCLUDE the handler's caps.
+    # Intra-module forwarding resolver, backed by the module's top-level
+    # ``FunDecl`` container and scoped to this function's own source file:
+    # a ``borrow`` parameter forwarded into a same-file callee position
+    # that is itself ``borrow`` is not an escape. Reads ``param.borrowing``
+    # directly, so it agrees with the analyzer's symbol-table resolver on
+    # the same program (both strip ``self`` and gate on the same file).
+    owner_file = (fn.pos.filename or "") if fn.pos is not None else ""
+
+    def _resolve_borrow_params(callee_name: str):
+        decl = top_funs.get(callee_name)
+        if decl is None:
+            return None
+        if (decl.pos.filename or "") != owner_file:
+            return None
+        return [
+            (p.name, p.borrowing) for p in decl.params if p.name != "self"
+        ]
+
     verified_borrow_params = frozenset(
         p.name
         for p in fn.params
         if p.borrowing
         and is_fun_typed_param(p.type_expr)
         and fn.body is not None
-        and not borrow_escapes(fn.body, p.name)
+        and not borrow_escapes(
+            fn.body, p.name,
+            resolve_borrow_params=_resolve_borrow_params,
+            local_names=[q.name for q in fn.params],
+        )
     )
     has_fun_in_sig_ceiling = any(
         _contains_fun_type(p.type_expr)

@@ -267,6 +267,9 @@ class _DeclarationsMixin:
                     sym.consuming_params = [
                         p.consuming for p in item.params if p.name != "self"
                     ]
+                    sym.borrowing_params = [
+                        p.borrowing for p in item.params if p.name != "self"
+                    ]
                     sym.param_names = [
                         p.name for p in item.params if p.name != "self"
                     ]
