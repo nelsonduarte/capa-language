@@ -9,6 +9,80 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.22.0], 2026-07-25
+
+**Added.**
+
+- *Intra-module forwarding of a `borrow` parameter into a `borrow`
+  position.* A `borrow` parameter was invoke-only in the strictest
+  sense: the only accepted occurrence was as the direct callee of a
+  top-level call, `handler(...)`, and passing it as an argument to any
+  other function counted as an escape and was rejected. It is now also
+  accepted to forward a `borrow` parameter as an argument into a call
+  `f(..., handler, ...)` when ALL of the following hold: `f` is a
+  direct, named call (an `Ident` callee); `f` statically resolves to a
+  function DECLARED IN THE SAME SOURCE FILE; and the parameter of `f`
+  at that argument position is itself declared `borrow`. This is what
+  lets `capa_server`'s `serve_connections(borrow handler)` forward
+  `handler` into `serve_once(borrow handler)` and keep its Serve-only
+  ceiling honest. The relaxation is sound because `borrow` is
+  SELF-VERIFYING: a callee declaring `borrow cb` that leaked it would
+  itself be a compile error, so a caller may trust the callee's
+  signature without reading its body. The check is a per-call-site
+  signature lookup; there is no fixpoint and no callee-body inspection.
+
+  The relaxation stays FAIL-CLOSED outside that narrow rule. Every one
+  of the following still escapes and is rejected: forwarding into a
+  bare-`Fun` target position (which may legally retain or return the
+  callback); a first-class call through a `Fun`-typed local value; a
+  dynamically dispatched method call (neither has a static `borrow`
+  signature); a local binding that shadows a same-named top-level
+  function (the shadowed name is not resolved, so a `Fun`-typed local
+  is never mistaken for the function); a CROSS-MODULE forward, because
+  `borrow`-ness is not carried in the exported interface and cross-file
+  forwarding fails closed this cycle; and returning it, binding it,
+  placing it in a struct / list / tuple literal, using it as a
+  receiver or field access, or ANY occurrence inside a lambda body.
+  `borrow_escapes` in [`capa/_borrow.py`](capa/_borrow.py) is the
+  single shared change point; the analyzer supplies a resolver backed
+  by the Phase-1 symbol table (new `Symbol.borrowing_params`) and the
+  manifest one backed by its top-level `FunDecl` container (reading
+  `param.borrowing`), so the two give the same verdict on the same
+  program. This is not source-breaking: it only widens what the
+  existing `borrow` modifier accepts, adding no keyword and rejecting
+  no previously valid program.
+
+**Fixed.**
+
+- *The invoke-only shadow scan now collects struct-pattern shorthand
+  binders, so the self-verifying property the forwarding relaxation
+  trusts is sound.* The forwarding rule refuses to resolve a callee
+  whose name is shadowed by a local binding. The shadow scan
+  `_collect_bound_names` gathered binder names from `IdentPat`,
+  `VarStmt` and `Param` and relied on the generic node walk for the
+  rest, but a struct-pattern shorthand binder is not a node: `let Box {
+  inner } = b` parses to `StructPat.fields = [("inner", None)]`, a bare
+  `str` with a `None` sub-pattern the node-only walk never added. A
+  local bound that way did not shadow, so a forward `inner(cb)` could
+  resolve the top-level `inner(borrow cb)` and pass as verified
+  invoke-only while the real call bound to the local (possibly a bare
+  `Fun` that retains or returns the callback); the analyzer emitted no
+  escape and the per-function `ceiling_authority_provable` signal was
+  wrongly true. `_collect_bound_names` now adds a `(name, None)`
+  shorthand field explicitly, in both `let` bindings and match arms,
+  while an explicit `(name, sub)` rename still binds only the names
+  inside `sub`, so ordinary destructuring is not over-rejected.
+
+**Notes.**
+
+- The forwarding relaxation is CEILING-ONLY. It feeds only
+  `verified_borrow_params`, which withholds a verified inlet's `Fun`
+  arrow from the ceiling signal. The strict signals `has_fun_in_sig`
+  and `provably_excluded_capabilities` are UNCHANGED, so a forwarding
+  function still does NOT claim to exclude the handler's capabilities;
+  every capability the handler exercises still reaches the composed
+  product SBOM.
+
 ## [1.21.0], 2026-07-24
 
 **Added.**
@@ -9154,7 +9228,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v0.5.0-alpha...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.22.0...HEAD
+[1.22.0]: https://github.com/nelsonduarte/capa-language/compare/v1.21.0...v1.22.0
 [0.5.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.5.0-alpha
 [0.4.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.4.0-alpha
 [0.3.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.3.0-alpha
