@@ -111,7 +111,7 @@
         "check-types": "tsc --noEmit"
     },
     "dependencies": {
-        "vscode-languageclient": "^8.1.0"
+        "vscode-languageclient": "^10.1.0"
     },
     "devDependencies": {
         "@types/node": "^18.19.0",
