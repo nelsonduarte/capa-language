@@ -101,7 +101,7 @@ For a progressive 10-chapter introduction to the language, open
 | `capa init [name]` | Scaffold a new project (subcommand). |
 | `capa --run file.capa` | Compile and execute. |
 | `capa --check file.capa` | Type-check only (do not run). |
-| `capa --transpile file.capa` | Print the generated Python code. |
+| `capa --transpile file.capa` | Print the generated Python code. Lowering only, not a verification gate (see the note below). |
 | `capa --ir [--run|--transpile] file.capa` | Use the CIR (capability-aware IR) pipeline instead of the direct legacy transpiler. Same observable output; falls back to legacy when CIR lowering hits an unsupported construct. |
 | `capa --wasm --run file.capa` | Compile via CIR -> WAT -> binary `.wasm` and execute on `wasmtime` with a Python host bridge. Requires `wasm-tools` and `wasmtime` on PATH. The Wasm backend has full generics and trait parity with the Python reference; the main remaining limits are a few stdlib surface gaps, a loud error if a trait is used as a `Map` key / `Set` element, and a loud rejection of programs reaching the Python-only `Serve` / `Unsafe` capabilities. See `examples/wasm/`. |
 | `capa --wasm --transpile file.capa` | Print the WAT (WebAssembly text format) the Wasm backend would compile. |
@@ -119,6 +119,14 @@ For a progressive 10-chapter introduction to the language, open
 
 Every command above also works as `python -m capa <args>` if the
 `capa` shim is not on your `PATH`.
+
+> **`--transpile` is a lowering step, not a safety gate.** On its own
+> (without `--check` or `--run`) it emits code and does not enforce the
+> semantic analyzer: analyzer diagnostics are neither reported nor do
+> they fail the command, so a program that would be rejected still
+> prints its transpiled output, and no capability manifest / SBOM /
+> conformance artifact is produced. Use `capa --check` (or `--run`,
+> which analyzes and fails closed) as the verification gate.
 
 ## 5. Minimum program structure
 

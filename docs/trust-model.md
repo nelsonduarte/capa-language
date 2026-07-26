@@ -219,6 +219,22 @@ separately.
   *vulnerability* (see [`SECURITY.md`](../SECURITY.md)) but the running
   Python toolchain is trusted to execute.
 
+- **The compiled Wasm artifact, on the Wasm backends.** Capability
+  confinement and attenuation on `capa --wasm` (core module and Component
+  Model) are enforced by the trusted Capa compiler / emitter, not at the
+  runtime boundary: the host handle table is keyed by small sequential
+  integer handles, and on the core-module `WasmHost` path the linker
+  defines every `capa:host/*` import regardless of what the artifact
+  declares. A hand-written or edited module can therefore name a handle or
+  call an import it was never granted. The guarantee holds at *interface
+  granularity* for a component the Capa compiler produced; intra-artifact
+  attenuation and the core-module path rely on the emitter. Consequently
+  the executed `.wasm` / `.cwasm` is part of the TCB: running a
+  third-party-supplied artifact trusts that artifact, not just its
+  declared WIT surface. Closing the runtime-boundary gap is separate,
+  tracked work; see
+  [`docs/design/wasm-cap-handles.md`](design/wasm-cap-handles.md).
+
 - **`install.sh` channel integrity (M3).** Same-channel SHA pinning for
   the one-line installer is **deferred by design** and tracked as M3
   ([`TODO.md`](../TODO.md)). Until it lands, the installer trusts its
