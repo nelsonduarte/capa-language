@@ -893,13 +893,20 @@ def _fun_record(
     )
     # The ceiling-scoped counterpart: identical to ``sig_unprovable`` except
     # a verified invoke-only ``borrow`` param's Fun arrow is withheld from
-    # the downgrade. ``extra_caps`` is unchanged (a bare Fun reaches no
-    # caps), so ``transitively_reachable`` below stays exact.
-    _ceil_extra, sig_unprovable_ceiling = caps_reachable_via_sig(
+    # the downgrade. ``ceil_extra`` adds one more thing to ``extra_caps``:
+    # the caps a borrow-Fun's arrow yields or takes (``borrow mk: Fun() ->
+    # Net`` charges Net), which the body exercises locally. It is a superset
+    # of ``extra_caps``, so it is the sound input to
+    # ``transitively_reachable`` -- and thus to the composed ceiling cap set,
+    # which is where a borrow-Fun that manufactures a capability must be
+    # charged so the ceiling no longer falsely certifies its exclusion. It
+    # never removes a cap, so ``provably_excluded`` below stays sound (and
+    # for a borrow-Fun the strict ``has_fun_in_sig`` already voids it).
+    ceil_extra, sig_unprovable_ceiling = caps_reachable_via_sig(
         fn, container=container, reachable=reachable, unprovable=unprovable,
         skip_fun_params=verified_borrow_params,
     )
-    extra_caps_demangled = {_demangle(c)[0] for c in extra_caps}
+    extra_caps_demangled = {_demangle(c)[0] for c in extra_caps | ceil_extra}
     if "Unsafe" in extra_caps_demangled:
         # Unsafe reachable via an impl is the same regulatory risk
         # as Unsafe in the signature: the escape hatch is in play.

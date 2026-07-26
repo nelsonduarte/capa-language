@@ -152,6 +152,70 @@ def _type_mentions_any(
     return False
 
 
+def _impl_reachable_caps(
+    impl: A.ImplBlock,
+    reachable: dict[str, set[str]],
+    unprovable: set[str],
+) -> tuple[set[str], bool]:
+    """Caps an implementor of a trait can transitively exercise, plus
+    whether it makes the trait unprovable.
+
+    Returns ``(caps, unprov)`` where ``caps`` is the union of built-in
+    (and user-) caps reachable through the impl's receiver type, the
+    receiver's TYPE ARGUMENTS, and the impl method signatures, and
+    ``unprov`` is True when the impl carries a ``Fun`` (in a type arg or
+    a method sig) or mentions an already-unprovable type - in which case
+    the reachable set is not a sound upper bound and the trait must
+    downgrade fully.
+
+    The receiver's type ARGUMENTS are walked because an
+    ``impl SomeTrait for Wrapper<Smtp>`` exercises whatever ``Smtp``
+    reaches (``Net``), which ``reachable[Wrapper]`` alone drops: the impl
+    stores the concrete arguments in ``type_args``, not as ``args`` on a
+    ``TypeName``, so the ordinary field/signature walk never sees them.
+    ``_caps_via_type`` resolves each argument exactly as it already does
+    for a generic argument inside a struct field (a cap-free argument
+    charges nothing; a ``Fun`` argument marks the trait unprovable), so a
+    cap-bearing argument is charged and a cap-free one does not over-fail.
+    """
+    caps: set[str] = set()
+    unprov = False
+    # Caps reachable through the impl's receiver struct (its fields can
+    # hold built-in caps or other cap-bearing types).
+    if impl.type_name in reachable:
+        caps |= reachable[impl.type_name]
+    if impl.type_name in unprovable:
+        unprov = True
+    # Caps carried by the receiver's TYPE ARGUMENTS (``Wrapper<Smtp>``).
+    for ta in impl.type_args or ():
+        cs, hf = _caps_via_type(ta, reachable)
+        caps |= cs
+        if hf:
+            unprov = True
+        if _type_mentions_any(ta, unprovable):
+            unprov = True
+    # Caps mentioned in the impl method signatures (non-self params +
+    # return type). A method that takes ``stdio: Stdio`` directly
+    # exercises Stdio, so any value dispatched through the trait can too.
+    for m in impl.methods:
+        for p in m.params:
+            if p.name == "self":
+                continue
+            cs, hf = _caps_via_type(p.type_expr, reachable)
+            caps |= cs
+            if hf:
+                unprov = True
+            if _type_mentions_any(p.type_expr, unprovable):
+                unprov = True
+        cs, hf = _caps_via_type(m.return_type, reachable)
+        caps |= cs
+        if hf:
+            unprov = True
+        if _type_mentions_any(m.return_type, unprovable):
+            unprov = True
+    return caps, unprov
+
+
 def compute_reachability(
     module: A.Module,
     *,
@@ -214,6 +278,30 @@ def compute_reachability(
         for item in module.items
         if isinstance(item, A.TypeSum)
     }
+
+    # Plain (non-capability) traits: an abstract interface a signature
+    # position can be typed as. A value of that type dispatches
+    # DYNAMICALLY to some implementor's method, so the position can
+    # exercise whatever that implementor reaches -- exactly the way a
+    # user-capability position does. Pre-fix such a position was charged
+    # ZERO caps, letting a function ``use_greeter(g: Greeter)`` claim to
+    # provably-exclude a cap an implementor exercises through the trait.
+    #
+    # A PRIVATE trait is sealed by construction (no external package can
+    # implement it), so it is charged the union of the reachable caps of
+    # its implementors visible in this compilation, folded into the same
+    # fixpoint as user capabilities. A ``pub`` trait is externally
+    # implementable: a downstream package could implement it with a
+    # cap-bearing type this package cannot see, so it is authority-
+    # UNPROVABLE (seeded into ``unprovable`` below) and any signature that
+    # touches it downgrades fully, exactly like a ``Fun`` in the signature.
+    non_cap_trait_names: set[str] = set()
+    pub_trait_names: set[str] = set()
+    for item in module.items:
+        if isinstance(item, A.TraitDecl) and not item.is_capability:
+            non_cap_trait_names.add(item.name)
+            if item.is_pub:
+                pub_trait_names.add(item.name)
 
     # A struct whose fields TRANSITIVELY hold a ``Fun(...)`` value is
     # unprovable EVEN IF it is a plain data struct (not cap-bearing): a
@@ -290,12 +378,22 @@ def compute_reachability(
     # fixpoint union the per-variant caps up through any nesting depth.
     for name in sum_payloads_by_name:
         reachable.setdefault(name, set())
+    # Seed a reachable entry for every plain (non-capability) trait, so
+    # ``_caps_via_type`` resolves a trait-typed signature position to the
+    # union of its implementors' caps (computed in the fixpoint below)
+    # rather than to empty.
+    for name in non_cap_trait_names:
+        reachable.setdefault(name, set())
     # Seed ``unprovable`` with every Fun-bearing struct (cap-bearing or
     # plain data), so ``_type_mentions_any(t, unprovable)`` downgrades any
     # signature that touches one. A plain data struct gets no ``reachable``
     # entry (it carries no statically-named caps), but its presence in
     # ``unprovable`` is what forces the caller's exclusion list to empty.
-    unprovable: set[str] = set(fun_bearing_structs)
+    # Seed every ``pub`` (externally implementable) plain trait too: a
+    # downstream package could implement it with a cap-bearing type this
+    # compilation cannot see, so a signature touching it must fail closed
+    # exactly like a ``Fun`` in the signature.
+    unprovable: set[str] = set(fun_bearing_structs) | pub_trait_names
 
     changed = True
     while changed:
@@ -353,43 +451,29 @@ def compute_reachability(
                 reachable[sname] = new_caps
                 changed = True
 
-        # User-defined capabilities: union over all impls.
-        for ucn in user_cap_names:
-            was_unprovable = ucn in unprovable
-            new_caps = set(reachable[ucn])
-            for impl in impls_by_trait.get(ucn, ()):
-                # Caps reachable through the impl's struct
-                # (its fields can hold built-in caps or other
-                # cap-bearing types).
-                if impl.type_name in reachable:
-                    new_caps |= reachable[impl.type_name]
-                if impl.type_name in unprovable:
-                    unprovable.add(ucn)
-                # Caps mentioned in the impl method signatures
-                # (non-self params + return type). A method that
-                # takes ``stdio: Stdio`` directly exercises Stdio,
-                # so any value of the user-cap can reach Stdio.
-                for m in impl.methods:
-                    for p in m.params:
-                        if p.name == "self":
-                            continue
-                        cs, hf = _caps_via_type(p.type_expr, reachable)
-                        new_caps |= cs
-                        if hf:
-                            unprovable.add(ucn)
-                        if _type_mentions_any(p.type_expr, unprovable):
-                            unprovable.add(ucn)
-                    cs, hf = _caps_via_type(m.return_type, reachable)
-                    new_caps |= cs
-                    if hf:
-                        unprovable.add(ucn)
-                    if _type_mentions_any(m.return_type, unprovable):
-                        unprovable.add(ucn)
+        # User-defined capabilities AND plain (non-capability) traits:
+        # union over all impls of the trait. Both are dispatch surfaces --
+        # a value typed as either exercises whatever an implementor
+        # reaches -- so they share one loop and one implementor-union
+        # helper (``_impl_reachable_caps``, which also accounts for the
+        # impl's TYPE ARGUMENTS and replicates the unprovable propagation).
+        # A ``pub`` trait was already seeded into ``unprovable`` above; the
+        # union still runs so its ``reachable`` set stays a precise upper
+        # bound for the ceiling surface even though the exclusion claim is
+        # already voided.
+        for tname in user_cap_names | non_cap_trait_names:
+            was_unprovable = tname in unprovable
+            new_caps = set(reachable[tname])
+            for impl in impls_by_trait.get(tname, ()):
+                cs, unprov = _impl_reachable_caps(impl, reachable, unprovable)
+                new_caps |= cs
+                if unprov:
+                    unprovable.add(tname)
             if (
-                new_caps != reachable[ucn]
-                or (ucn in unprovable and not was_unprovable)
+                new_caps != reachable[tname]
+                or (tname in unprovable and not was_unprovable)
             ):
-                reachable[ucn] = new_caps
+                reachable[tname] = new_caps
                 changed = True
 
     return reachable, unprovable
@@ -429,10 +513,23 @@ def caps_reachable_via_sig(
         extra |= cs
         if p.name in skip_fun_params:
             # A verified invoke-only ``borrow`` inlet: its Fun arrow does
-            # not make the enclosing signature unprovable. Its reachable
-            # caps are still unioned in above (a bare Fun contributes
-            # none), but the Fun-arrow / unprovable-mention downgrade is
-            # withheld for this parameter.
+            # not make the enclosing signature unprovable. The Fun-arrow /
+            # unprovable-mention downgrade is withheld for this parameter,
+            # BUT the caps carried by the arrow's own parameter and return
+            # types are charged here: a ``borrow mk: Fun() -> Net`` that the
+            # body invokes (``mk().get(...)``) manufactures and exercises a
+            # ``Net`` locally, so that authority belongs to THIS function,
+            # not to a caller. ``_caps_via_type`` on the bare Fun type above
+            # returns none (its short-circuit protects the strict
+            # ``has_fun`` downgrade), so the arrow's inner types are walked
+            # explicitly. A cap-free arrow (``Fun(Request) -> Response``)
+            # charges nothing and keeps the ceiling clean.
+            if isinstance(p.type_expr, A.FunType):
+                for at in p.type_expr.param_types:
+                    acs, _ = _caps_via_type(at, reachable)
+                    extra |= acs
+                acs, _ = _caps_via_type(p.type_expr.return_type, reachable)
+                extra |= acs
             continue
         if hf:
             sig_unprovable = True
