@@ -415,6 +415,32 @@ class _DispatchMixin:
             reordered_args if reordered_args is not None else e.args
         )
 
+        # Alpha-rename (FRESHEN) the callee's declared type parameters to
+        # unique names before unifying. Without this, a callee parameter and
+        # a caller parameter that SHARE A NAME collide: inside
+        # ``fun leak<T>(...)`` a call to ``id<T>(x: T) -> T`` (or
+        # ``head<T>(xs: List<T>) -> T``, ``unbox<T>(b: Box<T>) -> T``, a
+        # tuple / Option / Fun position, at ANY nesting depth) presents the
+        # callee's ``T`` against the caller's rigid ``T``. ``unify``'s
+        # reflexive same-name shortcut (``T`` vs ``T``, ``List<T>`` vs
+        # ``List<T>``, ...) then treats two DIFFERENT variables as identical
+        # and returns consistent WITHOUT binding, so the callee's return
+        # ``T`` stays unbound and ``instantiate`` defaults it to
+        # ``TyUnknown``. That let an inline generic call launder a bare type
+        # parameter past the member-access / index guards (the call result
+        # read back as ``?``). With FRESH callee names the reflexive shortcut
+        # cannot misfire, so ordinary unification binds fresh-callee-``T`` to
+        # the caller's rigid ``T`` (or to a concrete argument) at every
+        # structural position, and the result carries the caller's rigid
+        # ``T`` everywhere. A genuinely unconstrained PHANTOM parameter
+        # (``make<T>() -> T`` with no ``T``-typed argument) stays unbound, so
+        # ``instantiate`` still defaults it to ``TyUnknown`` -- a phantom
+        # result is not turned into a rigid rejection.
+        if type_params:
+            rename = {p: self._fresh_ty_var(p) for p in type_params}
+            fun_ty = substitute(fun_ty, rename)
+            type_params = [rename[p].name for p in type_params]
+
         if len(fun_ty.params) != len(arg_tys):
             self._err(
                 f"call to {name!r}: expected {len(fun_ty.params)} arguments, "
@@ -426,33 +452,6 @@ class _DispatchMixin:
         mapping: dict[str, Ty] = {}
         for param_ty, arg_ty in zip(fun_ty.params, arg_tys):
             unify(param_ty, arg_ty, mapping)
-
-        # Seed a reflexive rigid binding, mirroring the receiver-type-arg
-        # seeding the method dispatcher already does (``_check_method_dispatch``:
-        # ``mapping[param] = receiver arg``). A return type parameter matched
-        # against a caller's RIGID type variable of the SAME NAME
-        # (``id<T>(x: T) -> T`` called as ``id(x)`` where ``x: T``) is left
-        # unbound by ``unify``: its reflexive shortcut (``T`` vs ``T``) returns
-        # consistent WITHOUT binding, to avoid a self-binding loop. Then
-        # ``instantiate`` defaults the unbound parameter to ``TyUnknown``, so
-        # the call result loses the rigid identity and reads back as ``?``.
-        # That let an INLINE generic call launder a bare type parameter past
-        # the member-access / index guard (``id(x).field`` / ``id(x).m()`` /
-        # ``x[0]`` reached through ``id``), the same silent divergence those
-        # guards close for the direct and ``let``-bound forms. Binding each
-        # such parameter to the rigid argument makes the result carry the
-        # rigid ``T`` exactly as the ``let``-bound and method-dispatch paths
-        # already do. A FLEXIBLE ``?`` argument (a genuine inference
-        # placeholder, e.g. an empty ``[]``) is excluded, so this does not
-        # over-fix a receiver that legitimately resolves elsewhere.
-        for param_ty, arg_ty in zip(fun_ty.params, arg_tys):
-            if not (isinstance(param_ty, TyVar) and param_ty.name in type_params):
-                continue
-            if param_ty.name in mapping:
-                continue
-            resolved_arg = self._resolve_ty(arg_ty)
-            if isinstance(resolved_arg, TyVar) and not is_flexible(resolved_arg):
-                mapping[param_ty.name] = resolved_arg
 
         # Non-lambda arguments fixed the generic params above; now that
         # the expected ``Fun(..)`` type of each lambda slot is known,

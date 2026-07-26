@@ -1784,6 +1784,180 @@ class TestIndexOnTypeParamRejected(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestNestedGenericCallLaunderRejected(unittest.TestCase):
+    """The type parameter can pass through the callee at a NESTED position
+    (``List<T>`` / ``Box<T>`` / a tuple / ``Option<T>`` / a ``Fun`` arrow)
+    that shares the caller's name ``T``. The bare-argument seeding of the
+    prior commit did not fire there, so the result stayed ``TyUnknown`` and
+    the member / index guards were defeated. The root cause is a NAME
+    COLLISION: ``unify``'s reflexive same-name shortcut treats the callee's
+    ``T`` and the caller's ``T`` as identical and never binds. The fix
+    freshens (alpha-renames) the callee's declared type parameters before
+    unifying, so the result carries the caller's rigid ``T`` at every
+    nesting position. Renaming the CALLER parameter to ``U`` already made
+    these reject before the fix (distinct names let ``unify`` bind), which
+    is what pins it as a collision."""
+
+    def test_list_param_result_field_access_rejected(self):
+        msgs = errors_of(
+            "type Box<T> { field: T }\n"
+            "fun head<T>(xs: List<T>) -> T\n"
+            "    return xs[0]\n"
+            "fun leak<T>(xs: List<T>) -> Int\n"
+            "    return head(xs).field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_box_param_result_field_access_rejected(self):
+        msgs = errors_of(
+            "type Box<T> { field: T }\n"
+            "fun unbox<T>(b: Box<T>) -> T\n"
+            "    return b.field\n"
+            "fun leak<T>(b: Box<T>) -> Int\n"
+            "    return unbox(b).field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_tuple_param_result_field_access_rejected(self):
+        msgs = errors_of(
+            "type Box<T> { field: T }\n"
+            "fun fst<T>(t: (T, Int)) -> T\n"
+            "    return t[0]\n"
+            "fun leak<T>(t: (T, Int)) -> Int\n"
+            "    return fst(t).field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_option_param_result_index_rejected(self):
+        msgs = errors_of(
+            "fun get<T>(o: Option<T>) -> T\n"
+            "    return o.unwrap()\n"
+            "fun leak<T>(o: Option<T>) -> Int\n"
+            "    return get(o)[0]\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "index" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_nested_call_result_into_int_binding_rejected(self):
+        # The silent-divergence witness: head(xs) types as T, so binding it
+        # to a concrete Int is now a type error rather than a wrong-shape
+        # value at runtime.
+        msgs = errors_of(
+            "fun head<T>(xs: List<T>) -> T\n"
+            "    return xs[0]\n"
+            "fun leak<T>(xs: List<T>) -> Int\n"
+            "    let n: Int = head(xs)\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("expected Int" in m and "got T" in m for m in msgs), msgs
+        )
+
+    def test_distinct_caller_name_also_rejected(self):
+        # Renaming the caller parameter to U (distinct name) rejects too:
+        # the fix is name-independent, not a coincidence of shared names.
+        msgs = errors_of(
+            "type Box<T> { field: T }\n"
+            "fun head<T>(xs: List<T>) -> T\n"
+            "    return xs[0]\n"
+            "fun leak<U>(xs: List<U>) -> Int\n"
+            "    return head(xs).field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'U'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_nested_container_flow_still_accepted(self):
+        # Opaque: a nested-position generic result returned / stored, no
+        # member access on it. Must stay accepted.
+        r = check(
+            "type Box<T> { field: T }\n"
+            "fun head<T>(xs: List<T>) -> T\n"
+            "    return xs[0]\n"
+            "fun wrap_head<T>(xs: List<T>) -> Box<T>\n"
+            "    return Box { field: head(xs) }\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+class TestPhantomGenericResultAccepted(unittest.TestCase):
+    """A genuinely unconstrained (phantom) type parameter -- ``make<T>() ->
+    T`` with no ``T``-typed argument -- is fixed by the RETURN context, not
+    by any argument. Its call result stays ``TyUnknown`` (freshened but
+    unbound, so ``instantiate`` defaults it), NOT rigid ``T``. It must
+    satisfy a concrete binding and must NOT be turned into a rigid
+    member-access rejection."""
+
+    _MAKE = (
+        "type Box<T> { field: T }\n"
+        "fun make<T>() -> T\n"
+        "    return make()\n"
+    )
+
+    def test_phantom_result_satisfies_int_binding(self):
+        r = check(
+            self._MAKE
+            + "fun use_int() -> Int\n"
+            "    return make()\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_phantom_result_member_access_not_rejected(self):
+        # make() is genuinely unconstrained (TyUnknown), so member access
+        # on it is NOT the type-parameter rejection.
+        r = check(
+            self._MAKE
+            + "fun use_member() -> Int\n"
+            "    return make().field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 # =============================================================
 # Method dispatch
 # =============================================================
