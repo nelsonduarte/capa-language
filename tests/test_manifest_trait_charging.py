@@ -210,8 +210,9 @@ class TestImplTypeArguments(unittest.TestCase):
 # ``impl Doer for Wrapper<T>`` with a FREE type parameter T. The receiver
 # type argument names no concrete type, so it could be instantiated
 # downstream with a cap-bearing type this compilation cannot see. The
-# method dispatches through the generic member, so at runtime it exercises
-# whatever T reaches. The charging must fail closed, not charge zero.
+# body stays OPAQUE in the type parameter (member access on a bare T is a
+# type error, since Capa has no bounds syntax), but the FREE type argument
+# alone drives the charging: it must fail closed, not charge zero.
 def _free_param_src(trait_kw: str) -> str:
     return (
         "capability Emailer\n"
@@ -234,7 +235,6 @@ def _free_param_src(trait_kw: str) -> str:
         "\n"
         "impl Doer for Wrapper<T>\n"
         "    fun do_it(self) -> Unit\n"
-        "        self.inner.send(\"x\")\n"
         "        return\n"
         "\n"
         "fun run_doer(d: Doer) -> Unit\n"

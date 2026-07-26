@@ -25,7 +25,7 @@ from ..builtins import BUILTIN_POS as _BUILTIN_POS
 from ..typesys import (
     Ty, TyBool, TyChar, TyFloat, TyFun, TyInt, TyName, TyString,
     TyTuple, TyUnit, TyUnknown, TyVar,
-    compatible, substitute, ty_str, unify,
+    compatible, is_flexible, substitute, ty_str, unify,
 )
 
 
@@ -1048,6 +1048,27 @@ class _ExpressionsMixin:
                     mapping = dict(zip(sym.type_params, rty.args))
                     return substitute(fty, mapping)
                 return fty
+        # Field access on a value whose static type is an UNBOUNDED
+        # generic type parameter (a rigid ``TyVar`` such as ``T``) has no
+        # sound result type: without a bound, a bare type parameter
+        # exposes no fields. Falling through to ``TyUnknown`` here would
+        # let an ill-typed body pass ``--check`` (``TyUnknown`` unifies
+        # with anything) and then run wrong on Python / emit an invalid
+        # module on Wasm. Reject at the source. A FLEXIBLE ``?`` inference
+        # variable is excluded: it is a genuine not-yet-resolved
+        # placeholder, not a declared parameter. Accessing the struct's
+        # OWN field whose declared type is ``T`` is a different thing and
+        # is handled by the TYPE_STRUCT branch above.
+        resolved_rty = self._resolve_ty(rty)
+        if isinstance(resolved_rty, TyVar) and not is_flexible(resolved_rty):
+            self._err(
+                f"cannot access field {e.field_name!r} on a value of "
+                f"generic type parameter {resolved_rty.name!r}; an "
+                f"unconstrained type parameter exposes no members (a bound "
+                f"would be required, and bounds are not yet available)",
+                e.pos,
+            )
+            return TyUnknown
         return TyUnknown
 
     def _check_typestate_new(self, e: A.StructLit) -> Ty:

@@ -26,8 +26,8 @@ from typing import Optional
 
 from .. import capa_ast as A
 from ..typesys import (
-    CAPABILITY_NAMES, Ty, TyFun, TyName, TyUnknown,
-    instantiate, substitute, ty_str, unify,
+    CAPABILITY_NAMES, Ty, TyFun, TyName, TyUnknown, TyVar,
+    instantiate, is_flexible, substitute, ty_str, unify,
 )
 
 
@@ -610,6 +610,26 @@ class _DispatchMixin:
                 return self._check_method_dispatch(
                     e, type_sym, method_sym, recv_ty, arg_tys,
                 )
+
+        # A method call on a value whose static type is an UNBOUNDED
+        # generic type parameter (a rigid ``TyVar`` such as ``T``) has no
+        # sound result type: Capa has no bounds syntax yet (``where`` is
+        # reserved), so a bare type parameter exposes no methods. Falling
+        # through to ``TyUnknown`` here would let an ill-typed body pass
+        # ``--check`` (``TyUnknown`` unifies with anything), then run wrong
+        # on Python and emit an invalid module on Wasm. Reject at the
+        # source. A FLEXIBLE ``?`` inference variable is excluded: it is a
+        # genuine not-yet-resolved placeholder, not a declared parameter.
+        resolved_recv = self._resolve_ty(recv_ty)
+        if isinstance(resolved_recv, TyVar) and not is_flexible(resolved_recv):
+            self._err(
+                f"cannot call method {e.method!r} on a value of generic "
+                f"type parameter {resolved_recv.name!r}; an unconstrained "
+                f"type parameter exposes no members (a bound would be "
+                f"required, and bounds are not yet available)",
+                e.pos,
+            )
+            return TyUnknown
 
         return TyUnknown
 

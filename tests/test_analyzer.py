@@ -1416,6 +1416,176 @@ class TestRigidTypeVarSoundness(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestMemberAccessOnTypeParamRejected(unittest.TestCase):
+    """Member access (a method call OR a field access) on a value whose
+    static type is an UNBOUNDED generic type parameter (a rigid ``TyVar``
+    such as ``T``) has no sound result type: Capa has no bounds syntax yet
+    (``where`` is reserved), so a bare type parameter exposes no members.
+    Before the fix both fall-through sites returned ``TyUnknown``, which
+    unifies with anything, so an ill-typed body (a ``String`` returned from
+    an ``-> Int`` method) passed ``--check`` and then ran wrong on Python /
+    emitted an invalid module on Wasm. These must now be rejected, while
+    OPAQUE generic uses (store / pass / return / match a ``T``, and methods
+    on concrete ``List<T>`` / ``Result<T, E>`` containers) keep working.
+
+    The precision point: fire ONLY for a declared (rigid) type parameter,
+    never for a genuine inference-unknown (a flexible ``?`` placeholder or
+    ``TyUnknown`` that gets resolved elsewhere)."""
+
+    def test_silent_print_shape_rejected(self):
+        # A generic impl method returning ``self.inner.value`` (typed T)
+        # from a method declared ``-> Int``, bound to ``let n: Int``. This
+        # compiled clean before the fix (the String-through-T was masked by
+        # TyUnknown); it must now be rejected naming the parameter and the
+        # accessed member.
+        msgs = errors_of(
+            "type Wrap<T> { inner: T }\n"
+            "impl Wrap<T>\n"
+            "    fun leak(self) -> Int\n"
+            "        return self.inner.value\n"
+            "fun main(stdio: Stdio)\n"
+            "    let w = Wrap { inner: 5 }\n"
+            "    let n: Int = w.leak()\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'value'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_method_call_on_type_param_free_fn_rejected(self):
+        # ``fun f<T>(x: T) { x.m() }``: a method call on a bare parameter.
+        msgs = errors_of(
+            "fun f<T>(x: T) -> Int\n"
+            "    return x.compute()\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'compute'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_field_access_on_type_param_free_fn_rejected(self):
+        # ``fun f<T>(x: T) { x.field }``: a field access on a bare parameter.
+        msgs = errors_of(
+            "fun f<T>(x: T) -> Int\n"
+            "    return x.field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_method_call_on_type_param_impl_receiver_rejected(self):
+        # ``self.inner.method()`` where ``inner`` is typed T.
+        msgs = errors_of(
+            "type Wrap<T> { inner: T }\n"
+            "impl Wrap<T>\n"
+            "    fun run(self) -> Int\n"
+            "        return self.inner.process()\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'process'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_store_t_in_field_still_accepted(self):
+        # Opaque: store a T in a struct field (accessing the struct's OWN
+        # field typed T is allowed; only members OF the T value are not).
+        r = check(
+            "type Box<T> { value: T }\n"
+            "fun store<T>(x: T) -> Box<T>\n"
+            "    return Box { value: x }\n"
+            "fun read<T>(b: Box<T>) -> T\n"
+            "    return b.value\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = store(3)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_pass_and_return_t_still_accepted(self):
+        # Opaque: pass a T as an argument and return a T.
+        r = check(
+            "fun ident<T>(x: T) -> T\n"
+            "    return x\n"
+            "fun passthrough<T>(x: T) -> T\n"
+            "    return ident(x)\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_match_on_generic_receiver_still_accepted(self):
+        # Opaque: ``match self`` on a generic sum, returning a T arm.
+        r = check(
+            "type Maybe<T> =\n"
+            "    Nada\n"
+            "    Got(T)\n"
+            "impl Maybe<T>\n"
+            "    fun get_or(self, d: T) -> T\n"
+            "        return match self\n"
+            "            Nada -> d\n"
+            "            Got(v) -> v\n"
+            "fun main(stdio: Stdio)\n"
+            "    let m = Got(9)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_method_on_concrete_list_of_t_still_accepted(self):
+        # Opaque: ``List<T>.first()`` is a method on a resolvable CONTAINER
+        # type, not on the bare T, so it must keep working.
+        r = check(
+            "fun firstof<T>(xs: List<T>) -> Option<T>\n"
+            "    return xs.first()\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_method_on_concrete_result_still_accepted(self):
+        # Opaque: ``Result<Int, T>.err()`` is a method on a resolvable
+        # container, not on the bare T.
+        r = check(
+            "fun errof<T>(r: Result<Int, T>) -> Option<T>\n"
+            "    return r.err()\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_inference_unknown_container_not_rejected(self):
+        # Precision point: an empty ``[]`` has a FLEXIBLE element variable
+        # (``List<?>``) that is resolved by later use. Methods on it must
+        # NOT be swept up by the type-parameter rejection.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    var xs = []\n"
+            "    xs.push(1)\n"
+            "    let n = xs.first()\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 # =============================================================
 # Method dispatch
 # =============================================================
