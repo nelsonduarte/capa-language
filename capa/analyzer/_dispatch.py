@@ -340,10 +340,57 @@ class _DispatchMixin:
                             e.pos,
                         )
                         return TyUnknown
-        # Non-Ident callee forms (method-result, lambda, parens):
-        # v1 checker does not check the call shape on these. Still
-        # type-check the callee so its own diagnostics fire.
-        self._check_expr(e.callee)
+        # Non-Ident callee forms (a call result, a method result, a lambda,
+        # a parenthesised expression): a FIRST-CLASS invocation. When the
+        # callee's resolved type is a function arrow, validate the arity and
+        # argument types against the arrow and return its RETURN type,
+        # instead of falling through to a permissive ``TyUnknown``. The
+        # fall-through mistyped ``hof(x)()`` (with ``hof<T>(x: T) -> Fun() ->
+        # T``) as ``TyUnknown``, which unifies with anything, so an ill-typed
+        # ``hof(x)().field`` / ``hof(x)()[0]`` slipped past the member-access
+        # / index guards and a ``getf()()`` result inhabited a wrong binding.
+        # Returning the arrow's return type gives the guards the rigid ``T``
+        # (or the concrete result) they need. A callee whose type does NOT
+        # resolve to a ``TyFun`` (a genuine inference-unknown) behaves exactly
+        # as before, so a legitimately-unresolved inline callee is not newly
+        # rejected.
+        callee_ty = self._resolve_ty(self._check_expr(e.callee))
+        if isinstance(callee_ty, TyFun):
+            if len(callee_ty.params) != len(arg_tys):
+                self._err(
+                    f"call: expected {len(callee_ty.params)} arguments, got "
+                    f"{len(arg_tys)} (signature: {ty_str(callee_ty)})",
+                    e.pos,
+                )
+            else:
+                for i, (param_ty, arg_ty) in enumerate(
+                    zip(callee_ty.params, arg_tys)
+                ):
+                    if not self._assignable(param_ty, arg_ty, e.args[i]):
+                        self._err(
+                            f"call: argument {i + 1} expects "
+                            f"{ty_str(param_ty)}, got {ty_str(arg_ty)}",
+                            e.args[i].pos,
+                        )
+            return callee_ty.ret
+        # Invoking a value whose static type is an UNBOUNDED generic type
+        # parameter (a rigid ``TyVar``) is unsound: nothing constrains ``T``
+        # to be callable, so a bare type parameter cannot be applied. Reject
+        # here, symmetric with the member-access / index guards and with the
+        # identifier path's ``not callable`` diagnostic (which already
+        # catches ``f()`` for a ``f: T`` parameter). Without this an inline
+        # ``idf(x)()`` (``idf<T>(x: T) -> T``) would fall through to a
+        # permissive ``TyUnknown`` and launder the result past the guards. A
+        # flexible ``?`` placeholder is a genuine inference-unknown and is
+        # left to resolve elsewhere.
+        if isinstance(callee_ty, TyVar) and not is_flexible(callee_ty):
+            self._err(
+                f"cannot call a value of generic type parameter "
+                f"{callee_ty.name!r}; an unconstrained type parameter is not "
+                f"known to be callable (a bound would be required, and bounds "
+                f"are not yet available)",
+                e.pos,
+            )
         return TyUnknown
 
     def _resolve_inferred_lambda_args(

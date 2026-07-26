@@ -2125,6 +2125,166 @@ class TestGenericMethodCallLaunderRejected(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestInlineFirstClassInvocationLaunderRejected(unittest.TestCase):
+    """A first-class function value invoked INLINE (the call's callee is
+    itself a call / method / lambda, not a plain identifier) went through
+    a ``_check_call`` fall-through that returned a permissive ``TyUnknown``
+    instead of the arrow's return type. So ``hof(x)()`` (with
+    ``hof<T>(x: T) -> Fun() -> T``) typed as ``TyUnknown`` and its member /
+    index / method access laundered a bare ``T`` past the guards, and a
+    ``getf()()`` result inhabited a wrong binding. The non-identifier callee
+    path now returns the arrow's return type (validating arity / argument
+    types), so the guards see the rigid ``T`` (or the concrete result). The
+    ``let``-bound form was already rejected; a legitimately-typed inline
+    invocation used concretely stays accepted."""
+
+    _HOF = (
+        "type Box<T> { field: T, name: T }\n"
+        "fun hof<T>(x: T) -> Fun() -> T\n"
+        "    return fun () -> T => x\n"
+    )
+
+    def test_inline_invocation_field_access_rejected(self):
+        msgs = errors_of(
+            self._HOF
+            + "fun leak<T>(x: T) -> Int\n"
+            "    return hof(x)().field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_inline_invocation_method_call_rejected(self):
+        msgs = errors_of(
+            self._HOF
+            + "fun leak<T>(x: T) -> Int\n"
+            "    return hof(x)().name()\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'name'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_inline_invocation_index_rejected(self):
+        msgs = errors_of(
+            self._HOF
+            + "fun leak<T>(x: T) -> Int\n"
+            "    return hof(x)()[0]\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "index" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_nongeneric_inline_invocation_into_wrong_binding_rejected(self):
+        # The non-generic first-class gap: getf()() typed as TyUnknown and
+        # a String inhabited an Int binding. Now typed String and rejected.
+        msgs = errors_of(
+            "fun getf() -> Fun() -> String\n"
+            "    return fun () -> String => \"hi\"\n"
+            "fun leak() -> Int\n"
+            "    let n: Int = getf()()\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("expected Int" in m and "got String" in m for m in msgs), msgs
+        )
+
+    def test_calling_a_bare_type_param_value_rejected(self):
+        # Sibling: invoking a value whose type is a bare T (idf(x)()) is not
+        # known to be callable.
+        msgs = errors_of(
+            "type Box<T> { field: T }\n"
+            "fun idf<T>(x: T) -> T\n"
+            "    return x\n"
+            "fun leak<T>(x: T) -> Int\n"
+            "    return idf(x)().field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "callable" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_try_on_bare_type_param_rejected(self):
+        # Sibling: `?` on a bare T is not known to be Result / Option.
+        msgs = errors_of(
+            "fun leak<T>(x: T) -> Option<Int>\n"
+            "    let n: Int = x?\n"
+            "    return Some(n)\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m
+                and "Result or Option" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_letbound_first_class_invocation_still_rejected(self):
+        # The let-bound form was already rejected (g resolves to rigid T);
+        # it must stay rejected.
+        msgs = errors_of(
+            self._HOF
+            + "fun leak<T>(x: T) -> Int\n"
+            "    let g = hof(x)\n"
+            "    return g().field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_legitimate_inline_invocation_accepted(self):
+        # No over-reject: an inline invocation whose arrow returns a concrete
+        # type, used concretely, stays accepted (both a curried adder and a
+        # nullary getter).
+        r = check(
+            "fun adder(n: Int) -> Fun(Int) -> Int\n"
+            "    return fun (m: Int) -> Int => m + n\n"
+            "fun getf() -> Fun() -> String\n"
+            "    return fun () -> String => \"hi\"\n"
+            "fun use_it(stdio: Stdio) -> Unit\n"
+            "    let r = adder(5)(10)\n"
+            "    let t: String = getf()()\n"
+            "    stdio.println(t)\n"
+            "    return\n"
+            "fun main(stdio: Stdio)\n"
+            "    use_it(stdio)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 # =============================================================
 # Method dispatch
 # =============================================================

@@ -691,11 +691,28 @@ class _ExpressionsMixin:
                         e.pos,
                     )
                     return TyUnknown
+            elif isinstance(inner, TyVar) and not is_flexible(inner):
+                # A RIGID type parameter (a declared ``T``) is not known to
+                # be Result or Option, so ``x?`` on a bare ``T`` is unsound:
+                # it would inhabit the unwrapped binding with a value of an
+                # unknown shape (``let n: Int = x?``) and defeat the type
+                # check via the permissive ``TyUnknown`` below. Reject here,
+                # symmetric with the member-access / index / call guards. A
+                # FLEXIBLE ``?`` placeholder stays permissive (it may yet
+                # resolve to a Result / Option through inference).
+                self._err(
+                    f"cannot use `?` on a value of generic type parameter "
+                    f"{inner.name!r}; an unconstrained type parameter is not "
+                    f"known to be Result or Option (a bound would be "
+                    f"required, and bounds are not yet available)",
+                    e.pos,
+                )
+                return TyUnknown
             elif isinstance(inner, (TyVar,)) or inner is TyUnknown:
-                # TyUnknown / TyVar stay permissive: the runtime
-                # helper handles whatever shape they take, and we
-                # do not want to false-positive on generic code
-                # that produces a Result through a type variable.
+                # TyUnknown / flexible ``?`` TyVar stay permissive: the
+                # runtime helper handles whatever shape they take, and we do
+                # not want to false-positive on generic code that produces a
+                # Result through an as-yet-unresolved inference variable.
                 unwrap_ty = TyUnknown
             elif isinstance(inner, TyName) and inner.name in ("Result", "Option"):
                 # No args yet; payload type is unknown but the shape
