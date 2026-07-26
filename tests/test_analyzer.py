@@ -1958,6 +1958,173 @@ class TestPhantomGenericResultAccepted(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestGenericMethodCallLaunderRejected(unittest.TestCase):
+    """The launder also survived through a GENERIC METHOD call, which goes
+    through ``_check_method_dispatch`` (a different path from the free
+    call). That path seeds the mapping from the RECEIVER's type arguments
+    but did not freshen the METHOD's OWN declared type parameters, so a
+    method whose own type-param name collides with the caller's ``T`` hit
+    the same reflexive-unify shortcut and produced ``TyUnknown``, defeating
+    the member-access and index guards. The fix freshens the method's own
+    type parameters too (leaving the receiver-bound ones seeded from the
+    receiver, which were already handled)."""
+
+    _FOO = (
+        "type Box<T> { field: T }\n"
+        "type Foo { tag: Int }\n"
+        "impl Foo\n"
+        "    fun mid<T>(self, x: T) -> T\n"
+        "        return x\n"
+    )
+
+    def test_generic_method_result_field_access_rejected(self):
+        msgs = errors_of(
+            self._FOO
+            + "fun leak<T>(f: Foo, x: T) -> Int\n"
+            "    return f.mid(x).field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_generic_method_result_index_rejected(self):
+        msgs = errors_of(
+            self._FOO
+            + "fun leak<T>(f: Foo, x: T) -> Int\n"
+            "    return f.mid(x)[0]\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "index" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_generic_method_result_into_int_binding_rejected(self):
+        # The silent-divergence witness on the method path.
+        msgs = errors_of(
+            self._FOO
+            + "fun leak<T>(f: Foo, x: T) -> Int\n"
+            "    let n: Int = f.mid(x)\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("expected Int" in m and "got T" in m for m in msgs), msgs
+        )
+
+    def test_trait_dispatched_generic_method_rejected(self):
+        # A trait-dispatched generic method with the same own-type-param
+        # collision goes through the same method-dispatch path and is
+        # rejected too.
+        msgs = errors_of(
+            "type Box<T> { field: T }\n"
+            "trait Mid\n"
+            "    fun mid<T>(self, x: T) -> T\n"
+            "type Foo { tag: Int }\n"
+            "impl Mid for Foo\n"
+            "    fun mid<T>(self, x: T) -> T\n"
+            "        return x\n"
+            "fun leak<T>(m: Mid, x: T) -> Int\n"
+            "    return m.mid(x).field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_distinct_method_type_param_name_still_rejected(self):
+        # Control: declaring the method ``<U>`` (distinct name) was already
+        # rejected before the fix; it must stay rejected (name-independent).
+        msgs = errors_of(
+            "type Box<T> { field: T }\n"
+            "type Foo { tag: Int }\n"
+            "impl Foo\n"
+            "    fun mid<U>(self, x: U) -> U\n"
+            "        return x\n"
+            "fun leak<T>(f: Foo, x: T) -> Int\n"
+            "    return f.mid(x).field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_receiver_type_param_method_still_rejected(self):
+        # Delimiter: a method over the RECEIVER's type parameter
+        # (``b.get().field`` on ``impl Box<T>``) is caught by the receiver
+        # seeding and must NOT regress.
+        msgs = errors_of(
+            "type Box<T> { field: T }\n"
+            "impl Box<T>\n"
+            "    fun get(self) -> T\n"
+            "        return self.field\n"
+            "fun leak<T>(b: Box<T>) -> Int\n"
+            "    return b.get().field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_legitimate_generic_method_still_accepted(self):
+        # No over-reject: the method's own type param resolved to a
+        # concrete argument and the result used concretely; plus the mixed
+        # case where the own type param binds a concrete List<A> which is
+        # then legitimately indexed.
+        r = check(
+            self._FOO
+            + "fun use_it(f: Foo) -> Int\n"
+            "    let n = f.mid(42)\n"
+            "    return n + 1\n"
+            "fun mixed<A>(f: Foo, xs: List<A>) -> A\n"
+            "    return f.mid(xs)[0]\n"
+            "fun main(stdio: Stdio)\n"
+            "    let f = Foo { tag: 0 }\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_higher_order_builtin_method_in_generic_fn_accepted(self):
+        # Regression: a built-in generic method (``map``) called on the
+        # receiver's own type parameter inside a generic function. The
+        # method-param freshening must use RIGID (non-``?``) names, else the
+        # receiver's self-referential ``T -> T`` seed makes the fresh-var
+        # commit recurse forever. This must analyze cleanly.
+        r = check(
+            "fun apply<T>(f: Fun(T) -> T, xs: List<T>) -> List<T>\n"
+            "    return xs.map(f)\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 # =============================================================
 # Method dispatch
 # =============================================================

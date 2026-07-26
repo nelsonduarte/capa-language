@@ -27,6 +27,19 @@ class _TypingMixin:
         self._fresh_counter += 1
         return TyVar(name)
 
+    def _fresh_method_ty_var(self, prefix: str) -> TyVar:
+        """Create a unique RIGID (no ``?`` prefix) TyVar for alpha-renaming
+        a generic method's own type parameter at a call site. Unlike
+        ``_fresh_ty_var`` the name has no ``?`` prefix, so
+        ``_commit_fresh_substitutions`` skips it (it is call-local and must
+        not survive, exactly like the method's original type-param names)
+        and never dereferences the self-referential ``T -> T`` receiver seed
+        the method dispatcher records. The ``#`` marker cannot occur in a
+        user-written identifier, so the name is collision-free."""
+        name = f"{prefix}#m{self._fresh_counter}"
+        self._fresh_counter += 1
+        return TyVar(name)
+
     def _resolve_ty(self, ty: Ty) -> Ty:
         """Apply ``_ty_subs`` recursively. Unbound TyVars come
         back as themselves; the result is the type "as known so

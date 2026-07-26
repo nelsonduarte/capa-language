@@ -754,6 +754,46 @@ class _DispatchMixin:
             return TyUnknown
         method_fun_ty = method_sym.ty
 
+        # Alpha-rename (FRESHEN) the method's OWN declared type parameters
+        # to unique names before unifying, mirroring the free-call path
+        # (``_check_call_with_inference``). Without this, a method whose own
+        # type-param name collides with the caller's (``fun mid<T>(self, x: T)
+        # -> T`` called inside ``fun leak<T>``) hits ``unify``'s reflexive
+        # same-name shortcut, so the method's return ``T`` is left unbound and
+        # ``instantiate`` defaults it to ``TyUnknown`` -- laundering a bare
+        # type parameter past the member-access / index guards through a
+        # generic method call. Only the method's OWN params are freshened; the
+        # RECEIVER-bound type params (``type_sym.type_params``) are seeded from
+        # ``recv_ty.args`` below and must keep their names. A method param that
+        # SHADOWS a receiver type param is left alone: it aliases the
+        # receiver-bound param, which the receiver seeding already resolves to
+        # the caller's rigid type, so the guard already catches it.
+        #
+        # The fresh names are RIGID (no ``?`` prefix), unlike the free-call
+        # path. The receiver seeding below records a self-referential
+        # ``mapping[T] = TyVar("T")`` when the receiver's element type is the
+        # caller's rigid ``T`` (``List<T>``). ``_commit_fresh_substitutions``
+        # walks that mapping only for ``?``-prefixed keys via
+        # ``_apply_mapping``, which dereferences ``T -> T`` without a cycle
+        # guard; a ``?``-prefixed method param bound to ``T`` would make that
+        # walk recurse forever (``xs.map(f)`` inside ``fun apply<T>``). A rigid
+        # fresh name is skipped by the commit exactly as the method's original
+        # (non-``?``) type-param names were, so it stays call-local and cannot
+        # reach the self-referential seed, while ``unify`` still binds it (an
+        # unbound rigid variable binds normally) and ``instantiate`` closes it.
+        method_type_params = list(method_sym.type_params)
+        own_params = [
+            p for p in method_sym.type_params
+            if p not in type_sym.type_params
+        ]
+        if own_params:
+            rename = {p: self._fresh_method_ty_var(p) for p in own_params}
+            method_fun_ty = substitute(method_fun_ty, rename)
+            method_type_params = [
+                rename[p].name if p in rename else p
+                for p in method_sym.type_params
+            ]
+
         # Calling a user-defined impl method that lacks the `self`
         # parameter via ``receiver.method()`` is a real error: the
         # runtime would pass ``receiver`` as the first positional
@@ -794,7 +834,7 @@ class _DispatchMixin:
             fun_ty=method_fun_ty,
         )
         if perm is None:
-            all_type_params = type_sym.type_params + method_sym.type_params
+            all_type_params = type_sym.type_params + method_type_params
             return instantiate(method_fun_ty.ret, all_type_params, mapping)
         # Roadmap S2.6: cross-function sink-parameter flow at a method
         # call. ``perm`` maps each explicit parameter to its argument;
@@ -819,7 +859,7 @@ class _DispatchMixin:
                 f"{len(reordered_tys)}",
                 e.pos,
             )
-            return instantiate(method_fun_ty.ret, method_sym.type_params, mapping)
+            return instantiate(method_fun_ty.ret, method_type_params, mapping)
 
         for param_ty, arg_ty in zip(method_fun_ty.params, reordered_tys):
             substituted = substitute(param_ty, mapping)
@@ -871,7 +911,7 @@ class _DispatchMixin:
 
         self._commit_fresh_substitutions(mapping)
 
-        all_type_params = type_sym.type_params + method_sym.type_params
+        all_type_params = type_sym.type_params + method_type_params
         ret_ty = instantiate(method_fun_ty.ret, all_type_params, mapping)
         self._reject_cap_leak_via_substitution(
             method_fun_ty.ret, ret_ty, f"{recv_ty.name}.{e.method!r}",
