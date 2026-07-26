@@ -182,11 +182,23 @@ class Param(Node):
 
 @dataclass(kw_only=True)
 class MethodSig(Node):
-    """Method signature inside a trait."""
+    """Method signature inside a trait.
+
+    ``uses`` is the optional declared capability bound of a ``pub`` trait
+    method (the opt-in precision recovery over the 1.23.0
+    pub-trait-fail-closed default). It holds the source-level capability
+    atom names of the ``uses [...]`` clause: ``None`` means the clause was
+    ABSENT (unbounded, authority-unprovable exactly as 1.23.0); an empty
+    list means ``uses []`` (declared pure); a non-empty list is the
+    declared bound ``B``. Each ``impl`` of a fully-bounded ``pub`` trait is
+    checked so its per-method footprint is a subset of ``B``.
+    """
     name: str
     type_params: list[str] = field(default_factory=list)
     params: list[Param]
     return_type: Optional[TypeExpr] = None
+    uses: Optional[list[str]] = None
+    uses_pos: Optional[Pos] = None
     name_pos: Optional[Pos] = None
 
 

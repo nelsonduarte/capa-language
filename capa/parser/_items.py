@@ -522,7 +522,7 @@ class _ItemsMixin:
         self._expect(T.INDENT, "expected indented method signatures")
         methods: list[A.MethodSig] = []
         while not self._check(T.DEDENT) and not self._at_end():
-            methods.append(self._parse_method_sig())
+            methods.append(self._parse_method_sig(allow_uses=True))
             self._skip_newlines()
         self._expect(T.DEDENT, f"expected dedent at end of {word} body")
         return A.TraitDecl(
@@ -605,7 +605,7 @@ class _ItemsMixin:
             doc=doc,
         )
 
-    def _parse_method_sig(self) -> A.MethodSig:
+    def _parse_method_sig(self, *, allow_uses: bool = False) -> A.MethodSig:
         start = self._peek().start
         self._expect(T.KW_FUN, "expected 'fun' in method signature")
         name_tok = self._expect(T.IDENT, "expected method name")
@@ -616,6 +616,10 @@ class _ItemsMixin:
         return_type: Optional[A.TypeExpr] = None
         if self._match(T.ARROW):
             return_type = self._parse_type()
+        uses: Optional[list[str]] = None
+        uses_pos = None
+        if allow_uses:
+            uses, uses_pos = self._parse_uses_clause_opt()
         self._expect_eos("after method signature")
         return A.MethodSig(
             pos=start,
@@ -624,7 +628,49 @@ class _ItemsMixin:
             type_params=type_params,
             params=params,
             return_type=return_type,
+            uses=uses,
+            uses_pos=uses_pos,
         )
+
+    def _parse_uses_clause_opt(self):
+        """Parse an optional trailing ``uses [Atom, ...]`` capability-bound
+        clause on a trait method signature (the declared-bound feature).
+
+        ``uses`` is a CONTEXTUAL keyword (matched by identifier text, not a
+        reserved word), so it stays usable as an ordinary identifier
+        everywhere else. The clause is a bracketed, comma-separated set of
+        capability atom names, possibly empty (``uses []`` declares the
+        method pure). Returns ``(atoms, pos)`` where ``atoms`` is ``None``
+        when no clause is present, or the list of atom names (possibly
+        empty) when one is."""
+        tok = self._peek()
+        if tok.kind != T.IDENT or tok.text != "uses":
+            return None, None
+        self._advance()  # consume 'uses'
+        self._expect(
+            T.LBRACKET,
+            "expected '[' to begin the capability set after 'uses' "
+            "(write `uses []` for a pure method or `uses [Net, Fs]`)",
+        )
+        atoms: list[str] = []
+        if not self._check(T.RBRACKET):
+            atoms.append(
+                self._expect(
+                    T.IDENT, "expected a capability name in the 'uses' clause",
+                ).text
+            )
+            while self._match(T.COMMA):
+                if self._check(T.RBRACKET):
+                    # Trailing comma is permitted.
+                    break
+                atoms.append(
+                    self._expect(
+                        T.IDENT,
+                        "expected a capability name in the 'uses' clause",
+                    ).text
+                )
+        self._expect(T.RBRACKET, "expected ']' to close the 'uses' clause")
+        return atoms, tok.start
 
     # -------- impl --------
 

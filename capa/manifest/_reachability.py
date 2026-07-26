@@ -193,6 +193,97 @@ def _type_arg_unresolvable(
     return False
 
 
+def _impl_receiver_caps(
+    impl: A.ImplBlock,
+    reachable: dict[str, set[str]],
+    unprovable: set[str],
+    known_type_names: frozenset[str],
+) -> tuple[set[str], bool]:
+    """Caps reachable through the impl's RECEIVER alone: its struct
+    fields plus the receiver's type ARGUMENTS. Returns ``(caps, unprov)``
+    with the same fail-closed conventions as :func:`_impl_reachable_caps`.
+
+    Shared by :func:`_impl_reachable_caps` (which unions it with every
+    method signature) and :func:`_impl_method_reachable_caps` (which
+    unions it with a SINGLE method), so the per-method conformance
+    footprint is computed by the very same walk that drives charging -
+    the soundness anchor: any divergence between the two would be a hole.
+    """
+    caps: set[str] = set()
+    unprov = False
+    # Caps reachable through the impl's receiver struct (its fields can
+    # hold built-in caps or other cap-bearing types).
+    if impl.type_name in reachable:
+        caps |= reachable[impl.type_name]
+    if impl.type_name in unprovable:
+        unprov = True
+    # Caps carried by the receiver's TYPE ARGUMENTS (``Wrapper<Smtp>``).
+    # A free/unbound argument (``Wrapper<T>``) is charge-UNPROVABLE, not
+    # charge-zero: it could be a cap-bearing type downstream.
+    for ta in impl.type_args or ():
+        if _type_arg_unresolvable(ta, known_type_names):
+            unprov = True
+        cs, hf = _caps_via_type(ta, reachable)
+        caps |= cs
+        if hf:
+            unprov = True
+        if _type_mentions_any(ta, unprovable):
+            unprov = True
+    return caps, unprov
+
+
+def _method_sig_caps(
+    m: A.FunDecl,
+    reachable: dict[str, set[str]],
+    unprovable: set[str],
+) -> tuple[set[str], bool]:
+    """Caps mentioned in ONE impl method signature (non-self params +
+    return type). A method that takes ``stdio: Stdio`` directly exercises
+    Stdio, so any value dispatched through the trait can too. Fail-closed
+    conventions match :func:`_impl_reachable_caps`."""
+    caps: set[str] = set()
+    unprov = False
+    for p in m.params:
+        if p.name == "self":
+            continue
+        cs, hf = _caps_via_type(p.type_expr, reachable)
+        caps |= cs
+        if hf:
+            unprov = True
+        if _type_mentions_any(p.type_expr, unprovable):
+            unprov = True
+    cs, hf = _caps_via_type(m.return_type, reachable)
+    caps |= cs
+    if hf:
+        unprov = True
+    if _type_mentions_any(m.return_type, unprovable):
+        unprov = True
+    return caps, unprov
+
+
+def _impl_method_reachable_caps(
+    impl: A.ImplBlock,
+    m: A.FunDecl,
+    reachable: dict[str, set[str]],
+    unprovable: set[str],
+    known_type_names: frozenset[str],
+) -> tuple[set[str], bool]:
+    """Footprint of ONE impl method: the receiver (fields + type
+    arguments) unioned with that method's own signature. This is exactly
+    :func:`_impl_reachable_caps` restricted to a single method, and is the
+    footprint the declared-bound conformance check compares against the
+    trait method's bound ``B``. Reusing the charging walk verbatim is what
+    makes the four fail-closed shapes (a ``Fun`` in the signature, a free
+    type parameter, a nested-generic free type argument, an unprovable
+    mention) yield TOP here too, so ``TOP`` is not a subset of any non-top
+    ``B`` and those impls are rejected by construction."""
+    caps, unprov = _impl_receiver_caps(
+        impl, reachable, unprovable, known_type_names,
+    )
+    cs, u = _method_sig_caps(m, reachable, unprovable)
+    return caps | cs, unprov or u
+
+
 def _impl_reachable_caps(
     impl: A.ImplBlock,
     reachable: dict[str, set[str]],
@@ -225,46 +316,108 @@ def _impl_reachable_caps(
     The union is SOUND for resolvable receiver / type-argument / method-
     signature caps; an unresolvable generic type argument fails closed.
     """
-    caps: set[str] = set()
-    unprov = False
-    # Caps reachable through the impl's receiver struct (its fields can
-    # hold built-in caps or other cap-bearing types).
-    if impl.type_name in reachable:
-        caps |= reachable[impl.type_name]
-    if impl.type_name in unprovable:
-        unprov = True
-    # Caps carried by the receiver's TYPE ARGUMENTS (``Wrapper<Smtp>``).
-    # A free/unbound argument (``Wrapper<T>``) is charge-UNPROVABLE, not
-    # charge-zero: it could be a cap-bearing type downstream.
-    for ta in impl.type_args or ():
-        if _type_arg_unresolvable(ta, known_type_names):
-            unprov = True
-        cs, hf = _caps_via_type(ta, reachable)
-        caps |= cs
-        if hf:
-            unprov = True
-        if _type_mentions_any(ta, unprovable):
-            unprov = True
+    caps, unprov = _impl_receiver_caps(
+        impl, reachable, unprovable, known_type_names,
+    )
     # Caps mentioned in the impl method signatures (non-self params +
     # return type). A method that takes ``stdio: Stdio`` directly
     # exercises Stdio, so any value dispatched through the trait can too.
     for m in impl.methods:
-        for p in m.params:
-            if p.name == "self":
-                continue
-            cs, hf = _caps_via_type(p.type_expr, reachable)
-            caps |= cs
-            if hf:
-                unprov = True
-            if _type_mentions_any(p.type_expr, unprovable):
-                unprov = True
-        cs, hf = _caps_via_type(m.return_type, reachable)
+        cs, u = _method_sig_caps(m, reachable, unprovable)
         caps |= cs
-        if hf:
-            unprov = True
-        if _type_mentions_any(m.return_type, unprovable):
+        if u:
             unprov = True
     return caps, unprov
+
+
+def _bounded_pub_trait_bounds(
+    module: A.Module,
+    known_cap_atoms: frozenset[str],
+) -> dict[str, dict[str, set[str]]]:
+    """The DECLARED per-method capability bounds of every FULLY-bounded
+    ``pub`` plain trait (the declared-bound feature).
+
+    Returns ``{trait_name: {method_name: {atom, ...}}}``. A trait is
+    included IFF it is ``pub``, non-capability, and EVERY one of its
+    methods carries a ``uses`` clause whose atoms ALL resolve to a known
+    capability (built-in or user-declared). This is amendment A1's
+    per-position rule: if any method is unbounded (``uses`` absent) or
+    names an unresolvable atom, the WHOLE trait is omitted and stays
+    authority-unprovable exactly as 1.23.0 - no partial precision.
+
+    Atom names resolve in the reachability namespace: a built-in cap
+    (``Net``) is its own name; a same-module user capability keeps its
+    source name (root-module items are not loader-mangled). An atom that
+    is neither is unresolvable and disqualifies the trait here (the
+    analyzer reports it as an error separately)."""
+    bounds: dict[str, dict[str, set[str]]] = {}
+    for item in module.items:
+        if not isinstance(item, A.TraitDecl):
+            continue
+        if item.is_capability or not item.is_pub:
+            continue
+        per_method: dict[str, set[str]] = {}
+        fully_bounded = True
+        for m in item.methods:
+            if m.uses is None:
+                fully_bounded = False
+                break
+            # Fail closed on a trait method with its OWN generic type
+            # parameters: its footprint cannot be resolved to a definite
+            # capability set (a downstream instantiation could introduce a
+            # cap-bearing type), so the whole trait stays unprovable rather
+            # than claim a bound the conformance check cannot discharge.
+            if m.type_params:
+                fully_bounded = False
+                break
+            resolved: set[str] = set()
+            for atom in m.uses:
+                if atom not in known_cap_atoms:
+                    fully_bounded = False
+                    break
+                resolved.add(atom)
+            if not fully_bounded:
+                break
+            per_method[m.name] = resolved
+        if fully_bounded:
+            bounds[item.name] = per_method
+    return bounds
+
+
+def _closure_of_atoms(
+    atoms: set[str], reachable: dict[str, set[str]],
+) -> set[str]:
+    """A declared bound expanded through the current reachable sets: each
+    atom plus whatever that atom (a user capability) transitively reaches.
+    Used both to SEED a bounded trait's charge and to compare an impl
+    method footprint against the bound, so the two sides stay consistent
+    (an impl exercising ``Net`` directly is within a ``uses [Logger]``
+    bound exactly when ``Logger`` reaches ``Net``)."""
+    out = set(atoms)
+    for atom in atoms:
+        out |= reachable.get(atom, set())
+    return out
+
+
+def _build_known_type_names(
+    module: A.Module, reachable: dict[str, set[str]],
+) -> frozenset[str]:
+    """The names that denote a concrete, KNOWN type: the built-in set plus
+    every user-declared type in this compilation (all reachable keys -
+    structs, sums, plain traits and user capabilities - plus typestates
+    and extern-component boundaries, which are not seeded into
+    ``reachable``). A ``TypeName`` head appearing in an impl's type
+    arguments that is in none of these is a free/unbound generic
+    parameter, which must fail closed rather than charge zero."""
+    return (
+        _BUILTIN_TYPE_NAMES
+        | frozenset(reachable.keys())
+        | frozenset(
+            item.name
+            for item in module.items
+            if isinstance(item, (A.TypestateDecl, A.ExternComponent))
+        )
+    )
 
 
 def compute_reachability(
@@ -353,6 +506,23 @@ def compute_reachability(
             non_cap_trait_names.add(item.name)
             if item.is_pub:
                 pub_trait_names.add(item.name)
+
+    # Declared-bound feature: a ``pub`` trait every method of which
+    # declares its capability bound (``uses [...]``) opts OUT of the
+    # fail-closed default. Its charge becomes the declared bound-union
+    # ``B`` (seeded below, amendment A2) instead of authority-unprovable,
+    # and each impl is checked ``footprint ⊆ B`` (amendment A3, in
+    # ``trait_bound_violations``). ``known_cap_atoms`` is the vocabulary an
+    # atom may draw from: the built-ins plus this module's user-declared
+    # capabilities. A trait with any unbounded method, or any unresolvable
+    # atom, is NOT included and stays unprovable (A1, no partial
+    # precision).
+    known_cap_atoms: frozenset[str] = CAPABILITY_NAMES | frozenset(
+        user_cap_names
+    )
+    bounded_pub_traits: dict[str, dict[str, set[str]]] = (
+        _bounded_pub_trait_bounds(module, known_cap_atoms)
+    )
 
     # A struct whose fields TRANSITIVELY hold a ``Fun(...)`` value is
     # unprovable EVEN IF it is a plain data struct (not cap-bearing): a
@@ -444,7 +614,16 @@ def compute_reachability(
     # downstream package could implement it with a cap-bearing type this
     # compilation cannot see, so a signature touching it must fail closed
     # exactly like a ``Fun`` in the signature.
-    unprovable: set[str] = set(fun_bearing_structs) | pub_trait_names
+    #
+    # EXCEPTION (declared-bound feature, amendment A2): a ``pub`` trait
+    # whose every method declares its bound is NOT seeded unprovable. Its
+    # charge is the declared bound-union ``B`` (seeded into ``reachable``
+    # in the fixpoint below), which is sound because each admissible impl
+    # was checked ``footprint ⊆ B``. Only the still-unbounded ``pub``
+    # traits keep the fail-closed seeding.
+    unprovable: set[str] = set(fun_bearing_structs) | (
+        pub_trait_names - bounded_pub_traits.keys()
+    )
 
     # The names that denote a concrete, KNOWN type: the built-in set plus
     # every user-declared type in this compilation (all reachable keys -
@@ -453,14 +632,8 @@ def compute_reachability(
     # ``reachable``). A ``TypeName`` head appearing in an impl's type
     # arguments that is in none of these is a free/unbound generic
     # parameter, which must fail closed rather than charge zero.
-    known_type_names: frozenset[str] = (
-        _BUILTIN_TYPE_NAMES
-        | frozenset(reachable.keys())
-        | frozenset(
-            item.name
-            for item in module.items
-            if isinstance(item, (A.TypestateDecl, A.ExternComponent))
-        )
+    known_type_names: frozenset[str] = _build_known_type_names(
+        module, reachable,
     )
 
     changed = True
@@ -529,16 +702,28 @@ def compute_reachability(
         # union still runs so its ``reachable`` set stays a precise upper
         # bound for the ceiling surface even though the exclusion claim is
         # already voided.
+        #
+        # A fully-bounded ``pub`` trait (declared-bound feature) is the
+        # exception: its charge is the declared bound-union ``B`` closed
+        # over user-cap reachability, NOT the visible-impl union (amendment
+        # A2 - a downstream impl may use up to ``B``, so the visible union
+        # can be unsoundly small). It is never made unprovable here.
         for tname in user_cap_names | non_cap_trait_names:
             was_unprovable = tname in unprovable
             new_caps = set(reachable[tname])
-            for impl in impls_by_trait.get(tname, ()):
-                cs, unprov = _impl_reachable_caps(
-                    impl, reachable, unprovable, known_type_names,
-                )
-                new_caps |= cs
-                if unprov:
-                    unprovable.add(tname)
+            if tname in bounded_pub_traits:
+                declared: set[str] = set()
+                for atoms in bounded_pub_traits[tname].values():
+                    declared |= atoms
+                new_caps |= _closure_of_atoms(declared, reachable)
+            else:
+                for impl in impls_by_trait.get(tname, ()):
+                    cs, unprov = _impl_reachable_caps(
+                        impl, reachable, unprovable, known_type_names,
+                    )
+                    new_caps |= cs
+                    if unprov:
+                        unprovable.add(tname)
             if (
                 new_caps != reachable[tname]
                 or (tname in unprovable and not was_unprovable)
@@ -547,6 +732,146 @@ def compute_reachability(
                 changed = True
 
     return reachable, unprovable
+
+
+def _demangle_atom(name: str) -> str:
+    """Source-level form of a capability name for a diagnostic. Built-in
+    caps pass through unchanged; a loader-mangled user-cap name is
+    stripped to its source name."""
+    from ._funrec import _demangle
+    return _demangle(name)[0]
+
+
+def trait_uses_atom_errors(
+    module: A.Module,
+    *,
+    user_cap_names: set[str],
+) -> list[tuple[str, object]]:
+    """Validate the ``uses`` clauses of every trait method (the
+    declared-bound feature). Returns ``(message, pos)`` pairs for each
+    atom that names no known capability.
+
+    The vocabulary is the built-in capability set plus this module's
+    user-declared capabilities - the same vocabulary a package
+    ``[capabilities] max`` ceiling draws from. An unknown atom is always
+    a mistake (a typo or an out-of-scope name) and is reported wherever a
+    ``uses`` clause appears, independent of whether the trait has any
+    impls. This runs regardless of ``pub`` / ``capability`` status; a
+    redundant clause (on a private trait, amendment A2) is still checked
+    for well-formed names."""
+    known_cap_atoms = CAPABILITY_NAMES | frozenset(user_cap_names)
+    errors: list[tuple[str, object]] = []
+    for item in module.items:
+        if not isinstance(item, A.TraitDecl):
+            continue
+        for m in item.methods:
+            if m.uses is None:
+                continue
+            for atom in m.uses:
+                if atom not in known_cap_atoms:
+                    errors.append((
+                        f"unknown capability {_demangle_atom(atom)!r} in the "
+                        f"'uses' clause of method {m.name!r}; a 'uses' bound "
+                        f"may only name a built-in capability or a "
+                        f"user-declared 'capability' in scope",
+                        m.uses_pos or m.pos,
+                    ))
+    return errors
+
+
+def trait_bound_violations(
+    module: A.Module,
+    *,
+    user_cap_names: set[str],
+) -> list[tuple[str, object]]:
+    """Conformance check for the declared-bound feature (amendment A3).
+
+    For every FULLY-bounded ``pub`` trait, each ``impl`` method's
+    reachable footprint must be a SUBSET of the corresponding trait
+    method's declared bound ``B``. The footprint is computed with the
+    SAME charging reachability restricted to one method
+    (:func:`_impl_method_reachable_caps`): its parameter types, its return
+    type, and the receiver (fields + type arguments). Returns
+    ``(message, pos)`` pairs for each impl method that escapes its bound,
+    including an impl method whose footprint comes back authority-
+    unprovable (``TOP``), which is not a subset of any bound and so is
+    rejected by construction (amendment A4: a ``Fun`` in the signature, a
+    free type parameter, a nested-generic free type argument).
+
+    Fails closed on anything unresolved: an impl method carrying its own
+    generic type parameters is rejected rather than passed."""
+    reachable, unprovable = compute_reachability(
+        module, user_cap_names=user_cap_names,
+    )
+    known_cap_atoms = CAPABILITY_NAMES | frozenset(user_cap_names)
+    bounded = _bounded_pub_trait_bounds(module, known_cap_atoms)
+    if not bounded:
+        return []
+    known_type_names = _build_known_type_names(module, reachable)
+
+    impls_by_trait: dict[str, list[A.ImplBlock]] = {}
+    for item in module.items:
+        if isinstance(item, A.ImplBlock) and item.trait_name is not None:
+            impls_by_trait.setdefault(item.trait_name, []).append(item)
+
+    violations: list[tuple[str, object]] = []
+    for tname, per_method in bounded.items():
+        trait_disp = _demangle_atom(tname)
+        for impl in impls_by_trait.get(tname, ()):
+            for m in impl.methods:
+                atoms = per_method.get(m.name)
+                if atoms is None:
+                    # An impl method the trait does not declare: not a
+                    # bound-bearing position, left to the ordinary
+                    # trait-conformance checks.
+                    continue
+                bound = _closure_of_atoms(atoms, reachable)
+                declared_disp = "[" + ", ".join(
+                    sorted(_demangle_atom(a) for a in atoms)
+                ) + "]"
+                pos = getattr(m, "name_pos", None) or m.pos
+                # Fail closed on an impl method with its own generic type
+                # parameters: its footprint is not resolvable to a definite
+                # set here (mirrors the trait-side disqualification).
+                if getattr(m, "type_params", None):
+                    violations.append((
+                        f"impl method {m.name!r} of pub trait "
+                        f"{trait_disp!r} carries its own generic type "
+                        f"parameters, so its capability footprint cannot be "
+                        f"proved within the declared bound {declared_disp}; "
+                        f"remove the generics or widen the trait method's "
+                        f"'uses' clause",
+                        pos,
+                    ))
+                    continue
+                caps, unprov = _impl_method_reachable_caps(
+                    impl, m, reachable, unprovable, known_type_names,
+                )
+                if unprov:
+                    violations.append((
+                        f"impl method {m.name!r} of pub trait "
+                        f"{trait_disp!r} has an authority-unprovable "
+                        f"footprint (a Fun in its signature, a free type "
+                        f"parameter, or an unresolvable generic type "
+                        f"argument), which cannot be proved within the "
+                        f"declared bound {declared_disp}; widen the trait "
+                        f"method's 'uses' clause or remove it",
+                        pos,
+                    ))
+                    continue
+                excess = caps - bound
+                if excess:
+                    offending = ", ".join(
+                        sorted(_demangle_atom(c) for c in excess)
+                    )
+                    violations.append((
+                        f"impl method {m.name!r} of pub trait "
+                        f"{trait_disp!r} exercises capability "
+                        f"{offending!r}, outside the bound {declared_disp} "
+                        f"declared by the trait method's 'uses' clause",
+                        pos,
+                    ))
+    return violations
 
 
 def caps_reachable_via_sig(

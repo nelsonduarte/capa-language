@@ -717,6 +717,11 @@ class Analyzer(
         # higher-order call gets a clear, actionable error here rather
         # than a silent ``Unknown`` propagating into the backends.
         self._flush_pending_inferred_lambdas()
+        # Phase 2c: declared capability bounds on ``pub`` trait methods
+        # (the ``uses [...]`` clause). Validate the atom vocabulary and
+        # check every impl of a fully-bounded ``pub`` trait against its
+        # declared bound (footprint subset of B). Both are hard errors.
+        self._check_trait_declared_bounds(module)
         # Phase 3: non-fatal lints. One for now (migrate tooling
         # slice 2): an ``Unsafe`` parameter whose token provably never
         # reaches py_import/py_invoke can be dropped. Warnings never
@@ -770,6 +775,39 @@ class Analyzer(
             src = self.sources[pos.filename]
             fname = pos.filename
         self.warnings.append(AnalysisError(_demangle(message), pos, src, fname))
+
+    def _check_trait_declared_bounds(self, module: A.Module) -> None:
+        """Enforce declared capability bounds on ``pub`` trait methods.
+
+        Two hard-error checks, both delegating to the SAME charging
+        reachability that drives ``provably_excluded_capabilities`` so the
+        two never diverge (the soundness anchor of the feature):
+
+        - every ``uses`` atom must name a known capability (built-in or a
+          user-declared ``capability`` in scope);
+        - every ``impl`` method of a fully-bounded ``pub`` trait must have
+          a footprint that is a subset of the trait method's declared
+          bound ``B`` (an unprovable / excess footprint is rejected).
+
+        The user-capability name set is the analyzer-internal (mangled)
+        set - the ``capability`` declarations of this module - matching the
+        namespace the reachability machinery keeps."""
+        from ..manifest._reachability import (
+            trait_bound_violations,
+            trait_uses_atom_errors,
+        )
+        user_cap_names = {
+            item.name for item in module.items
+            if isinstance(item, A.TraitDecl) and item.is_capability
+        }
+        for message, pos in trait_uses_atom_errors(
+            module, user_cap_names=user_cap_names,
+        ):
+            self._err(message, pos)
+        for message, pos in trait_bound_violations(
+            module, user_cap_names=user_cap_names,
+        ):
+            self._err(message, pos)
 
     def _warn_dead_unsafe(self, module: A.Module) -> None:
         """Warn on every ``Unsafe`` parameter whose token provably

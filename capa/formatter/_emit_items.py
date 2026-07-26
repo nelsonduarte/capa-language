@@ -267,6 +267,10 @@ class _ItemsEmitterMixin:
         self._write(")")
         if m.return_type is not None:
             self._write(f" -> {self._emit_type(m.return_type)}")
+        # Declared capability bound (``uses [...]``): preserve it verbatim
+        # rather than drop it on a reformat. ``None`` means no clause.
+        if m.uses is not None:
+            self._write(f" uses [{', '.join(m.uses)}]")
         self._newline()
 
     # ------------------------------------------------------------
