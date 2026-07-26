@@ -277,6 +277,37 @@ class TestFreeGenericTypeArgument(unittest.TestCase):
         self.assertIn("Net", f["transitively_reachable_capabilities"])
         self.assertTrue(f["authority_provable_from_types"])
 
+    def test_builtin_nominal_type_args_stay_provable(self):
+        # The known-builtin-type set is the analyzer's authoritative one
+        # (capa.analyzer._frozen), so a nominal built-in like ``Unit`` /
+        # ``Task`` / ``Self`` used as an impl type argument resolves and is
+        # cap-free: charge nothing, stay provable. A re-listed copy that
+        # omitted these over-failed them; this pins against that drift.
+        for arg in ("Unit", "Task", "Self"):
+            src = (
+                "type Wrapper<T> {\n"
+                "    inner: T\n"
+                "}\n"
+                "\n"
+                "trait Doer\n"
+                "    fun do_it(self) -> Unit\n"
+                "\n"
+                f"impl Doer for Wrapper<{arg}>\n"
+                "    fun do_it(self) -> Unit\n"
+                "        return\n"
+                "\n"
+                "fun run_doer(d: Doer) -> Unit\n"
+                "    d.do_it()\n"
+                "    return\n"
+            )
+            m = _manifest(src)
+            f = _fn(m, "run_doer")
+            self.assertTrue(
+                f["authority_provable_from_types"],
+                f"Wrapper<{arg}> should be provable, not over-fail",
+            )
+            self.assertEqual(f["transitively_reachable_capabilities"], [])
+
 
 class TestBorrowFunArrowCaps(unittest.TestCase):
     """(c) A borrow-Fun whose arrow yields a capability charges it."""

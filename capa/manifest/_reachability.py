@@ -23,20 +23,19 @@ from __future__ import annotations
 from typing import Optional
 
 from .. import capa_ast as A
-from ..builtins import PARAMETRIC_TYPES
-from ..typesys import CAPABILITY_NAMES, PRIMITIVE_NAMES
+from ..analyzer._frozen import _BUILTIN_TYPE_NAMES
+from ..typesys import CAPABILITY_NAMES
 
-# The type names that denote a concrete, KNOWN type: built-in
-# capabilities, primitives, the built-in parametric/container types, and
-# the built-in ``JsonValue`` sum. Extended per-compilation with every
-# user-declared type name (see ``compute_reachability``). A ``TypeName``
-# head that is in none of these is a free/unbound generic type parameter.
-_BUILTIN_TYPE_NAMES: frozenset[str] = (
-    frozenset(CAPABILITY_NAMES)
-    | frozenset(PRIMITIVE_NAMES)
-    | frozenset(name for name, _params in PARAMETRIC_TYPES)
-    | frozenset({"JsonValue"})
-)
+# ``_BUILTIN_TYPE_NAMES`` (imported from ``capa.analyzer._frozen``) is the
+# analyzer's authoritative set of built-in type names: capabilities,
+# primitives, the built-in parametric/container types, and the built-in
+# nominal types (``JsonValue``, ``Task``, ``Self``, ``Unit``). It is
+# reused here as the SINGLE SOURCE OF TRUTH for the known-built-in-type
+# check in ``_type_arg_unresolvable``; re-listing it once drifted (it
+# omitted ``Unit``/``Task``/``Self`` and over-failed impls parameterised
+# on them). Extended per-compilation with every user-declared type name
+# (see ``compute_reachability``); a ``TypeName`` head that is in neither
+# is a free/unbound generic type parameter.
 
 
 def _caps_via_type(
