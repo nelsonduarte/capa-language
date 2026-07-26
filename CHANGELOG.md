@@ -9,6 +9,78 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.23.0], 2026-07-26
+
+A soundness release. Five confirmed holes in the capability and
+information-flow analysis are closed. Each let a program certify or
+accept a guarantee it did not honour. The information-flow fixes make the
+offending flow visible (a warning in the default tier, a hard error under
+`@strict_ifc`); the capability-charging fixes stop the manifest certifying
+a ceiling or exclusion the code violates. All five were reproduced with a
+running exploit before the fix.
+
+**Fixed.**
+
+- *Information-flow label totality; the `0..secret` public-sink leak.*
+  The confidentiality-label function is now total over the expression
+  AST. A range expression (`a..b`) and the typestate re-type node had no
+  rule and fell through to a terminal "public" default, so a secret
+  routed through `0..secret` and read back at a public sink (for example
+  via the range's length or a loop over it) was laundered to public and
+  accepted with no diagnostic, including under `@strict_ifc`. A range now
+  carries the join of its two endpoint labels and the re-type node
+  carries the label of the value it re-types. Any expression node with no
+  rule now raises a compiler-internal error instead of defaulting to
+  public, so a future unhandled node can no longer silently launder a
+  secret.
+
+- *Information-flow at call arguments.* The cross-function sink check
+  flags a `@secret` value that reaches a public sink inside a callee. For
+  a `Fun`-typed argument the callee invokes and sinks, the check now
+  recovers the closure's return label for argument shapes it previously
+  skipped and reported clean: a closure bound from a call result, a
+  by-name alias, a struct field, a re-passed parameter, and a reassigned
+  mutable binding. A secret-returning closure passed to a public `Fun`
+  parameter that sinks it is now flagged. Under `@strict_ifc` a reassigned
+  `Fun` argument whose return label is secret fails closed. This check is
+  best-effort in the default tier: it is kept free of false positives and
+  does not catch every mixed-closure shape.
+
+- *Capability charging for trait-typed positions.* A parameter, field, or
+  return typed as a plain trait (not a capability) charged zero
+  capabilities, so a package could certify a capability ceiling or
+  exclusion for authority an implementor exercises through dynamic
+  dispatch. A value of a trait type dispatches to an implementor's method,
+  so a private (sealed) trait position is now charged the union of its
+  visible implementors' reachable capabilities. A `pub` (externally
+  implementable) trait position is made authority-unprovable and fails
+  closed, exactly like a higher-order `Fun` parameter.
+
+- *Capability charging through generic implementors.* An implementor's
+  reachable capabilities are now computed through the receiver's type
+  arguments, so `impl SomeTrait for Wrapper<Smtp>` charges the `Net` that
+  `Smtp` carries instead of dropping it; a concrete cap-free argument
+  still charges nothing. An unresolvable free generic type argument
+  (`Wrapper<T>`) fails closed, since it may be instantiated downstream
+  with a cap-bearing type this compilation cannot see. The check reuses
+  the analyzer's authoritative builtin type-name set, so a nominal builtin
+  argument (`Unit`, `Task`, `Self`) stays provable.
+
+- *Capability charging for `borrow`-`Fun` parameters.* A `borrow` function
+  parameter whose arrow returns a capability (`borrow mk: Fun() -> Net`)
+  charged zero capabilities, so the ceiling relaxation could clear a
+  ceiling while the parameter's invocation hands back authority. Such a
+  parameter now charges the capabilities of its arrow. A cap-free arrow
+  (`Fun(Request) -> Response`) still charges nothing and keeps a clean,
+  provable ceiling.
+
+**Notes.**
+
+- These are capability and information-flow soundness fixes only. They do
+  not change the Wasm handle model or any other deferred item. The default
+  information-flow tier stays best-effort by design; `@strict_ifc` is the
+  fail-closed tier.
+
 ## [1.22.0], 2026-07-25
 
 **Added.**
@@ -9228,7 +9300,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.22.0...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.23.0...HEAD
+[1.23.0]: https://github.com/nelsonduarte/capa-language/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/nelsonduarte/capa-language/compare/v1.21.0...v1.22.0
 [0.5.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.5.0-alpha
 [0.4.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.4.0-alpha
