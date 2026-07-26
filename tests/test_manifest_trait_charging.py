@@ -15,13 +15,19 @@ dynamic dispatch:
     (``Smtp``, bearing ``Net``) was dropped because the implementor-union
     read ``reachable[Wrapper]`` and never consulted the type arguments.
     This shipped as a live false-exclusion on the existing user-capability
-    path and the new trait path inherits the same union machinery.
+    path and the new trait path inherits the same union machinery. A
+    CONCRETE argument (cap-bearing or cap-free) is charged precisely; a
+    FREE/unbound generic argument (``Wrapper<T>``) names no concrete type
+    and could be instantiated downstream with a cap-bearing type, so it
+    fails CLOSED (authority-unprovable) rather than charging zero.
 
 (c) a ``borrow mk: Fun() -> Net`` whose body invokes ``mk().get(...)``:
     the arrow's return type was never walked for caps, so the ceiling
     relaxation certified a Net exclusion the function actually exercises.
 
-None of the three may ever produce a FALSE exclusion.
+The charging is sound for resolvable receiver / type-argument / method-
+signature caps, and an unresolvable generic type argument fails closed, so
+none of these shapes produces a FALSE exclusion.
 """
 
 import unittest
@@ -198,6 +204,77 @@ class TestImplTypeArguments(unittest.TestCase):
         f = _fn(m, "run_doer")
         self.assertEqual(f["transitively_reachable_capabilities"], [])
         self.assertIn("Net", f["provably_excluded_capabilities"])
+        self.assertTrue(f["authority_provable_from_types"])
+
+
+# ``impl Doer for Wrapper<T>`` with a FREE type parameter T. The receiver
+# type argument names no concrete type, so it could be instantiated
+# downstream with a cap-bearing type this compilation cannot see. The
+# method dispatches through the generic member, so at runtime it exercises
+# whatever T reaches. The charging must fail closed, not charge zero.
+def _free_param_src(trait_kw: str) -> str:
+    return (
+        "capability Emailer\n"
+        "    fun send(self, msg: String) -> Unit\n"
+        "\n"
+        "type Smtp {\n"
+        "    net: Net\n"
+        "}\n"
+        "\n"
+        "impl Emailer for Smtp\n"
+        "    fun send(self, msg: String) -> Unit\n"
+        "        return\n"
+        "\n"
+        "type Wrapper<T> {\n"
+        "    inner: T\n"
+        "}\n"
+        "\n"
+        f"{trait_kw} Doer\n"
+        "    fun do_it(self) -> Unit\n"
+        "\n"
+        "impl Doer for Wrapper<T>\n"
+        "    fun do_it(self) -> Unit\n"
+        "        self.inner.send(\"x\")\n"
+        "        return\n"
+        "\n"
+        "fun run_doer(d: Doer) -> Unit\n"
+        "    d.do_it()\n"
+        "    return\n"
+    )
+
+
+class TestFreeGenericTypeArgument(unittest.TestCase):
+    """(b) A FREE generic type argument fails closed, not charge-zero.
+
+    ``impl Doer for Wrapper<T>`` where T is unbound could be instantiated
+    downstream with a cap-bearing type, so the position is authority-
+    UNPROVABLE rather than provably-excluding the caps the dispatch
+    exercises. Only a free/unbound parameter fails closed; a concrete
+    argument (cap-bearing or cap-free) still charges precisely."""
+
+    def test_trait_path_free_param_is_unprovable(self):
+        m = _manifest(_free_param_src("trait"))
+        f = _fn(m, "run_doer")
+        self.assertFalse(f["authority_provable_from_types"])
+        self.assertEqual(f["provably_excluded_capabilities"], [])
+        # The caps the dispatch exercises are NOT falsely excluded.
+        self.assertNotIn("Net", f["provably_excluded_capabilities"])
+        self.assertNotIn("Emailer", f["provably_excluded_capabilities"])
+
+    def test_user_capability_path_free_param_is_unprovable(self):
+        m = _manifest(_free_param_src("capability"))
+        f = _fn(m, "run_doer")
+        self.assertFalse(f["authority_provable_from_types"])
+        self.assertEqual(f["provably_excluded_capabilities"], [])
+        self.assertNotIn("Net", f["provably_excluded_capabilities"])
+
+    def test_concrete_cap_bearing_arg_still_charges_not_fails(self):
+        # Belt and braces alongside TestImplTypeArguments: a concrete
+        # cap-bearing type argument is charged precisely and stays
+        # provable (it does NOT fail closed).
+        m = _manifest(_wrapper_src("trait", "Smtp"))
+        f = _fn(m, "run_doer")
+        self.assertIn("Net", f["transitively_reachable_capabilities"])
         self.assertTrue(f["authority_provable_from_types"])
 
 

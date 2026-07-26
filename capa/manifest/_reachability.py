@@ -23,7 +23,20 @@ from __future__ import annotations
 from typing import Optional
 
 from .. import capa_ast as A
-from ..typesys import CAPABILITY_NAMES
+from ..builtins import PARAMETRIC_TYPES
+from ..typesys import CAPABILITY_NAMES, PRIMITIVE_NAMES
+
+# The type names that denote a concrete, KNOWN type: built-in
+# capabilities, primitives, the built-in parametric/container types, and
+# the built-in ``JsonValue`` sum. Extended per-compilation with every
+# user-declared type name (see ``compute_reachability``). A ``TypeName``
+# head that is in none of these is a free/unbound generic type parameter.
+_BUILTIN_TYPE_NAMES: frozenset[str] = (
+    frozenset(CAPABILITY_NAMES)
+    | frozenset(PRIMITIVE_NAMES)
+    | frozenset(name for name, _params in PARAMETRIC_TYPES)
+    | frozenset({"JsonValue"})
+)
 
 
 def _caps_via_type(
@@ -152,31 +165,66 @@ def _type_mentions_any(
     return False
 
 
+def _type_arg_unresolvable(
+    t: Optional[A.TypeExpr], known_type_names: frozenset[str]
+) -> bool:
+    """True if ``t`` contains a ``TypeName`` head that names no known
+    type - a free/unbound generic type parameter.
+
+    A concrete argument (a built-in like ``Int``/``List`` or a
+    user-declared type) resolves to a definite reachable set (possibly
+    empty), so it is charged precisely. A free type parameter (``T`` in
+    ``impl SomeTrait for Wrapper<T>``) could be instantiated downstream
+    with a capability-bearing type this compilation cannot see, so an
+    impl carrying it must fail CLOSED (authority-unprovable) rather than
+    charge the zero caps its unresolved name resolves to. A ``Fun`` arrow
+    is not flagged here: its unprovable downgrade is already handled by
+    ``_caps_via_type``'s ``has_fun`` short-circuit at the call site."""
+    if isinstance(t, A.TypeName):
+        if t.name not in known_type_names:
+            return True
+        return any(
+            _type_arg_unresolvable(a, known_type_names)
+            for a in (t.args or ())
+        )
+    if isinstance(t, A.TupleType):
+        return any(
+            _type_arg_unresolvable(e, known_type_names) for e in t.elements
+        )
+    return False
+
+
 def _impl_reachable_caps(
     impl: A.ImplBlock,
     reachable: dict[str, set[str]],
     unprovable: set[str],
+    known_type_names: frozenset[str],
 ) -> tuple[set[str], bool]:
     """Caps an implementor of a trait can transitively exercise, plus
     whether it makes the trait unprovable.
 
     Returns ``(caps, unprov)`` where ``caps`` is the union of built-in
     (and user-) caps reachable through the impl's receiver type, the
-    receiver's TYPE ARGUMENTS, and the impl method signatures, and
-    ``unprov`` is True when the impl carries a ``Fun`` (in a type arg or
-    a method sig) or mentions an already-unprovable type - in which case
-    the reachable set is not a sound upper bound and the trait must
-    downgrade fully.
+    receiver's TYPE ARGUMENTS, and the impl method signatures. ``unprov``
+    is True when the reachable set is NOT a sound upper bound and the
+    trait must downgrade fully: the impl carries a ``Fun`` (in a type arg
+    or a method sig), mentions an already-unprovable type, or carries an
+    UNRESOLVABLE type argument (a free generic parameter).
 
     The receiver's type ARGUMENTS are walked because an
     ``impl SomeTrait for Wrapper<Smtp>`` exercises whatever ``Smtp``
     reaches (``Net``), which ``reachable[Wrapper]`` alone drops: the impl
     stores the concrete arguments in ``type_args``, not as ``args`` on a
     ``TypeName``, so the ordinary field/signature walk never sees them.
-    ``_caps_via_type`` resolves each argument exactly as it already does
-    for a generic argument inside a struct field (a cap-free argument
-    charges nothing; a ``Fun`` argument marks the trait unprovable), so a
-    cap-bearing argument is charged and a cap-free one does not over-fail.
+    A concrete argument is resolved by ``_caps_via_type`` exactly as it
+    already is for a generic argument inside a struct field (a cap-free
+    argument charges nothing; a cap-bearing one is charged). A FREE
+    generic argument (``Wrapper<T>``) resolves to no known type and could
+    be instantiated downstream with a cap-bearing type, so it fails
+    closed instead of charging zero (``_type_arg_unresolvable``).
+
+    The union is SOUND for resolvable receiver / type-argument / method-
+    signature caps; an unresolvable generic type argument fails closed.
     """
     caps: set[str] = set()
     unprov = False
@@ -187,7 +235,11 @@ def _impl_reachable_caps(
     if impl.type_name in unprovable:
         unprov = True
     # Caps carried by the receiver's TYPE ARGUMENTS (``Wrapper<Smtp>``).
+    # A free/unbound argument (``Wrapper<T>``) is charge-UNPROVABLE, not
+    # charge-zero: it could be a cap-bearing type downstream.
     for ta in impl.type_args or ():
+        if _type_arg_unresolvable(ta, known_type_names):
+            unprov = True
         cs, hf = _caps_via_type(ta, reachable)
         caps |= cs
         if hf:
@@ -395,6 +447,23 @@ def compute_reachability(
     # exactly like a ``Fun`` in the signature.
     unprovable: set[str] = set(fun_bearing_structs) | pub_trait_names
 
+    # The names that denote a concrete, KNOWN type: the built-in set plus
+    # every user-declared type in this compilation (all reachable keys -
+    # structs, sums, plain traits and user capabilities - plus typestates
+    # and extern-component boundaries, which are not seeded into
+    # ``reachable``). A ``TypeName`` head appearing in an impl's type
+    # arguments that is in none of these is a free/unbound generic
+    # parameter, which must fail closed rather than charge zero.
+    known_type_names: frozenset[str] = (
+        _BUILTIN_TYPE_NAMES
+        | frozenset(reachable.keys())
+        | frozenset(
+            item.name
+            for item in module.items
+            if isinstance(item, (A.TypestateDecl, A.ExternComponent))
+        )
+    )
+
     changed = True
     while changed:
         changed = False
@@ -465,7 +534,9 @@ def compute_reachability(
             was_unprovable = tname in unprovable
             new_caps = set(reachable[tname])
             for impl in impls_by_trait.get(tname, ()):
-                cs, unprov = _impl_reachable_caps(impl, reachable, unprovable)
+                cs, unprov = _impl_reachable_caps(
+                    impl, reachable, unprovable, known_type_names,
+                )
                 new_caps |= cs
                 if unprov:
                     unprovable.add(tname)
