@@ -427,6 +427,33 @@ class _DispatchMixin:
         for param_ty, arg_ty in zip(fun_ty.params, arg_tys):
             unify(param_ty, arg_ty, mapping)
 
+        # Seed a reflexive rigid binding, mirroring the receiver-type-arg
+        # seeding the method dispatcher already does (``_check_method_dispatch``:
+        # ``mapping[param] = receiver arg``). A return type parameter matched
+        # against a caller's RIGID type variable of the SAME NAME
+        # (``id<T>(x: T) -> T`` called as ``id(x)`` where ``x: T``) is left
+        # unbound by ``unify``: its reflexive shortcut (``T`` vs ``T``) returns
+        # consistent WITHOUT binding, to avoid a self-binding loop. Then
+        # ``instantiate`` defaults the unbound parameter to ``TyUnknown``, so
+        # the call result loses the rigid identity and reads back as ``?``.
+        # That let an INLINE generic call launder a bare type parameter past
+        # the member-access / index guard (``id(x).field`` / ``id(x).m()`` /
+        # ``x[0]`` reached through ``id``), the same silent divergence those
+        # guards close for the direct and ``let``-bound forms. Binding each
+        # such parameter to the rigid argument makes the result carry the
+        # rigid ``T`` exactly as the ``let``-bound and method-dispatch paths
+        # already do. A FLEXIBLE ``?`` argument (a genuine inference
+        # placeholder, e.g. an empty ``[]``) is excluded, so this does not
+        # over-fix a receiver that legitimately resolves elsewhere.
+        for param_ty, arg_ty in zip(fun_ty.params, arg_tys):
+            if not (isinstance(param_ty, TyVar) and param_ty.name in type_params):
+                continue
+            if param_ty.name in mapping:
+                continue
+            resolved_arg = self._resolve_ty(arg_ty)
+            if isinstance(resolved_arg, TyVar) and not is_flexible(resolved_arg):
+                mapping[param_ty.name] = resolved_arg
+
         # Non-lambda arguments fixed the generic params above; now that
         # the expected ``Fun(..)`` type of each lambda slot is known,
         # re-check any lambda whose annotations were left to be

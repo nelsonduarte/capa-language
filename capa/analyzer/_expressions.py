@@ -659,6 +659,23 @@ class _ExpressionsMixin:
                     e.pos,
                 )
                 return TyUnknown
+            # Indexing a value whose static type is an UNBOUNDED generic
+            # type parameter (a rigid ``TyVar`` such as ``T``) is unsound:
+            # nothing constrains ``T`` to be a List / indexable, so the
+            # program is ill-typed even though the runtime fails loud
+            # rather than silently. Reject at the source, symmetric with
+            # the member-access guards. A FLEXIBLE ``?`` inference variable
+            # is excluded (it is a genuine not-yet-resolved placeholder).
+            resolved_recv = self._resolve_ty(recv_ty)
+            if isinstance(resolved_recv, TyVar) and not is_flexible(resolved_recv):
+                self._err(
+                    f"cannot index into a value of generic type parameter "
+                    f"{resolved_recv.name!r}; an unconstrained type "
+                    f"parameter is not known to be indexable (a bound would "
+                    f"be required, and bounds are not yet available)",
+                    e.pos,
+                )
+                return TyUnknown
             return TyUnknown
         if isinstance(e, A.Try):
             inner = self._check_expr(e.expr)

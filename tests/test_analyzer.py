@@ -1586,6 +1586,204 @@ class TestMemberAccessOnTypeParamRejected(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestInlineGenericCallLaunderRejected(unittest.TestCase):
+    """An INLINE generic-call result cannot launder a bare type parameter
+    past the member-access / index guards.
+
+    ``id<T>(x: T) -> T`` called as ``id(x)`` where ``x: T`` shares the
+    caller's parameter NAME. ``unify`` reflexively matched ``T`` vs ``T``
+    without binding, so ``instantiate`` defaulted the return parameter to
+    ``TyUnknown`` and the call result read back as ``?`` at the access
+    site, which the rigid-``TyVar`` guard skipped. ``id(x).field`` then
+    let a String inhabit an ``-> Int`` binding, the same silent divergence
+    the direct and ``let``-bound forms already reject. The free-call path
+    now seeds the reflexive rigid binding (as method dispatch already does
+    from the receiver's type argument), so the result carries the rigid
+    ``T`` and is caught. Opaque inline flow (return / store / pass the
+    result, no member access) stays accepted."""
+
+    _ID = (
+        "type Box<T> { field: T, name: T, a: T }\n"
+        "fun id<T>(x: T) -> T\n"
+        "    return x\n"
+    )
+
+    def test_inline_field_access_rejected(self):
+        msgs = errors_of(
+            self._ID
+            + "fun leak<T>(x: T) -> Int\n"
+            "    return id(x).field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_inline_method_call_rejected(self):
+        msgs = errors_of(
+            self._ID
+            + "fun leak<T>(x: T) -> Int\n"
+            "    return id(x).name()\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'name'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_inline_chained_field_access_rejected(self):
+        # ``id(x).a.b``: the first hop ``id(x).a`` is already the rejected
+        # access on the bare parameter.
+        msgs = errors_of(
+            self._ID
+            + "fun leak<T>(x: T) -> Int\n"
+            "    return id(x).a.b\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'a'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_nested_inline_call_field_access_rejected(self):
+        # ``id(id(x)).field``: the inner call yields rigid T, the outer
+        # call preserves it, the field access is caught.
+        msgs = errors_of(
+            self._ID
+            + "fun leak<T>(x: T) -> Int\n"
+            "    return id(id(x)).field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_let_bound_inline_call_field_access_rejected(self):
+        # The ``let``-bound form: ``let z = id(x)`` commits z to rigid T,
+        # ``z.field`` is caught.
+        msgs = errors_of(
+            self._ID
+            + "fun leak<T>(x: T) -> Int\n"
+            "    let z = id(x)\n"
+            "    return z.field\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "'field'" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_inline_result_returned_still_accepted(self):
+        # Opaque: the inline result flows out as a T return, no member
+        # access on it. Must stay accepted.
+        r = check(
+            self._ID
+            + "fun wrap<T>(x: T) -> T\n"
+            "    return id(x)\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_inline_result_stored_and_passed_still_accepted(self):
+        # Opaque: the inline result stored in a field and passed nested.
+        r = check(
+            self._ID
+            + "fun store_it<T>(x: T) -> Box<T>\n"
+            "    return Box { field: id(x), name: x, a: x }\n"
+            "fun pass_it<T>(x: T) -> T\n"
+            "    return id(id(x))\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+class TestIndexOnTypeParamRejected(unittest.TestCase):
+    """Indexing a value whose static type is an unbounded generic type
+    parameter is unsound (nothing constrains ``T`` to be indexable) and is
+    rejected, symmetric with the member-access guards. A concrete
+    ``List<T>`` / tuple index stays allowed, and a genuine inference
+    placeholder is not swept up."""
+
+    def test_index_on_bare_type_param_rejected(self):
+        msgs = errors_of(
+            "fun leak<T>(x: T) -> Int\n"
+            "    return x[0]\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "index" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_index_on_inline_generic_call_rejected(self):
+        msgs = errors_of(
+            "fun id<T>(x: T) -> T\n"
+            "    return x\n"
+            "fun leak<T>(x: T) -> Int\n"
+            "    return id(x)[0]\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "generic type parameter 'T'" in m and "index" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_index_on_concrete_list_of_t_still_accepted(self):
+        # Indexing a resolvable ``List<T>`` container is fine; the element
+        # type is the parameter, but the receiver is not the bare T.
+        r = check(
+            "fun firstish<T>(xs: List<T>) -> T\n"
+            "    return xs[0]\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_index_on_inference_list_not_rejected(self):
+        # Precision point: indexing an empty-inferred ``List<?>`` stays
+        # accepted (the element is a flexible placeholder, not a rigid T).
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    var xs = []\n"
+            "    xs.push(1)\n"
+            "    let n = xs[0]\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 # =============================================================
 # Method dispatch
 # =============================================================
