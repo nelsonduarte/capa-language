@@ -981,25 +981,30 @@ class TestCrossFnClosureByNameTwoHop(unittest.TestCase):
             [e.message for e in r.errors],
         )
 
-    def test_var_reassigned_secret_then_public_lambda_stays_clean(self):
-        # The reverse order keeps the ``var``'s FIRST-inferred
-        # secret-returning slot type; reassigning a public closure does
-        # not lower it, and the closure-by-name boundary check keeps its
-        # documented poison-skip for the reassigned name -- so this stays
-        # clean (no false positive), the conservative but FP-free outcome.
-        r = _analyze(
-            self._INVOKE
-            + "@strict_ifc()\n"
+    def test_var_reassigned_secret_then_public_default_clean_strict_flagged(self):
+        # A ``var`` reassigned secret-then-public has an ambiguous
+        # denotation: its joined resolved type reads secret while it now
+        # holds a public closure. The DEFAULT tier stays precise and skips
+        # it (a public closure was assigned, so no false positive). The
+        # STRICT tier FAILS CLOSED and flags it -- an accepted over-rejection
+        # (the reject-first posture), the price of closing the mixed-var leak
+        # where a SECRET closure is the value actually held at the sink
+        # (a public decoy having merely been assigned first). See
+        # ``_fun_arg_ret_label``.
+        body = (
             "fun main(stdio: Stdio, s: @secret String)\n"
             "    var f = fun () -> String => s\n"
             "    f = fun () -> String => \"pub\"\n"
             "    invoke(f, stdio)\n"
         )
+        r = _analyze(self._INVOKE + body)
         self.assertTrue(r.ok, [e.message for e in r.errors])
         self.assertEqual(len(_crossfn_warnings(r)), 0,
                          [w.message for w in r.warnings])
-        self.assertEqual(len(_crossfn_errors(r)), 0,
-                         [e.message for e in r.errors])
+        rs = _analyze(self._INVOKE + "@strict_ifc()\n" + body)
+        self.assertFalse(rs.ok, [e.message for e in rs.errors])
+        self.assertEqual(len(_crossfn_errors(rs)), 1,
+                         [e.message for e in rs.errors])
 
     def test_var_reassigned_non_lambda_stays_skip(self):
         # A ``var`` reassigned a NON-lambda value (a call result) can no

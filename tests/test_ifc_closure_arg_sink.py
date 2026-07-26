@@ -167,19 +167,48 @@ class TestClosureArgSinkStaysClean(unittest.TestCase):
         self.assertTrue(r.ok, [e.message for e in r.errors])
         self.assertEqual(_crossfn_errors(r), [])
 
-    def test_reassigned_var_secret_then_public_no_false_positive(self):
-        # A var reassigned from a secret closure to a public one: its joined
-        # resolved type can read secret, but it now holds a public closure --
-        # the ambiguous denotation must be skipped, not flagged.
-        r = _strict(
+    def test_reassigned_var_secret_then_public_default_clean_strict_flagged(self):
+        # A var reassigned from a secret closure to a public one has an
+        # ambiguous denotation (its joined resolved type reads secret while
+        # it now holds a public closure). The DEFAULT tier stays precise and
+        # skips it (no false positive). The STRICT tier fails closed and
+        # flags it -- an accepted strict-tier over-rejection, the price of
+        # closing the mixed-var-holds-secret leak without a warn-tier FP.
+        src = (
             _INVOKE
             + "fun main(stdio: Stdio, s: @secret String)\n"
             "    var f = fun () -> String => s\n"
             "    f = fun () -> String => \"pub\"\n"
             "    invoke(f, stdio)\n"
         )
+        r = _analyze(src)
         self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(_crossfn_errors(r), [])
+        self.assertEqual(_crossfn_warnings(r), [])
+        rs = _strict(src)
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_crossfn_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_mixed_var_public_then_secret_flagged_strict(self):
+        # A var declared with a secret-returning slot, assigned a PUBLIC
+        # decoy first (which marks it ever-public) then a SECRET closure it
+        # actually holds at the sink. The default tier skips it (ever-public,
+        # best-effort), but the strict tier must reject this real leak.
+        src = (
+            _INVOKE
+            + "fun main(env: Env, stdio: Stdio)\n"
+            "    let k = env.get(\"K\").unwrap_or(\"d\")\n"
+            "    var f: Fun() -> @secret String = fun () => \"PUBLIC-DECOY\"\n"
+            "    f = fun () => k\n"
+            "    invoke(f, stdio)\n"
+        )
+        r = _analyze(src)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_crossfn_warnings(r), [])
+        rs = _strict(src)
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_crossfn_errors(rs)), 1,
+                         [e.message for e in rs.errors])
 
 
 class TestReassignedVarHoldsSecretIsFlagged(unittest.TestCase):

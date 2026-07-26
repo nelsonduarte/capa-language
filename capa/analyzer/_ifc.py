@@ -1394,12 +1394,18 @@ class _IfcMixin:
         the call-result-binding false negative (a honestly-secret-returning
         factory whose result is later sunk by a public-``Fun`` callee).
 
-        ONE residual skip (``None``) REMAINS, to keep ZERO false positive:
-        a ``var`` that is EVER REASSIGNED. Its resolved type is the JOIN
-        over every assigned closure, so it can read ``secret`` even when the
-        name currently denotes a PUBLIC closure -- recovering the ret_label
-        there would be a false positive, so the ambiguous denotation is
-        skipped (a residual false negative, deliberately preferred).
+        A REASSIGNED ``var`` has an ambiguous denotation, and the two tiers
+        resolve it differently (``_fun_arg_ret_label``). In the DEFAULT
+        (warn) tier the check is precise: it flags the ``var`` only when
+        EVERY closure ever assigned to it is secret-returning, and SKIPS an
+        ever-public / mixed ``var`` (its current closure may be public), a
+        best-effort documented limitation that keeps the warn tier free of
+        false positives. In the STRICT tier the check FAILS CLOSED: any
+        reassigned Fun argument whose resolved ``TyFun.ret_label`` is secret
+        is flagged, regardless of ever-public -- the mixed ``var`` whose last
+        assignment is secret is a real leak, so the strict tier over-rejects
+        (a public-only-final ``var`` becomes an accepted strict-tier false
+        positive, consistent with the strict tier's reject-first posture).
 
         The parameter kind is told apart by its declared TYPE: a ``TyFun``
         parameter is the invoke case, anything else the data case."""
@@ -1420,18 +1426,26 @@ class _IfcMixin:
         resolved ``TyFun`` type for the sink-path boundary check. ``None``
         when the type is not a resolved ``TyFun`` (nothing to test).
 
-        A REASSIGNED ``var`` has an ambiguous denotation, so its joined
-        resolved type could read ``secret`` even when the name currently
-        holds a PUBLIC closure. It is recovered SOUNDLY: the resolved label
-        is returned only when EVERY closure ever assigned to the ``var`` is
-        secret-returning (``_var_ever_public_fun`` does not hold its id) --
-        the ``var`` then holds a secret-returning closure on every path and
-        at every point, so flagging is never a false positive. Once a
-        public-returning closure has been assigned the current value MAY be
-        public, so the check skips (``None``): a narrower residual fail-open
-        than the old blanket skip, and a public-then-secret reassignment
-        into a PUBLIC slot is already caught at the store site
-        (``_check_closure_ret_flow`` at ``_check_assign``)."""
+        A REASSIGNED ``var`` has an ambiguous denotation -- its joined
+        resolved type can read ``secret`` even when the name currently holds
+        a PUBLIC closure -- so the two tiers resolve it differently:
+
+        * DEFAULT (warn): recover the resolved label only when EVERY closure
+          ever assigned to the ``var`` is secret-returning
+          (``_var_ever_public_fun`` does not hold its id); the ``var`` then
+          holds a secret closure on every path and at every point, so
+          flagging is never a false positive. Once a public-returning
+          closure has been assigned, the current value MAY be public, so the
+          warn tier SKIPS (``None``) -- a best-effort documented limitation
+          that keeps the warn tier free of false positives.
+        * STRICT: FAIL CLOSED. Drop the ever-public exception and return the
+          resolved ``TyFun.ret_label`` for any reassigned ``var`` -- a mixed
+          ``var`` whose last assignment is secret is a real leak the strict
+          tier must reject, and the strict tier accepts the resulting
+          over-rejection on a public-only-final ``var`` (its reject-first
+          posture). A public-then-secret reassignment into a PUBLIC slot is
+          in any case already caught at the store site
+          (``_check_closure_ret_flow`` at ``_check_assign``)."""
         from ..typesys import TyFun
         if isinstance(arg, A.Ident):
             sym = self.bindings.get(id(arg))
@@ -1439,6 +1453,7 @@ class _IfcMixin:
                 sym is not None
                 and self._binding_reassigned(sym)
                 and id(sym) in self._var_ever_public_fun
+                and not getattr(self, "_strict_ifc", False)
             ):
                 return None
         arg_ty = self.types.get(id(arg))

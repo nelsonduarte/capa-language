@@ -477,17 +477,20 @@ class Analyzer(
         # ``var`` that was EVER assigned a PUBLIC-returning closure (at its
         # introduction or any reassignment). A reassigned ``var`` has an
         # ambiguous denotation, so the invoke-sink boundary check would
-        # otherwise skip it (fail open). It is now recovered SOUNDLY: the
-        # check flags such a ``var`` only when EVERY closure assigned to it
-        # is secret-returning -- i.e. its id is NOT in this set -- because
-        # then the ``var`` holds a secret-returning closure on every path
-        # and at every point, so reading its (joined) secret return label is
-        # never a false positive. Once any public-returning closure has been
-        # assigned the current value MAY be public, so the check skips (a
-        # narrower residual fail-open than the old blanket skip; a
-        # public-then-secret reassignment into a PUBLIC slot is already
-        # caught at the store site). Populated by ``_note_fun_var_assignment``
-        # at the ``var`` introduction and at every reassignment.
+        # otherwise skip it (fail open). It is now recovered by tier
+        # (``_fun_arg_ret_label``): the DEFAULT (warn) tier flags such a
+        # ``var`` only when EVERY closure assigned to it is secret-returning
+        # -- i.e. its id is NOT in this set -- because then the ``var`` holds
+        # a secret-returning closure on every path and at every point, so
+        # reading its (joined) secret return label is never a false positive;
+        # an ever-public / mixed ``var`` is SKIPPED in the warn tier
+        # (best-effort, keeps the warn tier free of false positives). The
+        # STRICT tier ignores this set and FAILS CLOSED on any reassigned Fun
+        # arg with a secret resolved ret_label (a mixed ``var`` whose last
+        # assignment is secret is a real leak), accepting the over-rejection
+        # on a public-only-final ``var``. Populated by
+        # ``_note_fun_var_assignment`` at the ``var`` introduction and at
+        # every reassignment.
         self._var_ever_public_fun: set[int] = set()
         # Roadmap S2 (per-field IFC precision). Parallel to
         # ``self._expr_labels`` but only for STRUCT-typed expressions:
