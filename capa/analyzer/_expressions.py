@@ -1146,22 +1146,20 @@ class _ExpressionsMixin:
                 e.pos,
             )
             return TyUnknown
-        # A STRUCTURAL value (a tuple, a function, or unit) has no fields.
-        # Every nominal receiver (a struct, capability, trait, or a built-in
-        # container / primitive registered like a struct) is handled above
-        # with its field type or a ``has no field`` error, so only these
-        # structural shapes and a genuine inference-unknown reach here.
-        # Falling through to a permissive ``TyUnknown`` let an ill-typed
-        # ``t.field`` inhabit a typed binding. Reject the structural cases;
-        # keep a genuine inference-unknown (``TyUnknown`` / flexible ``?``)
-        # permissive.
-        if isinstance(resolved_rty, (TyTuple, TyFun)) or resolved_rty is TyUnit:
+        # FAIL CLOSED. Only structs have fields, and a struct receiver
+        # resolves above (its field type or a ``has no field`` error). Any
+        # other CONCRETE receiver that reached this fall-through (a tuple, a
+        # function, unit, a user sum, a typestate, a built-in, ...) has no
+        # such field: reject it, whatever the type kind, rather than return a
+        # permissive ``TyUnknown`` that lets an ill-typed ``t.field`` /
+        # ``sumval.field`` inhabit a typed binding. A GENUINE inference-
+        # unknown (``TyUnknown`` / flexible ``?``) stays permissive.
+        if not self._is_inference_unknown(resolved_rty):
             self._err(
-                f"a value of type {ty_str(resolved_rty)} has no field "
-                f"{e.field_name!r} (only structs have fields)",
+                f"cannot access field {e.field_name!r} on a value of type "
+                f"{ty_str(resolved_rty)}; only structs have fields",
                 e.pos,
             )
-            return TyUnknown
         return TyUnknown
 
     def _check_typestate_new(self, e: A.StructLit) -> Ty:

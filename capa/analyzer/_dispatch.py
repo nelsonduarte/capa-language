@@ -26,7 +26,7 @@ from typing import Optional
 
 from .. import capa_ast as A
 from ..typesys import (
-    CAPABILITY_NAMES, Ty, TyFun, TyName, TyTuple, TyUnit, TyUnknown, TyVar,
+    CAPABILITY_NAMES, Ty, TyFun, TyName, TyUnknown, TyVar,
     instantiate, is_flexible, substitute, ty_str, unify,
 )
 
@@ -391,6 +391,20 @@ class _DispatchMixin:
                 f"are not yet available)",
                 e.pos,
             )
+            return TyUnknown
+        # FAIL CLOSED. A function callee resolves above (its arrow return
+        # type). Any other CONCRETE callee that reached this fall-through (a
+        # struct, a sum, an Int, a tuple, ...) is not callable: reject it,
+        # rather than return a permissive ``TyUnknown`` that lets an
+        # ill-typed ``mkt()()`` / ``geti()()`` result inhabit a typed
+        # binding. A GENUINE inference-unknown (``TyUnknown`` / flexible
+        # ``?``) stays permissive.
+        if not self._is_inference_unknown(callee_ty):
+            self._err(
+                f"cannot call a value of type {ty_str(callee_ty)}; it is not "
+                f"a function",
+                e.pos,
+            )
         return TyUnknown
 
     def _resolve_inferred_lambda_args(
@@ -704,22 +718,21 @@ class _DispatchMixin:
             )
             return TyUnknown
 
-        # A STRUCTURAL value (a tuple, a function, or unit) has no methods.
-        # Every nominal receiver (a capability, trait, struct, sum, or a
-        # built-in container / primitive registered like one) is handled
-        # above with a real dispatch or a ``has no method`` error, so only
-        # these structural shapes and a genuine inference-unknown reach here.
-        # Falling through to a permissive ``TyUnknown`` let an ill-typed
-        # ``t.foo()`` / ``getf().foo()`` result inhabit a typed binding.
-        # Reject the structural cases; keep a genuine inference-unknown
-        # (``TyUnknown`` / flexible ``?``) permissive.
-        if isinstance(resolved_recv, (TyTuple, TyFun)) or resolved_recv is TyUnit:
+        # FAIL CLOSED. Every nominal receiver (a capability, trait, struct,
+        # sum, typestate, or a built-in container / primitive registered like
+        # one) is dispatched or ``has no method``-errored above, so any
+        # CONCRETE receiver reaching this fall-through (a tuple, a function,
+        # unit, or any other type kind) has no such method: reject it, rather
+        # than return a permissive ``TyUnknown`` that lets an ill-typed
+        # ``t.foo()`` / ``getf().foo()`` result inhabit a typed binding. A
+        # GENUINE inference-unknown (``TyUnknown`` / flexible ``?``) stays
+        # permissive.
+        if not self._is_inference_unknown(resolved_recv):
             self._err(
-                f"a value of type {ty_str(resolved_recv)} has no method "
-                f"{e.method!r} (only nominal types have methods)",
+                f"cannot call method {e.method!r} on a value of type "
+                f"{ty_str(resolved_recv)}",
                 e.pos,
             )
-            return TyUnknown
 
         return TyUnknown
 

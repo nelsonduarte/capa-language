@@ -1878,13 +1878,16 @@ class TestNonListIndexRejected(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
-class TestStructuralMemberAccessRejected(unittest.TestCase):
-    """Field access and method calls on a STRUCTURAL value (a tuple, a
-    function, or unit) have no member: the field / method terminals used to
-    return a permissive ``TyUnknown`` that let ``let n: Int = t.field`` /
-    ``t.foo()`` / ``getf().foo()`` inhabit a typed binding and reach
-    runtime. They are now rejected. Nominal receivers (structs, containers,
-    primitives) keep their own ``has no field / method`` diagnostics."""
+class TestConcreteReceiverMemberAccessRejected(unittest.TestCase):
+    """The field / method / index / inline-call terminals FAIL CLOSED: a
+    permissive ``TyUnknown`` is returned ONLY for a genuine inference-unknown
+    (a flexible ``?`` or an already-``TyUnknown``). ANY concrete resolved
+    receiver / callee that reaches a terminal matched no modeled branch, so
+    the access / call / index is unsupported or ill-typed and is rejected,
+    whatever the type kind (a tuple, a function, unit, a user SUM, a
+    typestate, a built-in, any future kind), with no per-kind enumeration.
+    Before, each such value inhabited a typed binding and reached runtime
+    (a silent Python wrong-output for the sum case, an invalid Wasm module)."""
 
     def test_tuple_field_access_rejected(self):
         msgs = errors_of(
@@ -1896,7 +1899,11 @@ class TestStructuralMemberAccessRejected(unittest.TestCase):
             "    stdio.println(\"x\")\n"
         )
         self.assertTrue(
-            any("has no field" in m and "(Int, Int)" in m for m in msgs), msgs
+            any(
+                "cannot access field" in m and "(Int, Int)" in m
+                for m in msgs
+            ),
+            msgs,
         )
 
     def test_tuple_method_call_rejected(self):
@@ -1909,7 +1916,11 @@ class TestStructuralMemberAccessRejected(unittest.TestCase):
             "    stdio.println(\"x\")\n"
         )
         self.assertTrue(
-            any("has no method" in m and "(Int, Int)" in m for m in msgs), msgs
+            any(
+                "cannot call method" in m and "(Int, Int)" in m
+                for m in msgs
+            ),
+            msgs,
         )
 
     def test_function_value_field_access_rejected(self):
@@ -1924,7 +1935,8 @@ class TestStructuralMemberAccessRejected(unittest.TestCase):
             "    stdio.println(\"x\")\n"
         )
         self.assertTrue(
-            any("has no field" in m and "fun(" in m for m in msgs), msgs
+            any("cannot access field" in m and "fun(" in m for m in msgs),
+            msgs,
         )
 
     def test_function_value_method_call_rejected(self):
@@ -1939,8 +1951,107 @@ class TestStructuralMemberAccessRejected(unittest.TestCase):
             "    stdio.println(\"x\")\n"
         )
         self.assertTrue(
-            any("has no method" in m and "fun(" in m for m in msgs), msgs
+            any("cannot call method" in m and "fun(" in m for m in msgs),
+            msgs,
         )
+
+    def test_sum_value_field_access_rejected(self):
+        # The found hole: a user SUM value's field access. A sum has no
+        # fields (match on it); before, ``W("hello").value`` inhabited an
+        # Int binding and printed the String silently on Python.
+        msgs = errors_of(
+            "type W =\n"
+            "    Wv(String)\n"
+            "fun leak() -> Int\n"
+            "    let w = Wv(\"hello\")\n"
+            "    let n: Int = w.value\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "cannot access field 'value'" in m and "type W" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_multipayload_sum_field_access_rejected(self):
+        # The flip closes this "next kind" with no new branch.
+        msgs = errors_of(
+            "type Shape =\n"
+            "    Rect(Int, Int)\n"
+            "    Circle(Int)\n"
+            "fun leak() -> Int\n"
+            "    let sh = Rect(3, 4)\n"
+            "    let n: Int = sh.width\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "cannot access field 'width'" in m and "type Shape" in m
+                for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_inline_call_of_concrete_struct_rejected(self):
+        # Inline invocation of a concrete non-function (a struct result).
+        msgs = errors_of(
+            "type Point { x: Int, y: Int }\n"
+            "fun mkt() -> Point\n"
+            "    return Point { x: 1, y: 2 }\n"
+            "fun leak() -> Int\n"
+            "    let n: Int = mkt()()\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any(
+                "cannot call a value of type Point" in m for m in msgs
+            ),
+            msgs,
+        )
+
+    def test_inline_call_of_concrete_int_rejected(self):
+        msgs = errors_of(
+            "fun geti() -> Int\n"
+            "    return 5\n"
+            "fun leak() -> Int\n"
+            "    let n: Int = geti()()\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("cannot call a value of type Int" in m for m in msgs), msgs
+        )
+
+    def test_sum_method_and_typestate_field_still_accepted(self):
+        # Must preserve: a sum's own impl method and a typestate's declared
+        # field both resolve ABOVE the terminal and stay accepted (the flip
+        # changes only the fall-through, not the modeled branches).
+        r = check(
+            "type Shape =\n"
+            "    Rect(Int, Int)\n"
+            "    Circle(Int)\n"
+            "impl Shape\n"
+            "    fun area(self) -> Int\n"
+            "        return 1\n"
+            "fun use_shape(sh: Shape) -> Int\n"
+            "    return sh.area()\n"
+            "typestate Socket { fd: Int }\n"
+            "    Created\n"
+            "fun fd_of(sk: Socket[Created]) -> Int\n"
+            "    return sk.fd\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
 
 
 class TestNestedGenericCallLaunderRejected(unittest.TestCase):

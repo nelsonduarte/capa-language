@@ -13,12 +13,33 @@ The mixin assumes ``self`` has the fields set up by
 
 from __future__ import annotations
 
-from ..typesys import Ty, TyFun, TyName, TyTuple, TyVar
+from ..typesys import (
+    Ty, TyFun, TyName, TyTuple, TyUnknown, TyVar, is_flexible,
+)
 
 
 class _TypingMixin:
     _ty_subs: dict[str, Ty]
     _fresh_counter: int
+
+    def _is_inference_unknown(self, ty: Ty) -> bool:
+        """True only for a GENUINE inference-unknown: the ``TyUnknown``
+        singleton or a FLEXIBLE ``?`` inference variable. Both legitimately
+        resolve elsewhere, so a member-access / call / index fall-through
+        that reaches one must stay permissive.
+
+        This is the FAIL-CLOSED test at the analyzer's four member/call/index
+        terminals: after every modeled branch (struct field, nominal method
+        dispatch, List index, constant tuple index, ``TyFun`` inline callee,
+        ...) has had its chance, a receiver / callee that is NOT an inference
+        unknown is a CONCRETE type no branch matched -- so the operation is
+        unsupported or ill-typed and is rejected, whatever the type kind
+        (tuple, function, unit, a user sum, a typestate, any built-in, any
+        future kind), with no per-kind enumeration to keep in sync. Resolves
+        first so an inference variable since bound to a concrete type is
+        judged on its real shape."""
+        resolved = self._resolve_ty(ty)
+        return resolved is TyUnknown or is_flexible(resolved)
 
     def _fresh_ty_var(self, prefix: str) -> TyVar:
         """Create a TyVar with a unique name. The prefix makes
