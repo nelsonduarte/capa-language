@@ -26,7 +26,7 @@ from typing import Optional
 
 from .. import capa_ast as A
 from ..typesys import (
-    CAPABILITY_NAMES, Ty, TyFun, TyName, TyUnknown, TyVar,
+    CAPABILITY_NAMES, Ty, TyFun, TyName, TyTuple, TyUnit, TyUnknown, TyVar,
     instantiate, is_flexible, substitute, ty_str, unify,
 )
 
@@ -700,6 +700,23 @@ class _DispatchMixin:
                 f"type parameter {resolved_recv.name!r}; an unconstrained "
                 f"type parameter exposes no members (a bound would be "
                 f"required, and bounds are not yet available)",
+                e.pos,
+            )
+            return TyUnknown
+
+        # A STRUCTURAL value (a tuple, a function, or unit) has no methods.
+        # Every nominal receiver (a capability, trait, struct, sum, or a
+        # built-in container / primitive registered like one) is handled
+        # above with a real dispatch or a ``has no method`` error, so only
+        # these structural shapes and a genuine inference-unknown reach here.
+        # Falling through to a permissive ``TyUnknown`` let an ill-typed
+        # ``t.foo()`` / ``getf().foo()`` result inhabit a typed binding.
+        # Reject the structural cases; keep a genuine inference-unknown
+        # (``TyUnknown`` / flexible ``?``) permissive.
+        if isinstance(resolved_recv, (TyTuple, TyFun)) or resolved_recv is TyUnit:
+            self._err(
+                f"a value of type {ty_str(resolved_recv)} has no method "
+                f"{e.method!r} (only nominal types have methods)",
                 e.pos,
             )
             return TyUnknown

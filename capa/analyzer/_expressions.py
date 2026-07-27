@@ -659,13 +659,19 @@ class _ExpressionsMixin:
                     e.pos,
                 )
                 return TyUnknown
-            # Indexing a value whose static type is an UNBOUNDED generic
-            # type parameter (a rigid ``TyVar`` such as ``T``) is unsound:
-            # nothing constrains ``T`` to be a List / indexable, so the
-            # program is ill-typed even though the runtime fails loud
-            # rather than silently. Reject at the source, symmetric with
-            # the member-access guards. A FLEXIBLE ``?`` inference variable
-            # is excluded (it is a genuine not-yet-resolved placeholder).
+            # Beyond ``List<T>[i]`` (any index) and a constant-indexed tuple,
+            # both handled above, the ``[]`` operator does not index a value.
+            # ``xs[i]`` is documented for List only (docs/stdlib.md); String
+            # access is ``char_at``, Map access is ``get``, and a tuple takes
+            # a literal-constant index only. The Wasm backend already enforces
+            # this ("only List indexing is supported"), but the analyzer's
+            # fall-through returned a permissive ``TyUnknown``, so a
+            # non-indexable receiver in a typed binding (``let n: Int =
+            # "hi"[0]``) passed ``--check`` and then ran wrong on Python (a
+            # String inhabiting an Int binding, printed silently) while Wasm
+            # failed loud. Reject here so ``--check`` agrees with the backend.
+            # Resolve first so an inference variable since bound to a real
+            # type is judged on its real shape.
             resolved_recv = self._resolve_ty(recv_ty)
             if isinstance(resolved_recv, TyVar) and not is_flexible(resolved_recv):
                 self._err(
@@ -676,6 +682,43 @@ class _ExpressionsMixin:
                     e.pos,
                 )
                 return TyUnknown
+            # A genuine inference-unknown (an unresolved ``?`` placeholder or
+            # ``TyUnknown``) stays permissive: it resolves elsewhere.
+            if resolved_recv is TyUnknown or is_flexible(resolved_recv):
+                return TyUnknown
+            # A List reached only after resolution (the receiver was an
+            # inference variable now bound to a List) is indexable.
+            if isinstance(resolved_recv, TyName) and resolved_recv.name == "List":
+                return resolved_recv.args[0] if resolved_recv.args else TyUnknown
+            # A tuple: a literal-constant index yields the slot type; a
+            # dynamic (non-literal) index is not a Capa surface construct,
+            # matching the Wasm backend (``dynamic indexing into tuples isn't
+            # a Capa surface construct``).
+            if isinstance(resolved_recv, TyTuple):
+                if isinstance(e.index, A.IntLit):
+                    idx = e.index.value
+                    if 0 <= idx < len(resolved_recv.elements):
+                        return resolved_recv.elements[idx]
+                    self._err(
+                        f"tuple index {idx} is out of range for a "
+                        f"{len(resolved_recv.elements)}-element tuple",
+                        e.pos,
+                    )
+                    return TyUnknown
+                self._err(
+                    "a tuple can only be indexed by a literal constant "
+                    "integer; dynamic tuple indexing is not supported "
+                    "(destructure with `let (a, b) = ...` instead)",
+                    e.pos,
+                )
+                return TyUnknown
+            # Every other concrete receiver is not indexable.
+            self._err(
+                f"a value of type {ty_str(resolved_recv)} is not indexable; "
+                f"only `List<T>` supports `[]` indexing (use `char_at` for a "
+                f"String, `get` for a Map)",
+                e.pos,
+            )
             return TyUnknown
         if isinstance(e, A.Try):
             inner = self._check_expr(e.expr)
@@ -1100,6 +1143,22 @@ class _ExpressionsMixin:
                 f"generic type parameter {resolved_rty.name!r}; an "
                 f"unconstrained type parameter exposes no members (a bound "
                 f"would be required, and bounds are not yet available)",
+                e.pos,
+            )
+            return TyUnknown
+        # A STRUCTURAL value (a tuple, a function, or unit) has no fields.
+        # Every nominal receiver (a struct, capability, trait, or a built-in
+        # container / primitive registered like a struct) is handled above
+        # with its field type or a ``has no field`` error, so only these
+        # structural shapes and a genuine inference-unknown reach here.
+        # Falling through to a permissive ``TyUnknown`` let an ill-typed
+        # ``t.field`` inhabit a typed binding. Reject the structural cases;
+        # keep a genuine inference-unknown (``TyUnknown`` / flexible ``?``)
+        # permissive.
+        if isinstance(resolved_rty, (TyTuple, TyFun)) or resolved_rty is TyUnit:
+            self._err(
+                f"a value of type {ty_str(resolved_rty)} has no field "
+                f"{e.field_name!r} (only structs have fields)",
                 e.pos,
             )
             return TyUnknown

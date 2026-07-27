@@ -1784,6 +1784,165 @@ class TestIndexOnTypeParamRejected(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestNonListIndexRejected(unittest.TestCase):
+    """The ``[]`` operator is a List-only surface construct (docs
+    stdlib.md), plus a literal-constant tuple index. The index terminal
+    used to return a permissive ``TyUnknown`` for every other receiver, so
+    ``let n: Int = "hi"[0]`` passed ``--check`` and ran wrong on Python (a
+    String printed for the Int) while Wasm failed loud. The terminal now
+    rejects a non-indexable receiver, matching the backend. List indexing
+    (dynamic or constant), a constant tuple index, and an inferred
+    ``List<?>`` index stay accepted."""
+
+    def test_string_constant_index_rejected(self):
+        msgs = errors_of(
+            "fun leak() -> Int\n"
+            "    let n: Int = \"hi\"[0]\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("String" in m and "not indexable" in m for m in msgs), msgs
+        )
+
+    def test_string_dynamic_index_rejected(self):
+        msgs = errors_of(
+            "fun leak(i: Int) -> Int\n"
+            "    let n: Int = \"hi\"[i]\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("String" in m and "not indexable" in m for m in msgs), msgs
+        )
+
+    def test_dynamic_tuple_index_rejected(self):
+        msgs = errors_of(
+            "fun leak(i: Int) -> String\n"
+            "    let t = (1, 2)\n"
+            "    let s: String = t[i]\n"
+            "    return s\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("tuple" in m and "constant" in m for m in msgs), msgs
+        )
+
+    def test_map_index_rejected(self):
+        msgs = errors_of(
+            "fun leak(m: Map<String, Int>) -> Int\n"
+            "    let n: Int = m[\"k\"]\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("not indexable" in m for m in msgs), msgs
+        )
+
+    def test_struct_index_rejected(self):
+        msgs = errors_of(
+            "type Point { x: Int, y: Int }\n"
+            "fun leak(p: Point) -> Int\n"
+            "    let n: Int = p[0]\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("Point" in m and "not indexable" in m for m in msgs), msgs
+        )
+
+    def test_list_dynamic_and_constant_index_accepted(self):
+        r = check(
+            "fun getdyn(xs: List<Int>, i: Int) -> Int\n"
+            "    return xs[i]\n"
+            "fun getconst(xs: List<String>) -> String\n"
+            "    return xs[0]\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_constant_tuple_index_accepted(self):
+        r = check(
+            "fun pick() -> String\n"
+            "    let t = (1, \"hi\")\n"
+            "    return t[1]\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+class TestStructuralMemberAccessRejected(unittest.TestCase):
+    """Field access and method calls on a STRUCTURAL value (a tuple, a
+    function, or unit) have no member: the field / method terminals used to
+    return a permissive ``TyUnknown`` that let ``let n: Int = t.field`` /
+    ``t.foo()`` / ``getf().foo()`` inhabit a typed binding and reach
+    runtime. They are now rejected. Nominal receivers (structs, containers,
+    primitives) keep their own ``has no field / method`` diagnostics."""
+
+    def test_tuple_field_access_rejected(self):
+        msgs = errors_of(
+            "fun leak() -> Int\n"
+            "    let t = (1, 2)\n"
+            "    let n: Int = t.field\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("has no field" in m and "(Int, Int)" in m for m in msgs), msgs
+        )
+
+    def test_tuple_method_call_rejected(self):
+        msgs = errors_of(
+            "fun leak() -> Int\n"
+            "    let t = (1, 2)\n"
+            "    let n: Int = t.foo()\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("has no method" in m and "(Int, Int)" in m for m in msgs), msgs
+        )
+
+    def test_function_value_field_access_rejected(self):
+        msgs = errors_of(
+            "fun getf() -> Fun() -> Int\n"
+            "    return fun () -> Int => 1\n"
+            "fun leak() -> Int\n"
+            "    let g = getf()\n"
+            "    let n: Int = g.fld\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("has no field" in m and "fun(" in m for m in msgs), msgs
+        )
+
+    def test_function_value_method_call_rejected(self):
+        msgs = errors_of(
+            "fun getf() -> Fun() -> Int\n"
+            "    return fun () -> Int => 1\n"
+            "fun leak() -> Int\n"
+            "    let g = getf()\n"
+            "    let n: Int = g.foo()\n"
+            "    return n\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"x\")\n"
+        )
+        self.assertTrue(
+            any("has no method" in m and "fun(" in m for m in msgs), msgs
+        )
+
+
 class TestNestedGenericCallLaunderRejected(unittest.TestCase):
     """The type parameter can pass through the callee at a NESTED position
     (``List<T>`` / ``Box<T>`` / a tuple / ``Option<T>`` / a ``Fun`` arrow)
