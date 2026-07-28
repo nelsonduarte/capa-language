@@ -9,6 +9,82 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.24.0], 2026-07-28
+
+A type-safety and honesty release. Two soundness holes in the analyzer's
+handling of generics and container element types are closed: each accepted
+an ill-typed value at `--check` that reached run time and diverged silently
+between the Python and Wasm backends. A new opt-in lets a `pub` trait method
+certify a tight capability ceiling again, and a documentation pass scopes
+several claims to what the compiler actually guarantees today. Each
+soundness fix was reproduced with a running program before the fix.
+
+**Added.**
+
+- *Declared capability bound on `pub` trait methods.* A `pub` trait method
+  may now declare the capabilities it is allowed to exercise (`uses [...]`,
+  with `uses []` meaning pure). Each implementation is checked to stay within
+  the declared bound, and a caller charges the bound rather than the concrete
+  implementor it cannot see. This restores a precise, provable ceiling to a
+  library that takes a `pub` trait whose real implementors are pure, which
+  since 1.23.0 was forced to fail closed as authority-unprovable. A `pub`
+  trait method with no declared bound keeps the 1.23.0 fail-closed
+  behaviour, so this is purely additive.
+
+**Fixed.**
+
+- *Type safety of member access, indexing, and call on an unbounded
+  generic.* Member access, indexing, and call/`?` on a value of an unbounded
+  generic type parameter (and on other non-modelled receivers) were accepted
+  at `--check` and let an ill-typed value reach run time, where the two
+  backends disagreed: a `String` read into an `Int` binding printed on
+  Python, and the Wasm backend emitted an invalid module. The terminals now
+  fail closed by default, treating only a genuine inference unknown as
+  permissive, so the whole family of generic-member-access launders is
+  rejected at check time. Both the free-call and method-dispatch paths
+  freshen the callee's own type parameters, so a same-name type-parameter
+  collision can no longer launder a return type.
+
+- *Container element-type launder across a function boundary.* An empty,
+  unannotated container (`[]`, `new_map()`, `new_set()`) carried an element
+  type that nothing pinned. Handed to a slot that fixes a concrete element
+  type and populated there, it could be read back out of the original
+  binding at an incompatible type: `--check` passed and the backends diverged
+  silently at run time (the Python value against Wasm garbage), and a
+  state-restricted value could be stashed in such a container and pulled back
+  out to bypass its typestate gate. The element type is now pinned when the
+  container flows into a concrete slot (a call argument, return, struct
+  field, or assignment, recursively through tuples and nested containers), so
+  every later use of the original binding is checked against it; `new_map`
+  and `new_set` now start with a genuinely inferable element type instead of
+  a permanent unknown; and a genuinely-empty container whose element type is
+  never determined is rejected on an element read, judged after the whole
+  function is checked so that read-before-populate stays legal.
+
+**Documentation.**
+
+- Several claims are scoped to the compiler's actual guarantees.
+  Information-flow enforcement is described as tiered (a warning by default,
+  a hard error under `@strict_ifc`) rather than a proof; the Wasm
+  capability-confinement boundary is described as enforced by the trusted
+  emitter with the executed artifact part of the trusted computing base, not
+  as a runtime attenuation boundary; `--transpile` is noted as a lowering
+  step, not a verification gate; the narrow per-function
+  `declared_capabilities` view is distinguished from the honest
+  `transitively_reachable` authority ceiling that the SBOM and ceiling gate
+  consume; and the xz-utils purity demonstration now verifies its library
+  with the `capa --check-capabilities` ceiling gate instead of a `grep` that
+  could certify a container-hidden capability as absent. A known limit is
+  recorded: an unannotated non-`Int` container does not yet assemble on the
+  Wasm backend, a loud error rather than a silent divergence.
+
+**Notes.**
+
+- The generic-member-access and container-element fixes are analyzer
+  type-safety fixes; both backends agree on the newly-rejected and
+  still-accepted programs. No change to the Wasm handle model or any other
+  deferred item.
+
 ## [1.23.0], 2026-07-26
 
 A soundness release. Five confirmed holes in the capability and
@@ -9300,7 +9376,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.23.0...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.24.0...HEAD
+[1.24.0]: https://github.com/nelsonduarte/capa-language/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/nelsonduarte/capa-language/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/nelsonduarte/capa-language/compare/v1.21.0...v1.22.0
 [0.5.0-alpha]: https://github.com/nelsonduarte/capa-language/releases/tag/v0.5.0-alpha
