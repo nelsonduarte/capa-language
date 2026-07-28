@@ -14,8 +14,26 @@ The mixin assumes ``self`` has the fields set up by
 from __future__ import annotations
 
 from ..typesys import (
-    Ty, TyFun, TyName, TyTuple, TyUnknown, TyVar, is_flexible,
+    Ty, TyFun, TyName, TyTuple, TyUnknown, TyVar, is_flexible, occurs_in,
 )
+
+
+def _has_flexible(t: Ty) -> bool:
+    """True if ``t`` mentions any FLEXIBLE ``?`` inference variable, at
+    any depth. A type that is free of flexible variables is fully
+    determined (it may still contain a RIGID generic parameter, which is
+    fixed-but-unknown within its scope, not open). Used by
+    ``_pin_flexible`` to pin an open element variable ONLY to a genuinely
+    concrete counterpart."""
+    if isinstance(t, TyVar):
+        return is_flexible(t)
+    if isinstance(t, TyName):
+        return any(_has_flexible(a) for a in t.args)
+    if isinstance(t, TyTuple):
+        return any(_has_flexible(e) for e in t.elements)
+    if isinstance(t, TyFun):
+        return any(_has_flexible(p) for p in t.params) or _has_flexible(t.ret)
+    return False
 
 
 class _TypingMixin:
@@ -60,6 +78,67 @@ class _TypingMixin:
         name = f"{prefix}#m{self._fresh_counter}"
         self._fresh_counter += 1
         return TyVar(name)
+
+    def _pin_flexible(self, a: Ty, b: Ty) -> None:
+        """Pin a still-open container element type discovered by handing
+        the container into a slot that fixes a CONCRETE element type.
+
+        Walks ``a`` and ``b`` in parallel. Wherever one side resolves to a
+        FLEXIBLE ``?`` inference variable and the other to a fully
+        determined type, records the binding in ``_ty_subs`` so every later
+        use of the ORIGINAL binding is checked against that type. This is
+        what closes the empty-container launder: after ``fill(xs)`` fixes
+        ``xs``'s element to ``Int``, reading ``xs[0]`` back at ``String`` is
+        rejected.
+
+        Purely additive and conservative:
+
+        - Two open variables pin nothing (``a`` handed to a slot that is
+          itself generic in the element stays polymorphic -- scenario 4).
+        - A variable is pinned only to a counterpart with NO flexible
+          variable (``_has_flexible``), i.e. only when the destination
+          genuinely fixes it to a concrete type.
+        - An existing binding is never overridden (``_resolve_ty`` returns
+          the representative; a bound variable is no longer flexible), so
+          the first fixing wins.
+        - The occurs-check refuses a self-referential binding.
+
+        The recursion reaches a container nested inside a tuple, another
+        container, a struct field, or a function type, so a nested handoff
+        pins too (scenario 3)."""
+        a = self._resolve_ty(a)
+        b = self._resolve_ty(b)
+        a_flex = is_flexible(a)
+        b_flex = is_flexible(b)
+        if a_flex and b_flex:
+            return
+        if a_flex:
+            if not _has_flexible(b) and not occurs_in(a.name, b):
+                self._ty_subs[a.name] = b
+            return
+        if b_flex:
+            if not _has_flexible(a) and not occurs_in(b.name, a):
+                self._ty_subs[b.name] = a
+            return
+        if (
+            isinstance(a, TyName) and isinstance(b, TyName)
+            and a.name == b.name and len(a.args) == len(b.args)
+        ):
+            for x, y in zip(a.args, b.args):
+                self._pin_flexible(x, y)
+        elif (
+            isinstance(a, TyTuple) and isinstance(b, TyTuple)
+            and len(a.elements) == len(b.elements)
+        ):
+            for x, y in zip(a.elements, b.elements):
+                self._pin_flexible(x, y)
+        elif (
+            isinstance(a, TyFun) and isinstance(b, TyFun)
+            and len(a.params) == len(b.params)
+        ):
+            for x, y in zip(a.params, b.params):
+                self._pin_flexible(x, y)
+            self._pin_flexible(a.ret, b.ret)
 
     def _resolve_ty(self, ty: Ty) -> Ty:
         """Apply ``_ty_subs`` recursively. Unbound TyVars come

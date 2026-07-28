@@ -30,7 +30,7 @@ from .._borrow import borrow_escapes, is_fun_typed_param
 from ..typesys import (
     CAPABILITY_NAMES,
     Ty, TyFun, TyName, TyUnit, TyUnknown, TyVar,
-    contains_capability, ty_str,
+    contains_capability, is_flexible, ty_str,
 )
 
 
@@ -287,6 +287,15 @@ class _ItemsMixin:
         # Fresh TyVar substitution universe for the function.
         prev_subs = self._ty_subs
         self._ty_subs = {}
+        # Fresh empty-container tracking for the function: the element
+        # variables minted for unannotated ``[]`` / ``new_map()`` /
+        # ``new_set()`` and the reads that pulled a value out of one at a
+        # still-open type. Saved / restored so a nested function does not
+        # inherit the enclosing one's containers.
+        prev_empty_container_vars = self._empty_container_vars
+        self._empty_container_vars = set()
+        prev_deferred_elem_reads = self._deferred_elem_reads
+        self._deferred_elem_reads = {}
 
         prev_ret = self.current_return_type
         ret = (
@@ -316,6 +325,35 @@ class _ItemsMixin:
                 err_pos,
             )
 
+        # Empty-container fail-closed guard, judged only NOW that the whole
+        # body has been analysed and every pin has settled. A value read
+        # out of a container created empty and unannotated whose element
+        # type was NEVER determined anywhere in the function is rejected:
+        # inference has nothing to fix the type to, so the two backends
+        # would disagree on the value's shape. Deferred to here so a
+        # legitimate read-before-populate (probe-then-fill, get-or-default,
+        # check-then-insert) -- where a LATER populate fixes the type -- is
+        # still accepted. Resolution runs against the function's still-live
+        # ``_ty_subs``.
+        for var_name, read_pos in self._deferred_elem_reads.items():
+            if is_flexible(self._resolve_ty(TyVar(var_name))):
+                if var_name.startswith("?lst"):
+                    kind, example = "list", "let xs: List<Int> = []"
+                elif var_name.startswith("?map"):
+                    kind, example = "map", "let m: Map<String, Int> = new_map()"
+                elif var_name.startswith("?set"):
+                    kind, example = "set", "let s: Set<Int> = new_set()"
+                else:
+                    kind, example = "container", "let xs: List<Int> = []"
+                self._err(
+                    f"cannot determine the element type of this {kind}: it "
+                    f"is created empty and its element type is never fixed "
+                    f"anywhere in this function, so a value read out of it "
+                    f"has no known type. Annotate the element type, e.g. "
+                    f"`{example}`.",
+                    read_pos,
+                )
+
         # Roadmap S1: any linear obligation still live at function
         # exit was never consumed -- a leak. Report each, then
         # restore the enclosing function's live set.
@@ -325,6 +363,8 @@ class _ItemsMixin:
         self._consumed = prev_consumed
         self._linear_names = prev_linear_names
         self._ty_subs = prev_subs
+        self._empty_container_vars = prev_empty_container_vars
+        self._deferred_elem_reads = prev_deferred_elem_reads
 
         new_bindings = {
             k: v for k, v in self.bindings.items()

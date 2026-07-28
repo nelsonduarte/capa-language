@@ -622,6 +622,24 @@ class Analyzer(
         # the same symbol, ``_resolve_ty`` applies it.
         self._ty_subs: dict[str, Ty] = {}
         self._fresh_counter: int = 0
+        # Names of the FLEXIBLE ``?`` inference variables minted for the
+        # element type of a container CREATED EMPTY and UNANNOTATED (an
+        # empty ``[]`` list literal, ``new_map()``, ``new_set()``). Per-
+        # function state, reset in ``_check_fun``. Handing such a container
+        # into a slot that fixes a concrete element type pins the variable
+        # (``_pin_flexible``); a value read back out of the container
+        # surfaces the bare variable, which is recorded in
+        # ``_deferred_elem_reads``. If the variable is still unbound once
+        # the whole body has been analysed, the read is rejected with an
+        # "annotate the element type" diagnostic. Tracking the origin here
+        # keeps the deferred guard from firing on unrelated ``?`` variables
+        # (a generic call's phantom result, a lambda placeholder).
+        self._empty_container_vars: set[str] = set()
+        # Reads that pulled a value out of an empty-origin container at a
+        # still-open element type: element-variable name -> the FIRST such
+        # read's position. Judged at END of function (after all pins have
+        # settled) so a legitimate read-before-populate is not rejected.
+        self._deferred_elem_reads: dict[str, object] = {}
         # Names of user-defined struct types whose values must
         # not be field-mutated, because the type appears
         # (directly or transitively) in a ``Set<...>`` or

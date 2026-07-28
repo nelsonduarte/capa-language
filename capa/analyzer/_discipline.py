@@ -429,8 +429,21 @@ class _DisciplineMixin:
         rejected. The other direction (a ``Char`` where a ``String`` is
         expected) is handled unconditionally by ``compatible`` itself,
         since a one-code-point ``Char`` is always a valid ``String``.
+
+        A value flowing into a declared slot is also the moment a
+        container CREATED EMPTY and UNANNOTATED has its element type
+        fixed. Both types are resolved against ``_ty_subs`` first, so a
+        variable pinned by an EARLIER handoff (or populate) is now judged
+        on its real element type -- this is what surfaces the launder at a
+        later, incompatible read. Once the value is found assignable, the
+        still-open element variables it carries are pinned to the
+        destination's concrete element type (:meth:`_pin_flexible`), so
+        every subsequent use of the original binding is checked against it.
         """
+        expected = self._resolve_ty(expected)
+        actual = self._resolve_ty(actual)
         if self._compatible_with_impls(expected, actual):
+            self._pin_flexible(expected, actual)
             return True
         if (
             isinstance(expected, TyName)

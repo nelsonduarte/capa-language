@@ -8880,5 +8880,301 @@ class TestLambdaParamInference(unittest.TestCase):
         self.assertEqual(lam.return_type.name, "Int")
 
 
+class TestEmptyContainerElementPinning(unittest.TestCase):
+    """Soundness: a container created EMPTY and UNANNOTATED (``[]``,
+    ``new_map()``, ``new_set()``) has an INFERABLE element type. Handing
+    it into a slot that fixes a concrete element type pins that type at the
+    ORIGINAL binding, so a later read at a different, incompatible type is
+    rejected at check time (instead of the two backends silently
+    disagreeing). If the element type is never determined anywhere in the
+    function, a value read out of the container is rejected with a deferred
+    "annotate the element type" diagnostic, judged only after the whole
+    body has been analysed so a legitimate read-before-populate stays
+    accepted."""
+
+    def _errs(self, src: str) -> list[str]:
+        return [e for e in errors_of(src) if "never used" not in e]
+
+    # --- handoff shapes that must PIN (launder rejected) -------------
+
+    def test_pin_via_function_arg(self):
+        # The receiving function is NOT generic in the element, so its
+        # concrete parameter fixes the element type at the caller's binding.
+        errs = self._errs(
+            "fun fill(xs: List<Int>)\n"
+            "    xs.push(42)\n"
+            "fun main(_s: Stdio)\n"
+            "    var xs = []\n"
+            "    fill(xs)\n"
+            "    let bad: String = xs[0]\n"
+        )
+        self.assertTrue(
+            any("expected String, got Int" in e for e in errs), errs,
+        )
+
+    def test_pin_via_return_slot(self):
+        errs = self._errs(
+            "fun give(flag: Bool) -> List<Int>\n"
+            "    var xs = []\n"
+            "    if flag\n"
+            "        return xs\n"
+            "    let bad: String = xs[0]\n"
+            "    return xs\n"
+        )
+        self.assertTrue(
+            any("expected String, got Int" in e for e in errs), errs,
+        )
+
+    def test_pin_via_struct_field_construction(self):
+        errs = self._errs(
+            "type Box { items: List<Int> }\n"
+            "fun main(_s: Stdio)\n"
+            "    let xs = []\n"
+            "    let b = Box { items: xs }\n"
+            "    let bad: String = xs[0]\n"
+        )
+        self.assertTrue(
+            any("expected String, got Int" in e for e in errs), errs,
+        )
+
+    def test_pin_via_struct_field_assignment(self):
+        errs = self._errs(
+            "type Box { items: List<Int> }\n"
+            "fun main(_s: Stdio)\n"
+            "    var b = Box { items: [10] }\n"
+            "    let xs = []\n"
+            "    b.items = xs\n"
+            "    let bad: String = xs[0]\n"
+        )
+        self.assertTrue(
+            any("expected String, got Int" in e for e in errs), errs,
+        )
+
+    def test_pin_via_plain_assignment(self):
+        errs = self._errs(
+            "fun main(_s: Stdio)\n"
+            "    var target: List<Int> = [1]\n"
+            "    let xs = []\n"
+            "    target = xs\n"
+            "    let bad: String = xs[0]\n"
+        )
+        self.assertTrue(
+            any("expected String, got Int" in e for e in errs), errs,
+        )
+
+    # --- nested handoff (scenario 3) --------------------------------
+
+    def test_pin_nested_in_tuple(self):
+        errs = self._errs(
+            "fun take(p: (List<Int>, Bool))\n"
+            "    return\n"
+            "fun main(_s: Stdio)\n"
+            "    let xs = []\n"
+            "    take((xs, true))\n"
+            "    let bad: String = xs[0]\n"
+        )
+        self.assertTrue(
+            any("expected String, got Int" in e for e in errs), errs,
+        )
+
+    def test_pin_nested_in_container(self):
+        errs = self._errs(
+            "fun take(rows: List<List<Int>>)\n"
+            "    return\n"
+            "fun main(_s: Stdio)\n"
+            "    let inner = []\n"
+            "    take([inner])\n"
+            "    let bad: String = inner[0]\n"
+        )
+        self.assertTrue(
+            any("expected String, got Int" in e for e in errs), errs,
+        )
+
+    def test_pin_nested_in_struct_field_arg(self):
+        errs = self._errs(
+            "type Box { items: List<Int> }\n"
+            "fun take(b: Box)\n"
+            "    return\n"
+            "fun main(_s: Stdio)\n"
+            "    let xs = []\n"
+            "    take(Box { items: xs })\n"
+            "    let bad: String = xs[0]\n"
+        )
+        self.assertTrue(
+            any("expected String, got Int" in e for e in errs), errs,
+        )
+
+    # --- map / set constructors start inferable (scenario 6) --------
+
+    def test_new_map_populate_then_incompatible_read(self):
+        errs = self._errs(
+            "fun sink_s(x: String)\n"
+            "    return\n"
+            "fun main(_s: Stdio)\n"
+            "    var m = new_map()\n"
+            "    m.set(\"a\", 1)\n"
+            "    sink_s(m.get(\"a\").unwrap())\n"
+        )
+        self.assertTrue(
+            any("expects String, got Int" in e for e in errs), errs,
+        )
+
+    def test_new_set_populate_then_incompatible_read(self):
+        errs = self._errs(
+            "fun sink_s(x: String)\n"
+            "    return\n"
+            "fun main(_s: Stdio)\n"
+            "    var s = new_set()\n"
+            "    s.add(1)\n"
+            "    for x in s\n"
+            "        sink_s(x)\n"
+        )
+        self.assertTrue(
+            any("expects String, got Int" in e for e in errs), errs,
+        )
+
+    def test_two_incompatible_reads_first_fixing_wins(self):
+        # A never-populated container read at two incompatible element
+        # types: the FIRST read fixes the type, the second is rejected.
+        errs = self._errs(
+            "fun sink_i(x: Int)\n"
+            "    return\n"
+            "fun sink_s(x: String)\n"
+            "    return\n"
+            "fun main(_s: Stdio)\n"
+            "    let xs = []\n"
+            "    sink_i(xs[0])\n"
+            "    sink_s(xs[0])\n"
+        )
+        self.assertTrue(
+            any("expects String, got Int" in e for e in errs), errs,
+        )
+
+    # --- state-gate bypass ------------------------------------------
+
+    def test_state_gate_bypass_rejected(self):
+        # A Door[Closed] stashed in an unannotated list via a HANDOFF (a
+        # function whose parameter fixes the element to Door[Closed]) and
+        # pulled back out cannot reach an operation that requires
+        # Door[Open]. Without the handoff pin the read came back at an open
+        # element type, compatible with Door[Open], bypassing the gate.
+        errs = self._errs(
+            "typestate Door\n"
+            "    Open\n"
+            "    Closed\n"
+            "fun needs_open(consume d: Door[Open]) -> Door[Closed]\n"
+            "    return become(d, Closed)\n"
+            "fun fill(xs: List<Door[Closed]>, d: Door[Closed])\n"
+            "    xs.push(d)\n"
+            "fun main(_s: Stdio)\n"
+            "    var xs = []\n"
+            "    fill(xs, Door[Closed] {})\n"
+            "    let taken = xs[0]\n"
+            "    let out = needs_open(taken)\n"
+        )
+        self.assertTrue(
+            any("expects Door[Open], got Door[Closed]" in e for e in errs),
+            errs,
+        )
+
+    # --- deferred never-determined guard (scenario 5) ---------------
+
+    def test_never_determined_read_rejected(self):
+        errs = self._errs(
+            "fun main(s: Stdio)\n"
+            "    let xs = []\n"
+            "    let v = xs[0]\n"
+            "    s.println(\"${v}\")\n"
+        )
+        self.assertTrue(
+            any("never fixed anywhere in this function" in e for e in errs),
+            errs,
+        )
+
+    def test_never_determined_names_the_map_kind(self):
+        errs = self._errs(
+            "fun main(s: Stdio)\n"
+            "    var m = new_map()\n"
+            "    let v = match m.get(\"a\")\n"
+            "        Some(x) -> x\n"
+            "        None -> panic(\"missing\")\n"
+            "    s.println(\"${v}\")\n"
+        )
+        self.assertTrue(
+            any(
+                "element type of this map" in e
+                and "never fixed anywhere in this function" in e
+                for e in errs
+            ),
+            errs,
+        )
+
+    # --- legitimate patterns that must stay ACCEPTED ----------------
+
+    def test_generic_destination_stays_open(self):
+        # Handing the container to a function GENERIC in the element does
+        # not pin it: polymorphic reuse across such calls stays legal.
+        r = check(
+            "fun store<T>(c: List<T>, x: T)\n"
+            "    c.push(x)\n"
+            "fun main(s: Stdio)\n"
+            "    let xs = []\n"
+            "    store(xs, 1)\n"
+            "    store(xs, 2)\n"
+            "    s.println(\"${xs[0]}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_read_before_populate_map_accepted(self):
+        # get-or-default: read the map, fall back, THEN populate. The later
+        # populate determines the element type, so the earlier read is fine.
+        r = check(
+            "fun main(s: Stdio)\n"
+            "    var m = new_map()\n"
+            "    let existing = match m.get(\"a\")\n"
+            "        Some(v) -> v\n"
+            "        None -> 0\n"
+            "    m.set(\"a\", existing + 1)\n"
+            "    s.println(\"${existing}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_read_before_populate_list_accepted(self):
+        r = check(
+            "fun main(s: Stdio)\n"
+            "    var xs = []\n"
+            "    let first = match xs.first()\n"
+            "        Some(v) -> v\n"
+            "        None -> 0\n"
+            "    xs.push(first + 10)\n"
+            "    s.println(\"${first}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_annotated_forms_unchanged(self):
+        r = check(
+            "fun main(s: Stdio)\n"
+            "    let m: Map<String, Int> = new_map()\n"
+            "    m.set(\"a\", 1)\n"
+            "    let st: Set<Int> = new_set()\n"
+            "    st.add(2)\n"
+            "    let xs: List<Int> = []\n"
+            "    xs.push(3)\n"
+            "    s.println(\"${m.get(\"a\").unwrap()} ${xs[0]}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_consistent_populate_and_read_accepted(self):
+        # Populate and read at the SAME type is of course fine.
+        r = check(
+            "fun main(s: Stdio)\n"
+            "    var xs = []\n"
+            "    xs.push(7)\n"
+            "    let n: Int = xs[0]\n"
+            "    s.println(\"${n}\")\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+
 if __name__ == "__main__":
     unittest.main()

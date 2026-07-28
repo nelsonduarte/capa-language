@@ -186,6 +186,31 @@ class _DispatchMixin:
                     if sym.pos == BUILTIN_POS:
                         return TyName("IoError")
                 if sym.kind == SymbolKind.FUNCTION:
+                    # The empty map / set constructors start with a
+                    # genuinely INFERABLE element type -- a fresh flexible
+                    # ``?`` variable per call, exactly like an empty ``[]``
+                    # list literal -- instead of a permanent ``TyUnknown``
+                    # that inference can never refine. A populate
+                    # (``m.set(k, v)``) then pins it through the ordinary
+                    # receiver-seeded method inference, and a handoff pins
+                    # it through ``_pin_flexible``, so a value read back at
+                    # an incompatible type is caught. The vars are tracked
+                    # as empty-container origins for the end-of-function
+                    # never-determined guard. Guarded on BUILTIN_POS so a
+                    # user function shadowing the name is unaffected.
+                    from ..builtins import BUILTIN_POS as _BPOS_MK
+                    if sym.pos == _BPOS_MK and not e.args and sym.name in (
+                        "new_map", "new_set",
+                    ):
+                        if sym.name == "new_map":
+                            k = self._fresh_ty_var("map")
+                            v = self._fresh_ty_var("map")
+                            self._empty_container_vars.add(k.name)
+                            self._empty_container_vars.add(v.name)
+                            return TyName("Map", (k, v))
+                        t = self._fresh_ty_var("set")
+                        self._empty_container_vars.add(t.name)
+                        return TyName("Set", (t,))
                     # Underscore-prefixed BUILTIN functions (e.g.
                     # ``_capa_chr``) are compiler-internal plumbing
                     # for the bundled JSON parser, not language

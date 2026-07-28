@@ -562,6 +562,17 @@ class _ExpressionsMixin:
     def _check_expr(self, e: A.Expr) -> Ty:
         ty = self._check_expr_inner(e)
         self.types[id(e)] = ty
+        # A value read OUT of an empty-origin container surfaces the bare
+        # element variable (``xs[0]``, a matched ``Some(v)`` from
+        # ``m.get(k)``, a ``for`` element of a set). Referencing the
+        # container itself keeps the variable WRAPPED (``List<?lst>``), so
+        # only a genuine extraction reaches here. Record it; the
+        # end-of-function guard rejects it if the element type was never
+        # determined anywhere in the body. Deferred (not inline) so a
+        # legitimate read-before-populate stays accepted.
+        resolved = self._resolve_ty(ty)
+        if is_flexible(resolved) and resolved.name in self._empty_container_vars:
+            self._deferred_elem_reads.setdefault(resolved.name, e.pos)
         # Roadmap S2.3: record the IFC label of this expression now
         # that its children (visited during _check_expr_inner) are
         # already labelled. Propagation only -- no flow is rejected
@@ -1337,7 +1348,12 @@ class _ExpressionsMixin:
             # element type so the later ``_assignable`` check passes.
             if expected_elem is not None:
                 return TyName("List", (expected_elem,))
-            return TyName("List", (self._fresh_ty_var("lst"),))
+            elem = self._fresh_ty_var("lst")
+            # Created empty and unannotated: remember the element variable
+            # so a handoff can pin it and an end-of-function guard can
+            # reject a value read out of a never-determined list.
+            self._empty_container_vars.add(elem.name)
+            return TyName("List", (elem,))
         # With an annotated element type (``let xs: List<Shape> = [...]``)
         # every element is checked against THAT type (trait / capability
         # membership via ``_assignable``) rather than against the first
