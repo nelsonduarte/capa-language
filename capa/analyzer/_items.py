@@ -325,12 +325,20 @@ class _ItemsMixin:
                 err_pos,
             )
 
-        # Empty-container fail-closed guard, judged only NOW that the whole
-        # body has been analysed and every pin has settled. A value read
-        # out of a container created empty and unannotated whose element
-        # type was NEVER determined anywhere in the function is rejected:
-        # inference has nothing to fix the type to, so the two backends
-        # would disagree on the value's shape. Deferred to here so a
+        # Empty-container element-type diagnostic, judged only NOW that the
+        # whole body has been analysed and every pin has settled. When a
+        # value is read out of a container created empty and unannotated,
+        # and that read does NOT itself pin the element type, inference has
+        # nothing to fix the type to; the read is reported so the user
+        # annotates it. This is a diagnostic-quality aid for the UN-PINNED
+        # case, NOT a blanket guarantee that every read-out of an empty
+        # container is diagnosed at check time: when the sole read lands
+        # directly in a concretely-typed slot, that read pins the element
+        # type through the normal assignment-compatibility path, so the
+        # variable is already bound by the time we get here and the guard
+        # stays silent. Soundness does not depend on catching that residual
+        # case -- it fails LOUD at run time on BOTH backends (a trap), with
+        # no silent divergence between them. Deferred to here so a
         # legitimate read-before-populate (probe-then-fill, get-or-default,
         # check-then-insert) -- where a LATER populate fixes the type -- is
         # still accepted. Resolution runs against the function's still-live

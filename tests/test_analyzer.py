@@ -8886,11 +8886,14 @@ class TestEmptyContainerElementPinning(unittest.TestCase):
     it into a slot that fixes a concrete element type pins that type at the
     ORIGINAL binding, so a later read at a different, incompatible type is
     rejected at check time (instead of the two backends silently
-    disagreeing). If the element type is never determined anywhere in the
-    function, a value read out of the container is rejected with a deferred
+    disagreeing). When a value is read out of such a container and the read
+    does NOT itself pin the element type, it is rejected with a deferred
     "annotate the element type" diagnostic, judged only after the whole
     body has been analysed so a legitimate read-before-populate stays
-    accepted."""
+    accepted. That diagnostic is a quality aid for the un-pinned case, not
+    a blanket guarantee: a sole read landing directly in a concretely-typed
+    slot pins the element type itself and stays silent, and such a program
+    fails LOUD at run time on both backends rather than diverging."""
 
     def _errs(self, src: str) -> list[str]:
         return [e for e in errors_of(src) if "never used" not in e]
