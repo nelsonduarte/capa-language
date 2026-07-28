@@ -1,0 +1,12 @@
+[package]
+name = "xz_pure"
+version = "0.1.0"
+
+# The honest Capa-shaped surface of a compression library is bytes-in,
+# bytes-out: pure, no capabilities at all. Declaring the ceiling as
+# `pure = true` (sugar for `max = []`) turns that into a machine-checkable
+# claim: `capa --check-capabilities` fails closed if any authority, even a
+# capability hidden inside a container-typed parameter, ever reaches this
+# package. Companion writeup: docs/cve_xz_utils.md.
+[capabilities]
+pure = true

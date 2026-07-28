@@ -1,0 +1,58 @@
+// xz_pure.capa, the genuinely authority-free surface of the xz-utils
+// case study (CVE-2024-3094), carved into its own package so its purity
+// is machine-checkable rather than eyeballed.
+//
+// These are the same four functions the demo in
+// examples/cve_xz_utils.capa exercises, minus the Stdio driver: a
+// compression library's legitimate role is bytes-in, bytes-out, which in
+// Capa is *pure* (no Fs, no Net, no Env, no Unsafe). The package declares
+// `[capabilities] pure = true` in capa.toml, so
+//
+//     capa --check-capabilities examples/xz_pure/xz_pure.capa
+//
+// EXITS NON-ZERO if any authority ever reaches this package. Unlike a
+// grep over the manifest, the gate reads the transitively-reachable
+// ceiling, so a capability smuggled in through a container-typed
+// parameter (e.g. `List<Fs>`) is charged and fails the check; it cannot
+// be certified "pure" by construction. See docs/cve_xz_utils.md.
+
+fun compress(data: List<Int>, level: Int) -> List<Int>
+    // A stub. Real compression uses LZMA; the algorithmic detail is
+    // irrelevant to the case study. Note the signature: only data + a
+    // parameter, returning data. No Fs, no Net, no Env, no Unsafe.
+    let result: List<Int> = []
+    for b in data
+        result.push(b)
+    return result
+
+fun decompress(data: List<Int>) -> List<Int>
+    let result: List<Int> = []
+    for b in data
+        result.push(b)
+    return result
+
+// An SSH connection-shaped record and the public-key check sshd's
+// authentication would express. In real systemd-linked sshd this is where
+// the backdoor fired (RSA_public_decrypt indirected through liblzma at
+// dynamic-link time). In Capa the function would need explicit authority
+// for any side effect it performed; the signature is the contract.
+type AuthRequest {
+    user: String,
+    key: List<Int>
+}
+
+fun authenticate(req: AuthRequest, allowed_keys: List<List<Int>>) -> Bool
+    for k in allowed_keys
+        if same_key(req.key, k)
+            return true
+    return false
+
+fun same_key(a: List<Int>, b: List<Int>) -> Bool
+    if a.length() != b.length()
+        return false
+    var i = 0
+    while i < a.length()
+        if a[i] != b[i]
+            return false
+        i = i + 1
+    return true

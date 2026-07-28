@@ -245,11 +245,25 @@ unchanged.
 ## Run it yourself
 
 ```bash
-# Source-level demo (pure: zero capabilities required):
+# Source-level demo (the Stdio-driven walkthrough):
 capa --run examples/cve_xz_utils.capa
 
-# Inspect the SBOM and verify that compress / decompress / authenticate
-# carry no capa:declared_capability entries:
-capa --cyclonedx examples/cve_xz_utils.capa | grep declared_capability
-# (empty output: the library legitimately needs no authority)
+# Machine-checkable purity gate. The genuinely authority-free surface
+# (compress / decompress / authenticate / same_key) lives in its own
+# package, examples/xz_pure/, whose capa.toml declares
+# `[capabilities] pure = true`. Verify the ceiling holds:
+capa --check-capabilities examples/xz_pure/xz_pure.capa
+# EXIT 0, stderr:
+#   capa: --check-capabilities: OK - every declared capability ceiling holds.
 ```
+
+Prefer this gate over grepping the manifest for `declared_capability`.
+`--check-capabilities` reads the transitively-reachable authority ceiling,
+so it EXITS NON-ZERO the moment any authority reaches the package, including
+a capability smuggled in through a container-typed parameter (a `List<Fs>`
+whose element is read is charged `Fs`). Such a parameter carries
+`is_capability = false` and adds nothing to the per-function
+`declared_capabilities` view, so a `grep declared_capability` would have
+certified the poisoned library as "pure"; the ceiling gate fails it with
+`FAILED - ... package '...' declares max=[] but its own code introduces
+'Fs'`. The gate cannot be fooled that way.
