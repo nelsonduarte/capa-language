@@ -624,6 +624,12 @@ class _DispatchMixin:
         # not launder it back to public.
         self._check_ifc_container_mutation(e, recv_ty)
 
+        # Capability discipline: inserting a capability into a container
+        # via a mutator (push / add / set) packs it into a data
+        # structure, which is forbidden. Early, precise diagnostic at the
+        # insertion site.
+        self._check_no_cap_into_container(e, recv_ty)
+
         # Roadmap S2 (higher-order IFC): inserting a secret-returning
         # closure into a public-declared container launders the secret
         # through the container's declared element / value type.

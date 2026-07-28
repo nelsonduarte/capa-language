@@ -972,6 +972,290 @@ class TestCapabilityDiscipline(unittest.TestCase):
 
 
 # =============================================================
+# Capability-container discipline: a capability may flow only as a
+# bare, top-level function parameter, and can never be hidden inside a
+# list / set / map / tuple (at any nesting depth). This closes the
+# read-out / smuggle family: a container built with a capability
+# element cannot be produced, stored, passed, or used, whatever the
+# surrounding syntax.
+# =============================================================
+
+class TestCapabilityContainerDiscipline(unittest.TestCase):
+    """A capability packed inside a container is rejected wherever it
+    is produced, stored, passed, or used. A BARE capability (a direct
+    parameter or a bare argument) stays accepted."""
+
+    CONTAINER_MSG = "packed inside a list, set, map, or tuple"
+
+    def _rejected(self, source: str) -> None:
+        msgs = errors_of(source)
+        self.assertTrue(
+            any(self.CONTAINER_MSG in m for m in msgs),
+            f"expected a capability-container rejection, got: {msgs}",
+        )
+
+    # ---- (C) entry gates: nested-capability parameters ----
+
+    def test_list_of_cap_param_rejected(self):
+        self._rejected(
+            "fun sink(xs: List<Stdio>)\n"
+            "    xs[0].println(\"x\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    sink([stdio])\n"
+        )
+
+    def test_set_of_cap_param_rejected(self):
+        self._rejected(
+            "fun sink(_xs: Set<Stdio>)\n"
+            "    return\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = new_set()\n"
+            "    s.add(stdio)\n"
+            "    sink(s)\n"
+        )
+
+    def test_map_of_cap_param_rejected(self):
+        self._rejected(
+            "fun sink(_m: Map<String, Stdio>)\n"
+            "    return\n"
+            "fun main(stdio: Stdio)\n"
+            "    let m = new_map()\n"
+            "    m.set(\"k\", stdio)\n"
+            "    sink(m)\n"
+        )
+
+    def test_tuple_of_cap_param_rejected(self):
+        self._rejected(
+            "fun sink(_t: (Stdio, Int))\n"
+            "    return\n"
+            "fun main(stdio: Stdio)\n"
+            "    sink((stdio, 1))\n"
+        )
+
+    def test_struct_holding_cap_container_field_rejected(self):
+        # A cap-bearing struct (implements a user capability) may hold a
+        # bare cap field, but not a CONTAINER of caps.
+        self._rejected(
+            "capability Logger\n"
+            "    fun log(self, msg: String)\n"
+            "type Box {\n"
+            "    caps: List<Stdio>\n"
+            "}\n"
+            "impl Logger for Box\n"
+            "    fun log(self, msg: String)\n"
+            "        return\n"
+        )
+
+    # ---- (C) entry gate: mutator insertion ----
+
+    def test_push_cap_into_list_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    var xs = []\n"
+            "    xs.push(stdio)\n"
+        )
+
+    def test_add_cap_into_set_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    var s = new_set()\n"
+            "    s.add(stdio)\n"
+        )
+
+    def test_set_cap_into_map_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    var m = new_map()\n"
+            "    m.set(\"k\", stdio)\n"
+        )
+
+    # ---- (B) deferred recheck: inferred-empty-then-populated ----
+
+    def test_inferred_empty_then_populated_read_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    var xs = []\n"
+            "    xs.push(stdio)\n"
+            "    xs[0].println(\"x\")\n"
+        )
+
+    def test_deferred_read_before_populate_rejected(self):
+        # The read is at a still-open element type, so only the
+        # end-of-function deferred recheck sees the capability.
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    var xs = []\n"
+            "    let probe = xs[0]\n"
+            "    xs.push(stdio)\n"
+            "    probe.println(\"late\")\n"
+        )
+
+    def test_generic_helper_escape_rejected(self):
+        # The element type is opaque inside the helper and only surfaces
+        # as the caller's List<Stdio> once inference completes.
+        self._rejected(
+            "fun stash<T>(xs: List<T>, v: T)\n"
+            "    xs.push(v)\n"
+            "fun main(stdio: Stdio)\n"
+            "    var xs = []\n"
+            "    stash(xs, stdio)\n"
+            "    xs[0].println(\"via generic stash\")\n"
+        )
+
+    # ---- (A) use-gate: read-out / use shapes ----
+
+    def test_index_bare_literal_receiver_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    [stdio][0].println(\"pwned via literal index\")\n"
+        )
+
+    def test_nested_literal_index_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    [[stdio]][0][0].println(\"via nested literal index\")\n"
+        )
+
+    def test_for_over_list_literal_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    for c in [stdio]\n"
+            "        c.println(\"pwned via for over literal\")\n"
+        )
+
+    def test_for_over_set_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    var s = new_set()\n"
+            "    s.add(stdio)\n"
+            "    for c in s\n"
+            "        c.println(\"via set for\")\n"
+        )
+
+    def test_for_over_map_values_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    var m = new_map()\n"
+            "    m.set(\"a\", stdio)\n"
+            "    for c in m.values()\n"
+            "        c.println(\"via map values\")\n"
+        )
+
+    def test_map_higher_order_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    let _ = [stdio].map(fun (c: Stdio) -> Int => leak(c))\n"
+            "fun leak(c: Stdio) -> Int\n"
+            "    c.println(\"pwned via map closure\")\n"
+            "    return 0\n"
+        )
+
+    def test_fold_higher_order_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    let _ = [stdio].fold(0, fun (a: Int, c: Stdio) -> Int => leak(c))\n"
+            "fun leak(c: Stdio) -> Int\n"
+            "    c.println(\"pwned via fold closure\")\n"
+            "    return 0\n"
+        )
+
+    def test_flat_map_higher_order_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    let _ = [stdio].flat_map(fun (c: Stdio) -> List<Int> => leak(c))\n"
+            "fun leak(c: Stdio) -> List<Int>\n"
+            "    c.println(\"pwned via flat_map closure\")\n"
+            "    return []\n"
+        )
+
+    def test_match_binds_cap_out_of_container_rejected(self):
+        # A pattern binding a capability element out of a container
+        # scrutinee is rejected: the scrutinee is a capability container.
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    var m = new_map()\n"
+            "    m.set(\"k\", stdio)\n"
+            "    match m.get(\"k\")\n"
+            "        Some(c) -> c.println(\"via match\")\n"
+            "        None -> return\n"
+        )
+
+    def test_tuple_destructure_of_cap_rejected(self):
+        self._rejected(
+            "fun main(stdio: Stdio)\n"
+            "    let (a, b) = (stdio, 1)\n"
+            "    a.println(\"via tuple destructure\")\n"
+        )
+
+    def test_cap_container_return_rejected(self):
+        self._rejected(
+            "fun make(stdio: Stdio) -> List<Stdio>\n"
+            "    return [stdio]\n"
+        )
+
+    # ---- allowances: the bare channel stays accepted ----
+
+    def test_bare_cap_param_ok(self):
+        r = check(
+            "fun sink(s: Stdio)\n"
+            "    s.println(\"ok\")\n"
+            "fun main(stdio: Stdio)\n"
+            "    sink(stdio)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_bare_cap_argument_ok(self):
+        r = check(
+            "fun helper(fs: Fs)\n"
+            "    let _e = fs.exists(\"/x\")\n"
+            "fun main(fs: Fs)\n"
+            "    helper(fs)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_user_cap_struct_field_ok(self):
+        # A cap-bearing struct may still hold a BARE built-in cap field.
+        r = check(
+            "capability Logger\n"
+            "    fun log(self, msg: String)\n"
+            "type Box {\n"
+            "    inner: Stdio\n"
+            "}\n"
+            "impl Logger for Box\n"
+            "    fun log(self, msg: String)\n"
+            "        self.inner.println(msg)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_user_cap_factory_return_ok(self):
+        # A factory may return a BARE user-defined capability.
+        r = check(
+            "capability Logger\n"
+            "    fun log(self, msg: String)\n"
+            "type Box {\n"
+            "    inner: Stdio\n"
+            "}\n"
+            "impl Logger for Box\n"
+            "    fun log(self, msg: String)\n"
+            "        self.inner.println(msg)\n"
+            "fun make(stdio: Stdio) -> Logger\n"
+            "    return Box { inner: stdio }\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_plain_container_of_values_ok(self):
+        # A container of ordinary values is unaffected.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    var xs = []\n"
+            "    xs.push(1)\n"
+            "    for n in xs\n"
+            "        stdio.println(\"n\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
+# =============================================================
 # Capability forge: rejecting `Fs()`-style local construction.
 # Surfaced 2026-05-24 by the empirical-study fuzz harness: the
 # legacy --python backend transpiled `let fs = Fs()` to a literal

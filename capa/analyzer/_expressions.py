@@ -562,6 +562,32 @@ class _ExpressionsMixin:
     def _check_expr(self, e: A.Expr) -> Ty:
         ty = self._check_expr_inner(e)
         self.types[id(e)] = ty
+        # Capability-container use-gate, framed on the RESOLVED TYPE and
+        # independent of the surrounding syntax. A value whose type packs
+        # a capability inside a list / set / map / tuple can never be
+        # produced, stored, passed, or used: no legitimate program ever
+        # has such a value, so flagging every sub-expression that resolves
+        # to one closes -- at a single site -- the whole family of
+        # read-out / smuggle shapes (a container literal built with a
+        # capability element, a cap-container as a method receiver, a
+        # for-loop iterable, a call argument, or the base of an index,
+        # including a ``.values()`` result and any nesting depth, and a
+        # higher-order ``map`` / ``fold`` / ``flat_map`` whose closure
+        # would receive the capability). The type is resolved first, so
+        # this fires as soon as inference has fixed the element type; a
+        # container whose element type only settles LATER is caught by the
+        # end-of-function deferred recheck instead. Deduped per node so a
+        # re-checked node reports once.
+        cap = self._cap_in_container(ty)
+        if cap is not None and id(e) not in self._cap_container_reported:
+            self._cap_container_reported.add(id(e))
+            self._err(
+                f"capability {cap.name!r} cannot be used here: this value "
+                f"is a container of capabilities, and a capability may only "
+                f"flow as a bare, top-level value (a direct function "
+                f"parameter), never packed inside a list, set, map, or tuple",
+                e.pos,
+            )
         # A value read OUT of an empty-origin container surfaces the bare
         # element variable (``xs[0]``, a matched ``Some(v)`` from
         # ``m.get(k)``, a ``for`` element of a set). Referencing the

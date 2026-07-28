@@ -1867,6 +1867,40 @@ class _IfcMixin:
         if sym is not None:
             sym.label = L.join(sym.label, L.SECRET)
 
+    def _check_no_cap_into_container(self, e: A.MethodCall, recv_ty) -> None:
+        """Reject inserting a capability into a container via a
+        mutator (``List.push`` / ``Set.add`` / ``Map.set``). This is an
+        entry gate for a precise, early diagnostic at the insertion
+        site; the resolved-type use-gate and the deferred recheck would
+        catch a later read of the populated container regardless.
+
+        The element / value argument positions are exactly the ones the
+        IFC taint check already keys on (``_CONTAINER_MUTATORS``). A
+        capability -- bare or itself nested -- in any of those positions
+        is packed into the container, which the discipline forbids."""
+        cap_name = getattr(recv_ty, "name", None)
+        if cap_name is None:
+            return
+        positions = _CONTAINER_MUTATORS.get((cap_name, e.method))
+        if not positions:
+            return
+        for idx in positions:
+            if idx >= len(e.args):
+                continue
+            arg_ty = self.types.get(id(e.args[idx]))
+            if arg_ty is None:
+                continue
+            cap = self._contains_any_capability(self._resolve_ty(arg_ty))
+            if cap is not None:
+                self._err(
+                    f"capability {cap.name!r} cannot be inserted into a "
+                    f"container: a capability may only flow as a bare, "
+                    f"top-level value (a direct function parameter), never "
+                    f"packed inside a list, set, map, or tuple",
+                    e.args[idx].pos,
+                )
+                return
+
     def _check_container_closure_store(self, e: A.MethodCall, recv_ty) -> None:
         """Higher-order IFC: inserting a secret-returning closure into a
         public-declared container (``List.push`` / ``Set.add`` /

@@ -36,3 +36,34 @@ fun move_cap(stdio: Stdio)
 // 8. Capability inside a tuple, forbidden
 fun in_tuple() -> (Stdio, Int)
     return (Stdio { }, 0)
+
+// 9. Capability nested in a container parameter, forbidden
+fun sink_list(caps: List<Stdio>)
+    caps[0].println("oops")
+
+// 10. Capability inserted into a container via a mutator, forbidden
+fun populate(stdio: Stdio)
+    var xs = []
+    xs.push(stdio)
+
+// 11. Capability read out of an inferred-then-populated container,
+//     forbidden. The element type only resolves after the push, so the
+//     end-of-function deferred recheck catches the read.
+fun read_out(stdio: Stdio)
+    var xs = []
+    xs.push(stdio)
+    xs[0].println("oops")
+
+// 12. Capability iterated out of a container literal, forbidden
+fun iterate(stdio: Stdio)
+    for c in [stdio]
+        c.println("oops")
+
+// 13. Capability read out through a higher-order method whose closure
+//     would receive it, forbidden
+fun higher_order(stdio: Stdio)
+    let _ = [stdio].map(fun (c: Stdio) -> Int => leak(c))
+
+fun leak(c: Stdio) -> Int
+    c.println("oops")
+    return 0

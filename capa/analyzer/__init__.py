@@ -640,6 +640,12 @@ class Analyzer(
         # read's position. Judged at END of function (after all pins have
         # settled) so a legitimate read-before-populate is not rejected.
         self._deferred_elem_reads: dict[str, object] = {}
+        # Expression nodes already reported as a capability container by
+        # the resolved-type use-gate in ``_check_expr``. Node ids are
+        # stable and unique, so this dedups the gate that fires once per
+        # cap-container-typed sub-expression (a repeated ``_check_expr``
+        # on the same node must not double-report).
+        self._cap_container_reported: set[int] = set()
         # Names of user-defined struct types whose values must
         # not be field-mutated, because the type appears
         # (directly or transitively) in a ``Set<...>`` or

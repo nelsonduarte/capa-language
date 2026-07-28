@@ -302,6 +302,65 @@ class _DisciplineMixin:
                     return found
         return None
 
+    def _cap_in_container(self, ty: Ty) -> Optional[TyName]:
+        """First capability smuggled INSIDE a container in ``ty``.
+
+        A capability may flow only as a bare, top-level value (a
+        direct function parameter). It must never be hidden inside a
+        data structure. This predicate returns the first capability
+        reachable STRICTLY BELOW the top-level type head -- a
+        list / set / map element, a tuple member, or any generic
+        argument, at any nesting depth -- which is exactly a
+        capability packed into a container.
+
+        A BARE capability (``Stdio``) or a cap-bearing struct value
+        (``SmtpMailer``) at the TOP level is deliberately NOT flagged:
+        those are the legitimate flows (a top-level parameter, a
+        factory result, a cap-bearing struct passed as a value). Only
+        the nested form is a violation.
+
+        Like :func:`capa.typesys.contains_capability`, it does NOT
+        descend a ``TyFun``: a capability appearing as the parameter
+        of a stored closure is a signature, not storage, so a
+        ``List<Fun(Stdio) -> Int>`` is not a capability container.
+        The nested walk reuses :meth:`_contains_any_capability`, so
+        built-in caps, user-defined caps, and cap-bearing structs all
+        count once they sit below a container layer. The type is
+        resolved against ``_ty_subs`` first, so a container whose
+        element was only pinned by inference is judged on its real
+        element type.
+        """
+        ty = self._resolve_ty(ty)
+        if isinstance(ty, TyName):
+            for a in ty.args:
+                found = self._contains_any_capability(a)
+                if found is not None:
+                    return found
+            return None
+        if isinstance(ty, TyTuple):
+            for elem in ty.elements:
+                found = self._contains_any_capability(elem)
+                if found is not None:
+                    return found
+        return None
+
+    def _check_no_cap_container(self, ty: Ty, pos: Pos, context: str) -> None:
+        """Reject a type that packs a capability inside a container in
+        ``context`` (see :meth:`_cap_in_container`). Used at the entry
+        gates -- a function parameter / return whose type nests a
+        capability inside a list / set / map / tuple -- for an early,
+        precise diagnostic."""
+        cap = self._cap_in_container(ty)
+        if cap is None:
+            return
+        self._err(
+            f"capability {cap.name!r} cannot appear in {context}; a "
+            f"capability may only flow as a bare, top-level value (a "
+            f"direct function parameter), never packed inside a list, "
+            f"set, map, or tuple",
+            pos,
+        )
+
     def _is_user_capability(self, name: str) -> bool:
         """True iff ``name`` resolves to a user-defined
         capability (a Symbol whose kind is CAPABILITY but whose

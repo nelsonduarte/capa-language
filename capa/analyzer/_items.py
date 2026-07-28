@@ -208,6 +208,14 @@ class _ItemsMixin:
                     name=p.name, kind=SymbolKind.PARAM, pos=p.pos, ty=pty,
                     label=p.type_expr.label if p.type_expr else None,
                 )
+                # A bare capability parameter is the ONE legitimate
+                # channel; a capability NESTED inside a container / tuple
+                # is not, so reject the parameter up front for a precise
+                # message (the resolved-type use-gate would also catch any
+                # use of it in the body).
+                self._check_no_cap_container(
+                    pty, p.pos, f"the type of parameter {p.name!r}",
+                )
                 if contains_capability(pty) is not None:
                     cap_param_syms.append(psym)
             if self.scope.lookup_local(p.name) is not None:
@@ -344,7 +352,32 @@ class _ItemsMixin:
         # still accepted. Resolution runs against the function's still-live
         # ``_ty_subs``.
         for var_name, read_pos in self._deferred_elem_reads.items():
-            if is_flexible(self._resolve_ty(TyVar(var_name))):
+            resolved_elem = self._resolve_ty(TyVar(var_name))
+            # Deferred capability-container recheck. A value read out of a
+            # container created empty and unannotated surfaces the bare,
+            # still-open element variable, so the ``_check_expr`` use-gate
+            # (which is framed on the resolved type) could not see a
+            # capability at production time. Now that the whole body has
+            # been analysed, the element type may have resolved to a
+            # capability -- the inferred-empty-then-populated local, or a
+            # capability pushed inside a generic helper that only surfaces
+            # as the caller's ``List<capability>``. Reject it here. This
+            # keys on a RESOLVED-to-capability element type, whereas the
+            # never-determined guard below keys on a STILL-FLEXIBLE one:
+            # the two conditions are mutually exclusive, so they compose
+            # without double-firing or conflicting.
+            cap = self._contains_any_capability(resolved_elem)
+            if cap is not None:
+                self._err(
+                    f"capability {cap.name!r} cannot be read out of a "
+                    f"container: this local resolves to a container of "
+                    f"capabilities, and a capability may only flow as a "
+                    f"bare, top-level value (a direct function parameter), "
+                    f"never packed inside a list, set, map, or tuple",
+                    read_pos,
+                )
+                continue
+            if is_flexible(resolved_elem):
                 if var_name.startswith("?lst"):
                     kind, example = "list", "let xs: List<Int> = []"
                 elif var_name.startswith("?map"):

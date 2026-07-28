@@ -216,6 +216,14 @@ class _DeclarationsMixin:
                         self._check_no_unsafe_field(
                             fty, fld.pos, f"struct field {fld.name!r}",
                         )
+                        # The relaxation lets a cap-bearing struct hold a
+                        # BARE capability field; it must not smuggle a
+                        # CONTAINER of capabilities (``caps: List<Net>``),
+                        # which would hide authority the same way any other
+                        # container does.
+                        self._check_no_cap_container(
+                            fty, fld.pos, f"struct field {fld.name!r}",
+                        )
                     sym.struct_fields[fld.name] = fty
                     self._record_field_label(sym, fld)
                 self._pop_type_params()
@@ -280,6 +288,16 @@ class _DeclarationsMixin:
                         self._check_no_builtin_capability(
                             sym.ty.ret, item.pos,
                             f"return type of function {item.name!r}",
+                        )
+                        # A factory may return a BARE user-defined
+                        # capability, but not one packed inside a
+                        # container: ``-> List<Logger>`` and
+                        # ``-> (Logger, Int)`` smuggle it the same way a
+                        # built-in would, and the builtin-only check above
+                        # does not see a user capability.
+                        self._check_no_cap_container(
+                            sym.ty.ret, item.pos,
+                            f"the return type of function {item.name!r}",
                         )
             elif isinstance(item, A.TraitDecl):
                 sym = self.global_scope.lookup(item.name)
