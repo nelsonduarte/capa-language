@@ -295,8 +295,12 @@ syntax-aware Capa programs. The Wasm backend runs every capability it
 supports (Fs, Env, Clock, Stdio, Net, Random, Db, Proc, all but the
 Python-only Serve and Unsafe, which it rejects loudly) and the full
 language surface with output byte-identical to the Python reference, and
-cross-function capability attenuation is enforced soundly at the Wasm
-runtime via host-side handle tables.
+cross-function capability attenuation is enforced by host-side handle
+tables for a Capa-emitted artifact; the enforcement lives in the
+trusted emitter/host, not the runtime boundary, so the executed
+artifact is part of the TCB (see
+[`docs/design/wasm-cap-handles.md`](docs/design/wasm-cap-handles.md)
+and [`trust-model.md`](docs/trust-model.md)).
 
 Run them:
 
