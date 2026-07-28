@@ -303,15 +303,15 @@ class _DisciplineMixin:
         return None
 
     def _cap_in_container(self, ty: Ty) -> Optional[TyName]:
-        """First capability smuggled INSIDE a container in ``ty``.
+        """First capability that appears BY NAME below a container in
+        ``ty``.
 
         A capability may flow only as a bare, top-level value (a
-        direct function parameter). It must never be hidden inside a
-        data structure. This predicate returns the first capability
-        reachable STRICTLY BELOW the top-level type head -- a
-        list / set / map element, a tuple member, or any generic
-        argument, at any nesting depth -- which is exactly a
-        capability packed into a container.
+        direct function parameter). This predicate returns the first
+        capability whose type NAME is reachable STRICTLY BELOW the
+        top-level type head -- a list / set / map element, a tuple
+        member, or any generic argument, at any nesting depth -- which
+        is exactly a capability packed into a container by name.
 
         A BARE capability (``Stdio``) or a cap-bearing struct value
         (``SmtpMailer``) at the TOP level is deliberately NOT flagged:
@@ -319,10 +319,23 @@ class _DisciplineMixin:
         factory result, a cap-bearing struct passed as a value). Only
         the nested form is a violation.
 
-        Like :func:`capa.typesys.contains_capability`, it does NOT
-        descend a ``TyFun``: a capability appearing as the parameter
-        of a stored closure is a signature, not storage, so a
+        Scope of the check. This is a TYPE-NAME reachability test, so
+        it finds authority only where a capability appears BY NAME in
+        the value's type. Like :func:`capa.typesys.contains_capability`
+        it does NOT descend a ``TyFun``: a capability appearing as the
+        parameter of a stored closure is a signature, not storage, so
         ``List<Fun(Stdio) -> Int>`` is not a capability container.
+        Consequently authority CAPTURED inside a closure is NOT covered
+        here: a thunk that closes over a live capability has a
+        signature such as ``Fun() -> Unit`` that does not name the
+        capability, so a ``List<Fun() -> Unit>`` of capturing thunks
+        carries the authority without this detector seeing it. That is
+        a separate, known capability-accounting limitation, not a
+        soundness hole this detector is meant to close: the
+        ``--check-capabilities`` ceiling still fails closed on any
+        ``Fun`` in a signature, so the captured authority cannot be
+        under-reported past that gate.
+
         The nested walk reuses :meth:`_contains_any_capability`, so
         built-in caps, user-defined caps, and cap-bearing structs all
         count once they sit below a container layer. The type is
