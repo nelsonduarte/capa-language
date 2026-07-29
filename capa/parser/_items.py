@@ -788,6 +788,8 @@ class _ItemsMixin:
         params: list[str] = []
         params.append(self._expect(T.IDENT, "expected type parameter name").text)
         while self._match(T.COMMA):
+            if self._check(T.GT):  # trailing comma
+                break
             params.append(
                 self._expect(T.IDENT, "expected type parameter name").text
             )

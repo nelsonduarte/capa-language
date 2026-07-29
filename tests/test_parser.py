@@ -736,12 +736,16 @@ class TestLambdaParamInference(unittest.TestCase):
 
 
 class TestTrailingCommaParity(unittest.TestCase):
-    """A trailing comma is accepted in the three paren-delimited lists
-    that used to reject it (function parameters, sum-variant payloads,
-    and lambda parameters), matching how call arguments and list /
-    struct / tuple literals already treat it. The comma is purely
-    cosmetic: each list parses to the same AST as without it. A bare
-    comma with no preceding element is still an error."""
+    """A trailing comma is accepted in the paren- and angle-bracket
+    delimited lists that used to reject it, matching how call arguments
+    and list / struct / tuple literals already treat it. The comma is
+    purely cosmetic: each list parses to the same AST as without it, and
+    an empty / bare / double comma is still an error. Sites covered:
+    function parameters, sum-variant payloads, lambda parameters,
+    match / variant pattern payloads, generic type-parameter
+    declarations (fun / type / trait / method), and generic
+    type-argument lists (including nested lists that close on a
+    lexer-fused '>>')."""
 
     def test_fun_params_trailing_comma_same_ast(self):
         with_comma = parse("fun f(a: Int, b: Int,)\n    return\n")
@@ -769,6 +773,98 @@ class TestTrailingCommaParity(unittest.TestCase):
     def test_lambda_params_bare_comma_rejected(self):
         with self.assertRaises(ParserError):
             parse_expr("fun (,) => 0")
+
+    # -- match / variant pattern payloads (closer ')') --
+
+    def test_pattern_payload_trailing_comma_same_ast(self):
+        with_comma = parse_expr("match v { V(a, b,) -> 0 }")
+        plain = parse_expr("match v { V(a, b) -> 0 }")
+        self.assertEqual(with_comma.arms[0].pattern, plain.arms[0].pattern)
+
+    def test_pattern_payload_bare_comma_rejected(self):
+        with self.assertRaises(ParserError):
+            parse_expr("match v { V(,) -> 0 }")
+
+    def test_pattern_payload_double_comma_rejected(self):
+        with self.assertRaises(ParserError):
+            parse_expr("match v { V(a,,) -> 0 }")
+
+    # -- generic type-parameter declarations (closer '>') --
+
+    def test_fun_type_params_trailing_comma_same_ast(self):
+        with_comma = parse("fun f<T, U,>()\n    return\n")
+        plain = parse("fun f<T, U>()\n    return\n")
+        self.assertEqual(
+            with_comma.items[0].type_params, plain.items[0].type_params
+        )
+
+    def test_type_decl_type_params_trailing_comma_same_ast(self):
+        with_comma = parse("type Box<T,> {}\n")
+        plain = parse("type Box<T> {}\n")
+        self.assertEqual(
+            with_comma.items[0].type_params, plain.items[0].type_params
+        )
+
+    def test_trait_type_params_trailing_comma_same_ast(self):
+        with_comma = parse("trait Show<T,>\n    fun show(self) -> String\n")
+        plain = parse("trait Show<T>\n    fun show(self) -> String\n")
+        self.assertEqual(
+            with_comma.items[0].type_params, plain.items[0].type_params
+        )
+
+    def test_method_sig_type_params_trailing_comma_same_ast(self):
+        with_comma = parse("trait C\n    fun m<T,>(self)\n")
+        plain = parse("trait C\n    fun m<T>(self)\n")
+        self.assertEqual(
+            with_comma.items[0].methods[0].type_params,
+            plain.items[0].methods[0].type_params,
+        )
+
+    def test_type_params_bare_comma_rejected(self):
+        with self.assertRaises(ParserError):
+            parse("fun f<,>()\n    return\n")
+
+    def test_type_params_double_comma_rejected(self):
+        with self.assertRaises(ParserError):
+            parse("fun f<T,,>()\n    return\n")
+
+    # -- generic type-argument lists (closer '>' or lexer-fused '>>') --
+
+    def test_type_args_trailing_comma_same_ast(self):
+        with_comma = parse("fun f(x: Map<String, Int,>)\n    return\n")
+        plain = parse("fun f(x: Map<String, Int>)\n    return\n")
+        self.assertEqual(
+            with_comma.items[0].params[0].type_expr,
+            plain.items[0].params[0].type_expr,
+        )
+
+    def test_type_args_trailing_comma_before_fused_closer_same_ast(self):
+        with_comma = parse("fun f(x: List<List<Int,>>)\n    return\n")
+        plain = parse("fun f(x: List<List<Int>>)\n    return\n")
+        self.assertEqual(
+            with_comma.items[0].params[0].type_expr,
+            plain.items[0].params[0].type_expr,
+        )
+
+    def test_type_args_trailing_comma_before_triple_fused_closer_same_ast(self):
+        with_comma = parse("fun f(x: List<List<List<Int,>>>)\n    return\n")
+        plain = parse("fun f(x: List<List<List<Int>>>)\n    return\n")
+        self.assertEqual(
+            with_comma.items[0].params[0].type_expr,
+            plain.items[0].params[0].type_expr,
+        )
+
+    def test_type_args_bare_comma_rejected(self):
+        with self.assertRaises(ParserError):
+            parse("fun f(x: Map<,>)\n    return\n")
+
+    def test_type_args_double_comma_rejected(self):
+        with self.assertRaises(ParserError):
+            parse("fun f(x: Map<String,,>)\n    return\n")
+
+    def test_type_args_double_comma_before_fused_closer_rejected(self):
+        with self.assertRaises(ParserError):
+            parse("fun f(x: List<List<Int,,>>)\n    return\n")
 
 
 class TestExpressionDepthCap(unittest.TestCase):

@@ -111,6 +111,13 @@ class _TypesMixin:
         self._expect(T.LT, "expected '<'")
         args = [self._parse_type()]
         while self._match(T.COMMA):
+            # A trailing comma may be followed by a single '>' (GT) or,
+            # in a nested list like ``List<List<Int,>>``, by a fused
+            # '>>' (RSHIFT) that ``_close_type_args`` splits. Treat
+            # either as the closer; in type-argument context a fused
+            # '>>' is unambiguously a closer, never a shift.
+            if self._check(T.GT, T.RSHIFT):  # trailing comma
+                break
             args.append(self._parse_type())
         self._close_type_args()
         return args

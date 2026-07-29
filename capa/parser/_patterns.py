@@ -76,6 +76,8 @@ class _PatternsMixin:
                 if not self._check(T.RPAREN):
                     payloads.append(self._parse_pattern(in_match=in_match))
                     while self._match(T.COMMA):
+                        if self._check(T.RPAREN):  # trailing comma
+                            break
                         payloads.append(self._parse_pattern(in_match=in_match))
                 self._expect(T.RPAREN, "expected ')' after variant payload(s)")
                 return A.VariantPat(pos=start, name=name, payloads=payloads)
