@@ -124,7 +124,7 @@ This chapter describes, in sufficient detail for implementation, the set of toke
 
 ### 3.1 Character set
 
-The source text of Capa is encoded in UTF-8. Comments and string literals may contain any valid Unicode codepoint. Identifiers are restricted to ASCII characters in version 1.0 (with possible future extension to UAX #31).
+The source text of Capa is encoded in UTF-8. Comments and string literals may contain any valid Unicode codepoint. Identifiers are **not** restricted to ASCII in version 1.0: the lexer admits any character accepted by Python's Unicode-aware `str.isalpha` as an identifier start (or `_`), and any character accepted by `str.isalnum` as a continuation (or `_`). Beyond ASCII `a`-`z` / `A`-`Z` / `0`-`9` that includes Unicode letters and digits (for example `café`, `año`, `π`). This is broader than the UAX #31 identifier profile; a future version may narrow to it.
 
 ### 3.2 Comments
 
@@ -146,11 +146,16 @@ Comments are consumed by the lexer and never reach the parser. Exception: docume
 ```ebnf
 IDENT = ident_start { ident_continue }
 
-ident_start = letter | "_"
+ident_start = ident_letter | "_"
 
-ident_continue = letter | digit | "_"
+ident_continue = ident_letter | ident_digit | "_"
 
-letter = "a" | "b" | ... | "z" | "A" | "B" | ... | "Z"
+ident_letter = (* any character c for which Python's Unicode-aware
+                  str.isalpha(c) is true: ASCII "a".."z" / "A".."Z"
+                  and any Unicode letter, e.g. those in café / año / π *)
+
+ident_digit = (* any character str.isalnum accepts but str.isalpha does
+                 not: the ASCII digits "0".."9" and Unicode numerics *)
 
 digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
 ```
@@ -168,11 +173,11 @@ INT_LIT = dec_int | hex_int | oct_int | bin_int
 
 dec_int = digit { digit | "_" }
 
-hex_int = "0x" hex_digit { hex_digit | "_" }
+hex_int = ( "0x" | "0X" ) hex_digit { hex_digit | "_" }
 
-oct_int = "0o" oct_digit { oct_digit | "_" }
+oct_int = ( "0o" | "0O" ) oct_digit { oct_digit | "_" }
 
-bin_int = "0b" bin_digit { bin_digit | "_" }
+bin_int = ( "0b" | "0B" ) bin_digit { bin_digit | "_" }
 
 hex_digit = digit | "a" | ... | "f" | "A" | ... | "F"
 
@@ -181,9 +186,9 @@ oct_digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7"
 bin_digit = "0" | "1"
 ```
 
-The interspersed underscores are purely visual (`1_000_000` is equivalent to `1000000`) and cannot appear at the beginning or end of the number, nor two consecutively. This restriction is enforced by the lexer.
+The interspersed underscores are purely visual (`1_000_000` is equivalent to `1000000`) and cannot appear at the beginning or end of the number, nor two consecutively. This restriction is enforced by the lexer. The base-marker letter is case-insensitive: `0XFF`, `0O755`, and `0B1010` are accepted alongside their lowercase forms.
 
-Valid examples: `0`, `42`, `-7` (the sign is part of the expression, not of the literal), `1_000_000`, `0xFF`, `0xCAFE_BABE`, `0o755`, `0b1010_1010`.
+Valid examples: `0`, `42`, `-7` (the sign is part of the expression, not of the literal), `1_000_000`, `0xFF`, `0XCAFE_BABE`, `0o755`, `0b1010_1010`.
 
 #### 3.4.2 Floating-point literals
 
@@ -256,7 +261,7 @@ The following words are reserved by the language and cannot be used as identifie
 | Declarations | `fun`, `type`, `trait`, `impl`, `capability`, `extern`, `const`, `pub`, `import`, `as` |
 | Control flow | `if`, `then`, `elif`, `else`, `match`, `while`, `for`, `in`, `break`, `continue`, `return` |
 | Variables | `let`, `var` |
-| Capability discipline | `consume` |
+| Capability discipline | `consume`, `borrow` |
 | Linear and typestate | `linear`, `typestate`, `become` |
 | Literal values | `true`, `false` |
 | Logical operators | `and`, `or`, `not` |
@@ -274,6 +279,7 @@ The operator and punctuation tokens are recognised by the lexer using the maxima
 | Category | Symbols |
 |---|---|
 | Arithmetic | `+`, `-`, `*`, `/`, `%` |
+| Bitwise / shift | `&`, `\|`, `^`, `<<`, `>>` (on `Int`; `\|` also separates or-patterns) |
 | Comparison | `==`, `!=`, `<`, `<=`, `>`, `>=` |
 | Logical | `and`, `or`, `not` (words); `&&` and `\|\|` do not exist |
 | Assignment | `=`, `+=`, `-=`, `*=`, `/=`, `%=` |
@@ -284,7 +290,7 @@ The operator and punctuation tokens are recognised by the lexer using the maxima
 
 > **DESIGN DECISION: AND/OR/NOT INSTEAD OF &&/||/!**
 >
-> Capa adopts `and`, `or`, `not` as keywords instead of the C-style symbols `&&` / `||` / `!`. The justification is twofold: it brings the language closer to Python (which the target audience knows), and it eliminates the confusion between logical operators and bitwise operators (which are reserved for a future extension in the form `bit_and`, `bit_or`, etc., avoiding visual ambiguity).
+> Capa adopts `and`, `or`, `not` as keywords instead of the C-style symbols `&&` / `||` / `!`. The justification is twofold: it brings the language closer to Python (which the target audience knows), and it keeps the logical operators (`and` / `or` / `not`, always boolean) visually distinct from the bitwise operators. The bitwise operators **do** exist, as the symbols `&`, `|`, `^`, `<<`, and `>>`: they operate on `Int` with C/Rust precedence and associativity (see Sections 5.12.3 and 6.1). Using words for the logical connectives is exactly what removes the `&`-versus-`&&` ambiguity that trips readers in C.
 
 ---
 
@@ -378,9 +384,14 @@ top_item = import_decl
          | extern_component_decl
          | const_decl
 
-import_decl = "import" module_path [ "as" IDENT ] NEWLINE
+import_decl = "import" module_path
+    ( import_selectors | [ "as" IDENT ] ) NEWLINE
 
 module_path = IDENT { "." IDENT }
+
+import_selectors = "(" import_selector { "," import_selector } [ "," ] ")"
+
+import_selector = IDENT [ "as" IDENT ]
 
 extern_component_decl = [ "pub" ] "extern" "component" IDENT "from" STRING
     NEWLINE INDENT { function_signature NEWLINE } DEDENT
@@ -414,7 +425,7 @@ extern_component_decl = [ "pub" ] "extern" "component" IDENT "from" STRING
 > program that only DECLARES a foreign component (never invokes one) runs
 > normally.
 
-> **Status of `import` in 1.0.** The grammar production `import_decl` is fully supported by both the parser and the semantic analyzer. An `import foo.bar` (optionally with `as alias`) loads another Capa module: the loader resolves the path against the current project's source tree and against the package manager's `vendor/` directory (see [`docs/packages.md`](docs/packages.md)). Imported names are visible to the importing module under the imported module's namespace; capability flow across module boundaries follows the same discipline as in-module calls (a function in another module that takes `Fs` still has to be called from a function that holds `Fs`).
+> **Status of `import` in 1.0.** The grammar production `import_decl` is fully supported by both the parser and the semantic analyzer. A parenthesised selector list, `import foo.bar (a, b as c)`, brings only the named `pub` items (each optionally renamed with `as`); it is mutually exclusive with a whole-module `as` alias and must name at least one symbol. An `import foo.bar` (optionally with `as alias`) loads another Capa module: the loader resolves the path against the current project's source tree and against the package manager's `vendor/` directory (see [`docs/packages.md`](docs/packages.md)). Imported names are visible to the importing module under the imported module's namespace; capability flow across module boundaries follows the same discipline as in-module calls (a function in another module that takes `Fs` still has to be called from a function that holds `Fs`).
 >
 > The `py_import` / `py_invoke` pair (see [`docs/stdlib.md`](docs/stdlib.md)) is a *separate* mechanism for crossing the Python boundary, not a replacement for `import`. Both require the `Unsafe` capability and exist to let a Capa program reach a Python library when no Capa-native alternative is available. Most user programs use `import` for Capa modules and never touch `py_import`.
 
@@ -446,11 +457,15 @@ generic_param = IDENT
 
 param_list = param { "," param } [ "," ]
 
-param = [ "consume" ] IDENT ":" type
-      | "self"                          (* method receiver, type implicit *)
+param = [ "consume" ] [ "borrow" ] ( IDENT ":" type | "self" )
+                                       (* self: method receiver, type
+                                          implicit; consume / borrow may
+                                          prefix either form *)
 ```
 
 The optional `consume` qualifier marks the parameter as taking ownership of the passed value (typically a capability). After a call to such a function, the caller can no longer use the argument it passed. This is enforced by the semantic analyzer's linearity check, not the grammar; see the Capabilities chapter of the white paper for details.
+
+The optional `borrow` qualifier marks a function-typed (`Fun(...) -> ...`) parameter as invoke-only: the body may call it but may not store, return, alias, pass it on, or capture it. Like `consume`, this is a semantic constraint the analyzer enforces, not a grammar rule. Both qualifiers may syntactically prefix `self` (`consume self` / `borrow self`); `consume self` is the meaningful case, releasing a linear receiver (`close(consume self)`). Because `self` is never function-typed, `borrow self` parses but the analyzer rejects it (`borrow applies only to a function-typed parameter`). `borrow` is a reserved word (Appendix A).
 
 Attributes are static, source-level metadata. The grammar accepts any identifier as the attribute name and any number of `key: "value"` arguments (including none), but the analyzer restricts the v1 catalogue to `security`, `deprecated`, `audited`, `vex`, `strict_ifc`, and `constant_time`, each with a fixed set of allowed keys. The first four carry documentation / supply-chain metadata; `strict_ifc` and `constant_time` are argument-less behavioural attributes written with empty parentheses (`@strict_ifc()`, `@constant_time()`): the former opts the function into fail-closed information-flow checking (a secret-reaches-public-sink flow becomes a hard error instead of a warning), the latter requires the function to be constant-time (the analyzer rejects any control-flow decision or index that depends on a `@secret` value). Attribute argument values must be string literals so that the metadata is statically inspectable without running expression evaluation. The `--manifest` tool emits attributes verbatim in JSON form for downstream consumption by audit tooling. Attributes are valid on top-level `fun` declarations and on methods inside an `impl` block; they are rejected on `const`, `type`, `trait`, `capability`, `impl`, and `import` in v1.
 
@@ -512,24 +527,37 @@ A trait defines a set of function signatures (and, optionally, default implement
 trait_decl = [ "pub" ] "trait" IDENT [ generic_params ]
     NEWLINE INDENT { trait_member } DEDENT
 
-trait_member = function_signature NEWLINE
+trait_member = function_signature [ uses_clause ] NEWLINE
 
 function_signature = "fun" IDENT [ generic_params ]
     "(" [ param_list ] ")"
     [ "->" type ]
+
+uses_clause = "uses" "[" [ IDENT { "," IDENT } [ "," ] ] "]"
 ```
+
+An optional `uses_clause` may follow the return type of a **trait or
+capability** method signature (not a regular `fun`, and not an
+`extern component` method): `fun fetch(self, net: Net) -> Int uses
+[Net]` declares the capability atoms the method is allowed to
+exercise, and `uses []` declares it pure. The analyzer checks each
+implementation against the declared bound and charges a caller the
+bound rather than the concrete implementor. `uses` is a **contextual**
+keyword (recognised by position, like `component` / `from`), not a
+reserved word, so it stays usable as an ordinary identifier
+elsewhere.
 
 ### 5.5 impl declarations
 
 An `impl` declaration associates a set of methods with a concrete type. There are two forms: a plain `impl` (methods belonging to the type itself) and a trait `impl` (which satisfies the signatures declared by the trait).
 
 ```ebnf
-impl_decl = "impl"
-    [ qualified_name [ type_args ] "for" ] type
+impl_decl = "impl" IDENT [ type_args ] [ state_index ]
+    [ "for" IDENT [ type_args ] [ state_index ] ]
     NEWLINE INDENT { function_decl } DEDENT
 ```
 
-When the `qualified_name for` part is omitted, the `impl` defines methods of the type itself (with no associated trait). This is the most common form for types specific to the application.
+Both names (the target type, and the trait before `for`) are a single `IDENT`, not a dotted `qualified_name`: the parser reads one identifier, so `impl foo.Bar` is not accepted. When the `for` part is omitted, the `impl` defines methods of the type itself (with no associated trait). This is the most common form for types specific to the application. Type arguments and a `[State]` index are parsed on the trait side (before `for`) but rejected by the analyzer, which allows them only on the target type.
 
 ### 5.6 Capability declarations
 
@@ -539,7 +567,8 @@ Standard capabilities are provided by the runtime and not declared in user code.
 capability_decl = [ "pub" ] "capability" IDENT [ generic_params ]
     NEWLINE INDENT { capability_member } DEDENT
 
-capability_member = function_signature NEWLINE
+capability_member = function_signature [ uses_clause ] NEWLINE
+                    (* uses_clause defined in Section 5.4 *)
 ```
 
 A user-defined capability is implemented exactly like a trait: `impl X for Type`, where `X` is the capability and `Type` is the concrete implementor. The implementor's value is then accepted anywhere `X` is expected (nominal subtyping).
@@ -633,10 +662,12 @@ assign_stmt = lvalue assign_op expression NEWLINE
 
 assign_op = "=" | "+=" | "-=" | "*=" | "/=" | "%="
 
-lvalue = IDENT { "." IDENT | "[" expression "]" }
+lvalue = postfix_expr        (* the parser then requires the outermost
+                                operation to be an identifier, a field
+                                access, or an index -- see notes *)
 ```
 
-Notes. `let` allows destructuring pattern matching (`let (a, b) = pair`); `var` allows only `IDENT`, because the concept of mutability only makes sense for a simple variable. `assign_stmt` admits any `lvalue` (field access or indexing) as a target; the type checker validates that the target is mutable.
+Notes. `let` allows destructuring pattern matching (`let (a, b) = pair`); `var` allows only `IDENT`, because the concept of mutability only makes sense for a simple variable. `assign_stmt` parses its target as a full `postfix_expr` (Section 5.12.4) and then requires the outermost operation to be a bare identifier, a field access (`.name`), or an index (`[e]`); anything else (a bare call, a literal, an arithmetic expression) is rejected at parse time with `invalid assignment target (must be name, field, or index)`. A call or other postfix may still appear deeper in the chain (for example `cache()[0] = x`, whose outermost operation is the index); the analyzer, not the grammar, then checks that the resolved target is an assignable, mutable location.
 
 ### 5.10 Control flow statements
 
@@ -712,9 +743,9 @@ binding_pattern = IDENT
 
 tuple_pattern = "(" pattern { "," pattern } [ "," ] ")"
 
-ctor_pattern = qualified_name [ "(" [ pattern { "," pattern } ] ")" ]
+ctor_pattern = IDENT [ "(" [ pattern { "," pattern } ] ")" ]
 
-struct_pattern = qualified_name "{" field_pattern { "," field_pattern } "}"
+struct_pattern = IDENT "{" field_pattern { "," field_pattern } "}"
 
 field_pattern = IDENT [ ":" pattern ]
 
@@ -723,7 +754,7 @@ field_pattern = IDENT [ ":" pattern ]
 match_arm_pattern = pattern { "|" pattern }
 ```
 
-Notes. A `binding_pattern` (a single identifier) binds the value to the name throughout the scope of the match arm or `let`. The wildcard `_` matches any value without binding anything.
+Notes. A `binding_pattern` (a single identifier) binds the value to the name throughout the scope of the match arm or `let`. The wildcard `_` matches any value without binding anything. A `ctor_pattern` / `struct_pattern` names its constructor or type with a single `IDENT`; a dotted `qualified_name` is not accepted in pattern position.
 
 Or-patterns at match-arm level (`A | B | C -> body`) match if *any* alternative matches. The analyzer enforces two consistency rules at the binding level:
 
@@ -739,8 +770,7 @@ Expressions are presented in layers, from lowest precedence to highest. This for
 #### 5.12.1 Generic expression
 
 ```ebnf
-expression = lambda_expr
-           | ternary_expr
+expression = ternary_expr
 
 lambda_expr = "fun" "(" [ param_list ] ")" [ "->" type ] "=>" lambda_body
 
@@ -748,7 +778,7 @@ lambda_body = expression                  (* single-expression body *)
             | NEWLINE INDENT { statement } DEDENT   (* block body *)
 ```
 
-Notes. The leading `fun` keyword makes lambdas trivially distinguishable from `paren_expr`, the parser does not need lookahead or backtracking (this supersedes the older Python-style `(params) -> expr` form). The return-type annotation is optional and inferred from the body when omitted.
+Notes. `lambda_expr` is a `primary_expr` (Section 5.12.5): the parser recognises it wherever a primary is expected (for example as a call argument, `xs.map(fun (x) => x + 1)`), not only at the top of an expression. The leading `fun` keyword makes lambdas trivially distinguishable from `paren_expr`, so the parser needs no lookahead or backtracking (this supersedes the older Python-style `(params) -> expr` form). The return-type annotation is optional and inferred from the body when omitted.
 
 The block body shape allows multi-statement closures with explicit `return`:
 
@@ -791,19 +821,29 @@ compare_expr = range_expr [ compare_op range_expr ]
 
 compare_op = "==" | "!=" | "<" | "<=" | ">" | ">="
 
-range_expr = add_expr [ ( ".." | "..=" ) add_expr ]
+range_expr = bit_or_expr [ ( ".." | "..=" ) bit_or_expr ]
+
+bit_or_expr = bit_xor_expr { "|" bit_xor_expr }
+
+bit_xor_expr = bit_and_expr { "^" bit_and_expr }
+
+bit_and_expr = shift_expr { "&" shift_expr }
+
+shift_expr = add_expr { ( "<<" | ">>" ) add_expr }
 
 add_expr = mul_expr { ( "+" | "-" ) mul_expr }
 
 mul_expr = unary_expr { ( "*" | "/" | "%" ) unary_expr }
 
-unary_expr = ( "-" | "+" ) unary_expr
+unary_expr = "-" unary_expr
            | postfix_expr
 ```
 
 Comparisons in Capa do not chain: `1 < x < 10` is a syntax error (because `<` is not associative under this grammar). To chain, write `1 < x and x < 10`. This restriction avoids subtle ambiguities.
 
 The `range_expr` production allows integer ranges. `a..b` is exclusive of `b`, `a..=b` is inclusive. Range itself is non-associative, `a..b..c` is a syntax error, and sits below comparisons in precedence, so `0..n == 0..m` parses as `(0..n) == (0..m)`. The value of a range expression has type `List<Int>` (materialised at runtime); the full `List<T>` API applies. Endpoints must be `Int`; Float endpoints are rejected at type-check time.
+
+The bitwise band (`bit_or_expr` through `shift_expr`) sits between range and additive: looser than `+` / `-`, tighter than a range or comparison. Within the band `|` binds loosest and the shifts `<<` / `>>` tightest, matching C and Rust, so `a | b & c` groups as `a | (b & c)` and `a & b << c` as `a & (b << c)`; and because additive binds tighter than shift, `a << b + c` groups as `a << (b + c)`. All five operators are left-associative and operate on `Int`. The `|` token is the same one that separates or-patterns in a match arm (Section 5.11); the parser tells the two roles apart by context, since `|` only reaches the bitwise level in expression position.
 
 #### 5.12.4 Postfix: calls, indexing, access
 
@@ -832,6 +872,7 @@ primary_expr = literal_expr
              | list_expr
              | struct_expr
              | become_expr
+             | lambda_expr             (* defined in Section 5.12.1 *)
 
 literal_expr = INT_LIT | FLOAT_LIT | STRING_LIT | CHAR_LIT
              | BOOL_LIT | UNIT_LIT
@@ -888,10 +929,14 @@ The table is ordered from lowest precedence (at the top, binding most loosely) t
 | 4 | `not` (unary) |, |
 | 5 | `==`  `!=`  `<`  `<=`  `>`  `>=` | Non-associative |
 | 6 | `..`  `..=`  (range) | Non-associative |
-| 7 | `+`  `-`  (binary) | Left |
-| 8 | `*`  `/`  `%` | Left |
-| 9 | `+`  `-`  (unary) | Right |
-| 10 (highest) | `.`  `()`  `[]`  `?`  (postfix) | Left |
+| 7 | `\|`  (bitwise or) | Left |
+| 8 | `^`  (bitwise xor) | Left |
+| 9 | `&`  (bitwise and) | Left |
+| 10 | `<<`  `>>`  (shift) | Left |
+| 11 | `+`  `-`  (binary) | Left |
+| 12 | `*`  `/`  `%` | Left |
+| 13 | `-`  (unary) | Right |
+| 14 (highest) | `.`  `()`  `[]`  `?`  (postfix) | Left |
 
 ### 6.2 Notes on associativity
 
@@ -901,7 +946,7 @@ The table is ordered from lowest precedence (at the top, binding most loosely) t
 
 ### 6.3 The `?` operator (Result propagation)
 
-The `?` operator deserves specific mention. When applied to an expression of type `Result<T, E>`, it unwraps `Ok(T)` (yielding the value `T`) or immediately returns from the enclosing function with `Err(E)`. Syntactically, `?` is a postfix at precedence level 9, binding more tightly than any binary operator.
+The `?` operator deserves specific mention. When applied to an expression of type `Result<T, E>`, it unwraps `Ok(T)` (yielding the value `T`) or immediately returns from the enclosing function with `Err(E)`. Syntactically, `?` is a postfix at the highest precedence level (level 14 in Section 6.1), binding more tightly than any prefix or binary operator.
 
 Example: `read(path)?.parse()?` evaluates `read(path)`, applies `?`, then accesses the `parse` method, and applies `?` again. Each `?` can cause an early return from the function.
 
@@ -1100,6 +1145,7 @@ The following words are reserved by the Capa 1.0 language and cannot be used as 
 | `self` | Current instance | In use |
 | `Self` | Type of the current instance | In use |
 | `consume` | Ownership-transfer parameter qualifier | In use |
+| `borrow` | Invoke-only function-parameter qualifier | In use |
 | `linear` | Must-consume struct qualifier (`linear type`) | In use |
 | `typestate` | Typestate declaration | In use |
 | `become` | Typestate transition (`become(value, State)`) | In use |
@@ -1118,11 +1164,15 @@ The following tokens are recognised by the lexer using the maximal munch rule. T
 
 | Symbol | Category | Notes |
 |---|---|---|
-| `+` | Arithmetic / unary | Binary addition or unary plus |
+| `+` | Arithmetic | Addition |
 | `-` | Arithmetic / unary | Binary subtraction or unary minus |
 | `*` | Arithmetic | Multiplication |
 | `/` | Arithmetic | Division |
 | `%` | Arithmetic | Remainder |
+| `&` | Bitwise | Bitwise AND on `Int` |
+| `^` | Bitwise | Bitwise XOR on `Int` |
+| `<<` | Shift | Left shift on `Int` |
+| `>>` | Shift | Right shift on `Int` (signed) |
 | `==` | Comparison | Equality |
 | `!=` | Comparison | Inequality |
 | `<` | Comparison / type args | Resolved by context |
@@ -1141,7 +1191,7 @@ The following tokens are recognised by the lexer using the maximal munch rule. T
 | `?` | Postfix | Result propagation |
 | `..` | Range / structural | Exclusive integer range `a..b`; also spread in patterns and structs |
 | `..=` | Range | Inclusive integer range `a..=b` |
-| `\|` | Pattern separator | Or-pattern alternatives in match arms |
+| `\|` | Bitwise / pattern separator | Bitwise OR on `Int` (expression position); or-pattern alternatives in match arms |
 | `.` | Structural | Field / method access; module path |
 | `,` | Punctuation | Separator in lists, args, fields |
 | `:` | Punctuation | Type annotation; map entry |

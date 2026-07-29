@@ -126,7 +126,7 @@ class TokenKind(Enum):
     # Structural
     AT = auto()           # @ (attribute prefix)
     ARROW = auto()        # ->
-    FAT_ARROW = auto()    # =>  (reserved for future use)
+    FAT_ARROW = auto()    # =>  (lambda body separator: fun (...) => body)
     QUESTION = auto()     # ?
     DOT_DOT = auto()      # ..   (exclusive-end range)
     DOT_DOT_EQ = auto()   # ..=  (inclusive-end range)

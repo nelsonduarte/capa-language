@@ -11,10 +11,11 @@ subset of ``examples/wasm/`` -- those programs that:
 
 - use only ``Stdio`` (no ``Clock`` / ``Env`` / ``Fs`` to keep the
   runs deterministic across backends without fixtures);
-- avoid ``Float`` interpolation (the Wasm ``$ftoa`` helper
-  prints fixed-6-decimal truncated values while Python's
-  ``str(float)`` is variable-width; that divergence is
-  documented under TODO.md as a separate task).
+- **may** use ``Float`` interpolation: it now goes through a
+  Grisu2 port in the Wasm runtime that matches Python's
+  ``str(float)``, so ``Float``-bearing programs are parity-clean
+  too (the earlier ``$ftoa`` fixed-6-decimal divergence is
+  closed).
 
 For each parity-compatible example the harness compiles + runs
 both backends in-process, captures stdout, and asserts the two
