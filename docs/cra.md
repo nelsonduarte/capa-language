@@ -23,7 +23,7 @@ so the technical claims are reviewable against the artefact.
 
 ## Scope of this document
 
-The CRA has 71 articles and four annexes. Most of it is
+The CRA has 71 articles and eight annexes. Most of it is
 **organisational** (vulnerability disclosure processes,
 incident notification timelines, conformity assessment
 modules, market surveillance). Capa, as a programming
@@ -77,7 +77,7 @@ both.
 | **Annex I Part II (1)** | "identify and document vulnerabilities and components contained in the product ... including by drawing up a software bill of materials in a commonly used and machine-readable format covering at the very least the top-level dependencies" | **Direct, primary fit**: `capa --cyclonedx` emits a CycloneDX 1.5 SBOM with the capability manifest embedded as standard `properties[]` entries. This is a strict superset of the CRA minimum: not just *what* is included but *what each component can do*. |
 | **Annex I Part II (2)** | "address and remediate vulnerabilities without delay" | Out of scope (organisational). |
 | **Annex I Part II (3)** | "apply effective and regular tests and reviews of the security of the product" | Partial: the property-based test suite (`tests/test_properties.py`) and the six CVE case studies demonstrate ongoing review of the discipline. Per-product test obligations remain the manufacturer's. |
-| **Annex I Part II (5)** | "once a security update has been made available, share and publicly disclose information about fixed vulnerabilities" | Out of scope (organisational). |
+| **Annex I Part II (4)** | "once a security update has been made available, share and publicly disclose information about fixed vulnerabilities" | Out of scope (organisational). |
 | **Annex I Part II (7)** | "provide for mechanisms to securely distribute updates ... to ensure that vulnerabilities are fixed or mitigated in a timely manner" | Out of scope (deployment-pipeline concern). |
 
 ---
@@ -87,8 +87,9 @@ both.
 The CRA's Annex I Part II (1) is satisfied by any
 machine-readable SBOM. CycloneDX, SPDX, and SWID are the
 common formats; all three list components and versions.
-[NTIA's minimum elements][ntia] (which the European
-Commission's CRA SBOM guidance largely mirrors) require:
+[NTIA's minimum elements][ntia], a common baseline that
+EU-side SBOM guidance (ENISA and BSI TR-03183-2) builds on and
+goes beyond, require:
 
 - supplier name
 - component name
@@ -241,17 +242,17 @@ consumes the SBOM + policy + VEX and produces both.
 
 Listed plainly, so the scope is honest:
 
-- **Vulnerability disclosure (Article 13, Annex I Part II
-  (4)-(7)).** Organisational: dedicated channels, CSIRT
-  notification, coordinated disclosure policy. Capa does not
-  intervene.
+- **Vulnerability disclosure (Article 13 "Obligations of
+  manufacturers", Annex I Part II (4)-(7)).** Organisational:
+  dedicated channels, coordinated disclosure policy. Capa does
+  not intervene.
 
 - **Security update distribution (Annex I Part II (7)).**
   Deployment pipeline; outside the language layer.
 
-- **Incident notification (Article 14).** 24-hour CSIRT
-  notification of actively exploited vulnerabilities is a
-  process, not a language feature.
+- **Reporting obligations of manufacturers (Article 14).**
+  24-hour CSIRT notification of actively exploited
+  vulnerabilities is a process, not a language feature.
 
 - **Cryptographic correctness.** Capa is capability-typed,
   not cryptographically typed. It can constrain *who* calls

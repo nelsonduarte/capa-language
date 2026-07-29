@@ -21,7 +21,7 @@ ship as **minor**; bug fixes ship as **patch**.
 | Capability manifest JSON schema | [`capa-language.com/manifest.html`](https://capa-language.com/manifest.html) |
 | CycloneDX / SPDX / VEX / SLSA emitted schemas | the respective external specs the compiler conforms to |
 | Package-manager manifest format (`capa.toml`) and lockfile (`capa.lock`) | [`docs/packages.md`](docs/packages.md) |
-| Numbered diagnostic codes (planned for 1.0, see below) | `docs/diagnostics.md` (to be added pre-1.0) |
+| Numbered diagnostic codes (planned, see Roadmap below) | `docs/diagnostics.md` (planned, not yet added) |
 | Module loader resolution order | [`docs/packages.md`](docs/packages.md) |
 | Programmatic Python API: `Lexer`, `Parser`, `analyze`, `transpile` re-exported from `capa` | [`docs/reference.md`](docs/reference.md) |
 
@@ -52,12 +52,15 @@ They can change at any time without a major bump:
 - **Performance characteristics**. The benchmarks suite tracks
   trends, not guarantees. Improvements are welcome and not a
   breaking change; regressions are bugs but not API breakages.
-- **Pre-1.0 versions**. `0.x` is beta. No compatibility
-  promise across `0.x` versions, including the current
-  `0.8.x`. Programs that worked on `0.8.4` are likely to work
-  on `0.8.5`, but we make no guarantee.
-- **`1.0-rc.N` candidates**. Released to gather feedback;
-  surface adjustments are expected before `1.0.0` final.
+- **Pre-1.0 versions (historical)**. The `0.x` line
+  (`0.2.0-alpha` through `0.8.4-beta`) predated the commitment
+  and made no compatibility promise across versions. It is
+  closed; the commitment took effect at `1.0.0`.
+- **`1.0.0-rc.N` candidates (historical)**. The release
+  candidates `rc.0` through `rc.7` (2026-05-19 to 2026-06-03)
+  were published to gather feedback on the proposed frozen
+  surface; the commitment started when the rc cycle produced
+  `1.0.0` on 2026-06-03.
 - **The LSP wire format**. LSP is itself a versioned
   protocol; we follow the spec, but if the spec evolves, we
   evolve with it.
@@ -143,60 +146,54 @@ This is the same exception virtually every language follows
 It exists to keep "we found a way to bypass the capability
 discipline" from being held up by SemVer.
 
-## Pre-1.0 plan
+## Roadmap
 
-The `0.x` line is in beta. The plan to `1.0.0` is:
+`1.0.0` shipped on 2026-06-03 (after the `rc.0`..`rc.7` cycle)
+and the commitment above has been in effect ever since; the
+language is now at `1.24.0`. Remaining work ships as
+**additive** changes under the SemVer rules above: new minor or
+patch releases that extend the frozen surfaces rather than
+break them. The current short list:
 
-1. **Burn down the open language gaps**. Tracked in
-   [`TODO.md`](TODO.md) and the GitHub issue tracker. The
-   current short list:
-   - additional stdlib helpers as gaps surface from real
-     downstream programs
+- **Numbered diagnostic codes**. Today's diagnostics are
+  message-only; a future `Cxxxx` code per category would let
+  tooling refer to them stably, with a new `docs/diagnostics.md`
+  as the index. Additive: the codes would sit alongside the
+  existing (unstable) message prose, so they change no frozen
+  surface.
+- **Additional stdlib helpers** as gaps surface from real
+  downstream programs. Each new method is a minor bump.
 
-   Items considered and explicitly deferred to post-1.0:
-   - **Block-form `if`-as-expression**. Only the ternary
-     form (`if cond then a else b`) is an expression today;
-     block-form `if` is a statement. The workaround is
-     `let x = match cond { true -> ..., false -> ... }`
-     (or its multi-line variant), which the block-as-
-     expression match-arm rule already supports. The
-     workaround is clean enough that elevating block-form
-     `if` to an expression does not justify the parser +
-     analyzer surgery before 1.0.
-2. **Finish package-manager round-out**: `capa add`,
-   `capa install --frozen`, transitive resolution. The MVP
-   (manifest + git fetch + lock) shipped in
-   [`docs/packages.md`](docs/packages.md); the rest is
-   incremental.
-3. **Numbered diagnostic codes**. Today's diagnostics are
-   message-only; a future `Cxxxx` code per category lets
-   tooling refer to them stably. New file
-   `docs/diagnostics.md` will become the index.
-4. **Two-three more downstream demos** in the public org so
-   we keep finding the bugs we don't expect.
-5. **A short `1.0-rc.0`** for feedback on the proposed frozen
-   surface. The rc is allowed to break things relative to
-   `0.8.x`; the *commitment* starts only when the rc cycle
-   produces `1.0.0`.
+Considered and explicitly deferred:
 
-There is no committed date. The criterion for `1.0.0` is "no
-known soundness bugs against the capability discipline, no
-known surface ergonomics gaps that need a breaking change",
-not a calendar.
+- **Block-form `if`-as-expression**. Only the ternary form
+  (`if cond then a else b`) is an expression today; block-form
+  `if` is a statement. The workaround is
+  `let x = match cond { true -> ..., false -> ... }` (or its
+  multi-line variant), which the block-as-expression match-arm
+  rule already supports. The workaround is clean enough that
+  elevating block-form `if` to an expression does not justify
+  the parser + analyzer surgery. If it ever lands, it is a new
+  syntax form that does not collide with valid `1.x` programs,
+  so it ships as a minor.
+
+There is no committed date for any of this. Additions land when
+they are ready and carry their SemVer weight (minor for new
+surface, patch for fixes); nothing on this list requires a
+breaking change.
 
 ## Reporting compatibility regressions
 
-If you find a program that worked on a previous `0.x.y` and
-breaks on `0.x.(y+1)`:
+If you find a documented program that worked on a previous
+`1.x` release and breaks on a later minor or patch release:
 
 - File an issue with a minimal reproducer.
-- We treat it as a bug; the regression should land in the
-  next patch unless the original behaviour was a bug being
-  fixed.
+- We treat it as a regression; the fix should land in the next
+  patch, unless the original behaviour was itself a bug being
+  fixed (see the security exception above).
 
-After `1.0.0`, the same applies across `1.x` more strongly:
-any documented program that breaks across a minor or patch
-release is a regression.
+This applies from `1.0.0` on. The historical `0.x` line
+(closed at `1.0.0`) carried no such promise.
 
 ## Related documents
 
