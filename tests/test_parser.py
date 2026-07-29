@@ -735,6 +735,42 @@ class TestLambdaParamInference(unittest.TestCase):
         self.assertIn("expected ':' after parameter name", ctx.exception.message)
 
 
+class TestTrailingCommaParity(unittest.TestCase):
+    """A trailing comma is accepted in the three paren-delimited lists
+    that used to reject it (function parameters, sum-variant payloads,
+    and lambda parameters), matching how call arguments and list /
+    struct / tuple literals already treat it. The comma is purely
+    cosmetic: each list parses to the same AST as without it. A bare
+    comma with no preceding element is still an error."""
+
+    def test_fun_params_trailing_comma_same_ast(self):
+        with_comma = parse("fun f(a: Int, b: Int,)\n    return\n")
+        plain = parse("fun f(a: Int, b: Int)\n    return\n")
+        self.assertEqual(with_comma.items[0].params, plain.items[0].params)
+
+    def test_fun_params_bare_comma_rejected(self):
+        with self.assertRaises(ParserError):
+            parse("fun f(,)\n    return\n")
+
+    def test_variant_payload_trailing_comma_same_ast(self):
+        with_comma = parse("type T =\n    Num(Int,)\n")
+        plain = parse("type T =\n    Num(Int)\n")
+        self.assertEqual(with_comma.items[0].variants, plain.items[0].variants)
+
+    def test_variant_payload_bare_comma_rejected(self):
+        with self.assertRaises(ParserError):
+            parse("type T =\n    Num(,)\n")
+
+    def test_lambda_params_trailing_comma_same_ast(self):
+        with_comma = parse_expr("fun (x, y,) => x + y")
+        plain = parse_expr("fun (x, y) => x + y")
+        self.assertEqual(with_comma.params, plain.params)
+
+    def test_lambda_params_bare_comma_rejected(self):
+        with self.assertRaises(ParserError):
+            parse_expr("fun (,) => 0")
+
+
 class TestExpressionDepthCap(unittest.TestCase):
     """Audit 2026-05-25 M2: pathological expression nesting must yield
     a clean parse diagnostic instead of a raw ``RecursionError``."""

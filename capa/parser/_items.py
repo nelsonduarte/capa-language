@@ -469,6 +469,8 @@ class _ItemsMixin:
             if not self._check(T.RPAREN):
                 payloads.append(self._parse_type())
                 while self._match(T.COMMA):
+                    if self._check(T.RPAREN):  # trailing comma
+                        break
                     payloads.append(self._parse_type())
             self._expect(T.RPAREN, "expected ')' after variant payload type(s)")
         return A.Variant(
@@ -798,6 +800,8 @@ class _ItemsMixin:
             return params
         params.append(self._parse_param())
         while self._match(T.COMMA):
+            if self._check(T.RPAREN):  # trailing comma
+                break
             params.append(self._parse_param())
         return params
 

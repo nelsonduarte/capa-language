@@ -174,6 +174,8 @@ class _StatementsMixin:
         if not self._check(T.RPAREN):
             params.append(self._parse_param(allow_inferred=True))
             while self._match(T.COMMA):
+                if self._check(T.RPAREN):  # trailing comma
+                    break
                 params.append(self._parse_param(allow_inferred=True))
         self._expect(T.RPAREN, "expected ')' after lambda parameters")
         return_type: Optional[A.TypeExpr] = None
