@@ -587,6 +587,13 @@ class TestMatch(unittest.TestCase):
         # prelude with one BinOp computing ``n + 1``, the emitter
         # inlines it back into the case clause as a single
         # composite expression. Locks the inline-chain code path.
+        #
+        # The inlined Int ``+`` routes through ``_capa_iadd`` exactly
+        # like the instruction stream (and like the legacy transpiler's
+        # guard emission), so a guard that overflows i64 traps on the
+        # CIR path at the same input the legacy and Wasm backends trap
+        # on. A bare ``(x + 1)`` here would silently diverge at
+        # ``x == i64::MAX`` (Python bignum, no trap).
         src = (
             "fun classify(n: Int) -> String\n"
             "    return match n\n"
@@ -595,7 +602,10 @@ class TestMatch(unittest.TestCase):
         )
         module, types = _parse_and_check(src)
         py = compile(module, types=types)
-        self.assertIn("if ((x + 1) > 5):", py)
+        self.assertIn("if (_capa_iadd(x, 1) > 5):", py)
+        # The emitted module imports ``_capa_iadd`` itself (the guard's
+        # Int ``+`` toggles the safety-helper import), so exec is
+        # self-contained.
         ns: dict = {}
         exec(py, ns)
         self.assertEqual(ns["classify"](5), "big")

@@ -50,14 +50,19 @@ _PY_BINOPS = {
 
 # Map from a Capa source op to the runtime safety helper that wraps
 # it on the Python backend. The helpers (in ``capa.runtime._safety``)
-# raise ``OverflowError`` at the same input the Wasm backend traps
-# on, so both backends fail loud at the same point (audit fixes C2
-# and C3). Only Int operands route through these; Float / String /
-# Bool stay on the plain Python operator path.
+# raise ``OverflowError`` / ``ZeroDivisionError`` at the same input
+# the Wasm backend traps on, so both backends fail loud at the same
+# point (audit fixes C2 and C3, plus the ``/`` floor-division fix).
+# Int ``/`` additionally floors toward negative infinity (Python
+# ``//`` via ``_capa_idiv``) to match the Wasm ``i64.div_s`` + floor
+# correction, where plain Python ``/`` would yield a Float. Only Int
+# operands route through these; Float / String / Bool stay on the
+# plain Python operator path.
 _CAPA_INT_HELPERS = {
     "+": "_capa_iadd",
     "-": "_capa_isub",
     "*": "_capa_imul",
+    "/": "_capa_idiv",
     "<<": "_capa_shl",
     ">>": "_capa_shr",
 }
@@ -91,8 +96,8 @@ class PythonEmitter:
         # with the legacy prelude already have ``dataclass`` in scope,
         # so the import is harmless when redundant.
         # Decide the safety-helper import up front by scanning every
-        # function / impl / const body for an Int +/-/* / <</>> BinOp;
-        # the matching ``from capa.runtime import _capa_iadd, ...``
+        # function / impl / const body for an Int +/-/* / ``/`` / <</>>
+        # BinOp; the matching ``from capa.runtime import _capa_iadd, ...``
         # line then lands at the top alongside ``from dataclasses
         # import dataclass``. The legacy transpiler's prelude already
         # imports the same names, so this is harmless when the IR
@@ -105,7 +110,8 @@ class PythonEmitter:
         if self._needs_safety:
             self._write(
                 "from capa.runtime import "
-                "_capa_iadd, _capa_isub, _capa_imul, _capa_shl, _capa_shr"
+                "_capa_iadd, _capa_isub, _capa_imul, _capa_idiv, "
+                "_capa_shl, _capa_shr"
             )
             self._lines.append("")
         if self._needs_bounds:
@@ -603,23 +609,36 @@ class PythonEmitter:
         raise NotImplementedError(f"IR Python emitter: value kind {v.kind!r}")
 
     def _format_binop(self, op: str, left: Value, right: Value) -> str:
+        if op not in _PY_BINOPS:
+            raise NotImplementedError(f"IR Python emitter: binop {op!r}")
         l = self._format_value(left)
         r = self._format_value(right)
-        if op in _PY_BINOPS:
-            # Safety (audit fixes C2 + C3): Int +/-/* and <</>> route
-            # through the overflow / shift-count runtime helpers so
-            # the Python backend raises ``OverflowError`` at the same
-            # input the Wasm backend traps on. Float / String / Bool
-            # arithmetic stays on the plain operator path. Cf. the
-            # legacy transpiler's matching rewrite in
-            # ``capa/transpiler/_expressions.py``.
-            if left.ty == "Int" and right.ty == "Int":
-                helper = _CAPA_INT_HELPERS.get(op)
-                if helper is not None:
-                    self._needs_safety = True
-                    return f"{helper}({l}, {r})"
-            return f"({l} {op} {r})"
-        raise NotImplementedError(f"IR Python emitter: binop {op!r}")
+        return self._binop_expr(op, l, r, left.ty, right.ty)
+
+    def _binop_expr(
+        self, op: str, l: str, r: str, left_ty: str, right_ty: str,
+    ) -> str:
+        """Render a binary operation from pre-formatted operand strings.
+
+        ``l`` / ``r`` are the already-rendered operands; ``left_ty`` /
+        ``right_ty`` are their Capa source types. Int/Int operands route
+        through the runtime safety helpers so the Python backend matches
+        the Wasm backend at the same input: overflow-checked ``+`` /
+        ``-`` / ``*`` and ``<<`` / ``>>`` (audit fixes C2 + C3), and
+        floored, trap-on-``/0``-and-``MIN/-1`` division via
+        ``_capa_idiv`` (where plain Python ``/`` would yield a Float and
+        never trap). Float / String / Bool operands stay on the plain
+        operator path. Mirrors the legacy transpiler's rewrite in
+        ``capa/transpiler/_expressions.py``. Shared by ``_format_binop``
+        (instruction stream) and the match-guard prelude inliner in
+        ``_format_guard`` so both emit identical arithmetic.
+        """
+        if left_ty == "Int" and right_ty == "Int":
+            helper = _CAPA_INT_HELPERS.get(op)
+            if helper is not None:
+                self._needs_safety = True
+                return f"{helper}({l}, {r})"
+        return f"({l} {op} {r})"
 
     def _format_unary(self, op: str, operand: Value) -> str:
         x = self._format_value(operand)
@@ -686,7 +705,15 @@ class PythonEmitter:
                         f"guard prelude BinOp with op {ins.op!r} cannot "
                         f"be inlined into a Python `case ... if EXPR:` clause"
                     )
-                expr = f"({render(ins.left)} {ins.op} {render(ins.right)})"
+                # Route through the same core as the instruction stream
+                # so an Int op inside a guard gets the identical
+                # floored/trapping ``/`` and overflow-checked +/-/*/<<
+                # />> treatment; otherwise a guard division would emit a
+                # plain ``/`` and diverge from the other two backends.
+                expr = self._binop_expr(
+                    ins.op, render(ins.left), render(ins.right),
+                    ins.left.ty, ins.right.ty,
+                )
             else:
                 raise UnsupportedInIR(
                     f"guard prelude instruction {type(ins).__name__} "
@@ -876,10 +903,11 @@ class PythonEmitter:
 
 def _module_uses_int_safety(module: Module) -> bool:
     """Whether any function / impl / const body contains an Int
-    +/-/* or <</>> BinOp. Drives the ``from capa.runtime import
-    _capa_iadd, ...`` line at the top of the emitted Python so the
-    safety helpers resolve at exec time without leaking the import
-    into modules that have no Int arithmetic.
+    +/-/*/ ``/`` or <</>> BinOp (every op in ``_CAPA_INT_HELPERS``).
+    Drives the ``from capa.runtime import _capa_iadd, ...`` line at
+    the top of the emitted Python so the safety helpers resolve at
+    exec time without leaking the import into modules that have no
+    Int arithmetic.
 
     Walks every instruction list reachable from the module: top-level
     function bodies, impl method bodies, const bodies, and the nested

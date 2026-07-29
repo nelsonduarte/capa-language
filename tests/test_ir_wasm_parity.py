@@ -1055,6 +1055,22 @@ def _run_wasm(src: str) -> str:
     return ""  # output already captured by caller's redirect
 
 
+def _run_cir(src: str) -> str:
+    """Compile via the CIR pipeline (the ``--ir`` path) and exec
+    in-process; capture stdout. Mirrors :func:`_run_python` but drives
+    ``compile_program`` -- the same entrypoint the CLI's ``--ir`` flag
+    uses -- so this exercises the CIR Python emitter rather than the
+    legacy direct transpiler."""
+    from capa.ir import compile_program
+    module, result = _parse_and_analyze(src)
+    code = compile_program(
+        module, types=result.types, bindings=result.bindings,
+    )
+    ns: dict = {"__name__": "__main__"}
+    exec(compile(code, "<cir-parity>", "exec"), ns)
+    return ""  # output already captured by caller's redirect
+
+
 def _run_wasm_component(src: str) -> str:
     """Compile to .wasm, wrap via ``wasm-tools component new``, and
     run under ``WasmComponentHost``; capture stdout. Targets the
@@ -6532,6 +6548,193 @@ class TestTuplePointerElementThroughTryParity(unittest.TestCase):
             '        Err(_) -> stdio.println("err")\n'
         )
         self._assert_src_parity(src, expect="7-tail\n")
+
+
+class TestCirIntegerArithmeticParity(unittest.TestCase):
+    """Three-way agreement for integer arithmetic across the legacy
+    transpiler, the CIR (``--ir``) pipeline, and the Wasm backend.
+
+    Regression net for the CIR integer-division divergence: the CIR
+    Python emitter emitted a bare ``a / b`` for Int operands, which
+    Python evaluates as true division (``7 / 2 == 3.5``) and never
+    traps, while the legacy and Wasm backends both floor the quotient
+    (``7 / 2 == 3``, ``-7 / 2 == -4``) and trap on divide-by-zero and
+    on ``MIN / -1``. Routing Int ``/`` through ``_capa_idiv`` on the
+    CIR path closes the gap. The sibling ops (``+`` / ``-`` / ``*``,
+    the remainder ``%``, the comparisons, the shifts and the bitwise
+    ops) already agreed and are pinned here so a future edit cannot
+    silently reintroduce a divergence.
+
+    The legacy-vs-CIR assertions run unconditionally: they carry the
+    fail-first signal for the fix (before the fix, CIR yields ``3.5``
+    where legacy yields ``3``, and skips the ``MIN / -1`` trap). The
+    Wasm leg runs only when wasm-tools + wasmtime-py are installed.
+    """
+
+    # ``i64::MIN`` written as an expression: the bare literal
+    # ``-9223372036854775808`` is out of range for a positive Int
+    # token, so both backends spell it ``-MAX - 1``.
+    _MIN_INT = "-9223372036854775807 - 1"
+
+    def _capture_run(self, runner, src: str) -> str:
+        """Run one backend and return its captured stdout, or the
+        sentinel ``"<TRAP>"`` when it aborted.
+
+        All three backends trap on the two illegal integer divisions
+        (``/0`` and ``MIN / -1``) but raise different exception classes
+        (``ZeroDivisionError`` / ``OverflowError`` on the Python paths,
+        ``wasmtime.Trap`` on Wasm). The observable CLI contract is "the
+        program trapped" (a non-zero exit), not which class surfaced,
+        so any abort collapses to a single token."""
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            runner(src)
+        except BaseException:  # noqa: BLE001
+            return "<TRAP>"
+        finally:
+            sys.stdout = saved
+        return buf.getvalue()
+
+    def _assert_three_way(self, src: str) -> None:
+        legacy = self._capture_run(_run_python, src)
+        cir = self._capture_run(_run_cir, src)
+        self.assertEqual(
+            legacy, cir,
+            msg=(
+                "legacy vs CIR (--ir) divergence.\n"
+                f"--- legacy ---\n{legacy!r}\n"
+                f"--- cir ---\n{cir!r}\n"
+                f"--- source ---\n{src}"
+            ),
+        )
+        if _has_wasm_tools() and _has_wasmtime_py():
+            wasm = self._capture_run(_run_wasm, src)
+            self.assertEqual(
+                legacy, wasm,
+                msg=(
+                    "legacy vs Wasm divergence.\n"
+                    f"--- legacy ---\n{legacy!r}\n"
+                    f"--- wasm ---\n{wasm!r}\n"
+                    f"--- source ---\n{src}"
+                ),
+            )
+
+    def test_division_floor_cases(self) -> None:
+        # Floor division rounds toward negative infinity on all three
+        # paths: 7/2 == 3, -7/2 == -4, 7/-2 == -4, -7/-2 == 3.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${7 / 2}")\n'
+            '    stdio.println("${-7 / 2}")\n'
+            '    stdio.println("${7 / -2}")\n'
+            '    stdio.println("${-7 / -2}")\n'
+            '    stdio.println("${8 / 2}")\n'
+            '    stdio.println("${-8 / 2}")\n'
+        )
+        self._assert_three_way(src)
+
+    def test_division_by_zero_traps(self) -> None:
+        # Divisor held in a local so the analyzer does not const-fold
+        # the ``/0`` away at check time; every backend must trap.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let a = 5\n"
+            "    let b = 0\n"
+            '    stdio.println("${a / b}")\n'
+        )
+        self.assertEqual(self._capture_run(_run_cir, src), "<TRAP>")
+        self._assert_three_way(src)
+
+    def test_division_min_int_over_neg_one_traps(self) -> None:
+        # ``MIN / -1`` overflows i64 (the quotient is ``2**63``); every
+        # backend must trap rather than yield the escaping value.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            f"    let a = {self._MIN_INT}\n"
+            "    let b = -1\n"
+            '    stdio.println("${a / b}")\n'
+        )
+        self.assertEqual(self._capture_run(_run_cir, src), "<TRAP>")
+        self._assert_three_way(src)
+
+    def test_float_division_stays_floating(self) -> None:
+        # Guard against over-correcting: a Float operand keeps true
+        # division on every path (7.0 / 2.0 == 3.5).
+        src = (
+            "fun main(stdio: Stdio)\n"
+            "    let a = 7.0\n"
+            "    let b = 2.0\n"
+            '    stdio.println("${a / b}")\n'
+        )
+        self._assert_three_way(src)
+
+    def test_modulo_cases(self) -> None:
+        # Floored remainder: the sign follows the divisor on all paths.
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${7 % 3}")\n'
+            '    stdio.println("${-7 % 3}")\n'
+            '    stdio.println("${7 % -3}")\n'
+            '    stdio.println("${-7 % -3}")\n'
+        )
+        self._assert_three_way(src)
+
+    def test_add_sub_mul(self) -> None:
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${3 + 4}")\n'
+            '    stdio.println("${3 - 4}")\n'
+            '    stdio.println("${-3 - 4}")\n'
+            '    stdio.println("${3 * 4}")\n'
+            '    stdio.println("${-3 * 4}")\n'
+        )
+        self._assert_three_way(src)
+
+    def test_comparisons(self) -> None:
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${3 < 4}")\n'
+            '    stdio.println("${4 < 3}")\n'
+            '    stdio.println("${3 <= 3}")\n'
+            '    stdio.println("${5 > 4}")\n'
+            '    stdio.println("${5 >= 6}")\n'
+            '    stdio.println("${5 == 5}")\n'
+            '    stdio.println("${5 != 5}")\n'
+            '    stdio.println("${-1 < 0}")\n'
+        )
+        self._assert_three_way(src)
+
+    def test_shifts_and_bitwise(self) -> None:
+        src = (
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println("${1 << 4}")\n'
+            '    stdio.println("${256 >> 2}")\n'
+            '    stdio.println("${6 & 3}")\n'
+            '    stdio.println("${6 | 1}")\n'
+            '    stdio.println("${6 ^ 3}")\n'
+        )
+        self._assert_three_way(src)
+
+    def test_division_in_match_guard(self) -> None:
+        # A division inside a ``case ... if`` guard is inlined by the
+        # CIR emitter's guard-prelude path, a second BinOp emission
+        # site. Before the fix it emitted a bare ``/`` there too, so
+        # ``classify(7)`` picked the wrong arm on the CIR path.
+        src = (
+            "fun classify(n: Int) -> String\n"
+            "    match n\n"
+            "        x if x / 2 == 3 ->\n"
+            '            return "sixish"\n'
+            "        _ ->\n"
+            '            return "other"\n'
+            "fun main(stdio: Stdio)\n"
+            '    stdio.println(classify(7))\n'
+            '    stdio.println(classify(6))\n'
+            '    stdio.println(classify(2))\n'
+        )
+        self._assert_three_way(src)
 
 
 if __name__ == "__main__":
