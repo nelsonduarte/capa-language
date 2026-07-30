@@ -1,6 +1,6 @@
 # Stability policy
 
-Capa ships as `1.24.0` (released 2026-07-28). The
+Capa ships as `1.25.0` (released 2026-07-30). The
 **stability commitment described below is now in effect**: the
 surfaces listed are covered by SemVer from this release on. The
 commitment is the only thing that changed at 1.0; the language
@@ -150,7 +150,7 @@ discipline" from being held up by SemVer.
 
 `1.0.0` shipped on 2026-06-03 (after the `rc.0`..`rc.7` cycle)
 and the commitment above has been in effect ever since; the
-language is now at `1.24.0`. Remaining work ships as
+language is now at `1.25.0`. Remaining work ships as
 **additive** changes under the SemVer rules above: new minor or
 patch releases that extend the frozen surfaces rather than
 break them. The current short list:

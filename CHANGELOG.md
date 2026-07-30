@@ -9,6 +9,122 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.25.0], 2026-07-30
+
+An additive-grammar and packaging release. A trailing comma is now
+accepted in every list-like construct, the change that makes this a
+minor bump, and Capa debuts on the Python Package Index (PyPI) under
+the distribution name `capa-language` (the import package and the
+`capa` command are unchanged). Two behavioural gaps are closed: a
+capability packed inside a container is now rejected at `--check`, and
+Int division on the `--ir` path now floors and traps like the legacy
+and Wasm backends instead of diverging silently. A documentation pass
+reconciles the grammar reference, the post-1.0 stability narrative, and
+the CRA references with what the compiler and the regulation actually
+say.
+
+**Added.**
+
+- *Trailing comma in every list-like construct.* A trailing comma is
+  now accepted in the six paren- and angle-bracket-delimited lists that
+  still rejected one: function parameter lists, sum-variant payload
+  lists, lambda parameter lists, match / variant pattern payloads,
+  generic type-parameter declarations (on `fun`, `type`, `trait`, and
+  method signatures), and generic type-argument lists (including a
+  nested list that closes on a lexer-fused `>>`, as in
+  `List<List<Int,>>`). Call arguments and list / struct / tuple
+  literals already accepted it. The comma is purely cosmetic: each list
+  parses to the same AST with or without it, and a bare or double comma
+  with no preceding element is still a parse error. This additive
+  grammar change is why 1.25.0 is a minor release.
+
+**Changed.**
+
+- *Published to PyPI as `capa-language`.* The Python distribution is
+  renamed from `capa` to `capa-language`, and this release debuts it on
+  PyPI: install with `pip install capa-language`. Only the distribution
+  identity moves; the import package stays `capa` (`import capa`,
+  `python -m capa`) and the console script stays `capa`. The built
+  wheel now also ships the runtime data files the compiler loads from
+  inside the package at run time (the bundled JSON parser source
+  `capa/ir/_builtin_json.capa` and the vendored WASI Preview 2 WIT
+  under `capa/wasi_wit/`), which the default `.py`-only packaging had
+  dropped; without them an installed wheel raised `FileNotFound` the
+  moment a user hit the Wasm-component path or the bundled JSON parser.
+  Publishing runs through a PyPI Trusted Publishing (OIDC) workflow
+  with no stored API token.
+
+**Fixed.**
+
+- *Capabilities smuggled inside a container are rejected.* A capability
+  may flow only as a bare, top-level function parameter. The analyzer
+  already rejected one as a struct field, a return type, and a
+  known-typed local, but several paths let a capability be packed into
+  a `List`, `Set`, `Map`, or tuple and then used while the per-function
+  declared-capability surface under-reported it. A capability nested
+  inside a container (at any depth) is now rejected at `--check`
+  wherever it is produced, stored, passed, or used: a container literal
+  built with a capability element; a cap-container parameter, return,
+  method receiver, `for`-loop iterable, call argument, or index base; a
+  mutator insertion (`push` / `add` / `set`); a read back out of an
+  inferred-then-populated container; and a higher-order `map` / `fold`
+  / `flat_map` whose closure would receive the capability. The bare
+  channel stays accepted: a top-level bare-capability parameter or
+  argument, a cap-bearing struct field, and a factory that returns a
+  bare capability. The check is a type-name reachability test, so
+  authority captured inside a closure (a `Fun` whose signature does not
+  name the capability) is a separate, known accounting limitation that
+  the `--check-capabilities` ceiling still fails closed on, not a hole
+  this check closes. Both backends already agreed; this is an
+  analyzer-only change.
+
+- *Int division on the `--ir` path floors and traps like the other
+  backends.* The CIR Python emitter emitted a bare `a / b` for Int
+  operands, which Python evaluates as true division (`7 / 2` became
+  `3.5`) and which never trapped on divide-by-zero or on `MIN / -1`.
+  The legacy transpiler and the Wasm backend both floor Int division
+  toward negative infinity (`7 / 2 == 3`, `-7 / 2 == -4`) and trap on
+  those two inputs, so the same source, accepted at `--check`, produced
+  a different value on `--ir` than on `--run` and on the Wasm backend.
+  Int `/` now routes through the `_capa_idiv` runtime helper on the CIR
+  path, including inside a match guard (a second emission site that had
+  the same divergence). Float division is unchanged.
+
+- *Stale install instructions corrected.* The floor-mismatch and
+  `init_project` remediation messages told users to
+  `pip install ... capa-lang`, a distribution name that never existed,
+  and the VSCode extension's two install strings pointed
+  `pip install "capa[lsp]"` at the unrelated `capa` project on PyPI.
+  All now name `capa-language`.
+
+**Documentation.**
+
+- *Grammar reference reconciled with the parser.* `Capa-EBNF.md` is
+  brought back to what `capa/parser` and `capa/lexer` accept (the
+  grammar follows the code, never the reverse): the bitwise and shift
+  operators (`|`, `^`, `&`, `<<`, `>>`), the `borrow` parameter
+  modifier, the `uses [...]` capability bound on trait and capability
+  method signatures, selective import (`import foo (a, b as c)`),
+  Unicode identifiers, and uppercase base prefixes (`0X` / `0O` / `0B`)
+  are now documented; unary `+`, which the parser never implemented, is
+  removed. Two stale docstrings are corrected.
+
+- *Post-1.0 stability and CRA references reconciled.* `STABILITY.md`
+  drops the stale pre-1.0 and release-candidate framing and reframes it
+  as a post-1.0 additive roadmap. `docs/cra.md` corrects four
+  references against Regulation (EU) 2024/2847 (the CRA has eight
+  annexes; the fixed-vulnerability disclosure duty is Annex I Part II
+  (4); the Article 13 and 14 titles) and softens the NTIA SBOM-elements
+  claim to a baseline rather than an EC-mirrored list. The release
+  classifier is `Development Status :: 5 - Production/Stable`.
+
+**Notes.**
+
+- The trailing-comma change only widens what parses; the AST is
+  identical with or without the comma. The capability-container and
+  `--ir` division fixes were each reproduced before the fix, and both
+  backends agree on the newly-rejected and still-accepted programs.
+
 ## [1.24.0], 2026-07-28
 
 A type-safety and honesty release. Two soundness holes in the analyzer's
@@ -9376,7 +9492,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.24.0...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.25.0...HEAD
+[1.25.0]: https://github.com/nelsonduarte/capa-language/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/nelsonduarte/capa-language/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/nelsonduarte/capa-language/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/nelsonduarte/capa-language/compare/v1.21.0...v1.22.0
