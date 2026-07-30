@@ -3,7 +3,11 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "capa"
+# Distribution (PyPI) name. The import package stays ``capa`` (see
+# ``[tool.setuptools.packages.find]`` below) and the console script
+# stays ``capa`` (see ``[project.scripts]``); only the distribution
+# identity is ``capa-language``.
+name = "capa-language"
 version = "1.24.0"
 description = "Capa, a capability-centric programming language"
 readme = "README.md"

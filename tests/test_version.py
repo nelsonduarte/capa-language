@@ -19,6 +19,7 @@ so the two can never diverge again.
 import re
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import capa
 
@@ -77,6 +78,62 @@ class TestVersionSingleSource(unittest.TestCase):
         """A pyproject without [project].version yields None, not a pin."""
         bogus = b'[build-system]\nrequires = ["setuptools>=68", "wheel"]\n'
         self.assertIsNone(capa._version_from_pyproject(bogus))
+
+
+class TestMetadataFallback(unittest.TestCase):
+    """The wheel / frozen-binary path resolves the version by distribution
+    name. Running from a source checkout always resolves via the adjacent
+    pyproject.toml, so these guard the metadata branch that path never
+    exercises: a wrong distribution name there is invisible to the rest of
+    the suite (no other test builds a wheel and installs it away from the
+    source), which is exactly how a rename would slip through.
+    """
+
+    def test_dist_names_prefer_the_new_name(self):
+        """The current distribution name is tried before the legacy one."""
+        self.assertEqual(capa._DIST_NAMES, ("capa-language", "capa"))
+
+    def test_metadata_lookup_tries_new_name_first(self):
+        """The fallback queries ``capa-language`` before ``capa`` and
+        returns the first hit, so a mixed environment carrying both
+        dist-infos reports the new distribution's version."""
+        seen = []
+
+        def fake_version(name):
+            seen.append(name)
+            return "9.9.9"
+
+        with mock.patch("importlib.metadata.version", fake_version):
+            self.assertEqual(capa._version_from_metadata(), "9.9.9")
+        self.assertEqual(seen, ["capa-language"])
+
+    def test_metadata_lookup_falls_back_to_legacy_name(self):
+        """When only the legacy ``capa`` dist-info is present, the
+        fallback still resolves rather than returning None."""
+        from importlib.metadata import PackageNotFoundError
+
+        seen = []
+
+        def fake_version(name):
+            seen.append(name)
+            if name == "capa-language":
+                raise PackageNotFoundError(name)
+            return "9.9.9"
+
+        with mock.patch("importlib.metadata.version", fake_version):
+            self.assertEqual(capa._version_from_metadata(), "9.9.9")
+        self.assertEqual(seen, ["capa-language", "capa"])
+
+    def test_metadata_lookup_returns_none_when_uninstalled(self):
+        """Neither name installed yields None, which drives the resolver
+        to its sentinel rather than a stale or fabricated version."""
+        from importlib.metadata import PackageNotFoundError
+
+        def fake_version(name):
+            raise PackageNotFoundError(name)
+
+        with mock.patch("importlib.metadata.version", fake_version):
+            self.assertIsNone(capa._version_from_metadata())
 
 
 if __name__ == "__main__":

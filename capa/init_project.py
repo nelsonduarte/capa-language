@@ -185,7 +185,7 @@ def init_project(
             f"`capa = \">={capa_version}\"` floor it would write into "
             f"capa.toml is one this same compiler cannot read. An "
             f"official Capa build never reports this; reinstall the "
-            f"compiler (`pip install --force-reinstall capa-lang`) or "
+            f"compiler (`pip install --force-reinstall capa-language`) or "
             f"run from a source checkout with its pyproject.toml intact.",
             file=sys.stderr,
         )

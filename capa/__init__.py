@@ -33,8 +33,11 @@ Example usage:
 # 2. Installed distribution metadata via ``importlib.metadata``.
 #    This is the path for a real ``pip install`` (no adjacent
 #    pyproject.toml under ``site-packages``) and for the PyInstaller
-#    binary, whose spec bundles ``capa``'s dist-info metadata with
-#    ``copy_metadata`` precisely so this lookup succeeds when frozen.
+#    binary, whose spec bundles the distribution's dist-info metadata
+#    with ``copy_metadata`` precisely so this lookup succeeds when
+#    frozen. The distribution is named ``capa-language`` on PyPI, but
+#    older installs used ``capa``, so we try the new name first and
+#    fall back to the old one.
 #
 # The final fallback is a clearly-bogus sentinel, never a plausible
 # release number: if resolution ever fails we want it to be obvious,
@@ -60,15 +63,9 @@ def _resolve_version() -> str:
             return version
 
     # 2. Installed distribution metadata (wheel / frozen binary).
-    try:
-        from importlib.metadata import PackageNotFoundError, version as _dist_version
-
-        try:
-            return _dist_version("capa")
-        except PackageNotFoundError:
-            pass
-    except ImportError:  # pragma: no cover - importlib.metadata is stdlib >=3.8
-        pass
+    version = _version_from_metadata()
+    if version is not None:
+        return version
 
     # 3. Sentinel: resolution failed. Deliberately not a real version.
     return "0+unknown"
@@ -102,6 +99,26 @@ def _version_from_pyproject(raw: bytes) -> "str | None":
     )
     if match is not None:
         return match.group(1).decode("utf-8")
+    return None
+
+
+# The distribution names to try, most-current first. The project is
+# ``capa-language`` on PyPI; ``capa`` is the legacy name older installs
+# still carry, so trying both keeps a wheel or frozen binary reporting
+# the real version across the transition instead of the sentinel.
+_DIST_NAMES = ("capa-language", "capa")
+
+
+def _version_from_metadata() -> "str | None":
+    try:
+        from importlib.metadata import PackageNotFoundError, version as _dist_version
+    except ImportError:  # pragma: no cover - importlib.metadata is stdlib >=3.8
+        return None
+    for name in _DIST_NAMES:
+        try:
+            return _dist_version(name)
+        except PackageNotFoundError:
+            continue
     return None
 
 

@@ -95,17 +95,22 @@ for _dist in ['pygls', 'lsprotocol', 'cattrs', 'attrs']:
 # Bundle Capa's OWN distribution metadata. `capa.__version__` resolves the
 # package version from `pyproject.toml` when running from a source checkout,
 # but that file is not part of the frozen bundle, so inside the binary the
-# resolver falls back to `importlib.metadata.version("capa")`. Copying the
+# resolver falls back to `importlib.metadata.version(...)`. Copying the
 # dist-info here is what makes that lookup succeed, so the released binary
 # reports the real version (e.g. `capa 1.15.0`) instead of a sentinel.
-# The release workflow `pip install`s the project before building, so this
-# metadata exists; guard anyway so a metadata-less build still produces a
-# working compiler (it would just fall back to the sentinel version).
+# The distribution is named `capa-language`; the release workflow installs
+# the wheel before building, so the installed dist-info is `capa_language-*`.
+# We try that name first and fall back to the old `capa` name so a build
+# against an older install still bundles metadata. Guard anyway so a
+# metadata-less build still produces a working compiler (it would just fall
+# back to the sentinel version).
 capa_datas = []
-try:
-    capa_datas += copy_metadata('capa')
-except Exception:
-    pass
+for _capa_dist in ('capa-language', 'capa'):
+    try:
+        capa_datas += copy_metadata(_capa_dist)
+        break
+    except Exception:
+        continue
 
 # Embed the Capa logo as the executable icon. Only Windows PE binaries
 # carry an embedded .ico; Linux ELF binaries have no icon slot and

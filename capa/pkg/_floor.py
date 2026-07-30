@@ -187,7 +187,7 @@ def _remediation(floor_text: str, running: str, where: str) -> str:
     return (
         f"How to proceed, most durable first:\n"
         f"  1. Upgrade the compiler to {floor_text} or newer "
-        f"(`pip install --upgrade capa-lang`). This is the option the "
+        f"(`pip install --upgrade capa-language`). This is the option the "
         f"floor is asking for.\n"
         f"  2. Lower or remove `capa` in {where} if the floor is wrong. "
         f"That is an explicit, reviewable decision that lives with the "
