@@ -88,3 +88,23 @@ Homepage = "https://capa-language.com"
 # on disk, producing wheels that ImportError'd at first use for
 # anything beyond the public API in ``capa.__init__``.
 include = ["capa", "capa.*"]
+
+[tool.setuptools.package-data]
+# Runtime data files the compiler loads from inside the ``capa`` import
+# package via ``Path(__file__)``. setuptools ships only ``.py`` files by
+# default, so without this the installed compiler FileNotFounds the moment
+# a user hits the Wasm-component path or the bundled JSON parser.
+#
+# ``capa/ir/_builtin_json.capa`` is the bundled JSON parser source spliced
+# in on the Wasm path; ``capa/ir/_builtin_json.py`` reads it from beside
+# itself. It belongs to the ``capa.ir`` package (that directory has an
+# ``__init__.py``).
+"capa.ir" = ["_builtin_json.capa"]
+# ``capa/wasi_wit`` holds the vendored WASI Preview 2 WIT. ``capa/cli.py``
+# copies the whole ``wasi_wit/deps`` tree next to the generated world so
+# ``capa --wasm --component`` (WASI mode) can resolve ``wasi:*`` offline,
+# and reads it for ``capa --wit``. It is not an import package (no
+# ``__init__.py``), so its files attach to the enclosing ``capa`` package.
+# Glob the entire subtree so every file the ``shutil.copytree`` copies
+# ships, whatever its extension.
+"capa" = ["wasi_wit/**/*"]
