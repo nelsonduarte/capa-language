@@ -49,6 +49,12 @@ _WORKFLOW_DIR = (
 )
 WORKFLOW = _WORKFLOW_DIR / "release-binaries.yml"
 GUARDS_WORKFLOW = _WORKFLOW_DIR / "release-guards.yml"
+PUBLISH_WORKFLOW = _WORKFLOW_DIR / "publish-pypi.yml"
+
+# The version-tag glob release-binaries.yml fires on. The real-PyPI
+# publish must fire on the SAME shape of tag: a single `git push` of that
+# tag both cuts the release and ships it to PyPI.
+VERSION_TAG_GLOB = "v[0-9]+.[0-9]+.[0-9]+*"
 
 ATTEST_ACTION = "actions/attest-build-provenance"
 
@@ -364,6 +370,153 @@ class TestReusableGuardsExample(unittest.TestCase):
             "the example's version marker no longer matches the "
             "release series it ships in",
         )
+
+
+class TestPublishPyPIWorkflow(unittest.TestCase):
+    """The real-PyPI publish must fire on a pushed version tag, gated by
+    the version guard, and a manual dry-run must never reach real PyPI.
+
+    THE DEFECT THIS PINS. The publish was gated on ``release: published``,
+    but the GitHub Release for a version tag is created by
+    ``release-binaries.yml`` with the default ``GITHUB_TOKEN``, and GitHub
+    deliberately does not start a new workflow run from an event a
+    ``GITHUB_TOKEN`` produced (anti-recursion). So the ``release``
+    trigger never fired on a normal ``git push`` of a tag, PyPI
+    publishing silently did not happen, and 1.25.0 reached PyPI only
+    after a human re-published the release by hand.
+
+    THE FIX. A tag push is always a human or PAT action, so it always
+    triggers. It is now the SINGLE path to the real PyPI, gated behind a
+    ``guard`` job that runs the same ``tools/check_tag_version.sh`` that
+    ``release-binaries.yml`` runs, pointed at the ``[project]`` table of
+    ``pyproject.toml``. ``release: published`` is removed so there is
+    exactly one upload per release and no manual re-publish can add a
+    second one. The OIDC binding (this filename, the ``pypi``/``testpypi``
+    environment names, ``id-token: write`` only where a publish happens,
+    ``permissions: {}`` by default) is left exactly as PyPI has it
+    registered.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+        cls.wf = yaml.safe_load(cls.text)
+        # `on:` parses to the YAML 1.1 boolean True key, not "on".
+        cls.on = cls.wf.get(True, cls.wf.get("on"))
+
+    def _pypi_job(self):
+        return self.wf["jobs"]["pypi"]
+
+    def _testpypi_job(self):
+        return self.wf["jobs"]["testpypi"]
+
+    # -- the trigger ----------------------------------------------------
+
+    def test_real_publish_fires_on_a_pushed_version_tag(self):
+        # A tag push is always a human/PAT action, so it always triggers;
+        # a release created by GITHUB_TOKEN does not.
+        push = self.on.get("push") if isinstance(self.on, dict) else None
+        self.assertIsInstance(
+            push, dict, "the workflow does not trigger on a tag push"
+        )
+        self.assertEqual(
+            push.get("tags"), [VERSION_TAG_GLOB],
+            "the push trigger must match the version-tag glob "
+            "release-binaries.yml fires on",
+        )
+
+    def test_the_release_event_no_longer_triggers_the_publish(self):
+        # `release: published` cannot fire on its own (GITHUB_TOKEN
+        # anti-recursion) and, kept beside the tag push, a manual
+        # re-publish of the release would upload a SECOND time. The tag
+        # push is the one and only path.
+        self.assertNotIn(
+            "release", self.on,
+            "release: published is still a trigger; a manual re-publish "
+            "of the release could double-upload to PyPI",
+        )
+
+    def test_dispatch_still_triggers_for_the_testpypi_dry_run(self):
+        self.assertIn("workflow_dispatch", self.on)
+
+    # -- the guard gates the real publish -------------------------------
+
+    def test_a_guard_job_gates_the_real_publish(self):
+        needs = self._pypi_job().get("needs")
+        needs = [needs] if isinstance(needs, str) else (needs or [])
+        self.assertIn(
+            "guard", needs,
+            "the PyPI publish does not wait for the version guard, so a "
+            "tag that disagrees with pyproject.toml could still publish",
+        )
+
+    def test_the_guard_runs_the_shared_script_against_the_project_table(self):
+        # Identical logic to release-binaries.yml's guard: same script,
+        # same argument shape, pointed at [project].
+        guard = self.wf["jobs"].get("guard", {})
+        run = "\n".join(step.get("run", "") for step in guard.get("steps", []))
+        self.assertIn("tools/check_tag_version.sh", run)
+        self.assertIn("pyproject.toml", run)
+        self.assertIn("project", run)
+
+    # -- who can reach real PyPI ----------------------------------------
+
+    def test_only_a_tag_push_reaches_real_pypi(self):
+        cond = str(self._pypi_job().get("if", ""))
+        self.assertIn(
+            "push", cond,
+            "the real-PyPI publish is not gated to the tag-push event",
+        )
+        self.assertNotIn(
+            "workflow_dispatch", cond,
+            "a manual dispatch must never reach the real PyPI",
+        )
+        self.assertNotIn("release", cond)
+
+    def test_dispatch_reaches_only_testpypi(self):
+        cond = str(self._testpypi_job().get("if", ""))
+        self.assertIn("workflow_dispatch", cond)
+        self.assertEqual(
+            self._testpypi_job()["environment"]["name"], "testpypi",
+            "the dry-run must target TestPyPI, not the real index",
+        )
+
+    # -- the OIDC binding, left exactly as registered -------------------
+
+    def test_environment_names_are_the_registered_ones(self):
+        self.assertEqual(self._pypi_job()["environment"]["name"], "pypi")
+        self.assertEqual(self._testpypi_job()["environment"]["name"], "testpypi")
+
+    def test_workflow_denies_permissions_by_default(self):
+        self.assertEqual(self.wf["permissions"], {})
+
+    def test_id_token_write_is_only_on_the_publishing_jobs(self):
+        # The OIDC token that trusted publishing exchanges must exist on
+        # the publish jobs and nowhere else, or a build/guard job could
+        # mint upload rights it has no use for.
+        for name, job in self.wf["jobs"].items():
+            perms = job.get("permissions", {})
+            with self.subTest(job=name):
+                if name in ("pypi", "testpypi"):
+                    self.assertEqual(
+                        perms.get("id-token"), "write",
+                        f"'{name}' cannot mint the OIDC token it publishes with",
+                    )
+                else:
+                    self.assertNotEqual(
+                        perms.get("id-token"), "write",
+                        f"non-publishing job '{name}' can mint an OIDC token",
+                    )
+
+    def test_every_action_is_pinned_to_a_commit_sha(self):
+        lines = [
+            line
+            for line in self.text.splitlines()
+            if re.match(r"^\s*uses:", line)
+        ]
+        self.assertTrue(lines)
+        for line in lines:
+            self.assertRegex(line.strip(), PINNED_USES.pattern.strip())
 
 
 if __name__ == "__main__":

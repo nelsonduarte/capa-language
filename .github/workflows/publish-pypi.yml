@@ -4,28 +4,48 @@ name: publish-pypi
 # Publishing (OpenID Connect), so no long-lived API token is ever stored in
 # this repository. GitHub mints a short-lived OIDC token per run and PyPI
 # exchanges it for upload rights, scoped to this repository, this workflow
-# file and the named environment. Nelson registers the trusted publisher on
-# PyPI/TestPyPI against the exact environment names below (`pypi` and
-# `testpypi`); they must match there and here or the exchange is rejected.
+# file (publish-pypi.yml) and the named environment. Nelson registers the
+# trusted publisher on PyPI/TestPyPI against the exact environment names
+# below (`pypi` and `testpypi`); they must match there and here or the
+# exchange is rejected. The filename and those environment names are part
+# of the binding, so renaming this file or an environment breaks publishing.
 #
 # Two paths share one build:
 #
-#   - publishing a GitHub Release ships that build to the real PyPI;
+#   - pushing a version tag (v1.2.3) ships that build to the real PyPI;
 #   - a manual run from the Actions tab ships it to TestPyPI instead, so a
 #     release can be rehearsed end to end before it is cut.
 #
+# WHY THE TAG PUSH, NOT `release: published`. The GitHub Release for a tag
+# is created by release-binaries.yml with the default GITHUB_TOKEN, and
+# GitHub deliberately does not start a new workflow run from an event a
+# GITHUB_TOKEN produced (anti-recursion). So a `release: published`
+# trigger never fired here on a normal `git push` of a tag, PyPI
+# publishing silently did not happen, and 1.25.0 reached PyPI only after a
+# human re-published the release by hand. A tag push, by contrast, is
+# always a human or PAT action and so always triggers. It is now the
+# SINGLE path to the real PyPI: the `release` trigger is gone, so there is
+# exactly one upload per release and no manual re-publish of the release
+# can add a second one.
+#
+# The `pypi` job is gated behind a `guard` job that runs the same
+# tools/check_tag_version.sh release-binaries.yml runs, pointed at the
+# [project] table of pyproject.toml. A tag whose name does not match the
+# declared version fails the guard, and the publish never runs.
+#
 # The publish action emits PEP 740 attestations by default on the
-# trusted-publishing flow. They are left on deliberately: attested provenance
-# for every wheel and sdist is the point, not an extra.
+# trusted-publishing flow. They are left on deliberately: attested
+# provenance for every wheel and sdist is the point, not an extra.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch: {}
 
 # Deny by default at the workflow level and grant per job, so a job added
-# here later starts with no rights at all rather than silently inheriting the
-# OIDC token that authorises a publish.
+# here later starts with no rights at all rather than silently inheriting
+# the OIDC token that authorises a publish.
 permissions: {}
 
 jobs:
@@ -55,6 +75,32 @@ jobs:
           name: dist
           path: dist/
 
+  guard:
+    # RELEASE GUARD 1, gating the real-PyPI publish via `needs`. It runs
+    # the SAME script release-binaries.yml runs, pointed at the [project]
+    # table of pyproject.toml instead of [package]. One guard logic,
+    # mirrored in both workflows. A tag whose name does not match the
+    # declared version fails here, so the publish below cannot run.
+    #
+    # Only on the tag push: a manual dry-run has no version tag to check
+    # (github.ref_name is a branch), and it publishes to TestPyPI, which
+    # the guard does not gate.
+    name: Guard - tag matches pyproject version
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Verify tag matches the manifest version
+        run: |
+          bash tools/check_tag_version.sh \
+            "${{ github.ref_name }}" \
+            pyproject.toml \
+            project
+
   testpypi:
     name: Publish to TestPyPI (dry-run)
     needs: build
@@ -79,8 +125,8 @@ jobs:
 
   pypi:
     name: Publish to PyPI
-    needs: build
-    if: github.event_name == 'release'
+    needs: [build, guard]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     environment:
       name: pypi
