@@ -313,7 +313,7 @@ async function handleStartFailure(
             `Capa: could not launch the language server (\"${cmd}\"). The ` +
                 `executable \"${executable}\" was not found. Syntax ` +
                 "highlighting, snippets, and indentation still work. Install " +
-                "Python >=3.10 with `pip install \"capa[lsp]\"`, or set " +
+                "Python >=3.10 with `pip install \"capa-language[lsp]\"`, or set " +
                 "\"capa.languageServer.command\" to the right interpreter " +
                 "(for example python3).",
             "Open Settings",
@@ -364,7 +364,7 @@ function isSpawnFailure(err: unknown): boolean {
 async function offerPyglsHelp(): Promise<void> {
     const choice = await vscode.window.showWarningMessage(
         "Capa: the language server needs the `pygls` dependency, which is " +
-            "not installed. Run `pip install \"capa[lsp]\"` (or " +
+            "not installed. Run `pip install \"capa-language[lsp]\"` (or " +
             "`pip install \"pygls>=2.0\"`) for the Python interpreter the " +
             "server runs on, then run \"Capa: Restart Language Server\". " +
             "Syntax highlighting, snippets, and indentation still work " +
@@ -373,8 +373,8 @@ async function offerPyglsHelp(): Promise<void> {
         "Show Output"
     );
     if (choice === "Copy install command") {
-        await vscode.env.clipboard.writeText('pip install "capa[lsp]"');
-        void vscode.window.showInformationMessage('Copied: pip install "capa[lsp]"');
+        await vscode.env.clipboard.writeText('pip install "capa-language[lsp]"');
+        void vscode.window.showInformationMessage('Copied: pip install "capa-language[lsp]"');
     } else if (choice === "Show Output") {
         getOutputChannel().show(true);
     }

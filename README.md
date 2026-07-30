@@ -1,16 +1,16 @@
 <p align="left">
-  <img src="capa_logo.svg" alt="Capa logo" height="80">
+  <img src="https://raw.githubusercontent.com/nelsonduarte/capa-language/main/capa_logo.svg" alt="Capa logo" height="80">
 </p>
 
 # Capa
 
 [![tests](https://github.com/nelsonduarte/capa-language/actions/workflows/tests.yml/badge.svg)](https://github.com/nelsonduarte/capa-language/actions/workflows/tests.yml)
 [![release](https://img.shields.io/github/v/release/nelsonduarte/capa-language?include_prereleases&label=release&color=blue)](https://github.com/nelsonduarte/capa-language/releases)
-[![license: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![python: >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
+[![license: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/nelsonduarte/capa-language/blob/main/LICENSE)
+[![python: >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](https://github.com/nelsonduarte/capa-language/blob/main/pyproject.toml)
 [![SLSA Level 1](https://slsa.dev/images/gh-badge-level1.svg)](https://slsa.dev/spec/v1.0/levels#build-l1)
 [![Discussions](https://img.shields.io/github/discussions/nelsonduarte/capa-language?logo=github&color=blueviolet)](https://github.com/nelsonduarte/capa-language/discussions)
-[![contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](https://github.com/nelsonduarte/capa-language/blob/main/CONTRIBUTING.md)
 
 **Website: <https://capa-language.com/>**
 
@@ -122,7 +122,7 @@ cd capa-language && pip install -e .
 
 After install, `capa --version` should work from any directory.
 For the manual binary download, language-server setup, and the
-VSCode extension, see [`docs/getting-started.md`](docs/getting-started.md).
+VSCode extension, see [`docs/getting-started.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/getting-started.md).
 
 ## CLI
 
@@ -198,7 +198,7 @@ The runtime ships built-in types (`Result`, `Option`, `List`,
 `Fs`, `Net`, `Env`, `Clock`, `Random`, `Db`, `Proc`, `Serve`,
 `Unsafe`). `Serve` (inbound TCP) and `Unsafe` are Python-backend
 only; `capa --wasm` rejects a program whose signatures reach either.
-Full reference in [`docs/stdlib.md`](docs/stdlib.md).
+Full reference in [`docs/stdlib.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/stdlib.md).
 
 Eight **seed libraries** live in standalone repos and are
 consumed via the package manager:
@@ -253,7 +253,7 @@ capa_testkit = { git = "https://github.com/user/capa_testkit", tag = "v0.2" }
 
 Then `capa install` materialises the deps under `./vendor/` and
 the loader picks them up automatically. See
-[`docs/packages.md`](docs/packages.md) for the manifest schema,
+[`docs/packages.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/packages.md) for the manifest schema,
 lockfile semantics, and resolution order.
 
 ## Project layout (sketch)
@@ -279,8 +279,8 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 Capa ships as **`1.24.0`** (released 2026-07-28), with the full
 security axis (information-flow control, constant-time markers, and
 typestate protocols) and the fully functional Wasm backend (see
-[`CHANGELOG.md`](CHANGELOG.md)). The stability commitment in
-[`STABILITY.md`](STABILITY.md) is now **in effect**: post-1.0,
+[`CHANGELOG.md`](https://github.com/nelsonduarte/capa-language/blob/main/CHANGELOG.md)). The stability commitment in
+[`STABILITY.md`](https://github.com/nelsonduarte/capa-language/blob/main/STABILITY.md) is now **in effect**: post-1.0,
 breaking changes to the covered surfaces require a major bump, and
 deprecations get one minor release of warning first.
 
@@ -299,8 +299,8 @@ cross-function capability attenuation is enforced by host-side handle
 tables for a Capa-emitted artifact; the enforcement lives in the
 trusted emitter/host, not the runtime boundary, so the executed
 artifact is part of the TCB (see
-[`docs/design/wasm-cap-handles.md`](docs/design/wasm-cap-handles.md)
-and [`trust-model.md`](docs/trust-model.md)).
+[`docs/design/wasm-cap-handles.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/design/wasm-cap-handles.md)
+and [`trust-model.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/trust-model.md)).
 
 Run them:
 
@@ -336,24 +336,24 @@ Capa emits **zero false clearances (0/48)**, against CodeQL (10/48,
 the strongest real dataflow tool tested), Semgrep (12/48), and a
 dependency-level SBOM (48/48). On positive attribution Capa **ties**
 CodeQL at 38/48; it does not beat it. The reproducible artefacts live
-in [`evaluation/empirical_study/`](evaluation/empirical_study/).
+in [`evaluation/empirical_study/`](https://github.com/nelsonduarte/capa-language/blob/main/evaluation/empirical_study/).
 
 Tier 2 (regulatory mapping) is **complete**:
-[`docs/regulatory.md`](docs/regulatory.md) covers the EU CRA,
+[`docs/regulatory.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/regulatory.md) covers the EU CRA,
 NIS2, DORA (cybersecurity articles), NIST SSDF, and OWASP SCVS
 side-by-side; the article-by-article CRA mapping lives in
-[`docs/cra.md`](docs/cra.md).
+[`docs/cra.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/cra.md).
 
 What each of these artefacts actually guarantees, separating
 fail-closed from best-effort from trusted premise, is consolidated in
-the [**trust model**](docs/trust-model.md).
+the [**trust model**](https://github.com/nelsonduarte/capa-language/blob/main/docs/trust-model.md).
 
 The `lambda_cap` soundness theorems are **mechanised in Agda**,
 no `postulate` remaining. Roughly 600 lines of self-contained
 Agda (no `agda-stdlib` dependency) cover Progress, Preservation,
 Capability Soundness, and a multi-step Manifest Completeness
 theorem. CI typechecks the proofs on every push to
-[`proofs/`](proofs/). The full roadmap is at
+[`proofs/`](https://github.com/nelsonduarte/capa-language/blob/main/proofs/). The full roadmap is at
 [`capa-language.com/roadmap.html`](https://capa-language.com/roadmap.html).
 
 ## Documentation map
@@ -378,18 +378,18 @@ licensed CC BY-NC 4.0.
 | [`capa-language.com/learn/`](https://capa-language.com/learn/) | 12-page tutorial sequence |
 | [`capa-language.com/manifest.html`](https://capa-language.com/manifest.html) | the manifest format + how to read it |
 | [`capa-language.com/roadmap.html`](https://capa-language.com/roadmap.html) | status + what's planned |
-| [`docs/getting-started.md`](docs/getting-started.md) | text version, plus LSP / editor setup |
-| [`docs/tutorial.md`](docs/tutorial.md) | longer walkthrough |
-| [`docs/reference.md`](docs/reference.md) | language reference (syntax + semantics) |
-| [`docs/stdlib.md`](docs/stdlib.md) | runtime + library APIs |
-| [`docs/packages.md`](docs/packages.md) | `capa.toml` + `capa install` + lockfile semantics |
-| [`docs/trust-model.md`](docs/trust-model.md) | what is fail-closed vs best-effort vs trusted premise vs out-of-model |
-| [`docs/testing.md`](docs/testing.md) | `capa test`: discovery, result contract, `--both` parity diff |
-| [`docs/positioning.md`](docs/positioning.md) | honest comparison vs Pony, Koka, Roc, Wasm CM, Zero |
-| [`docs/semantics.md`](docs/semantics.md) | lambda_cap calculus sketch + soundness theorems |
-| [`docs/cra.md`](docs/cra.md) + [`regulatory.md`](docs/regulatory.md) | EU CRA + multi-jurisdiction regulatory mapping |
-| [`docs/migration.md`](docs/migration.md) | porting Python code to Capa |
-| [`docs/paper-draft.md`](docs/paper-draft.md) | workshop-paper draft |
+| [`docs/getting-started.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/getting-started.md) | text version, plus LSP / editor setup |
+| [`docs/tutorial.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/tutorial.md) | longer walkthrough |
+| [`docs/reference.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/reference.md) | language reference (syntax + semantics) |
+| [`docs/stdlib.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/stdlib.md) | runtime + library APIs |
+| [`docs/packages.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/packages.md) | `capa.toml` + `capa install` + lockfile semantics |
+| [`docs/trust-model.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/trust-model.md) | what is fail-closed vs best-effort vs trusted premise vs out-of-model |
+| [`docs/testing.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/testing.md) | `capa test`: discovery, result contract, `--both` parity diff |
+| [`docs/positioning.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md) | honest comparison vs Pony, Koka, Roc, Wasm CM, Zero |
+| [`docs/semantics.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/semantics.md) | lambda_cap calculus sketch + soundness theorems |
+| [`docs/cra.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/cra.md) + [`regulatory.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/regulatory.md) | EU CRA + multi-jurisdiction regulatory mapping |
+| [`docs/migration.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/migration.md) | porting Python code to Capa |
+| [`docs/paper-draft.md`](https://github.com/nelsonduarte/capa-language/blob/main/docs/paper-draft.md) | workshop-paper draft |
 | `docs/cve_*.md` and `docs/demo-event-stream.md` | walkthroughs of real CVEs against Capa |
 
 ## Programmatic use
@@ -420,15 +420,15 @@ live in [**GitHub Discussions**](https://github.com/nelsonduarte/capa-language/d
 - **[Show and tell](https://github.com/nelsonduarte/capa-language/discussions/categories/show-and-tell)** for programs, manifests, integrations.
 - **[Announcements](https://github.com/nelsonduarte/capa-language/discussions/categories/announcements)** for release notes.
 
-Pull requests welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Pull requests welcome; see [`CONTRIBUTING.md`](https://github.com/nelsonduarte/capa-language/blob/main/CONTRIBUTING.md).
 For security issues, please use the private vulnerability
 reporting channel at
 <https://github.com/nelsonduarte/capa-language/security/advisories/new>;
-the disclosure flow is in [`SECURITY.md`](SECURITY.md).
+the disclosure flow is in [`SECURITY.md`](https://github.com/nelsonduarte/capa-language/blob/main/SECURITY.md).
 
 ## License
 
-Dual-licensed under either [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE) at your option. SPDX expression
-`MIT OR Apache-2.0` (the Rust idiom). See [`LICENSE`](LICENSE)
+Dual-licensed under either [MIT](https://github.com/nelsonduarte/capa-language/blob/main/LICENSE-MIT) or
+[Apache-2.0](https://github.com/nelsonduarte/capa-language/blob/main/LICENSE-APACHE) at your option. SPDX expression
+`MIT OR Apache-2.0` (the Rust idiom). See [`LICENSE`](https://github.com/nelsonduarte/capa-language/blob/main/LICENSE)
 for the rationale and the contribution clause.

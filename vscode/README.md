@@ -77,7 +77,7 @@ provide it:
   is required. The extension auto-detects this binary on PATH (see below).
 - Pip install of the compiler: the server runs as a Python process under
   `python -m capa lsp`. This requires Python >=3.10 and the
-  language-server extra: `pip install "capa[lsp]"`. The extra pulls in
+  language-server extra: `pip install "capa-language[lsp]"`. The extra pulls in
   `pygls`, which the server requires. If `pygls` is missing the server
   exits immediately and the extension shows a message telling you to run
   that command.
@@ -127,7 +127,7 @@ Changing any of these restarts the client automatically.
 ### Commands
 
 - `Capa: Restart Language Server`: restarts the client (use this after
-  installing the `capa` binary, installing `capa[lsp]`, or fixing the
+  installing the `capa` binary, installing `capa-language[lsp]`, or fixing the
   launch command).
 - `Capa: Show Language Server Output`: opens the output channel where the
   server's logs and stderr appear.

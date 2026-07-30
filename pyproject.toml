@@ -9,12 +9,12 @@ build-backend = "setuptools.build_meta"
 # identity is ``capa-language``.
 name = "capa-language"
 version = "1.24.0"
-description = "Capa, a capability-centric programming language"
+description = "A capability-typed language that emits machine-verifiable supply-chain SBOMs by construction"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Nelson Duarte", email = "nelson.duarte31@gmail.com" },
+    { name = "Nelson Duarte", email = "nelson@capa-language.com" },
 ]
 keywords = ["language", "compiler", "capabilities", "type-checker", "transpiler"]
 classifiers = [
@@ -79,7 +79,10 @@ capa = "capa.cli:main"
 
 [project.urls]
 Homepage = "https://capa-language.com"
-# Repository = "..."
+Repository = "https://github.com/nelsonduarte/capa-language"
+Documentation = "https://github.com/nelsonduarte/capa-language/tree/main/docs"
+Changelog = "https://github.com/nelsonduarte/capa-language/blob/main/CHANGELOG.md"
+Issues = "https://github.com/nelsonduarte/capa-language/issues"
 
 [tool.setuptools.packages.find]
 # Auto-discover every ``capa.X`` subpackage so the wheel ships

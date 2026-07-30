@@ -78,7 +78,7 @@
                         "type": "string"
                     },
                     "default": [],
-                    "markdownDescription": "Command used to launch the Capa language server over stdio, given as an argument vector (the first item is the executable, the rest are arguments). Leave it empty (the default) to auto-detect: the extension prefers the standalone `capa` binary on PATH (which serves the LSP since compiler v1.12.0) and falls back to `python -m capa lsp` when no `capa` binary is found. Set an explicit vector to override auto-detection and always use that command, for example `[\"capa\", \"lsp\"]`, `[\"python3\", \"-m\", \"capa\", \"lsp\"]`, or `[\"python\", \"-m\", \"capa\", \"lsp\"]`. The `python -m capa lsp` form requires Python >=3.10 with `capa[lsp]` installed (which provides `pygls`)."
+                    "markdownDescription": "Command used to launch the Capa language server over stdio, given as an argument vector (the first item is the executable, the rest are arguments). Leave it empty (the default) to auto-detect: the extension prefers the standalone `capa` binary on PATH (which serves the LSP since compiler v1.12.0) and falls back to `python -m capa lsp` when no `capa` binary is found. Set an explicit vector to override auto-detection and always use that command, for example `[\"capa\", \"lsp\"]`, `[\"python3\", \"-m\", \"capa\", \"lsp\"]`, or `[\"python\", \"-m\", \"capa\", \"lsp\"]`. The `python -m capa lsp` form requires Python >=3.10 with `capa-language[lsp]` installed (which provides `pygls`)."
                 },
                 "capa.languageServer.capaPath": {
                     "type": "array",

@@ -24,7 +24,7 @@ Use GitHub's private vulnerability reporting channel:
    - Why you believe it is a security issue (which property is broken)
 3. Submit. Only repository maintainers will see the report.
 
-You can also email **nelson.duarte31@gmail.com** with the subject line
+You can also email **security@capa-language.com** with the subject line
 `[capa security]`. PGP is not currently set up.
 
 I aim to acknowledge reports within **7 days** and to provide a
