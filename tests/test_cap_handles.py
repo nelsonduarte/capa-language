@@ -203,11 +203,16 @@ class TestCapHandleTable(unittest.TestCase):
 
     def test_bootstrap_root_handles(self):
         t = CapHandleTable()
+        # ``declared`` names the handle-bearing caps the artifact binds;
+        # only those (plus the always-present non-cap services) get a
+        # root. fs / net / clock are declared here, so all three appear.
         roots = bootstrap_root_handles(
-            t, stdio=Stdio(), fs=Fs(), net=Net(), clock=Clock(),
+            t, declared=["fs", "net", "clock"],
+            stdio=Stdio(), fs=Fs(), net=Net(), clock=Clock(),
             random=Random(seed=42), unsafe=Unsafe(),
         )
-        # Only the caps that were passed are in the result.
+        # The declared handle-bearing caps plus the always-present
+        # services (stdio / random / unsafe) are in the result.
         self.assertEqual(
             sorted(roots.keys()),
             ["clock", "fs", "net", "random", "stdio", "unsafe"],
@@ -222,6 +227,25 @@ class TestCapHandleTable(unittest.TestCase):
         self.assertNotIn("db", roots)
         self.assertNotIn("proc", roots)
         self.assertNotIn("env", roots)
+
+    def test_bootstrap_omits_undeclared_handle_bearing_caps(self):
+        # The soundness fix: a handle-bearing cap the artifact does not
+        # declare gets NO root, even when the host passes its object.
+        # An artifact binding only ``net`` must not receive an Fs root,
+        # so a forged Fs handle finds nothing (or the wrong-type Net
+        # root) at the typed lookup and the op denies.
+        t = CapHandleTable()
+        roots = bootstrap_root_handles(
+            t, declared=["net"],
+            stdio=Stdio(), fs=Fs(), net=Net(), db=Db(),
+            proc=Proc(), env=Env(), clock=Clock(),
+        )
+        self.assertEqual(sorted(roots.keys()), ["net", "stdio"])
+        self.assertNotIn("fs", roots)
+        # No table entry resolves to Fs at all.
+        for handle in range(1, len(t) + 1):
+            with self.assertRaises(CapHandleError):
+                t.lookup(handle, Fs)
 
     def test_table_len_reflects_allocations(self):
         t = CapHandleTable()
@@ -392,12 +416,14 @@ class TestCapabilityRegistry(unittest.TestCase):
         # checking it would pass for a cap that bootstrap supports
         # but the kind map omits - exactly the divergence this
         # guard exists to catch.
+        all_kinds = sorted(cap.lower() for cap in HANDLE_BEARING_CAPS)
         roots = bootstrap_root_handles(
             CapHandleTable(),
+            declared=all_kinds,
             fs=Fs(), net=Net(), db=Db(), proc=Proc(),
             env=Env(), clock=Clock(), stdio=Stdio(),
         )
-        kind_to_root = root_handle_map(roots)
+        kind_to_root = root_handle_map(roots, all_kinds)
         for cap in sorted(HANDLE_BEARING_CAPS):
             self.assertIn(
                 cap.lower(), kind_to_root,

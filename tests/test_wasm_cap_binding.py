@@ -352,12 +352,15 @@ class TestResolveCapTypesGrantsNothing(unittest.TestCase):
         # all, for the ops that do not check).
         full = bootstrap_root_handles(
             CapHandleTable(),
+            declared=["fs"],
             fs=None, net=None, db=None, proc=None,
             env=None, clock=None, stdio=None,
         )
         self.assertEqual(full, {})
         with self.assertRaises(CapBindingError) as ctx:
-            root_handle_map(full)
+            # A DECLARED cap whose root was never bootstrapped must raise
+            # rather than default to the ``0`` sentinel.
+            root_handle_map(full, ["fs"])
         self.assertIn("no capability is granted", str(ctx.exception))
 
 
@@ -739,6 +742,193 @@ class TestForgedBindingIsContainedOnEveryBridge(unittest.TestCase):
         with self.assertRaises(CapBindingError) as ctx:
             host.run_main_aot(module, hdr)
         self.assertIn("container header", str(ctx.exception))
+
+
+@unittest.skipUnless(
+    _has_wasmtime() and _has_wasm_tools(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestUndeclaredCapabilityHasNoRoot(unittest.TestCase):
+    """A hand-written artifact whose binding names ONLY ``net`` must not
+    reach the filesystem by forging the integer the Fs root is
+    deterministically assigned.
+
+    The per-instance handle table used to be bootstrapped with a root
+    for EVERY handle-bearing capability regardless of what the artifact
+    declared, and roots are consecutive integers (stdio=1, fs=2, ...).
+    So a module declaring only ``net`` could import ``capa:host/fs.read``
+    and call it with the integer 2, hit the live Fs root, and read a
+    secret file it never had authority over. Reachable through the
+    shipped ``capa run-aot`` verb, exit 0, no diagnostic.
+
+    The fix bootstraps ONLY the declared capabilities' roots, so the
+    forged integer resolves to the wrong-type root (or to nothing) at
+    the typed handle-table lookup and the op denies at the call. This
+    checks the containment on all three hosts that bootstrap the table:
+    the core module host (``capa --run --wasm``), the AOT run path
+    (``capa run-aot``), and the Component host.
+    """
+
+    _SECRET = "s3cr3t-launch-code-do-not-leak"
+
+    def _forged_fs_handle(self) -> int:
+        # The integer the Fs root is assigned when the FULL cap set is
+        # bootstrapped -- the value the pre-fix table always held an Fs
+        # at, hence the value an attacker forges. Derived from the real
+        # bootstrap rather than hardcoded, so a change to the allocation
+        # order cannot silently make this witness name a stale handle.
+        from capa.runtime._capabilities import (
+            Clock, Db, Env, Fs, Net, Proc, Stdio,
+        )
+        probe = bootstrap_root_handles(
+            CapHandleTable(),
+            declared=[c.lower() for c in HANDLE_BEARING_CAPS],
+            stdio=Stdio(), fs=Fs(), net=Net(), db=Db(),
+            proc=Proc(), env=Env(), clock=Clock(),
+        )
+        return probe["fs"]
+
+    def _forge_core_wasm(self, secret_path: Path) -> bytes:
+        """A minimal core module: binding declares only ``net``, yet
+        ``main`` calls ``capa:host/fs.read`` with the forged Fs-root
+        integer and prints the Ok string (or ``denied`` on Err)."""
+        path_bytes = str(secret_path).encode("utf-8")
+        n = len(path_bytes)
+        path_wat = "".join(f"\\{b:02x}" for b in path_bytes)
+        heap = ((n + 6 + 7) // 8) * 8
+        fs_handle = self._forged_fs_handle()
+        binding = main_cap_types_export_name(["net"])
+        wat = f"""(module
+  (import "capa:host/fs" "read"
+    (func $Fs_read (param i32 i32 i32 i32)))
+  (import "capa:host/stdio" "println" (func $println (param i32 i32)))
+  (memory (export "memory") 1 256)
+  (data (i32.const 0) "{path_wat}")
+  (data (i32.const {n}) "denied")
+  (global $heap_top (mut i32) (i32.const {heap}))
+  (func $alloc (export "alloc") (param $size i32) (result i32)
+    (local $ret i32) (local $new_top i32)
+    (local $needed_pages i32) (local $cur_pages i32)
+    global.get $heap_top
+    i32.const 7 i32.add i32.const -8 i32.and
+    local.set $ret
+    local.get $ret local.get $size i32.add
+    local.set $new_top
+    local.get $new_top i32.const 65535 i32.add i32.const 16 i32.shr_u
+    local.set $needed_pages
+    memory.size local.set $cur_pages
+    local.get $needed_pages local.get $cur_pages i32.gt_u
+    if
+      local.get $needed_pages local.get $cur_pages i32.sub
+      memory.grow i32.const -1 i32.eq
+      if unreachable end
+    end
+    local.get $new_top global.set $heap_top
+    local.get $ret
+  )
+  (func $cabi_realloc (export "cabi_realloc")
+      (param $old_ptr i32) (param $old_size i32)
+      (param $align i32) (param $new_size i32) (result i32)
+    local.get $new_size i32.eqz
+    if i32.const 0 return end
+    local.get $new_size call $alloc
+  )
+  (func $main (export "main") (param $net i32)
+    (local $ret i32)
+    i32.const 20 call $alloc local.set $ret
+    ;; fs.read(handle=<forged Fs root>, path_ptr=0, path_len, ret_area)
+    i32.const {fs_handle}
+    i32.const 0
+    i32.const {n}
+    local.get $ret
+    call $Fs_read
+    local.get $ret i32.load offset=0
+    i32.eqz
+    if
+      local.get $ret i32.load offset=4
+      local.get $ret i32.load offset=8
+      call $println
+    else
+      i32.const {n}
+      i32.const 6
+      call $println
+    end
+  )
+  (global $g i32 (i32.const 1))
+  (export "{binding}" (global $g))
+)
+"""
+        proc = subprocess.run(
+            ["wasm-tools", "parse", "-"],
+            input=wat.encode("utf-8"), capture_output=True,
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            proc.stderr.decode("utf-8", errors="replace"),
+        )
+        return proc.stdout
+
+    # WIT world for the component form: labels ``main``'s only slot
+    # ``cap0-net`` (so the Component host reads the binding as ``net``),
+    # imports the fs interface the forged core still calls.
+    _COMPONENT_WIT = (
+        "package capa:host;\n"
+        "interface fs {\n"
+        "  record io-error { message: string, cause: string, }\n"
+        "  read: func(handle: u32, path: string)"
+        " -> result<string, io-error>;\n"
+        "}\n"
+        "interface stdio { println: func(msg: string); }\n"
+        "world program {\n"
+        "  import fs;\n"
+        "  import stdio;\n"
+        f"  export main: func({wit_cap_slot_name(0, 'net')}: u32);\n"
+        "}\n"
+    )
+
+    def _write_secret(self, td) -> Path:
+        p = Path(td) / "secret.txt"
+        p.write_text(self._SECRET, encoding="utf-8")
+        return p
+
+    def _assert_denied(self, out: str) -> None:
+        self.assertNotIn(
+            self._SECRET, out,
+            "the forged Fs handle read the secret file; an undeclared "
+            "capability's root is still reachable through the table",
+        )
+        self.assertIn("denied", out)
+
+    def test_core_host_denies_the_forged_fs_handle(self):
+        from capa.runtime._wasm_host import WasmHost
+        with tempfile.TemporaryDirectory() as td:
+            blob = self._forge_core_wasm(self._write_secret(td))
+            out = _capture_stdout(lambda: WasmHost(args=[]).run_main(blob))
+        self._assert_denied(out)
+
+    def test_aot_run_path_denies_the_forged_fs_handle(self):
+        from capa.runtime import _aot
+        from capa.runtime._wasm_host import WasmHost
+        with tempfile.TemporaryDirectory() as td:
+            blob = self._forge_core_wasm(self._write_secret(td))
+            host = WasmHost(args=[])
+            artifact = _aot.build_aot(blob, capa_version="t")
+            module, hdr = _aot.load_aot(artifact, host.engine)
+            out = _capture_stdout(
+                lambda: host.run_main_aot(module, hdr)
+            )
+        self._assert_denied(out)
+
+    def test_component_host_denies_the_forged_fs_handle(self):
+        from capa.cli import _wrap_as_component
+        from capa.runtime._wasm_component_host import WasmComponentHost
+        with tempfile.TemporaryDirectory() as td:
+            blob = self._forge_core_wasm(self._write_secret(td))
+            comp = _wrap_as_component(blob, self._COMPONENT_WIT, wasi=False)
+            out = _capture_stdout(
+                lambda: WasmComponentHost(args=[]).run_main(comp)
+            )
+        self._assert_denied(out)
 
 
 def _tests_for_none(fn: ast.AST, var: str) -> bool:

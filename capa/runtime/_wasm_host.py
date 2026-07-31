@@ -3209,10 +3209,16 @@ class WasmHost:
         a re-run reuses the same ``Fs`` / ``Net`` / ... instances and
         their attenuation state. Their HANDLES are not stable:
         ``bootstrap_root_handles`` allocates fresh table entries on
-        every call, so three runs on one host leave the table at 7, 14
-        and 21 entries. Harmless for the CLI (one run per process) and
-        pre-existing, but the docstring used to claim the opposite, and
-        a long-lived embedder reusing a host should know it grows.
+        every call, so a re-run grows the table. Harmless for the CLI
+        (one run per process) and pre-existing, but a long-lived
+        embedder reusing a host should know it grows.
+
+        Only the roots the artifact DECLARES are bootstrapped:
+        ``declared=cap_types`` gates the handle-bearing caps so a cap
+        the binding never names gets no table entry. A hand-written
+        module that forges the small integer such a root would have been
+        assigned then hits the typed lookup with no entry (or a
+        wrong-type entry) and the privileged op denies at the call.
 
         ``cap_types`` is the artifact's own declaration of what each
         slot holds. ``None`` (no declaration) and any disagreement with
@@ -3250,6 +3256,7 @@ class WasmHost:
             self._root_stdio = Stdio()
         roots = bootstrap_root_handles(
             self._cap_handles,
+            declared=cap_types,
             fs=self._root_fs,
             net=self._root_net,
             db=self._root_db,
@@ -3258,7 +3265,7 @@ class WasmHost:
             clock=self._root_clock,
             stdio=self._root_stdio,
         )
-        kind_to_root = root_handle_map(roots)
+        kind_to_root = root_handle_map(roots, cap_types)
         handle_args = [kind_to_root[kind] for kind in cap_types]
         main(self.store, *handle_args)
 

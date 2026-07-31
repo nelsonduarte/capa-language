@@ -38,7 +38,7 @@ Lifecycle
 
 from __future__ import annotations
 
-from typing import Optional, TypeVar
+from typing import Iterable, Optional, TypeVar
 
 from ..ir._capa_types import HANDLE_BEARING_CAPS
 from ..ir._cap_binding import CapBindingError
@@ -172,6 +172,7 @@ class CapHandleError(RuntimeError):
 def bootstrap_root_handles(
     table: CapHandleTable,
     *,
+    declared: Iterable[str],
     stdio: Optional[Stdio] = None,
     fs: Optional[Fs] = None,
     net: Optional[Net] = None,
@@ -182,13 +183,30 @@ def bootstrap_root_handles(
     proc: Optional[Proc] = None,
     unsafe: Optional[Unsafe] = None,
 ) -> dict[str, int]:
-    """Allocate root handles for every cap the host will pass to
-    ``main``. Returns a name -> handle dict the host bridge uses
-    when invoking the program's entry point.
+    """Allocate root handles for this instance's cap table. Returns a
+    name -> handle dict the host bridge uses when invoking ``main``.
 
-    Caps not passed are simply absent from the result dict; ``main``
-    declarations that ask for them will fail at link time (the
-    discovery walker already enforces this independently)."""
+    ``declared`` is the artifact's own ``capa:main-cap-types`` binding
+    (the cap kinds ``main`` declares). A HANDLE-BEARING capability
+    (``HANDLE_BEARING_CAPS``: fs / net / db / proc / env / clock) gets a
+    root ONLY when the artifact declares it. A handle-bearing cap the
+    artifact never declared is left OUT of the table entirely, so a
+    hand-written module that forges the small predictable integer such a
+    root would have been assigned hits the typed handle-table lookup
+    with no entry (or the wrong-type entry the declared caps now occupy)
+    and the privileged op denies at the call. This is what stops an
+    artifact whose binding names only ``net`` from importing a
+    ``capa:host/fs.*`` function and reading the filesystem.
+
+    The non-capability host services (stdio / random / unsafe) are NOT
+    gated: they carry no attenuation surface and are always present when
+    the host passes them, matching the always-defined host imports.
+
+    Caps not passed at all are simply absent from the result dict; the
+    gating derives the handle-bearing set from ``HANDLE_BEARING_CAPS``
+    so reclassifying a capability cannot leave it behind."""
+    declared_kinds = set(declared)
+    gated = {cap.lower() for cap in HANDLE_BEARING_CAPS}
     out: dict[str, int] = {}
     for name, cap in (
         ("stdio", stdio),
@@ -201,43 +219,48 @@ def bootstrap_root_handles(
         ("proc", proc),
         ("unsafe", unsafe),
     ):
-        if cap is not None:
-            out[name] = table.alloc(cap)
+        if cap is None:
+            continue
+        if name in gated and name not in declared_kinds:
+            continue
+        out[name] = table.alloc(cap)
     return out
 
 
-def root_handle_map(roots: dict) -> dict[str, int]:
-    """Map a capability KIND (``fs`` / ``net`` / ...) to the root
-    handle a ``main`` slot of that declared type receives.
+def root_handle_map(roots: dict, declared: Iterable[str]) -> dict[str, int]:
+    """Map each DECLARED capability KIND (``fs`` / ``net`` / ...) to the
+    root handle a ``main`` slot of that type receives.
 
-    DERIVED from ``HANDLE_BEARING_CAPS`` rather than hand-listed, so
-    reclassifying a capability as handle-bearing cannot leave this map
-    behind. It was a hardcoded six-entry literal in ``_wasm_host`` until
-    2026-07-18, and duplicated a second time in
-    ``_wasm_component_host``.
+    ``declared`` is the artifact's own ``capa:main-cap-types`` binding.
+    Only the declared kinds are mapped: since 2026-07-31 the host
+    bootstraps a root for a handle-bearing cap ONLY when the artifact
+    declares it (see ``bootstrap_root_handles``), so this map is driven
+    by the same declaration rather than by the full
+    ``HANDLE_BEARING_CAPS`` set. Requiring all six here (as it did until
+    2026-07-31) would raise on every legitimate program that declares
+    fewer than six caps once the bootstrap stopped serving them all.
 
     Keyed by cap kind since 2026-07-23. Both hosts used to key it by
     ``main``'s source PARAM NAME, which is what let ``fun main(conn:
     Net, ...)`` miss every key and take their Fs fallback.
 
-    A handle-bearing cap with no root in ``roots`` raises rather than
-    yielding the ``0`` sentinel: a slot silently bound to 0 would fail
-    only at the first privileged call, and only for the ops that check.
+    A DECLARED cap with no root in ``roots`` raises rather than yielding
+    the ``0`` sentinel: a slot silently bound to 0 would fail only at
+    the first privileged call, and only for the ops that check.
 
     Lives here rather than in either host so the two cannot drift, and
     so the registry guard in ``tests/test_cap_handles.py`` can assert
     against the real map without importing wasmtime. Deliberately NOT
-    ``bootstrap_root_handles``' output, which is a strictly larger dict
-    (it also serves the erased caps).
+    ``bootstrap_root_handles``' output, which also serves the erased
+    caps.
     """
     out: dict[str, int] = {}
-    for cap in HANDLE_BEARING_CAPS:
-        kind = cap.lower()
+    for kind in declared:
         handle = roots.get(kind)
         if not handle:
             raise CapBindingError(
-                f"the host bootstrapped no root handle for the "
-                f"{cap!r} capability, so a `main` slot declaring it "
+                f"the host bootstrapped no root handle for the declared "
+                f"{kind!r} capability, so a `main` slot declaring it "
                 f"cannot be bound; no capability is granted"
             )
         out[kind] = handle

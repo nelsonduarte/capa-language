@@ -1240,13 +1240,18 @@ class WasmComponentHost:
 
     # ---- public surface ----------------------------------------
 
-    def _bootstrap_root_handles(self) -> dict[str, int]:
+    def _bootstrap_root_handles(self, cap_types) -> dict[str, int]:
         """Lazy-allocate the root caps the host will hand to
         ``main``. Returns a name -> handle dict (lowercase cap-name
         keyed: ``fs`` / ``net`` / ``db`` / ``proc`` / ``env`` /
         ``clock`` / ``stdio``). Mirrors ``WasmHost.run_main``'s
         block of the same name so re-running the program reuses
-        the same handle table entries."""
+        the same handle table entries.
+
+        ``cap_types`` is the artifact's own ``capa:main-cap-types``
+        binding; only the handle-bearing caps it declares get a root,
+        so a component whose binding names only ``net`` gets no Fs root
+        in its table and a forged Fs handle fails the typed lookup."""
         if self._root_fs is None:
             self._root_fs = Fs()
         if self._root_net is None:
@@ -1263,6 +1268,7 @@ class WasmComponentHost:
             self._root_stdio = Stdio()
         return bootstrap_root_handles(
             self._cap_handles,
+            declared=cap_types,
             fs=self._root_fs,
             net=self._root_net,
             db=self._root_db,
@@ -1332,8 +1338,8 @@ class WasmComponentHost:
             main(self._store)
             return
         cap_types = _read_component_cap_types(params)
-        roots = self._bootstrap_root_handles()
-        kind_to_root = root_handle_map(roots)
+        roots = self._bootstrap_root_handles(cap_types)
+        kind_to_root = root_handle_map(roots, cap_types)
         # WASI mode: Env attenuation is enforced GUEST-SIDE (Level 2 of
         # docs/design/wasi-attenuation.md). The guest reinterprets the
         # Env i32 value as 0 = unrestricted root, or a pointer to a
