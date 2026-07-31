@@ -36,7 +36,7 @@ Install the `[test]` extra, not the bare package: hypothesis and PyYAML
 live there, and without them whole test modules skip instead of failing,
 so the run prints OK while verifying less than you think.
 
-Run the test suite (a few minutes, currently ~4,350 tests):
+Run the test suite (a few minutes, currently ~5,034 tests):
 
 ```bash
 python -m unittest discover tests
