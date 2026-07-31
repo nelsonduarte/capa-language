@@ -221,18 +221,46 @@ separately.
 
 - **The compiled Wasm artifact, on the Wasm backends.** Capability
   confinement and attenuation on `capa --wasm` (core module and Component
-  Model) are enforced by the trusted Capa compiler / emitter, not at the
-  runtime boundary: the host handle table is keyed by small sequential
-  integer handles, and on the core-module `WasmHost` path the linker
-  defines every `capa:host/*` import regardless of what the artifact
-  declares. A hand-written or edited module can therefore name a handle or
-  call an import it was never granted. The guarantee holds at *interface
-  granularity* for a component the Capa compiler produced; intra-artifact
-  attenuation and the core-module path rely on the emitter. Consequently
-  the executed `.wasm` / `.cwasm` is part of the TCB: running a
-  third-party-supplied artifact trusts that artifact, not just its
-  declared WIT surface. Closing the runtime-boundary gap is separate,
-  tracked work; see
+  Model) are enforced by the trusted Capa compiler / emitter together
+  with the host handle table, not by an operator-supplied policy. The
+  per-instance handle table is now bootstrapped with a root ONLY for the
+  capabilities the artifact declares in its `capa:main-cap-types`
+  binding, so the declared cap set is a runtime-enforced UPPER BOUND on
+  the authority the artifact can exercise, on all three hosts (the core
+  `WasmHost`, the AOT `capa run-aot` path, and the Component host). The
+  linker still defines every `capa:host/*` import, but a hand-written or
+  edited module that declares only `net` and forges the small integer an
+  undeclared cap's root would have held now finds no entry (or a
+  wrong-type entry) at the typed handle-table lookup, and the privileged
+  op denies: cross-capability forgery, where an artifact declares one cap
+  and exercises a different, undeclared one, is closed. See
+  `capa/runtime/_cap_handles.py`.
+
+  Three things remain trusted rather than verified, and this is not a
+  sandbox for arbitrary artifacts:
+
+  - The `capa:main-cap-types` binding is the artifact's OWN,
+    freely-editable self-declaration, and there is no operator-supplied
+    cap allowlist on `run-aot`. A malicious artifact may simply declare
+    all six handle-bearing caps and receive all six roots. What the fix
+    restores is the honesty of the declared / SBOM cap set (imports can
+    no longer exceed the declaration), not a confinement decided by the
+    operator. Operator cap-allowlisting is a separate, open question.
+  - Within a cap it DID declare, root handles and their `restrict_to`
+    children are still small predictable integers, so a guest can name
+    the unrestricted root of that cap. This is not a cross-cap
+    escalation, it is authority the artifact already holds by declaring
+    the cap, and on the single-artifact core path there is no in-instance
+    trust boundary to cross; but full handle unforgeability is deferred,
+    tracked work.
+  - The guarantee holds at *interface granularity* for a component the
+    Capa compiler produced; intra-artifact attenuation still relies on
+    the emitter.
+
+  Consequently the executed `.wasm` / `.cwasm` stays part of the TCB:
+  running a third-party-supplied artifact trusts that artifact's declared
+  cap set as its authority ceiling. The fix makes that ceiling ENFORCED
+  rather than advisory; it does not remove the artifact from the TCB. See
   [`docs/design/wasm-cap-handles.md`](design/wasm-cap-handles.md).
 
 - **`install.sh` channel integrity (M3).** Same-channel SHA pinning for

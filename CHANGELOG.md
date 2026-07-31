@@ -9,6 +9,45 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Security.**
+
+- *A hand-written Wasm artifact could exercise a capability it never
+  declared.* On the Wasm backends the per-instance capability handle
+  table was bootstrapped with a root for EVERY handle-bearing cap
+  (Fs / Net / Db / Proc / Env / Clock) regardless of what the artifact
+  declared, and those roots are small consecutive integers (`stdio=1`,
+  `fs=2`, ...). So a hand-crafted `.wasm` / `.cwasm` whose
+  `capa:main-cap-types` binding named only `net` could import
+  `capa:host/fs.read`, call it with the integer the Fs root was
+  deterministically assigned, hit the live Fs root and read a secret
+  file it never had authority over. Reachable through the shipped
+  `capa run-aot` verb, exit 0, no diagnostic, and equally on the core
+  `--run --wasm` host and the Component host. `bootstrap_root_handles`
+  now takes the artifact's declared cap kinds and allocates a root ONLY
+  for a handle-bearing cap the artifact declares (the gated set is
+  derived from `HANDLE_BEARING_CAPS`, so a reclassified cap cannot be
+  left behind); the non-capability services (stdio / random / unsafe)
+  stay always-present. A forged integer for an UNDECLARED cap now
+  resolves to no entry, or to the wrong-type entry a declared cap
+  occupies, at the typed handle-table lookup, and the privileged op
+  denies at the call. The linker is deliberately unchanged: every
+  `capa:host/*` import stays defined; the gate is the missing root, not
+  a missing import. The declared capability set is therefore a
+  runtime-enforced UPPER BOUND on the authority a Wasm artifact can
+  exercise, on all three hosts (core, AOT `run-aot`, Component), closing
+  cross-capability forgery. Scope, stated plainly: this restores the
+  honesty of the declared / SBOM cap set (imports can no longer exceed
+  the declaration); it does NOT make `run-aot` a sandbox for arbitrary
+  artifacts, since the binding is the artifact's own, freely-editable
+  self-declaration and there is no operator cap allowlist, so a
+  malicious artifact may declare all six caps and receive all six roots.
+  The intra-capability residual (a guest naming the unrestricted root of
+  a cap it DID declare, because handles are still predictable integers)
+  and full handle unforgeability remain separate, deferred work. A new
+  forge regression asserts the secret is denied on all three hosts, and
+  a bootstrap unit asserts an undeclared handle-bearing cap gets no root
+  (`tests/test_wasm_cap_binding.py`, `tests/test_cap_handles.py`).
+
 ## [1.25.0], 2026-07-30
 
 An additive-grammar and packaging release. A trailing comma is now

@@ -67,15 +67,34 @@ Exactly three properties, all of them mechanically checked in
    read a binding out of grants nothing and does not run.
 
 It does NOT deliver WASI's "handles are unforgeable, no ambient
-authorities". Two independent reasons, both PRE-DATING this module and
-both out of its scope:
+authorities": root handles are small sequential integers, so a guest
+can name a handle by writing the integer down. That predates this
+module and still holds; what an attacker gains from it changed on
+2026-07-31 and now splits in two:
 
-* root handles are small sequential integers, so a guest can name a
-  handle it was never given by writing the integer down;
-* ``WasmHost``'s linker defines EVERY ``capa:host/*`` import
-  regardless of what the artifact declares, so a hand-written module
-  that declares only ``net`` can still call ``capa:host/fs.exists``
-  and read the filesystem.
+* Cross-capability forgery is CLOSED. Until then the per-instance
+  handle table was bootstrapped with a root for EVERY handle-bearing
+  cap, so a hand-written module that declared only ``net`` could forge
+  the small integer the ``Fs`` root was deterministically assigned,
+  call ``capa:host/fs.*`` and read the filesystem.
+  ``bootstrap_root_handles`` now allocates a root ONLY for a cap the
+  artifact declares, so a forged integer for an UNDECLARED cap resolves
+  to no entry (or the wrong-type entry a declared cap occupies) at the
+  typed lookup and the op denies. The declared cap set is therefore a
+  runtime-enforced upper bound on all three hosts (core, AOT
+  ``run-aot``, Component). The linker is unchanged: it still defines
+  every ``capa:host/*`` import; the gate is the missing root, not a
+  missing import. This restores the honesty of the declared cap set; it
+  does NOT make ``run-aot`` a sandbox, since the binding is the
+  artifact's own self-declaration and a malicious artifact may declare
+  all six caps and receive all six roots.
+* Intra-capability widening is still OPEN. Within a cap it DECLARED, a
+  guest can still name the unrestricted root instead of a
+  ``restrict_to`` child, because those handles are predictable
+  integers. This is not a cross-cap escalation, it is authority the
+  artifact already holds by declaring the cap, and full handle
+  unforgeability (unguessable tokens, or a resource-type migration)
+  remains separate, deferred work.
 
 The handle TABLE's typed lookup is what actually contains a forged or
 rewritten binding: a slot handed the wrong root fails
@@ -85,7 +104,7 @@ lookup rather than merely perform it. Three bridges (``now_secs``,
 ``now_monotonic``, ``env_args``, on both hosts) called it and threw the
 result away, so a forged binding was honoured there; they now require
 it, and ``TestEveryBridgeRequiresItsReceiver`` fails if a fourth
-appears. Unforgeability itself is separate, tracked work.
+appears.
 
 This module owns nothing but the encoding and its inverse, so the
 emitters and the two hosts cannot drift apart on the wire format.

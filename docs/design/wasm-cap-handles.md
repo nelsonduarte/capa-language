@@ -97,18 +97,56 @@ or the guest can write, and it cannot be silently defaulted.
 
 It does **not** deliver WASI's "handles are unforgeable, no ambient
 authorities", and an earlier draft of this section wrongly implied it
-did. Two reasons, both pre-dating this change and both out of its
-scope:
+did. Handles remain small sequential integers a guest can name by
+writing the integer down. Two consequences pre-dated this change and
+were out of its scope; they are in different states today.
 
-- root handles are small sequential integers, so a guest can name a
-  handle it was never given by writing the integer down;
-- `WasmHost`'s linker defines every `capa:host/*` import regardless of
-  what the artifact declares, so a hand-written module declaring only
-  `net` can call `capa:host/fs.exists(2, ".")` and read the
-  filesystem. Confirmed against `6321246` as well, so it is not a
-  regression from this work.
+- **Cross-capability forgery is now closed (2026-07-31).** Until then,
+  `WasmHost`'s linker defined every `capa:host/*` import regardless of
+  what the artifact declared AND the per-instance handle table was
+  bootstrapped with a root for every handle-bearing cap, so a
+  hand-written module declaring only `net` could call
+  `capa:host/fs.exists(2, ".")` with the integer the Fs root was
+  deterministically assigned and read the filesystem. Confirmed against
+  `6321246` as well, so it is not a regression from this work.
+  `b5d3514` closes it by bootstrapping the table with ONLY the declared
+  caps' roots (`bootstrap_root_handles(..., declared=cap_types)` in
+  [`capa/runtime/_cap_handles.py`](../../capa/runtime/_cap_handles.py)).
+  The linker is deliberately unchanged: the imports are still all
+  defined, but a forged integer for an UNDECLARED cap now resolves to
+  no entry, or to the wrong-type entry a declared cap occupies, and
+  fails the typed handle-table lookup, so the privileged op denies at
+  the call. The declared capability set is therefore a runtime-enforced
+  UPPER BOUND on the authority the artifact can exercise, on all three
+  hosts: the core `--run --wasm` host, the AOT `capa run-aot` path, and
+  the Component host. Mechanized on all three in
+  `TestUndeclaredCapabilityHasNoRoot` in
+  [`tests/test_wasm_cap_binding.py`](../../tests/test_wasm_cap_binding.py),
+  with the bootstrap-omission unit in
+  [`tests/test_cap_handles.py`](../../tests/test_cap_handles.py).
 
-Closing that is separate, tracked work.
+- **Intra-capability widening is still open.** Root handles and their
+  `restrict_to` children are still predictable integers, so within a
+  cap it DECLARED a guest can name the unrestricted root of that cap
+  instead of an attenuated child. This is not a cross-cap escalation:
+  it is authority the artifact already holds by declaring the cap, and
+  on the single-artifact core path there is no in-instance trust
+  boundary to escalate across. Full handle UNFORGEABILITY (unguessable
+  tokens, or a Component-Model resource-type migration) remains
+  separate, deferred, tracked work.
+
+Two honest caveats on the cross-cap fix. It restores the HONESTY of the
+declared / SBOM cap set (the imports an artifact can exercise can no
+longer exceed its declaration); it does not turn `capa run-aot` into a
+sandbox for untrusted artifacts. The `capa:main-cap-types` binding is
+the artifact's own, freely editable self-declaration, and there is no
+operator-supplied cap allowlist on `run-aot`, so a malicious artifact
+may simply declare all six caps and receive all six roots. Operator
+cap-allowlisting is a separate, open, undecided question. The executed
+`.wasm` / `.cwasm` therefore stays in the TCB: its declared cap set is
+trusted as its authority ceiling, and the fix makes that ceiling
+ENFORCED rather than advisory, it does not remove the artifact from the
+TCB.
 
 ## Problem (audit slice 25 F1)
 
