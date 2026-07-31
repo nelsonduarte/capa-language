@@ -9,6 +9,22 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.25.1], 2026-07-31
+
+A security patch, shipped under the [`STABILITY.md`](STABILITY.md)
+security exception because it tightens a runtime path so a call that
+previously succeeded now denies. Its one change closes the Wasm
+cross-capability handle forgery: on the Wasm backends a hand-written
+`.wasm` / `.cwasm` whose capability binding declared one capability
+could forge the small predictable integer of a different, undeclared
+capability's root handle and exercise authority it never declared. The
+per-instance handle table is now bootstrapped with a root only for the
+capabilities the artifact declares, so the declared capability set is a
+runtime-enforced upper bound on all three Wasm hosts (core, AOT
+`run-aot`, and Component). This restores the honesty of the declared
+capability set; it does not turn `run-aot` into a sandbox for arbitrary
+artifacts, and full handle unforgeability remains deferred.
+
 **Security.**
 
 - *A hand-written Wasm artifact could exercise a capability it never
@@ -9531,7 +9547,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.25.0...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.25.1...HEAD
+[1.25.1]: https://github.com/nelsonduarte/capa-language/compare/v1.25.0...v1.25.1
 [1.25.0]: https://github.com/nelsonduarte/capa-language/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/nelsonduarte/capa-language/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/nelsonduarte/capa-language/compare/v1.22.0...v1.23.0
