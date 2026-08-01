@@ -9,13 +9,15 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
-## [1.25.1], 2026-07-31
+## [1.25.1], 2026-08-01
 
-A security patch, shipped under the [`STABILITY.md`](STABILITY.md)
-security exception because it tightens a runtime path so a call that
-previously succeeded now denies. Its one change closes the Wasm
-cross-capability handle forgery: on the Wasm backends a hand-written
-`.wasm` / `.cwasm` whose capability binding declared one capability
+A security patch whose one change closes the Wasm cross-capability
+handle forgery. It ships under the [`STABILITY.md`](STABILITY.md)
+security exception, with a full advisory at
+[`docs/advisories/2026-08-01-wasm-cap-forge.md`](docs/advisories/2026-08-01-wasm-cap-forge.md),
+because it tightens a runtime path so a call that previously succeeded
+now denies: on the Wasm backends a hand-written `.wasm` / `.cwasm`
+whose capability binding declared one capability
 could forge the small predictable integer of a different, undeclared
 capability's root handle and exercise authority it never declared. The
 per-instance handle table is now bootstrapped with a root only for the

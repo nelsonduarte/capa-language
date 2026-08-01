@@ -220,6 +220,27 @@ The 2026-05-25 audit record lives at the repository root in
   hop, with the opener built without the file/data/ftp handlers, which
   refuses schemes a previous version accepted. Affected `v0.2.0-alpha`
   through `v1.19.0`, shipped in `1.20.0` under the security exception.
+- [`docs/advisories/2026-08-01-wasm-cap-forge.md`](docs/advisories/2026-08-01-wasm-cap-forge.md):
+  on the Wasm backends the per-instance capability handle table was
+  bootstrapped with a root for every handle-bearing capability (Fs, Net,
+  Db, Proc, Env, Clock) regardless of what the artifact declared, and
+  those roots are small predictable integers, so a hand-crafted `.wasm` /
+  `.cwasm` whose `capa:main-cap-types` binding named only one capability
+  could forge the integer of an undeclared capability's root, call that
+  capability's `capa:host/*` import, and exercise authority it never
+  declared. Reachable through the shipped `capa run-aot` verb (exit 0, no
+  diagnostic) and on the core `--run --wasm` and Component hosts. The
+  table is now bootstrapped with a root only for the declared
+  capabilities, so a forged integer for an undeclared capability fails
+  the typed handle-table lookup and the operation denies; the linker is
+  unchanged, the gate is the missing root. This restores the honesty of
+  the declared / SBOM capability set (imports can no longer exceed the
+  declaration) on all three hosts; it does not make `run-aot` a sandbox
+  for arbitrary artifacts, and the intra-capability widening residual and
+  full handle unforgeability remain deferred. The default Python backend
+  was never affected. Affected all releases with the Wasm capability
+  backend, through `1.25.0`, shipped in `1.25.1` under the security
+  exception.
 
 ## Public disclosure
 

@@ -1,6 +1,6 @@
 # Stability policy
 
-Capa ships as `1.25.1` (released 2026-07-31). The
+Capa ships as `1.25.1` (released 2026-08-01). The
 **stability commitment described below is now in effect**: the
 surfaces listed are covered by SemVer from this release on. The
 commitment is the only thing that changed at 1.0; the language
