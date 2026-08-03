@@ -223,6 +223,20 @@ class _SummaryBuilder:
         # primitive (so the conservative whole-value join governs and a
         # same-named user method cannot under-taint the result).
         self.param_type_names: dict = {}
+        # callable_key -> frozenset of parameter indices whose declared
+        # type PROVABLY has no writable interior (a built-in capability, a
+        # built-in primitive / String, or the built-in Unit). A parameter
+        # in this set is DROPPED from a mutation-effect TARGET set: a fresh
+        # local that merely carries such a parameter's data-flow taint
+        # cannot, by being mutated, write back into the parameter's object
+        # (it has none). Everything else is kept -- keep-by-default on any
+        # uncertainty -- so a user-defined capability, a user type that
+        # shadows a built-in name, a struct / sum / tuple / Fun / generic,
+        # or an unresolved name is never dropped. Consulted at the two
+        # sites that conflate a value's TAINT set with its mutation-TARGET
+        # set (``_record_mutation_effect`` and ``_propagate_callee_effects``,
+        # both via ``_writable_targets``).
+        self.immutable_params: dict = {}
         # method name -> list of method callable_keys (for the
         # receiver-type-unknown over-approximation at method calls).
         self.methods_by_name: dict[str, list] = {}
@@ -297,6 +311,9 @@ class _SummaryBuilder:
                 self.param_type_names[key] = self._param_type_names(
                     item.params,
                 )
+                self.immutable_params[key] = self._immutable_param_idxs(
+                    item.params,
+                )
             elif isinstance(item, A.ImplBlock):
                 for method in item.methods:
                     key = ("method", item.type_name, method.name)
@@ -318,6 +335,9 @@ class _SummaryBuilder:
                     )
                     self.param_type_names[key] = self._param_type_names(
                         method.params, owner=item.type_name,
+                    )
+                    self.immutable_params[key] = self._immutable_param_idxs(
+                        method.params,
                     )
                     self.methods_by_name.setdefault(
                         method.name, []
@@ -356,6 +376,112 @@ class _SummaryBuilder:
             if tyname is not None:
                 out[p.name] = tyname
         return out
+
+    def _immutable_param_idxs(self, params) -> frozenset:
+        """The 0-based indices of ``params`` whose declared type PROVABLY
+        has no writable interior, so a fresh local that merely carries the
+        parameter's data-flow taint cannot, by being mutated, write back
+        into the parameter's object. These are the ONLY parameters dropped
+        from a mutation-effect TARGET set; everything else is kept
+        (keep-by-default on any uncertainty), so no real write-back channel
+        is silently lost. Index alignment matches ``param_names`` (``self``
+        at index 0 for a method), so a dropped index lines up with the
+        summary's parameter order.
+
+        ``self`` (no ``type_expr``) is an impl OWNER type -- always a
+        user-defined struct / sum / capability, never a built-in immutable
+        -- so it is kept unconditionally."""
+        out: set = set()
+        for idx, p in enumerate(params):
+            te = getattr(p, "type_expr", None)
+            if p.name == "self" and te is None:
+                continue
+            if self._type_expr_is_builtin_immutable(te):
+                out.add(idx)
+        return frozenset(out)
+
+    def _type_expr_is_builtin_immutable(self, te) -> bool:
+        """True when ``te`` names a type that PROVABLY has no writable
+        interior: the built-in Unit (``()``), or a BARE named type that
+        resolves to a built-in capability or a built-in primitive /
+        String. A generic application (``List<T>``, ``Option<T>``), a
+        ``Fun`` / tuple type, a typestate handle (``Socket[Open]``), an
+        unannotated parameter, or anything unresolved is NOT provably
+        immutable and is kept."""
+        if te is None:
+            return False
+        # ``()`` -- the Unit type node. The parser only ever produces
+        # ``UnitType`` from ``()`` and a user cannot redeclare it, so the
+        # node itself is proof of the immutable built-in Unit (sourced from
+        # the AST shape, never a name a user could shadow). Unit has no
+        # interior at all.
+        if isinstance(te, A.UnitType):
+            return True
+        # Only a bare named type can be a built-in primitive / capability.
+        # A Fun or tuple type has a callable / writable interior.
+        if not isinstance(te, A.TypeName):
+            return False
+        # A generic application (``List<Int>``, ``Option<Emp>``) carries an
+        # interior element / payload, and a typestate handle is a mutable
+        # linear type: keep both.
+        if getattr(te, "args", None):
+            return False
+        if getattr(te, "state", None) is not None:
+            return False
+        return self._name_is_builtin_immutable(te.name)
+
+    def _name_is_builtin_immutable(self, name: str) -> bool:
+        """True when ``name`` resolves to the ACTUAL BUILT-IN capability or
+        primitive / String SYMBOL, not a user redeclaration of the same
+        name. Soundness rests on two distinctions the design review proved
+        must not be skipped:
+
+        * A parameter is dropped only when the name resolves to a symbol at
+          the built-in source position (``BUILTIN_POS``). A user
+          ``type Int { ... }`` shadows the built-in name with a MUTABLE
+          struct that carries a real source position, so it is kept -- the
+          check is by SYMBOL ORIGIN, never by the name alone.
+        * The built-in capability set is matched by NAME within the
+          built-in-position CAPABILITY symbols, so a USER-defined
+          ``capability Store`` (whose methods are a genuine mutable data
+          channel, and which also lands as ``SymbolKind.CAPABILITY``) is
+          kept -- the drop is decided by BUILT-IN-vs-user origin, never by
+          the symbol kind alone.
+
+        ``TYPE_STRUCT`` at the built-in position also covers the mutable
+        built-in containers (``List`` / ``Map`` / ``Set`` / ``IoError``),
+        so the primitive drop additionally requires the name to be in
+        ``PRIMITIVE_NAMES`` -- ``Int`` / ``Float`` / ``String`` / ``Char``
+        / ``Bool`` only."""
+        from .. import typesys as _typesys
+        from ..builtins import BUILTIN_POS
+        from . import SymbolKind
+        sym = self.global_scope.lookup(name)
+        if sym is None or sym.pos != BUILTIN_POS:
+            return False
+        if sym.kind == SymbolKind.CAPABILITY and \
+                name in _typesys.CAPABILITY_NAMES:
+            return True
+        if sym.kind == SymbolKind.TYPE_STRUCT and \
+                name in _typesys.PRIMITIVE_NAMES:
+            return True
+        return False
+
+    def _writable_targets(self, targets: set) -> set:
+        """Drop from a mutation-effect TARGET set every parameter whose
+        type is provably a built-in immutable (``_cur_immutable_params``),
+        leaving only the parameters that can hold a writable interior. The
+        SHARED guard called at BOTH sites that use a value's data-flow taint
+        set as an alias / mutation-target set (``_record_mutation_effect``
+        and ``_propagate_callee_effects``), so a fresh local whose elements
+        derive from an immutable-typed parameter no longer mis-records a
+        mutation of that parameter. The sentinel ``INTERNAL_SECRET`` (a
+        negative index) is never in the drop set, so it passes through
+        unchanged (both call sites skip it separately)."""
+        immutable = self._cur_immutable_params
+        if not immutable:
+            return targets
+        return {j for j in targets if j not in immutable}
 
     @staticmethod
     def _secret_source_params(params) -> set:
@@ -472,6 +598,12 @@ class _SummaryBuilder:
         )
         self._cur_param_struct_types = self.param_struct_types.get(key, {})
         self._cur_param_type_names = self.param_type_names.get(key, {})
+        # The parameter indices of THIS callable whose type is provably a
+        # built-in immutable, so ``_writable_targets`` can drop them from a
+        # mutation-effect TARGET set (see ``immutable_params``).
+        self._cur_immutable_params = self.immutable_params.get(
+            key, frozenset(),
+        )
         self._cur_effects = effects
         self._cur_returns = returns
         # Names of secret consts currently shadowed by a LEXICALLY IN-SCOPE
@@ -652,7 +784,14 @@ class _SummaryBuilder:
         root = self._chain_root_name(target)
         if root is None:
             return
-        target_params = env.get(root, set())
+        # ``env.get(root)`` is the root binding's data-flow TAINT set, used
+        # here as its alias / mutation-TARGET set. Drop any parameter whose
+        # type is provably a built-in immutable: a fresh local whose
+        # elements derive from such a parameter carries its taint but
+        # writing into the local can never write back into the parameter's
+        # (non-existent) interior. Keeps a real write-back channel (a user
+        # struct / capability, a List param, ...) untouched.
+        target_params = self._writable_targets(env.get(root, set()))
         if not target_params or not value_src:
             return
         for j in target_params:
@@ -1330,7 +1469,13 @@ class _SummaryBuilder:
             root = self._chain_root_name(args[arg_idx])
             if root is None:
                 continue
-            my_targets = env.get(root, set())
+            # Same conflation as ``_record_mutation_effect``: the argument's
+            # root binding taint set doubles as its mutation-target set.
+            # Drop provably-immutable parameters so inheriting a callee's
+            # write effect through an immutable-typed argument (a built-in
+            # capability, an ``Int``, ...) does not mis-record a mutation of
+            # that parameter.
+            my_targets = self._writable_targets(env.get(root, set()))
             if not my_targets:
                 continue
             translated: set = set()
