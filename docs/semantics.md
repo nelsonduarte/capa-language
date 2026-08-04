@@ -1131,10 +1131,18 @@ analyser is verified.** What λ_if deliberately abstracts away:
    back to the sound whole-value join on escape / aliasing /
    unknown shape, so λ_if's whole-value treatment is the sound
    over-approximation the analyser degrades to. λ_if does not
-   prove the per-field refinement itself sound; the analyser's
-   own comments record two known false negatives there that
-   remain abstracted away (cross-function self-mutation, and
-   embed-then-mutate staleness of an embedded struct binding).
+   prove the per-field refinement itself sound. The analyser's
+   own comments record the cross-function per-field cases it
+   closes: a callee's field write or container mutation of a
+   parameter, an embed alias mutated across a boundary, and a
+   secret arriving as a caller PARAMETER that a callee pushes
+   into a fresh, unaliased local read back and sunk in that
+   caller. The residual false negative that stays abstracted away
+   is the GENERAL aliasing case: a local that escapes, is aliased
+   to a second name, is stored into another structure, is
+   returned and re-entered, or is mutated by a deeper untracked
+   path. That is fundamental without a points-to analysis, which
+   Capa does not have.
    The implicit-flow case (a public field assigned under a secret
    pc) is *not* among them under `@strict_ifc`: `_ifc_field_store`
    folds the pc into the stored field's label via

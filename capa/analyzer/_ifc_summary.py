@@ -582,6 +582,21 @@ class _SummaryBuilder:
         reaching: set = set()
         effects: dict = {}
         returns: set = set()
+        # The additive CONTENT channel: ``name -> set of source-param /
+        # INTERNAL_SECRET`` that a CALLEE wrote INTO the object bound to
+        # ``name`` (a container mutation / field store recorded as the
+        # callee's mutation effect and inherited here). It is joined into
+        # the ``_taint_of`` result on a READ of the name, so a read-back of
+        # a caller-local the callee mutated reflects the injected taint --
+        # WITHOUT feeding the alias / mutation-TARGET derivation, which
+        # stays ``env``-only (the two channels are kept distinct on
+        # purpose). Reset per body; only ever unioned into, so the trailing
+        # -expression re-walk (implicit return) stays idempotent. Isolated
+        # (copied) at ``match`` arms and lambda bodies exactly as ``env``
+        # is, so a conditional / captured mutation does not escape its
+        # scope.
+        content: dict = {}
+        self._cur_content = content
         # Observational (feature #6, B1): PER PARAMETER, the sink
         # capabilities that parameter's value reaches in this body,
         # accumulated by the walk in parallel with ``reaching`` (a source
@@ -861,7 +876,15 @@ class _SummaryBuilder:
                 and e.name not in self._shadowed_consts
             ):
                 return {INTERNAL_SECRET}
-            return set(env.get(e.name, set()))
+            # Join the ADDITIVE content channel: a callee that mutated this
+            # local's interior (recorded cross-function in
+            # ``_propagate_callee_effects``) raised its content label, and a
+            # read-back must reflect it. Additive only -- ``env`` alone
+            # remains the alias / mutation-target set consulted elsewhere.
+            return (
+                set(env.get(e.name, set()))
+                | self._cur_content.get(e.name, set())
+            )
         if isinstance(e, (
             A.IntLit, A.FloatLit, A.StringLit, A.CharLit,
             A.BoolLit, A.UnitLit,
@@ -924,12 +947,20 @@ class _SummaryBuilder:
         if isinstance(e, A.MatchExpr):
             scrut = self._taint_of(e.scrutinee, env, reaching)
             out = set()
+            # The content channel is isolated per arm exactly like
+            # ``arm_env``: a cross-function mutation inside one arm must not
+            # leak into a sibling arm or persist past the match (env is a
+            # fresh ``dict(env)`` per arm and is not restored afterwards).
+            saved_content = self._cur_content
             for arm in e.arms:
                 # Each arm sees a sub-env where the pattern binds carry
                 # the scrutinee's taint (whole-value), and its OWN const-
                 # shadow scope: a pattern binding a name equal to a secret
                 # const shadows it within the arm only.
                 arm_env = dict(env)
+                self._cur_content = {
+                    k: set(v) for k, v in saved_content.items()
+                }
                 self._bind_pattern_taint(arm.pattern, scrut, arm_env)
                 saved = self._shadowed_consts
                 self._shadowed_consts = set(saved)
@@ -944,6 +975,7 @@ class _SummaryBuilder:
                 else:
                     out |= self._taint_of(arm.body, arm_env, reaching)
                 self._shadowed_consts = saved
+            self._cur_content = saved_content
             return out
         if isinstance(e, A.Become):
             return self._taint_of(e.value, env, reaching)
@@ -991,6 +1023,12 @@ class _SummaryBuilder:
         saved_returns = self._cur_returns
         lambda_returns: set = set()
         self._cur_returns = lambda_returns
+        # Isolate the content channel like ``body_env``: a cross-function
+        # mutation of a CAPTURED local inside the lambda body must not
+        # escape into the enclosing body's content map (whether the lambda
+        # is ever invoked is unknown), mirroring the env copy above.
+        saved_content = self._cur_content
+        self._cur_content = {k: set(v) for k, v in saved_content.items()}
         try:
             if isinstance(e.body, A.Block):
                 self._walk_block(e.body, body_env, reaching)
@@ -1002,6 +1040,7 @@ class _SummaryBuilder:
         finally:
             self._cur_returns = saved_returns
             self._shadowed_consts = saved_shadowed
+            self._cur_content = saved_content
         return lambda_returns
 
     def _block_tail_taint(
@@ -1469,15 +1508,6 @@ class _SummaryBuilder:
             root = self._chain_root_name(args[arg_idx])
             if root is None:
                 continue
-            # Same conflation as ``_record_mutation_effect``: the argument's
-            # root binding taint set doubles as its mutation-target set.
-            # Drop provably-immutable parameters so inheriting a callee's
-            # write effect through an immutable-typed argument (a built-in
-            # capability, an ``Int``, ...) does not mis-record a mutation of
-            # that parameter.
-            my_targets = self._writable_targets(env.get(root, set()))
-            if not my_targets:
-                continue
             translated: set = set()
             for s in sources:
                 if s == INTERNAL_SECRET:
@@ -1488,7 +1518,26 @@ class _SummaryBuilder:
                         translated |= arg_srcs[src_arg]
             if not translated:
                 continue
-            for j in my_targets:
+            # CONTENT channel (additive, distinct from the alias set): the
+            # callee wrote ``translated`` INTO the object bound to
+            # ``target_pidx`` -- this caller-local -- so a read-back of the
+            # local must reflect it. Applied REGARDLESS of whether the local
+            # is itself a writable mutation TARGET of this body: a fresh or
+            # immutable-seeded local has an empty writable-target set (its
+            # taint derives only from a built-in-immutable param the
+            # precision fix drops), yet the callee still mutated its
+            # interior. Gating this on the target set would reopen the
+            # false negative. Keyed by the chain ROOT name; joined so the
+            # trailing-expression re-walk stays idempotent.
+            self._cur_content.setdefault(root, set()).update(translated)
+            # MUTATION-TARGET channel (unchanged): the argument's root
+            # binding taint set doubles as its alias / mutation-TARGET set;
+            # drop provably-immutable parameters so inheriting a callee's
+            # write effect through an immutable-typed argument (a built-in
+            # capability, an ``Int``, ...) does not mis-record a mutation of
+            # that parameter. Records THIS body's own mutation-effect
+            # summary exactly as before.
+            for j in self._writable_targets(env.get(root, set())):
                 if j == INTERNAL_SECRET:
                     continue
                 self._cur_effects.setdefault(j, set()).update(translated)

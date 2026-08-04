@@ -617,6 +617,28 @@ class _IfcMixin:
     #       before, a struct field written by a callee was caught but a
     #       container mutated by one escaped the analysis entirely, even
     #       though the identical push written inline was caught (FN-3).
+    #       SCOPE (FN-3 was not fully closed): the caller-binding
+    #       whole-value taint above fires only when the secret is already
+    #       @secret IN THE CALLER (it owns the local and, e.g., reads it
+    #       from ``env``). When the secret instead arrives as a PARAMETER
+    #       of the caller, which pushes it through a callee into a FRESH
+    #       LOCAL, reads it back and sinks it, no caller-side @secret label
+    #       exists, so only the caller's cross-function SUMMARY can see the
+    #       leak. The summary recorded the callee's write against the
+    #       caller's own parameters (the mutation-TARGET channel) but did
+    #       NOT reflect it on the local's READ-BACK, so the parameter was
+    #       never marked sink-reaching and that param-carried read-back
+    #       leaked unflagged. It is now CLOSED for the FRESH, UNALIASED
+    #       local shape by a distinct, additive content channel in
+    #       ``_ifc_summary`` (the callee's translated write raises the
+    #       local's read-back label, applied regardless of whether the
+    #       local is itself a writable mutation target). The GENERAL
+    #       aliasing residual stays OPEN: a local that escapes, is aliased
+    #       to a second name, is stored into another structure, is returned
+    #       and re-entered, or is mutated by a deeper untracked path is not
+    #       tracked without a points-to analysis, which Capa does not have.
+    #       This closes exactly that one shape, not "all cross-function
+    #       false negatives".
     #   (b) embed-then-mutate staleness: CLOSED. A struct EXPRESSION
     #       embedded into another struct literal (``Outer { inner: b }``,
     #       or a field-access chain ``Outer { inner: m.inner }``) names a
