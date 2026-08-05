@@ -632,13 +632,20 @@ class _IfcMixin:
     #       local shape by a distinct, additive content channel in
     #       ``_ifc_summary`` (the callee's translated write raises the
     #       local's read-back label, applied regardless of whether the
-    #       local is itself a writable mutation target). The GENERAL
-    #       aliasing residual stays OPEN: a local that escapes, is aliased
-    #       to a second name, is stored into another structure, is returned
-    #       and re-entered, or is mutated by a deeper untracked path is not
-    #       tracked without a points-to analysis, which Capa does not have.
-    #       This closes exactly that one shape, not "all cross-function
-    #       false negatives".
+    #       local is itself a writable mutation target). The closure holds
+    #       across CONTROL-FLOW positions uniformly: the mutation and the
+    #       read-back may sit straight-line or inside / after an ``if`` /
+    #       ``elif`` / ``else``, ``while``, ``for`` or ``match`` arm. That
+    #       content channel is scoped so a mutation in one branch does not
+    #       contaminate a mutually-exclusive sibling branch's read (no false
+    #       positive) yet still reaches a read AFTER the construct (no false
+    #       negative). The GENERAL aliasing residual stays OPEN: a local
+    #       that escapes, is aliased to a second name, is stored into
+    #       another structure, is returned and re-entered, or is mutated by
+    #       a deeper untracked path is not tracked without a points-to
+    #       analysis, which Capa does not have. This closes the
+    #       fresh-unaliased-local shape, not "all cross-function false
+    #       negatives".
     #   (b) embed-then-mutate staleness: CLOSED. A struct EXPRESSION
     #       embedded into another struct literal (``Outer { inner: b }``,
     #       or a field-access chain ``Outer { inner: m.inner }``) names a

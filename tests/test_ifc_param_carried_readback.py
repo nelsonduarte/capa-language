@@ -555,5 +555,254 @@ class TestBothBackendsRunTheLeak(unittest.TestCase):
                 self.assertEqual(py_out, expected)
 
 
+# ---- content-channel scoping across branching constructs ---------------
+#
+# The content channel is scoped uniformly across if / elif / else, while,
+# for and match arms: each branch is analyzed from a common pre-construct
+# baseline in isolation, and every branch's delta is unioned into the
+# enclosing scope after ALL branches are walked. Two consequences, both
+# regression-guarded here:
+#   * a cross-function mutation in one branch does NOT reach a
+#     mutually-exclusive sibling branch's read (no false positive);
+#   * a mutation in a branch / arm DOES reach a read AFTER the construct
+#     (no false negative), consistently for every construct.
+
+# Cross-branch (leak-free): the secret is pushed in one branch and read +
+# sunk in a mutually-exclusive SIBLING branch, so no execution path reaches
+# the sink carrying the secret. ``main`` selects the READ branch, so the
+# run prints the public "empty", never the secret.
+CROSS_IF = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun leak(secret: String, n: Int, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    if n == 0\n"
+    "        push_it(xs, secret)\n"
+    "    else\n"
+    "        match xs.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, 1, stdio)\n"
+)
+
+CROSS_ELIF = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun leak(secret: String, n: Int, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    if n == 0\n"
+    "        push_it(xs, secret)\n"
+    "    elif n == 1\n"
+    "        match xs.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"empty\")\n"
+    "    else\n"
+    "        stdio.println(\"other\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, 1, stdio)\n"
+)
+
+# A while INSIDE the pushing branch, read in the mutually-exclusive sibling
+# else: the loop body's content delta must stay contained in its branch.
+CROSS_WHILE = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun leak(secret: String, n: Int, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    if n == 0\n"
+    "        var i: Int = 0\n"
+    "        while i < 1\n"
+    "            push_it(xs, secret)\n"
+    "            i = i + 1\n"
+    "    else\n"
+    "        match xs.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, 1, stdio)\n"
+)
+
+_CROSS_BRANCH_CLEAN = {
+    "if_else": CROSS_IF,
+    "if_elif": CROSS_ELIF,
+    "while_in_branch": CROSS_WHILE,
+}
+
+# Read after the construct (real leak): the secret is pushed in a branch /
+# arm, then read + sunk AFTER the construct. ``main`` selects the pushing
+# path, so the run prints the secret.
+AFTER_IF = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun leak(secret: String, n: Int, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    if n == 0\n"
+    "        push_it(xs, secret)\n"
+    "    match xs.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, 0, stdio)\n"
+)
+
+AFTER_WHILE = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun leak(secret: String, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    var i: Int = 0\n"
+    "    while i < 1\n"
+    "        push_it(xs, secret)\n"
+    "        i = i + 1\n"
+    "    match xs.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, stdio)\n"
+)
+
+AFTER_FOR = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun leak(secret: String, items: List<String>, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    for it in items\n"
+    "        push_it(xs, secret)\n"
+    "    match xs.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, [\"a\"], stdio)\n"
+)
+
+# The match analog: the Defect-B shape (pushed in an arm, read after the
+# match) that isolate-then-discard used to miss.
+AFTER_MATCH = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun leak(secret: String, flag: Bool, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    match flag\n"
+    "        true -> push_it(xs, secret)\n"
+    "        false -> ()\n"
+    "    match xs.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, true, stdio)\n"
+)
+
+_READ_AFTER_LEAK = {
+    "if": AFTER_IF,
+    "while": AFTER_WHILE,
+    "for": AFTER_FOR,
+    "match": AFTER_MATCH,
+}
+
+
+def _capture(thunk) -> str:
+    import io
+    import sys
+    buf = io.StringIO()
+    saved = sys.stdout
+    sys.stdout = buf
+    try:
+        thunk()
+    finally:
+        sys.stdout = saved
+    return buf.getvalue()
+
+
+def _run_py(src: str) -> str:
+    module = _parse(src)
+    result = analyze(module, source=src)
+    code = transpile(module, types=result.types, bindings=result.bindings)
+    ns: dict = {"__name__": "__main__"}
+    return _capture(lambda: exec(compile(code, "<param-carried>", "exec"), ns))
+
+
+def _run_wasm(src: str) -> str:
+    from capa.runtime._wasm_host import WasmHost
+    module = _parse(src)
+    result = analyze(module, source=src)
+    blob = compile_wasm(module, types=result.types)
+    return _capture(lambda: WasmHost().run_main(blob))
+
+
+def _wasm_unavailable():
+    if shutil.which("wasm-tools") is None:
+        return "wasm-tools not installed"
+    try:
+        import wasmtime  # noqa: F401
+    except ImportError:
+        return "wasmtime-py not installed"
+    return None
+
+
+class TestCrossBranchClean(unittest.TestCase):
+    """Defect A: a secret pushed in one branch and read in a
+    mutually-exclusive sibling branch is leak-free and must NOT be flagged
+    (a warning by default, and -- the sharp edge -- a HARD ERROR under
+    @strict_ifc that rejected correct code). The per-branch content
+    isolation contains the mutation."""
+
+    def test_default_tier_is_clean(self):
+        for name, src in _CROSS_BRANCH_CLEAN.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+
+    def test_strict_tier_is_clean(self):
+        for name, src in _CROSS_BRANCH_CLEAN.items():
+            with self.subTest(shape=name):
+                r = _analyze(_strict(src))
+                self.assertEqual(len(_flow_errors(r)), 0,
+                                 [e.message for e in r.errors])
+
+    def test_both_backends_are_leak_free(self):
+        skip = _wasm_unavailable()
+        for name, src in _CROSS_BRANCH_CLEAN.items():
+            with self.subTest(shape=name):
+                py_out = _run_py(src)
+                self.assertEqual(py_out, "empty\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "empty\n")
+
+
+class TestReadAfterConstructFlagged(unittest.TestCase):
+    """Defect B (and its if / while / for analogs): a secret pushed in a
+    branch / arm and read AFTER the construct is a real leak and must be
+    flagged for every construct -- a warning by default, a hard error under
+    @strict_ifc. The deferred union propagates each branch's delta out."""
+
+    def test_default_tier_is_a_single_warning(self):
+        for name, src in _READ_AFTER_LEAK.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 1,
+                                 [w.message for w in r.warnings])
+
+    def test_strict_tier_is_a_single_hard_error(self):
+        for name, src in _READ_AFTER_LEAK.items():
+            with self.subTest(shape=name):
+                r = _analyze(_strict(src))
+                self.assertFalse(r.ok)
+                self.assertEqual(len(_flow_errors(r)), 1,
+                                 [e.message for e in r.errors])
+
+    def test_both_backends_print_the_secret(self):
+        skip = _wasm_unavailable()
+        for name, src in _READ_AFTER_LEAK.items():
+            with self.subTest(shape=name):
+                py_out = _run_py(src)
+                self.assertEqual(py_out, "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
 if __name__ == "__main__":
     unittest.main()

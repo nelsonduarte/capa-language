@@ -32,8 +32,12 @@ the intra-procedural tier.
 This is whole-value granularity (no per-field precision) and a sound
 over-approximation: a method call whose receiver type is not known
 statically is matched against every user method of that name, so the
-analysis never under-reports a leak. It only ADDS detection; no
-existing label or check is relaxed.
+analysis never under-reports a leak. It never RELAXES (loosens) a label
+or check. It is not invisible to already-accepted code, though: adding
+detection can TIGHTEN the outcome, so a program whose genuine
+cross-function leak was previously missed now warns and is rejected under
+``@strict_ifc``. The direction is always stricter on a real leak, never
+more permissive.
 
 MUTATION EFFECTS (closes the cross-function self/param field-write
 false negative, and the container one). Alongside the sink-reaching
@@ -591,10 +595,20 @@ class _SummaryBuilder:
         # WITHOUT feeding the alias / mutation-TARGET derivation, which
         # stays ``env``-only (the two channels are kept distinct on
         # purpose). Reset per body; only ever unioned into, so the trailing
-        # -expression re-walk (implicit return) stays idempotent. Isolated
-        # (copied) at ``match`` arms and lambda bodies exactly as ``env``
-        # is, so a conditional / captured mutation does not escape its
-        # scope.
+        # -expression re-walk (implicit return) stays idempotent.
+        #
+        # Scoping across the branching constructs (``if`` / ``elif`` /
+        # ``else``, ``while``, ``for``, ``match`` arms) is UNIFORM: each
+        # branch is analyzed from a common pre-construct content snapshot in
+        # isolation, then every branch's delta is unioned into the enclosing
+        # scope AFTER all branches are walked (``_content_isolated`` /
+        # ``_content_merge``). So a mutation in one branch does NOT reach a
+        # sibling branch's read, and the delta DOES propagate out to a read
+        # AFTER the construct. A LAMBDA body is isolated-and-discarded
+        # instead: its mutation of a captured local is a side effect that
+        # only happens on invocation, which the summary does not model, so
+        # not propagating it keeps an un-invoked lambda from raising a false
+        # positive.
         content: dict = {}
         self._cur_content = content
         # Observational (feature #6, B1): PER PARAMETER, the sink
@@ -670,6 +684,41 @@ class _SummaryBuilder:
             if name in self.secret_consts:
                 self._shadowed_consts.add(name)
 
+    # ---- content-channel scoping across branching constructs --------
+
+    def _content_isolated(self, walk) -> dict:
+        """Run ``walk`` with the content channel isolated from a snapshot
+        of the CURRENT content, and RETURN the resulting content map (the
+        snapshot plus whatever the branch added) while RESTORING the
+        pre-call content.
+
+        The snapshot is taken NOW, so it includes anything already
+        evaluated on the enclosing path (e.g. a preceding branch's
+        condition). Restoring the pre-call content means a sibling branch
+        analyzed next does NOT see this branch's cross-function mutation
+        (fixes the cross-branch false positive). The caller collects the
+        returned maps and unions them once ALL branches are walked (see
+        ``_content_merge``) -- the union is DEFERRED so no branch sees an
+        earlier sibling's delta. ``env`` scoping is the caller's job and
+        is unchanged (flat for ``if`` / ``while`` / ``for``, copied per
+        ``match`` arm)."""
+        saved = self._cur_content
+        self._cur_content = {k: set(v) for k, v in saved.items()}
+        walk()
+        post = self._cur_content
+        self._cur_content = saved
+        return post
+
+    def _content_merge(self, posts) -> None:
+        """Union each branch's content map (from ``_content_isolated``)
+        into the enclosing content, so a read AFTER the construct reflects
+        any branch's cross-function mutation (a fresh local mutated in one
+        arm and read past the construct is caught). Deferred to after all
+        branches, so it never contaminates a sibling branch's read."""
+        for post in posts:
+            for name, srcs in post.items():
+                self._cur_content.setdefault(name, set()).update(srcs)
+
     def _walk_stmt(self, stmt: A.Stmt, env: dict, reaching: set) -> None:
         if isinstance(stmt, A.LetStmt):
             src = self._taint_of(stmt.value, env, reaching)
@@ -703,26 +752,53 @@ class _SummaryBuilder:
                 # store cross-function leak.
                 self._record_mutation_effect(stmt.target, src, env)
         elif isinstance(stmt, A.IfStmt):
+            # ``env`` (and each condition) is evaluated in the ORIGINAL
+            # interleaved order (cond, body, cond, body ...) so its flat,
+            # monotone propagation is unchanged. Only the CONTENT channel is
+            # scoped: each branch is isolated from a snapshot of the content
+            # at that point, and every branch's delta is unioned into the
+            # enclosing scope after ALL branches are walked (deferred union).
             self._taint_of(stmt.cond, env, reaching)
-            self._walk_scoped_block(stmt.then_block, env, reaching)
+            posts = [self._content_isolated(
+                lambda: self._walk_scoped_block(
+                    stmt.then_block, env, reaching,
+                ),
+            )]
             for cond, blk in stmt.elif_arms:
                 self._taint_of(cond, env, reaching)
-                self._walk_scoped_block(blk, env, reaching)
+                posts.append(self._content_isolated(
+                    lambda b=blk: self._walk_scoped_block(b, env, reaching),
+                ))
             if stmt.else_block is not None:
-                self._walk_scoped_block(stmt.else_block, env, reaching)
+                posts.append(self._content_isolated(
+                    lambda: self._walk_scoped_block(
+                        stmt.else_block, env, reaching,
+                    ),
+                ))
+            self._content_merge(posts)
         elif isinstance(stmt, A.WhileStmt):
             self._taint_of(stmt.cond, env, reaching)
-            self._walk_scoped_block(stmt.body, env, reaching)
+            # A single body, but routed through the same rule so a read
+            # AFTER the loop reflects a cross-function mutation in the body.
+            self._content_merge([self._content_isolated(
+                lambda: self._walk_scoped_block(stmt.body, env, reaching),
+            )])
         elif isinstance(stmt, A.ForStmt):
             iter_src = self._taint_of(stmt.iter, env, reaching)
             self._bind_pattern_taint(stmt.pattern, iter_src, env)
-            # The loop variable is scoped to the body; a loop var named
-            # like a secret const shadows it there only.
-            saved = self._shadowed_consts
-            self._shadowed_consts = set(saved)
-            self._register_shadowing_binds(_pattern_bound_names(stmt.pattern))
-            self._walk_block(stmt.body, env, reaching)
-            self._shadowed_consts = saved
+
+            def _for_body():
+                # The loop variable is scoped to the body; a loop var named
+                # like a secret const shadows it there only.
+                saved = self._shadowed_consts
+                self._shadowed_consts = set(saved)
+                self._register_shadowing_binds(
+                    _pattern_bound_names(stmt.pattern),
+                )
+                self._walk_block(stmt.body, env, reaching)
+                self._shadowed_consts = saved
+
+            self._content_merge([self._content_isolated(_for_body)])
         elif isinstance(stmt, A.ReturnStmt):
             if stmt.value is not None:
                 # The returned value's source set is a return-secret
@@ -947,35 +1023,40 @@ class _SummaryBuilder:
         if isinstance(e, A.MatchExpr):
             scrut = self._taint_of(e.scrutinee, env, reaching)
             out = set()
-            # The content channel is isolated per arm exactly like
-            # ``arm_env``: a cross-function mutation inside one arm must not
-            # leak into a sibling arm or persist past the match (env is a
-            # fresh ``dict(env)`` per arm and is not restored afterwards).
-            saved_content = self._cur_content
+            # Same uniform content-channel rule as ``if`` / ``while`` /
+            # ``for``: each arm is isolated from a snapshot of the content,
+            # and every arm's delta is unioned into the enclosing scope
+            # after ALL arms are walked. A cross-function mutation in one
+            # arm therefore does NOT reach a sibling arm's read (isolation),
+            # yet a read AFTER the match reflects any arm's mutation
+            # (deferred union). ``env`` is a fresh ``dict(env)`` per arm, as
+            # before.
+            posts = []
             for arm in e.arms:
-                # Each arm sees a sub-env where the pattern binds carry
-                # the scrutinee's taint (whole-value), and its OWN const-
-                # shadow scope: a pattern binding a name equal to a secret
-                # const shadows it within the arm only.
-                arm_env = dict(env)
-                self._cur_content = {
-                    k: set(v) for k, v in saved_content.items()
-                }
-                self._bind_pattern_taint(arm.pattern, scrut, arm_env)
-                saved = self._shadowed_consts
-                self._shadowed_consts = set(saved)
-                self._register_shadowing_binds(
-                    _pattern_bound_names(arm.pattern),
-                )
-                if arm.guard is not None:
-                    self._taint_of(arm.guard, arm_env, reaching)
-                if isinstance(arm.body, A.Block):
-                    self._walk_block(arm.body, arm_env, reaching)
-                    out |= self._block_tail_taint(arm.body, arm_env, reaching)
-                else:
-                    out |= self._taint_of(arm.body, arm_env, reaching)
-                self._shadowed_consts = saved
-            self._cur_content = saved_content
+                def _walk_arm(arm=arm):
+                    # Each arm sees a sub-env where the pattern binds carry
+                    # the scrutinee's taint (whole-value), and its OWN
+                    # const-shadow scope: a pattern binding a name equal to
+                    # a secret const shadows it within the arm only.
+                    arm_env = dict(env)
+                    self._bind_pattern_taint(arm.pattern, scrut, arm_env)
+                    saved = self._shadowed_consts
+                    self._shadowed_consts = set(saved)
+                    self._register_shadowing_binds(
+                        _pattern_bound_names(arm.pattern),
+                    )
+                    if arm.guard is not None:
+                        self._taint_of(arm.guard, arm_env, reaching)
+                    if isinstance(arm.body, A.Block):
+                        self._walk_block(arm.body, arm_env, reaching)
+                        out.update(
+                            self._block_tail_taint(arm.body, arm_env, reaching),
+                        )
+                    else:
+                        out.update(self._taint_of(arm.body, arm_env, reaching))
+                    self._shadowed_consts = saved
+                posts.append(self._content_isolated(_walk_arm))
+            self._content_merge(posts)
             return out
         if isinstance(e, A.Become):
             return self._taint_of(e.value, env, reaching)

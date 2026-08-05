@@ -1137,12 +1137,18 @@ analyser is verified.** What λ_if deliberately abstracts away:
    parameter, an embed alias mutated across a boundary, and a
    secret arriving as a caller PARAMETER that a callee pushes
    into a fresh, unaliased local read back and sunk in that
-   caller. The residual false negative that stays abstracted away
-   is the GENERAL aliasing case: a local that escapes, is aliased
-   to a second name, is stored into another structure, is
-   returned and re-entered, or is mutated by a deeper untracked
-   path. That is fundamental without a points-to analysis, which
-   Capa does not have.
+   caller. That last case is closed uniformly across control-flow
+   positions: the mutation and the read-back may be straight-line
+   or inside / after an `if` / `elif` / `else`, `while`, `for` or
+   `match` arm, and the content channel that carries it is scoped
+   so one branch's mutation neither contaminates a
+   mutually-exclusive sibling branch's read nor is lost to a read
+   after the construct. The residual false negative that stays
+   abstracted away is the GENERAL aliasing case: a local that
+   escapes, is aliased to a second name, is stored into another
+   structure, is returned and re-entered, or is mutated by a
+   deeper untracked path. That is fundamental without a points-to
+   analysis, which Capa does not have.
    The implicit-flow case (a public field assigned under a secret
    pc) is *not* among them under `@strict_ifc`: `_ifc_field_store`
    folds the pc into the stored field's label via
