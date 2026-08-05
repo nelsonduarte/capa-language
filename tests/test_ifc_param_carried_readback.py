@@ -804,5 +804,252 @@ class TestReadAfterConstructFlagged(unittest.TestCase):
                     self.assertEqual(_run_wasm(src), "s3cr3t\n")
 
 
+# ---- systematic construct x position matrix ----------------------------
+#
+# The recurring failure mode was a branching construct or position missed
+# by the per-branch content isolation. This matrix pins every construct
+# (if-STATEMENT, if-EXPRESSION, while, for, match as a statement, match as
+# a value / let-binding) in every position (mid-body, tail / implicit
+# return, let-binding, nested inside another branching construct) with two
+# cases: CLEAN (a secret pushed in one branch, read + sunk in a
+# mutually-exclusive sibling branch -> must not flag) and LEAK (a secret
+# pushed in a branch / arm, read + sunk AFTER the construct -> must warn
+# and error under @strict_ifc). Includes the reviewer's counterexamples: a
+# tail-position match with a sibling read, an if inside a match arm in tail
+# position, and an if-expression in a let-binding with a sibling read.
+
+_MATRIX_HELPERS = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun read_print(xs: List<String>, stdio: Stdio)\n"
+    "    match xs.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun noop()\n"
+    "    ()\n"
+)
+
+# CLEAN: a sibling branch reads the fresh local the OTHER branch pushed
+# into. ``main`` selects the READ branch, so the run prints "empty".
+
+# match in TAIL / implicit-return position (the reviewer's FP1).
+MTX_MATCH_TAIL = (
+    _MATRIX_HELPERS +
+    "fun leak(secret: String, flag: Bool, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    match flag\n"
+    "        true -> push_it(xs, secret)\n"
+    "        false -> read_print(xs, stdio)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, false, stdio)\n"
+)
+
+# an if STATEMENT nested inside a match arm, in tail position (FP1b).
+MTX_IF_IN_MATCH_TAIL = (
+    _MATRIX_HELPERS +
+    "fun leak(secret: String, flag: Bool, n: Int, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    match flag\n"
+    "        true -> push_it(xs, secret)\n"
+    "        false ->\n"
+    "            if n == 0\n"
+    "                stdio.println(\"zero\")\n"
+    "            else\n"
+    "                read_print(xs, stdio)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, false, 1, stdio)\n"
+)
+
+# an if EXPRESSION in a let-binding, sibling else read (the reviewer's FP2).
+MTX_IF_EXPR_LET = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun push_ret(xs: List<String>, v: String) -> String\n"
+    "    xs.push(v)\n"
+    "    return \"ok\"\n"
+    "fun first_or(xs: List<String>, d: String) -> String\n"
+    "    return match xs.get(0)\n"
+    "        Some(x) -> x\n"
+    "        None -> d\n"
+    "fun leak(secret: String, flag: Bool, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    let msg = if flag then push_ret(xs, secret) "
+    "else first_or(xs, \"empty\")\n"
+    "    stdio.println(msg)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, false, stdio)\n"
+)
+
+# an if EXPRESSION in RETURN (implicit-return / value) position: an
+# if-expression cannot be a bare statement, so its tail/value position is a
+# return. The then-branch pushes but returns a public value; the else
+# branch reads the fresh local.
+MTX_IF_EXPR_RETURN = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun push_ret(xs: List<String>, v: String) -> String\n"
+    "    xs.push(v)\n"
+    "    return \"ok\"\n"
+    "fun first_or(xs: List<String>, d: String) -> String\n"
+    "    return match xs.get(0)\n"
+    "        Some(x) -> x\n"
+    "        None -> d\n"
+    "fun choose(xs: List<String>, secret: String, flag: Bool) -> String\n"
+    "    return if flag then push_ret(xs, secret) else first_or(xs, \"empty\")\n"
+    "fun leak(secret: String, flag: Bool, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    stdio.println(choose(xs, secret, flag))\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, false, stdio)\n"
+)
+
+# match as a VALUE in a let-binding, sibling arm read.
+MTX_MATCH_EXPR_LET = (
+    _MATRIX_HELPERS +
+    "fun leak(secret: String, flag: Bool, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    let _ = match flag\n"
+    "        true -> push_it(xs, secret)\n"
+    "        false -> read_print(xs, stdio)\n"
+    "    stdio.println(\"done\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, false, stdio)\n"
+)
+
+# match as a bare statement mid-body (a statement follows it).
+MTX_MATCH_MID = (
+    _MATRIX_HELPERS +
+    "fun leak(secret: String, flag: Bool, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    match flag\n"
+    "        true -> push_it(xs, secret)\n"
+    "        false -> read_print(xs, stdio)\n"
+    "    stdio.println(\"done\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, false, stdio)\n"
+)
+
+# a for loop nested inside an if branch, sibling else read.
+MTX_FOR_IN_BRANCH = (
+    _MATRIX_HELPERS +
+    "fun leak(secret: String, n: Int, items: List<String>, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    if n == 0\n"
+    "        for it in items\n"
+    "            push_it(xs, secret)\n"
+    "    else\n"
+    "        read_print(xs, stdio)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, 1, [\"a\"], stdio)\n"
+)
+
+_MATRIX_CLEAN = {
+    "match_tail": (MTX_MATCH_TAIL, "empty\n"),
+    "if_in_match_arm_tail": (MTX_IF_IN_MATCH_TAIL, "empty\n"),
+    "if_expr_let": (MTX_IF_EXPR_LET, "empty\n"),
+    "if_expr_return": (MTX_IF_EXPR_RETURN, "empty\n"),
+    "match_expr_let": (MTX_MATCH_EXPR_LET, "empty\ndone\n"),
+    "match_stmt_mid": (MTX_MATCH_MID, "empty\ndone\n"),
+    "for_in_branch": (MTX_FOR_IN_BRANCH, "empty\n"),
+}
+
+# LEAK: a branch / arm pushes the secret; the read + sink is AFTER the
+# construct, so the deferred union must carry the mutation out. ``main``
+# selects the pushing path, so the run prints the secret.
+
+# an if EXPRESSION whose then-branch pushes, read after the let-binding.
+MTX_IF_EXPR_AFTER = (
+    _MATRIX_HELPERS +
+    "fun leak(secret: String, flag: Bool, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    let _ = if flag then push_it(xs, secret) else noop()\n"
+    "    match xs.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, true, stdio)\n"
+)
+
+# a match VALUE whose arm pushes, read after the let-binding.
+MTX_MATCH_EXPR_AFTER = (
+    _MATRIX_HELPERS +
+    "fun leak(secret: String, flag: Bool, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    let _ = match flag\n"
+    "        true -> push_it(xs, secret)\n"
+    "        false -> noop()\n"
+    "    match xs.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, true, stdio)\n"
+)
+
+_MATRIX_LEAK = {
+    "if_expr_read_after": MTX_IF_EXPR_AFTER,
+    "match_expr_read_after": MTX_MATCH_EXPR_AFTER,
+}
+
+
+class TestControlFlowMatrixClean(unittest.TestCase):
+    """Every CLEAN cell: a secret pushed in one branch and read in a
+    mutually-exclusive sibling branch is leak-free and must NOT be flagged
+    (no warning, no strict error), for every construct in every position,
+    on both backends."""
+
+    def test_default_tier_is_clean(self):
+        for name, (src, _out) in _MATRIX_CLEAN.items():
+            with self.subTest(cell=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+
+    def test_strict_tier_is_clean(self):
+        for name, (src, _out) in _MATRIX_CLEAN.items():
+            with self.subTest(cell=name):
+                r = _analyze(_strict(src))
+                self.assertEqual(len(_flow_errors(r)), 0,
+                                 [e.message for e in r.errors])
+
+    def test_both_backends_are_leak_free(self):
+        skip = _wasm_unavailable()
+        for name, (src, out) in _MATRIX_CLEAN.items():
+            with self.subTest(cell=name):
+                self.assertEqual(_run_py(src), out)
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), out)
+
+
+class TestControlFlowMatrixLeak(unittest.TestCase):
+    """Every LEAK cell: a secret pushed in a branch / arm and read AFTER
+    the construct is a real leak and must be flagged for every construct --
+    a warning by default, a hard error under @strict_ifc, both backends."""
+
+    def test_default_tier_is_a_single_warning(self):
+        for name, src in _MATRIX_LEAK.items():
+            with self.subTest(cell=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 1,
+                                 [w.message for w in r.warnings])
+
+    def test_strict_tier_is_a_single_hard_error(self):
+        for name, src in _MATRIX_LEAK.items():
+            with self.subTest(cell=name):
+                r = _analyze(_strict(src))
+                self.assertFalse(r.ok)
+                self.assertEqual(len(_flow_errors(r)), 1,
+                                 [e.message for e in r.errors])
+
+    def test_both_backends_print_the_secret(self):
+        skip = _wasm_unavailable()
+        for name, src in _MATRIX_LEAK.items():
+            with self.subTest(cell=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
 if __name__ == "__main__":
     unittest.main()

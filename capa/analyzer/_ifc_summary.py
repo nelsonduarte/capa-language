@@ -33,11 +33,15 @@ This is whole-value granularity (no per-field precision) and a sound
 over-approximation: a method call whose receiver type is not known
 statically is matched against every user method of that name, so the
 analysis never under-reports a leak. It never RELAXES (loosens) a label
-or check. It is not invisible to already-accepted code, though: adding
-detection can TIGHTEN the outcome, so a program whose genuine
-cross-function leak was previously missed now warns and is rejected under
-``@strict_ifc``. The direction is always stricter on a real leak, never
-more permissive.
+or check: every effect is in the tightening direction. It is not
+invisible to already-accepted code, though: adding detection can TIGHTEN
+the outcome, so a program whose genuine cross-function leak was previously
+missed now warns and is rejected under ``@strict_ifc``. Being a sound
+over-approximation, the tightening can in principle over-report on a
+non-leak too (a false positive), so the control-flow scoping that decides
+when a cross-function mutation is visible to a later read is applied
+uniformly across every branching construct (see the content channel in
+``_analyze_body``). The direction is never more permissive.
 
 MUTATION EFFECTS (closes the cross-function self/param field-write
 false negative, and the container one). Alongside the sink-reaching
@@ -594,21 +598,35 @@ class _SummaryBuilder:
         # a caller-local the callee mutated reflects the injected taint --
         # WITHOUT feeding the alias / mutation-TARGET derivation, which
         # stays ``env``-only (the two channels are kept distinct on
-        # purpose). Reset per body; only ever unioned into, so the trailing
-        # -expression re-walk (implicit return) stays idempotent.
+        # purpose). Reset per body; only ever unioned into (never
+        # overwritten).
         #
-        # Scoping across the branching constructs (``if`` / ``elif`` /
-        # ``else``, ``while``, ``for``, ``match`` arms) is UNIFORM: each
-        # branch is analyzed from a common pre-construct content snapshot in
-        # isolation, then every branch's delta is unioned into the enclosing
-        # scope AFTER all branches are walked (``_content_isolated`` /
-        # ``_content_merge``). So a mutation in one branch does NOT reach a
-        # sibling branch's read, and the delta DOES propagate out to a read
-        # AFTER the construct. A LAMBDA body is isolated-and-discarded
-        # instead: its mutation of a captured local is a side effect that
-        # only happens on invocation, which the summary does not model, so
-        # not propagating it keeps an un-invoked lambda from raising a false
-        # positive.
+        # Scoping across the branching constructs is UNIFORM: the ``if`` /
+        # ``elif`` / ``else`` and ``match`` STATEMENT forms, the ``if ...
+        # then ... else`` and ``match`` EXPRESSION forms, and the ``while``
+        # / ``for`` loop bodies. Each branch is analyzed from a common
+        # pre-construct content snapshot in isolation, then every branch's
+        # delta is unioned into the enclosing scope AFTER all branches are
+        # walked (``_content_isolated`` / ``_content_merge``). So a mutation
+        # in one branch does NOT reach a sibling branch's read, and the
+        # delta DOES propagate out to a read AFTER the construct. The
+        # trailing / implicit-return expression of a value block is walked
+        # EXACTLY ONCE (``_walk_value_block``), never walk-then-re-walk, so
+        # a branching tail expression's branches are not re-isolated from an
+        # already-merged baseline (which would leak a sibling's mutation
+        # into another sibling's read). A LAMBDA body is
+        # isolated-and-discarded instead: its mutation of a captured local
+        # is a side effect that only happens on invocation, which the
+        # summary does not model, so not propagating it keeps an un-invoked
+        # lambda from raising a false positive.
+        #
+        # RESIDUAL (out of scope): a LOOP-CARRIED read-before-write inside a
+        # ``while`` / ``for`` -- a read textually BEFORE the cross-function
+        # push that, on a later iteration, would see the earlier iteration's
+        # push -- is not caught: the body is walked once in source order
+        # with no iteration fixpoint. Closing it needs an iteration
+        # fixpoint; "closed uniformly inside while / for" means within a
+        # single pass, not across loop-carried ordering.
         content: dict = {}
         self._cur_content = content
         # Observational (feature #6, B1): PER PARAMETER, the sink
@@ -649,12 +667,13 @@ class _SummaryBuilder:
         self._shadowed_consts: set[str] = {
             pname for pname in param_names if pname in self.secret_consts
         }
-        self._walk_block(decl.body, env, reaching)
         # A function body's trailing bare expression is an implicit
         # return (unit / expression-bodied functions), so its taint is a
-        # return source too -- mirroring the analyzer's block-as-value
-        # rule and the match-arm tail handling below.
-        returns |= self._block_tail_taint(decl.body, env, reaching)
+        # return source too. ``_walk_value_block`` walks that trailing
+        # expression EXACTLY ONCE (not walk-then-re-walk), so a branching
+        # tail expression's per-branch content isolation is not defeated by
+        # a second walk over an already-merged baseline.
+        returns |= self._walk_value_block(decl.body, env, reaching)
         return reaching, effects, returns, sink_caps_local
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
@@ -1015,11 +1034,28 @@ class _SummaryBuilder:
                 out |= self._taint_of(el, env, reaching)
             return out
         if isinstance(e, A.IfExpr):
+            # Same uniform content-channel rule as the if / match STATEMENT
+            # forms: the two branch expressions are isolated from a common
+            # snapshot and their deltas unioned afterwards, so a
+            # cross-function mutation in the ``then`` branch is not seen by
+            # the ``else`` branch's read (no false positive), while the
+            # value taint is the union over both branches.
             self._taint_of(e.cond, env, reaching)
-            return (
-                self._taint_of(e.then_expr, env, reaching)
-                | self._taint_of(e.else_expr, env, reaching)
-            )
+            results: list = []
+            posts = [
+                self._content_isolated(
+                    lambda: results.append(
+                        self._taint_of(e.then_expr, env, reaching),
+                    ),
+                ),
+                self._content_isolated(
+                    lambda: results.append(
+                        self._taint_of(e.else_expr, env, reaching),
+                    ),
+                ),
+            ]
+            self._content_merge(posts)
+            return results[0] | results[1]
         if isinstance(e, A.MatchExpr):
             scrut = self._taint_of(e.scrutinee, env, reaching)
             out = set()
@@ -1048,9 +1084,10 @@ class _SummaryBuilder:
                     if arm.guard is not None:
                         self._taint_of(arm.guard, arm_env, reaching)
                     if isinstance(arm.body, A.Block):
-                        self._walk_block(arm.body, arm_env, reaching)
                         out.update(
-                            self._block_tail_taint(arm.body, arm_env, reaching),
+                            self._walk_value_block(
+                                arm.body, arm_env, reaching,
+                            ),
                         )
                     else:
                         out.update(self._taint_of(arm.body, arm_env, reaching))
@@ -1112,8 +1149,7 @@ class _SummaryBuilder:
         self._cur_content = {k: set(v) for k, v in saved_content.items()}
         try:
             if isinstance(e.body, A.Block):
-                self._walk_block(e.body, body_env, reaching)
-                lambda_returns |= self._block_tail_taint(
+                lambda_returns |= self._walk_value_block(
                     e.body, body_env, reaching,
                 )
             else:
@@ -1124,14 +1160,29 @@ class _SummaryBuilder:
             self._cur_content = saved_content
         return lambda_returns
 
-    def _block_tail_taint(
+    def _walk_value_block(
         self, block: A.Block, env: dict, reaching: set,
     ) -> set:
-        """The taint of a block used as an expression: its trailing
-        bare expression's taint, mirroring the analyzer's
-        block-as-expression rule for match arms."""
-        if block.stmts and isinstance(block.stmts[-1], A.ExprStmt):
-            return self._taint_of(block.stmts[-1].expr, env, reaching)
+        """Walk a block used as a VALUE (a function / lambda body, or a
+        ``match`` arm body) and return the taint of its implicit-return
+        value: the taint of its trailing bare expression.
+
+        The trailing expression is walked EXACTLY ONCE. Walking the whole
+        block and then RE-walking the trailing expression (the previous
+        shape) is unsound for the content channel: the first walk merges a
+        branching tail expression's per-branch deltas into the block's
+        content, and the second walk then re-isolates those same branches
+        from the now-merged baseline, so a sibling read arm sees another
+        arm's cross-function mutation (a false positive). Walking once
+        keeps each branch isolated from the pre-tail baseline. The trailing
+        expression's own content delta still merges into the block content,
+        which is harmless because nothing follows it."""
+        stmts = block.stmts
+        if stmts and isinstance(stmts[-1], A.ExprStmt):
+            for stmt in stmts[:-1]:
+                self._walk_stmt(stmt, env, reaching)
+            return self._taint_of(stmts[-1].expr, env, reaching)
+        self._walk_block(block, env, reaching)
         return set()
 
     def _attribute_sink_caps(self, sources: set, caps) -> None:

@@ -1139,16 +1139,24 @@ analyser is verified.** What λ_if deliberately abstracts away:
    into a fresh, unaliased local read back and sunk in that
    caller. That last case is closed uniformly across control-flow
    positions: the mutation and the read-back may be straight-line
-   or inside / after an `if` / `elif` / `else`, `while`, `for` or
-   `match` arm, and the content channel that carries it is scoped
-   so one branch's mutation neither contaminates a
-   mutually-exclusive sibling branch's read nor is lost to a read
-   after the construct. The residual false negative that stays
-   abstracted away is the GENERAL aliasing case: a local that
-   escapes, is aliased to a second name, is stored into another
-   structure, is returned and re-entered, or is mutated by a
-   deeper untracked path. That is fundamental without a points-to
-   analysis, which Capa does not have.
+   or inside / after any branching construct -- the `if` / `elif` /
+   `else` and `match` statement forms, the `if ... then ... else`
+   and `match` expression forms, and `while` / `for` loop bodies --
+   in any position (mid-body, tail, a let-binding, or nested), and
+   the content channel that carries it is scoped so one branch's
+   mutation neither contaminates a mutually-exclusive sibling
+   branch's read nor is lost to a read after the construct. Two
+   residual false negatives stay abstracted away. The first is the
+   GENERAL aliasing case: a local that escapes, is aliased to a
+   second name, is stored into another structure, is returned and
+   re-entered, or is mutated by a deeper untracked path; that is
+   fundamental without a points-to analysis, which Capa does not
+   have. The second is a loop-carried read-before-write inside a
+   `while` / `for` (a read textually before a cross-function push
+   that a later iteration would feed): the body is walked once in
+   source order with no iteration fixpoint, so "closed uniformly
+   inside while / for" means within a single pass, not across
+   loop-carried ordering.
    The implicit-flow case (a public field assigned under a secret
    pc) is *not* among them under `@strict_ifc`: `_ifc_field_store`
    folds the pc into the stored field's label via

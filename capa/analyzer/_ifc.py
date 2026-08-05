@@ -634,16 +634,22 @@ class _IfcMixin:
     #       local's read-back label, applied regardless of whether the
     #       local is itself a writable mutation target). The closure holds
     #       across CONTROL-FLOW positions uniformly: the mutation and the
-    #       read-back may sit straight-line or inside / after an ``if`` /
-    #       ``elif`` / ``else``, ``while``, ``for`` or ``match`` arm. That
-    #       content channel is scoped so a mutation in one branch does not
-    #       contaminate a mutually-exclusive sibling branch's read (no false
-    #       positive) yet still reaches a read AFTER the construct (no false
-    #       negative). The GENERAL aliasing residual stays OPEN: a local
-    #       that escapes, is aliased to a second name, is stored into
-    #       another structure, is returned and re-entered, or is mutated by
-    #       a deeper untracked path is not tracked without a points-to
-    #       analysis, which Capa does not have. This closes the
+    #       read-back may sit straight-line or inside / after any branching
+    #       construct -- the ``if`` / ``elif`` / ``else`` and ``match``
+    #       STATEMENT forms, the ``if ... then ... else`` and ``match``
+    #       EXPRESSION forms, and ``while`` / ``for`` loop bodies -- in any
+    #       position (mid-body, tail / implicit return, a let-binding, or
+    #       nested). The content channel is scoped so a mutation in one
+    #       branch does not contaminate a mutually-exclusive sibling
+    #       branch's read (no false positive) yet still reaches a read AFTER
+    #       the construct (no false negative). GENERAL aliasing residual
+    #       stays OPEN: a local that escapes, is aliased to a second name,
+    #       is stored into another structure, is returned and re-entered, or
+    #       is mutated by a deeper untracked path is not tracked without a
+    #       points-to analysis, which Capa does not have. A LOOP-CARRIED
+    #       read-before-write inside a ``while`` / ``for`` (a read textually
+    #       before the push that a later iteration would feed) is also OUT
+    #       of scope -- there is no iteration fixpoint. This closes the
     #       fresh-unaliased-local shape, not "all cross-function false
     #       negatives".
     #   (b) embed-then-mutate staleness: CLOSED. A struct EXPRESSION
