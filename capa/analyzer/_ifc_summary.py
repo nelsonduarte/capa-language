@@ -609,10 +609,14 @@ class _SummaryBuilder:
         # delta is unioned into the enclosing scope AFTER all branches are
         # walked (``_content_isolated`` / ``_content_merge``). So a mutation
         # in one branch does NOT reach a sibling branch's read, and the
-        # delta DOES propagate out to a read AFTER the construct. The
-        # trailing / implicit-return expression of a value block is walked
-        # EXACTLY ONCE (``_walk_value_block``), never walk-then-re-walk, so
-        # a branching tail expression's branches are not re-isolated from an
+        # delta DOES propagate out to a read AFTER the construct. A branch
+        # CONDITION (an ``if`` / ``elif`` guard) and a match-arm GUARD are
+        # NOT isolated: they run on the path to later branches / arms, so
+        # they are evaluated in the enclosing content scope and their
+        # mutation propagates (see the ``MatchExpr`` handler). The trailing
+        # / implicit-return expression of a value block is walked EXACTLY
+        # ONCE (``_walk_value_block``), never walk-then-re-walk, so a
+        # branching tail expression's branches are not re-isolated from an
         # already-merged baseline (which would leak a sibling's mutation
         # into another sibling's read). A LAMBDA body is
         # isolated-and-discarded instead: its mutation of a captured local
@@ -620,13 +624,16 @@ class _SummaryBuilder:
         # summary does not model, so not propagating it keeps an un-invoked
         # lambda from raising a false positive.
         #
-        # RESIDUAL (out of scope): a LOOP-CARRIED read-before-write inside a
-        # ``while`` / ``for`` -- a read textually BEFORE the cross-function
-        # push that, on a later iteration, would see the earlier iteration's
-        # push -- is not caught: the body is walked once in source order
-        # with no iteration fixpoint. Closing it needs an iteration
-        # fixpoint; "closed uniformly inside while / for" means within a
-        # single pass, not across loop-carried ordering.
+        # RESIDUALS (out of scope): (1) a LOOP-CARRIED read-before-write
+        # inside a ``while`` / ``for`` -- a read textually BEFORE the
+        # cross-function push that, on a later iteration, would see the
+        # earlier iteration's push -- is not caught, since the body is
+        # walked once in source order with no iteration fixpoint ("closed
+        # uniformly inside while / for" means within a single pass, not
+        # across loop-carried ordering); and (2) an INVOKED lambda's
+        # mutation of a captured local (the aliasing / escape residual: the
+        # side effect happens at an invocation site the summary does not
+        # model). Both need machinery this pass deliberately omits.
         content: dict = {}
         self._cur_content = content
         # Observational (feature #6, B1): PER PARAMETER, the sink
@@ -1059,30 +1066,37 @@ class _SummaryBuilder:
         if isinstance(e, A.MatchExpr):
             scrut = self._taint_of(e.scrutinee, env, reaching)
             out = set()
-            # Same uniform content-channel rule as ``if`` / ``while`` /
-            # ``for``: each arm is isolated from a snapshot of the content,
-            # and every arm's delta is unioned into the enclosing scope
-            # after ALL arms are walked. A cross-function mutation in one
-            # arm therefore does NOT reach a sibling arm's read (isolation),
-            # yet a read AFTER the match reflects any arm's mutation
-            # (deferred union). ``env`` is a fresh ``dict(env)`` per arm, as
-            # before.
+            # Uniform content-channel rule: each arm BODY is mutually
+            # exclusive, so it is isolated from a snapshot of the content and
+            # every body's delta is unioned into the enclosing scope after
+            # ALL arms are walked (deferred union). A cross-function mutation
+            # in one arm's body therefore does NOT reach a sibling arm's
+            # read, yet a read AFTER the match reflects any arm's mutation.
+            # ``env`` is a fresh ``dict(env)`` per arm.
+            #
+            # An arm GUARD is NOT isolated: it is tested on the path to
+            # LATER arms (if it fails, control proceeds to the next arm), so
+            # -- exactly like an ``if`` / ``elif`` CONDITION -- it is
+            # evaluated in the ENCLOSING content scope, so a cross-function
+            # mutation it performs is visible to later arms and to code after
+            # the match. Only the mutually-exclusive BODY is isolated.
             posts = []
             for arm in e.arms:
-                def _walk_arm(arm=arm):
-                    # Each arm sees a sub-env where the pattern binds carry
-                    # the scrutinee's taint (whole-value), and its OWN
-                    # const-shadow scope: a pattern binding a name equal to
-                    # a secret const shadows it within the arm only.
-                    arm_env = dict(env)
-                    self._bind_pattern_taint(arm.pattern, scrut, arm_env)
-                    saved = self._shadowed_consts
-                    self._shadowed_consts = set(saved)
-                    self._register_shadowing_binds(
-                        _pattern_bound_names(arm.pattern),
-                    )
-                    if arm.guard is not None:
-                        self._taint_of(arm.guard, arm_env, reaching)
+                # Each arm sees a sub-env where the pattern binds carry the
+                # scrutinee's taint (whole-value), and its OWN const-shadow
+                # scope: a pattern binding a name equal to a secret const
+                # shadows it within the arm only.
+                arm_env = dict(env)
+                self._bind_pattern_taint(arm.pattern, scrut, arm_env)
+                saved = self._shadowed_consts
+                self._shadowed_consts = set(saved)
+                self._register_shadowing_binds(
+                    _pattern_bound_names(arm.pattern),
+                )
+                if arm.guard is not None:
+                    self._taint_of(arm.guard, arm_env, reaching)
+
+                def _walk_body(arm=arm, arm_env=arm_env):
                     if isinstance(arm.body, A.Block):
                         out.update(
                             self._walk_value_block(
@@ -1091,8 +1105,9 @@ class _SummaryBuilder:
                         )
                     else:
                         out.update(self._taint_of(arm.body, arm_env, reaching))
-                    self._shadowed_consts = saved
-                posts.append(self._content_isolated(_walk_arm))
+
+                posts.append(self._content_isolated(_walk_body))
+                self._shadowed_consts = saved
             self._content_merge(posts)
             return out
         if isinstance(e, A.Become):
@@ -1659,8 +1674,9 @@ class _SummaryBuilder:
             # taint derives only from a built-in-immutable param the
             # precision fix drops), yet the callee still mutated its
             # interior. Gating this on the target set would reopen the
-            # false negative. Keyed by the chain ROOT name; joined so the
-            # trailing-expression re-walk stays idempotent.
+            # false negative. Keyed by the chain ROOT name; JOINED (never
+            # overwritten) so it both accumulates straight-line and composes
+            # with the deferred per-branch merge (``_content_merge``).
             self._cur_content.setdefault(root, set()).update(translated)
             # MUTATION-TARGET channel (unchanged): the argument's root
             # binding taint set doubles as its alias / mutation-TARGET set;

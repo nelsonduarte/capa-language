@@ -1145,18 +1145,22 @@ analyser is verified.** What λ_if deliberately abstracts away:
    in any position (mid-body, tail, a let-binding, or nested), and
    the content channel that carries it is scoped so one branch's
    mutation neither contaminates a mutually-exclusive sibling
-   branch's read nor is lost to a read after the construct. Two
+   branch's read nor is lost to a read after the construct. A
+   branch condition and a match-arm guard run on the path to later
+   branches / arms, so a side-effecting one's mutation is
+   propagated (evaluated in the enclosing scope, not isolated). Two
    residual false negatives stay abstracted away. The first is the
    GENERAL aliasing case: a local that escapes, is aliased to a
    second name, is stored into another structure, is returned and
-   re-entered, or is mutated by a deeper untracked path; that is
-   fundamental without a points-to analysis, which Capa does not
-   have. The second is a loop-carried read-before-write inside a
-   `while` / `for` (a read textually before a cross-function push
-   that a later iteration would feed): the body is walked once in
-   source order with no iteration fixpoint, so "closed uniformly
-   inside while / for" means within a single pass, not across
-   loop-carried ordering.
+   re-entered, is mutated by a deeper untracked path, or is mutated
+   by an invoked lambda that captured it; that is fundamental
+   without a points-to analysis, which Capa does not have. The
+   second is a loop-carried read-before-write inside a `while` /
+   `for` (a read textually before a cross-function push that a
+   later iteration would feed): the body is walked once in source
+   order with no iteration fixpoint, so "closed uniformly inside
+   while / for" means within a single pass, not across loop-carried
+   ordering.
    The implicit-flow case (a public field assigned under a secret
    pc) is *not* among them under `@strict_ifc`: `_ifc_field_store`
    folds the pc into the stored field's label via

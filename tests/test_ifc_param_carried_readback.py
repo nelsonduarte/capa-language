@@ -943,6 +943,37 @@ MTX_FOR_IN_BRANCH = (
     "    leak(TOKEN, 1, [\"a\"], stdio)\n"
 )
 
+# Match-arm GUARD helpers: guards with a side-effecting call that pushes
+# into a fresh local. A guard is tested on the path to LATER arms, so its
+# mutation is evaluated in the ENCLOSING content scope, not isolated.
+_GUARD_HELPERS = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH_IT +
+    "fun push_false(xs: List<String>, v: String) -> Bool\n"
+    "    xs.push(v)\n"
+    "    return false\n"
+    "fun push_true(xs: List<String>, v: String) -> Bool\n"
+    "    xs.push(v)\n"
+    "    return true\n"
+    "fun read_print(xs: List<String>, stdio: Stdio)\n"
+    "    match xs.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+)
+
+# CLEAN: a PURE (non-mutating) guard must not taint a later-arm read.
+MTX_GUARD_PURE = (
+    _GUARD_HELPERS +
+    "fun leak(secret: String, n: Int, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    let _ = secret\n"
+    "    match n\n"
+    "        k if k > 0 -> stdio.println(\"pos\")\n"
+    "        _ -> read_print(xs, stdio)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, -1, stdio)\n"
+)
+
 _MATRIX_CLEAN = {
     "match_tail": (MTX_MATCH_TAIL, "empty\n"),
     "if_in_match_arm_tail": (MTX_IF_IN_MATCH_TAIL, "empty\n"),
@@ -951,6 +982,7 @@ _MATRIX_CLEAN = {
     "match_expr_let": (MTX_MATCH_EXPR_LET, "empty\ndone\n"),
     "match_stmt_mid": (MTX_MATCH_MID, "empty\ndone\n"),
     "for_in_branch": (MTX_FOR_IN_BRANCH, "empty\n"),
+    "guard_pure_later_arm": (MTX_GUARD_PURE, "empty\n"),
 }
 
 # LEAK: a branch / arm pushes the secret; the read + sink is AFTER the
@@ -985,9 +1017,25 @@ MTX_MATCH_EXPR_AFTER = (
     "    leak(TOKEN, true, stdio)\n"
 )
 
+# a side-effecting GUARD pushes the secret (returns false so its arm is not
+# chosen); a LATER arm reads the fresh local. The guard ran on the path to
+# that later arm, so the mutation must be visible: this is the fail-first
+# guard leak (missed while the guard was isolated per-arm).
+MTX_GUARD_LATER_ARM = (
+    _GUARD_HELPERS +
+    "fun leak(secret: String, n: Int, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    match n\n"
+    "        k if push_false(xs, secret) -> stdio.println(\"chosen\")\n"
+    "        _ -> read_print(xs, stdio)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, 5, stdio)\n"
+)
+
 _MATRIX_LEAK = {
     "if_expr_read_after": MTX_IF_EXPR_AFTER,
     "match_expr_read_after": MTX_MATCH_EXPR_AFTER,
+    "guard_later_arm": MTX_GUARD_LATER_ARM,
 }
 
 
@@ -1049,6 +1097,71 @@ class TestControlFlowMatrixLeak(unittest.TestCase):
                 self.assertEqual(_run_py(src), "s3cr3t\n")
                 if skip is None:
                     self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+# a side-effecting guard pushes the secret, read AFTER the match.
+MTX_GUARD_READ_AFTER = (
+    _GUARD_HELPERS +
+    "fun leak(secret: String, n: Int, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    match n\n"
+    "        k if push_false(xs, secret) -> stdio.println(\"chosen\")\n"
+    "        _ -> stdio.println(\"other\")\n"
+    "    read_print(xs, stdio)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, 5, stdio)\n"
+)
+
+# a side-effecting guard pushes the secret (returns true so its arm IS
+# chosen), read in its OWN arm body.
+MTX_GUARD_OWN_ARM = (
+    _GUARD_HELPERS +
+    "fun leak(secret: String, n: Int, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    match n\n"
+    "        k if push_true(xs, secret) -> read_print(xs, stdio)\n"
+    "        _ -> stdio.println(\"other\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, 5, stdio)\n"
+)
+
+
+class TestMatchArmGuardSideEffect(unittest.TestCase):
+    """A match-arm GUARD runs on the path to LATER arms, so a
+    cross-function mutation it performs is evaluated in the enclosing
+    content scope (like an if / elif condition), not isolated per arm. A
+    secret pushed by a guard and read later must be caught; the arm BODY
+    stays isolated, so a sibling body read stays clean."""
+
+    _LEAKS = {
+        "later_arm": (MTX_GUARD_LATER_ARM, "s3cr3t\n"),
+        "read_after_match": (MTX_GUARD_READ_AFTER, "other\ns3cr3t\n"),
+        "own_arm": (MTX_GUARD_OWN_ARM, "s3cr3t\n"),
+    }
+
+    def test_default_tier_is_a_single_warning(self):
+        for name, (src, _out) in self._LEAKS.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 1,
+                                 [w.message for w in r.warnings])
+
+    def test_strict_tier_is_a_single_hard_error(self):
+        for name, (src, _out) in self._LEAKS.items():
+            with self.subTest(shape=name):
+                r = _analyze(_strict(src))
+                self.assertFalse(r.ok)
+                self.assertEqual(len(_flow_errors(r)), 1,
+                                 [e.message for e in r.errors])
+
+    def test_both_backends_print_the_secret(self):
+        skip = _wasm_unavailable()
+        for name, (src, out) in self._LEAKS.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), out)
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), out)
 
 
 if __name__ == "__main__":
