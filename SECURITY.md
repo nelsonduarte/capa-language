@@ -88,15 +88,15 @@ Out of scope:
 
 ## Supported versions
 
-Capa is on the `1.x` line (latest `1.25.1`) and is a one-person
+Capa is on the `1.x` line (latest `1.26.0`) and is a one-person
 project. Only the latest tagged release is supported for security fixes.
 I may publish patch releases for the latest minor when a fix is
 significant.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.25.1 (latest) | yes |
-| < 1.25  | no, please upgrade |
+| 1.26.0 (latest) | yes |
+| < 1.26  | no, please upgrade |
 
 ## Published advisories
 
@@ -240,6 +240,25 @@ The 2026-05-25 audit record lives at the repository root in
   full handle unforgeability remain deferred. The default Python backend
   was never affected. Affected all releases with the Wasm capability
   backend, through `1.25.0`, shipped in `1.25.1` under the security
+  exception.
+- [`docs/advisories/2026-08-08-ifc-param-carried-readback.md`](docs/advisories/2026-08-08-ifc-param-carried-readback.md):
+  a cross-function information-flow false negative. A `@secret` value
+  arriving as a plain parameter of a caller, pushed by a user callee (or a
+  side-effecting `match`-arm guard) into a fresh caller-local, then read
+  back and sent to a public sink in that caller, produced no diagnostic:
+  the summary recorded the callee's write against the caller's own
+  parameters (the mutation-target channel) but never on the local's
+  read-back, so no default warning and no `@strict_ifc` error fired and the
+  secret reached the sink at runtime on both backends (reproduced on the
+  released `1.25.1` binary). The cross-function summary now carries a
+  distinct, additive content channel, scoped uniformly per branch, so the
+  callee's write raises the local's content label and the read-back leak
+  warns by default and is a hard error under `@strict_ifc`. Closes the
+  fresh, unaliased, param-carried read-back shape uniformly across
+  control-flow positions; the general aliasing / escape case, a
+  loop-carried read-before-write, and a whole-value-rebind
+  over-approximation stay open and are documented. Affected `1.25.1` and
+  earlier on the `1.x` line, shipped in `1.26.0` under the security
   exception.
 
 ## Public disclosure

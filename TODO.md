@@ -7,7 +7,7 @@
 > This file holds only what is still open; everything already shipped
 > lives in [`DONE.md`](DONE.md).
 
-Compiler at **v1.25.1** (released 2026-08-01). Suite green (~5034 tests),
+Compiler at **v1.26.0** (released 2026-08-08). Suite green (~5086 tests),
 CI green. Items are grouped by time horizon, not by an internal priority
 code.
 
@@ -157,5 +157,21 @@ code.
   by name cross-function.
 - **IFC flow-insensitivity on reassignment.** Conservative, never
   unsound.
+- **IFC cross-function param-carried read-back residuals.** The v1.26.0
+  fix closes the fresh, unaliased, param-carried read-back shape
+  ([advisory](docs/advisories/2026-08-08-ifc-param-carried-readback.md));
+  three residuals stay open. (1) The general aliasing / escape case: a
+  local that escapes, is aliased to a second name, is stored into another
+  structure, is returned and re-entered, is mutated by a deeper untracked
+  path, or is mutated by an INVOKED lambda that captured it, is not
+  tracked (fundamental without a points-to analysis Capa does not have).
+  (2) Loop-carried read-before-write: a read placed textually before a
+  cross-function push inside a `while` / `for` that a later iteration
+  would feed is not caught, since the body is walked once in source order
+  with no iteration fixpoint. (3) Whole-value-rebind precision
+  over-approximation: the additive content channel is monotone (never
+  cleared), so a whole-value rebind does not lower the accumulated content
+  label and can over-report in the safe (secret) direction; it never
+  under-reports a leak.
 - **Security M3.** `install.sh` same-channel SHA pinning, deferred by
   design.

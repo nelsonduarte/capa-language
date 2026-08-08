@@ -9,6 +9,116 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.26.0], 2026-08-08
+
+A security patch that closes a cross-function information-flow false
+negative. A `@secret` value arriving as a plain PARAMETER of a caller,
+pushed by a user callee (or by a side-effecting `match`-arm guard) into
+a FRESH caller-local, then read back and sent to a public sink in that
+caller, was not flagged: no default warning, no `@strict_ifc` error, and
+the secret reached the public sink at runtime on both backends. It ships
+under the [`STABILITY.md`](STABILITY.md) security exception, and as a
+MINOR bump for the same reason the earlier information-flow soundness
+fixes did (`1.2.0`, `1.3.0`, `1.4.0`, `1.15.0`): it tightens the static
+analysis so a program that previously compiled clean while laundering a
+secret now warns by default and is a hard error under `@strict_ifc`.
+Only programs that were already unsound are affected. The fix adds a
+distinct, additive content-taint channel to the cross-function summary,
+scoped uniformly per branch across every control-flow position; the
+honest scope and the named open residuals are below.
+
+**Security.**
+
+- *A `@secret` parameter laundered through a callee-mutated (or
+  guard-mutated) fresh local, read back and sunk in the caller, was not
+  flagged.* A plain parameter carries no caller-side `@secret` label, so
+  only the caller's cross-function summary can see the leak. The summary
+  recorded the callee's write against the caller's own parameters (the
+  mutation-TARGET channel) but never reflected it on the local's
+  read-back, so the parameter was never marked sink-reaching: the flow
+  produced no default warning and was not a hard error under
+  `@strict_ifc`, and the secret reached the public sink at runtime on
+  both the Python and the Wasm backend (reproduced on the released
+  `1.25.1` binary, which prints the secret at exit 0). Reachable through
+  a user callee that mutates the fresh local (`List.push` / `Set.add` /
+  `Map.set` or a struct field store) and through a side-effecting
+  `match`-arm guard. `capa/analyzer/_ifc_summary.py` now carries a
+  distinct, ADDITIVE content channel: the callee's translated write
+  raises the caller-local's content label, joined into `_taint_of` on a
+  read of the name, and applied REGARDLESS of whether the local is
+  itself a writable mutation target (load-bearing, because the
+  mutation-target set is empty for a fresh or immutable-seeded local, so
+  a content write gated on it would close nothing). The channel is scoped
+  uniformly per branch (`_content_isolated` / `_content_merge`): each
+  branch or arm is analyzed from a common pre-construct content snapshot
+  in isolation, and every branch's delta is unioned into the enclosing
+  scope only after all branches are walked, so one branch's mutation
+  neither contaminates a mutually-exclusive sibling branch's read nor is
+  lost to a read after the construct. A branch condition and a match-arm
+  guard run on the path to later branches / arms, so a side-effecting
+  one's mutation is evaluated in the enclosing scope and propagates. The
+  leak now warns by default and is a hard error under `@strict_ifc` with
+  the diagnostic `information-flow: a @secret value is passed to <fn> as
+  <param>, which reaches a public sink inside <fn> (it sends data out of
+  the program). Route it through declassify(value, reason: "...") if
+  this disclosure is intended.` This closes the fresh, unaliased,
+  param-carried read-back shape UNIFORMLY across control-flow positions:
+  straight-line, the `if` / `elif` / `else` and `match` statement forms,
+  the `if ... then ... else` and `match` expression forms, `while` and
+  `for` loop bodies, and side-effecting `match`-arm guards, in any
+  position (mid-body, tail, a let-binding, or nested). Precision is
+  preserved: a `declassify`, a sibling local, a written-but-unread local,
+  an escaping struct, a tail read before the push, plain public data, and
+  a pure (non-mutating) guard all stay clean. Covered by
+  `tests/test_ifc_param_carried_readback.py`, verified adversarially and
+  runtime-identical on both backends.
+
+  Honest scope. This closes the FRESH, UNALIASED, param-carried
+  read-back shape only. Named residuals stay open: (1) the GENERAL
+  aliasing / escape case, where the local escapes, is aliased to a
+  second name, is stored into another structure, is returned and
+  re-entered, is mutated by a deeper untracked path, or is mutated by an
+  INVOKED lambda that captured it, which is fundamental without a
+  points-to analysis Capa does not have; (2) a LOOP-CARRIED
+  read-before-write inside a `while` / `for` (a read textually before a
+  cross-function push that a later iteration would feed), since the body
+  is walked once in source order with no iteration fixpoint; and (3) a
+  whole-value REBIND of the local, which the additive content channel
+  over-reports in the safe (secret) direction, a monotone precision
+  over-approximation that mirrors the existing env channel. Separately,
+  the env channel's pre-existing DIRECT-push cross-branch false positive
+  (a secret pushed directly in the caller's own frame in one branch and
+  read in a mutually-exclusive sibling branch) is unrelated to, and not
+  fixed by, this change: this fix scoped the content channel per branch,
+  and left the flat, monotone env channel as it was.
+
+**Fixed.**
+
+- *A cross-function IFC mutation-effect FALSE POSITIVE: a
+  provably-immutable parameter that merely CARRIED a secret's taint was
+  mis-recorded as a mutation target and flagged a clean flow.* This is the
+  OPPOSITE direction from the read-back fix above: it removes a class of
+  `@secret`-reaches-sink false positives rather than closing a false
+  negative, so it is a precision bug fix, not a security fix. The
+  cross-function summary reused a value's data-flow TAINT set as its
+  mutation-TARGET set, so mutating a fresh local whose elements derived
+  from a parameter was recorded as mutating that parameter; when the
+  parameter was immutable-typed and only carried a secret's taint, the
+  effect propagated into the caller and raised a false-positive
+  `@secret`-reaches-sink diagnostic (a warning by default, a hard error
+  under `@strict_ifc`). In `capa_server.serve_once` it flagged `serve` (a
+  `Serve` capability) and `conn` (an `Int`). `capa/analyzer/_ifc_summary.py`
+  now drops a parameter from the mutation-target set only when its type
+  PROVABLY has no writable interior (a built-in capability, a built-in
+  primitive, or built-in `String`), resolved by the type's SYMBOL ORIGIN
+  (the built-in source position), not by name or kind: a user-defined
+  capability (its methods are a real mutable channel) and a user type that
+  shadows a built-in name (`type Int { ... }`) are both kept, so no genuine
+  write-back channel is dropped, and everything else is kept by default.
+  Covered by `tests/test_ifc_immutable_target_drop.py`, whose adversarial
+  corpus of seven genuine write-back channels stays caught (warns by
+  default, errors under `@strict_ifc`) so the drop cannot be too broad.
+
 ## [1.25.1], 2026-08-01
 
 A security patch whose one change closes the Wasm cross-capability
@@ -9549,7 +9659,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.25.1...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.26.0...HEAD
+[1.26.0]: https://github.com/nelsonduarte/capa-language/compare/v1.25.1...v1.26.0
 [1.25.1]: https://github.com/nelsonduarte/capa-language/compare/v1.25.0...v1.25.1
 [1.25.0]: https://github.com/nelsonduarte/capa-language/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/nelsonduarte/capa-language/compare/v1.23.0...v1.24.0

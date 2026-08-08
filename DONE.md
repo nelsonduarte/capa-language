@@ -19,6 +19,71 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.26.0: cross-function param-carried IFC read-back false negative closed (2026-08-08)
+
+- **A `@secret` parameter laundered through a callee-mutated (or
+  guard-mutated) fresh local, read back and sunk in the caller, was not
+  flagged (security exception, MINOR).** A plain parameter carries no
+  caller-side `@secret` label, so only the caller's cross-function
+  summary could see the leak; the summary recorded the callee's write
+  against the caller's own parameters (the mutation-TARGET channel) but
+  never reflected it on the local's read-back, so the parameter was never
+  marked sink-reaching. No default warning, no `@strict_ifc` error, and
+  the secret reached the public sink at runtime on both backends
+  (reproduced on the released `1.25.1` binary). `_ifc_summary.py` now
+  carries a distinct, ADDITIVE content channel: the callee's translated
+  write raises the caller-local's content label, joined into `_taint_of`
+  on a read of the name, applied REGARDLESS of whether the local is a
+  writable mutation target (load-bearing, the target set being empty for
+  a fresh / immutable-seeded local). The channel is scoped uniformly per
+  branch (`_content_isolated` / `_content_merge`): each branch or arm is
+  analyzed from a common pre-construct snapshot in isolation and every
+  delta is unioned into the enclosing scope only after all branches are
+  walked, so one branch's mutation neither contaminates a sibling
+  branch's read nor is lost to a read after the construct; a branch
+  condition and a match-arm guard run on the path to later branches /
+  arms, so a side-effecting one's mutation propagates. Now a warning by
+  default and a hard error under `@strict_ifc`. Closes the FRESH,
+  UNALIASED, param-carried read-back shape uniformly across control-flow
+  positions (straight-line, `if` / `elif` / `else` and `match` statement
+  forms, `if ... then ... else` and `match` expression forms, `while` /
+  `for`, and side-effecting `match`-arm guards; any position: mid-body,
+  tail, let-binding, nested). Residuals stay open and are documented: the
+  GENERAL aliasing / escape case (the local escapes, is aliased, is
+  stored into another structure, is returned and re-entered, or is
+  mutated by an INVOKED lambda that captured it, fundamental without a
+  points-to analysis); a LOOP-CARRIED read-before-write inside `while` /
+  `for` (no iteration fixpoint); and a whole-value REBIND of the local,
+  which the additive content channel over-reports in the safe direction
+  (a monotone precision over-approximation mirroring the env channel).
+  The env channel's pre-existing DIRECT-push cross-branch false positive
+  is unrelated to, and not fixed by, this change. Validated by four
+  adversarial review rounds, a pentester (34 leak shapes, all now
+  flagged), and an independent holistic review; covered by
+  `tests/test_ifc_param_carried_readback.py`; full suite grew 5056 ->
+  5086 with zero regressions.
+
+- **A cross-function IFC mutation-effect FALSE POSITIVE removed: a
+  provably-immutable parameter carrying a secret's taint was mis-recorded
+  as a mutation target (precision fix, OPPOSITE direction from the
+  read-back fix above; not a security fix).** The summary reused a value's
+  data-flow TAINT set as its mutation-TARGET set, so mutating a fresh local
+  whose elements derived from a parameter was recorded as mutating that
+  parameter; an immutable-typed parameter that only carried a secret's
+  taint then propagated the effect into the caller and raised a
+  false-positive `@secret`-reaches-sink diagnostic (a warning by default, a
+  hard error under `@strict_ifc`). In `capa_server.serve_once` this flagged
+  `serve` (a `Serve` capability) and `conn` (an `Int`). `_ifc_summary.py`
+  now drops a parameter from the mutation-target set only when its type
+  PROVABLY has no writable interior (a built-in capability, a built-in
+  primitive, or built-in `String`), resolved by the type's SYMBOL ORIGIN,
+  not by name or kind, so a user-defined capability and a user type
+  shadowing a built-in name are both kept and no genuine write-back channel
+  is dropped. Covered by `tests/test_ifc_immutable_target_drop.py` (the
+  precision cases plus an adversarial corpus of seven genuine channels that
+  must stay caught); this is the change behind the ~5034 -> ~5056 suite
+  step, before the read-back fix took it to ~5086.
+
 ## v1.19.0: the root `capa.toml` made authoritative, the compiler floor enforced (2026-07-20)
 
 - **A malformed root manifest silently swapped which source file was
