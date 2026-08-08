@@ -42,8 +42,10 @@ branch-scoped.
   branch-scoped channel joined into a binding's label only on a read; the
   shared label, field labels, struct-alias groups and escaped-struct
   tracking stay flat and untouched. Both the intra and summary channels are
-  isolated per branch and deferred-unioned back, uniformly across `if` /
-  `elif` / `else`, `if ... then ... else`, `while`, `for` and `match`.
+  isolated per branch and deferred-unioned back across `if` / `elif` /
+  `else`, `if ... then ... else`, and `match`; inside a `while` / `for`
+  body the taint is deliberately NOT branch-isolated (see the honest scope
+  below).
 
 **Honest scope.** This closes the direct-container-push sibling false
 positive and the `match`-arm-discard false negative. It does NOT close the
@@ -52,9 +54,21 @@ in a sibling), which lives on the shared label via assignment and remains
 open. The general list-aliasing residuals disclosed with `1.26.0` also
 stay open (a list aliased under a second name, `var alias = xs;
 xs.push(secret); read alias`; embed-then-mutate; store-then-push): lists
-are reference types and Capa has no points-to / list-alias analysis. The
-loop-carried read-before-write residual (a read textually before a push
-that a later iteration would feed) likewise stays open.
+are reference types and Capa has no points-to / list-alias analysis.
+
+Inside a `while` / `for` body the container-mutation taint is intentionally
+NOT branch-isolated: the loop walks its body twice (a dry-run pass then the
+real pass) and the pushed taint from the first pass is visible to every
+read in the body on the second, so a push anywhere in the body taints every
+read of that container in the body. This is a sound MAY over-approximation.
+It CATCHES the intra loop-carried read-before-write leak (a read at the top
+of the body fed by a LATER iteration's push) -- that shape genuinely leaks
+across iterations, so flagging it is correct, not a false positive. The
+cost is a safe-direction over-approximation: a read in a mutually-exclusive
+SIBLING branch inside a loop is also flagged, even when a loop-invariant
+condition would keep the push and the read from ever both running, because
+Capa does not prove the condition loop-invariant. Like the whole-value
+-rebind over-approximation, it over-reports there and never under-reports.
 
 ## [1.26.0], 2026-08-08
 

@@ -258,6 +258,69 @@ EMBED_AFTER_BRANCH = (
     "    stdio.println(o.inner.sv)\n")
 
 
+# ---- loop-family REAL leaks (must stay flagged) ----
+#
+# Inside a while / for body the container-mutation taint is intentionally
+# NOT branch-isolated (the two-pass loop walk makes a push anywhere in the
+# body visible to every read in the body), a sound MAY over-approximation.
+# These shapes genuinely leak across iterations, so they must stay flagged
+# on BOTH backends -- the review's blindspot was that only a read-AFTER-loop
+# case existed.
+
+# Loop-carried read-before-write: the read at the top of the body is fed by
+# the PREVIOUS iteration's push (iteration 2 reads iteration 1's secret).
+LOOP_CARRIED_WHILE = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var xs: List<String> = []\n    var i: Int = 0\n"
+    "    while i < 2\n"
+    "        match xs.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"empty\")\n"
+    "        xs.push(secret)\n        i = i + 1\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+LOOP_CARRIED_FOR = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String, items: List<String>)\n"
+    "    var xs: List<String> = []\n"
+    "    for it in items\n"
+    "        match xs.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"empty\")\n"
+    "        xs.push(secret)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN, [\"a\", \"b\"])\n")
+
+# Loop-VARYING sibling: the branch selector varies across iterations, so the
+# push (one iteration) and the sibling read (a later iteration) DO both run.
+VARYING_SIBLING_WHILE = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var xs: List<String> = []\n    var i: Int = 0\n"
+    "    while i < 2\n"
+    "        if i == 0\n            xs.push(secret)\n"
+    "        else\n            match xs.get(0)\n"
+    "                Some(x) -> stdio.println(x)\n"
+    "                None -> stdio.println(\"empty\")\n"
+    "        i = i + 1\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+VARYING_SIBLING_FOR = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String, items: List<String>)\n"
+    "    var xs: List<String> = []\n    var first: Bool = true\n"
+    "    for it in items\n"
+    "        if first\n            xs.push(secret)\n            first = false\n"
+    "        else\n            match xs.get(0)\n"
+    "                Some(x) -> stdio.println(x)\n"
+    "                None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN, [\"a\", \"b\"])\n")
+
+# {name: (src, strict_fn, expected_output)} -- every one prints the secret.
+_LOOP_LEAK = {
+    "loop_carried_while": (LOOP_CARRIED_WHILE, "leak", "empty\ns3cr3t\n"),
+    "loop_carried_for": (LOOP_CARRIED_FOR, "leak", "empty\ns3cr3t\n"),
+    "varying_sibling_while": (VARYING_SIBLING_WHILE, "leak", "s3cr3t\n"),
+    "varying_sibling_for": (VARYING_SIBLING_FOR, "leak", "s3cr3t\n"),
+}
+
+
 class TestC1FalsePositiveClosed(unittest.TestCase):
     """C1: a direct push in one branch read in a mutually-exclusive sibling
     is leak-free and must NOT be flagged, for if / while / match, on the
@@ -354,6 +417,41 @@ class TestMustStayFlagged(unittest.TestCase):
         rs = _analyze(_strict(EMBED_AFTER_BRANCH, "caller"))
         self.assertGreaterEqual(len(_flow_errors(rs)), 1,
                                 [e.message for e in rs.errors])
+
+
+class TestLoopFamilyLeaksStayFlagged(unittest.TestCase):
+    """Inside a loop the container-mutation taint is NOT branch-isolated (a
+    sound over-approximation). A loop-carried read-before-write and a
+    loop-varying sibling read are REAL leaks across iterations and must stay
+    flagged -- a warning by default, a hard error under @strict_ifc -- both
+    backends printing the secret. (The prior tests only had a read-AFTER
+    -loop case.)"""
+
+    def test_default_tier_flags(self):
+        for name, (src, _fn, _out) in _LOOP_LEAK.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+
+    def test_strict_tier_errors(self):
+        for name, (src, fn, _out) in _LOOP_LEAK.items():
+            with self.subTest(shape=name):
+                r = _analyze(_strict(src, fn))
+                self.assertFalse(r.ok)
+                self.assertGreaterEqual(len(_flow_errors(r)), 1,
+                                        [e.message for e in r.errors])
+
+    def test_both_backends_leak_the_secret(self):
+        skip = _wasm_unavailable()
+        for name, (src, _fn, out) in _LOOP_LEAK.items():
+            with self.subTest(shape=name):
+                py_out = _run_py(src)
+                self.assertEqual(py_out, out)
+                self.assertIn("s3cr3t", py_out)
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), out)
 
 
 if __name__ == "__main__":
