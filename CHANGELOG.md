@@ -9,6 +9,8 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.27.0], 2026-08-08
+
 A coupled information-flow fix that follows on from `1.26.0`. It closes a
 real `@secret` false NEGATIVE and a `@strict_ifc` false REJECTION, both
 caused by the container-mutation taint being flat / monotone across
@@ -62,8 +64,9 @@ real pass) and the pushed taint from the first pass is visible to every
 read in the body on the second, so a push anywhere in the body taints every
 read of that container in the body. This is a sound MAY over-approximation.
 It CATCHES the intra loop-carried read-before-write leak (a read at the top
-of the body fed by a LATER iteration's push) -- that shape genuinely leaks
-across iterations, so flagging it is correct, not a false positive. The
+of the body fed by an EARLIER iteration's push: iteration 2 reads
+iteration 1's secret) -- that shape genuinely leaks across iterations, so
+flagging it is correct, not a false positive. The
 cost is a safe-direction over-approximation: a read in a mutually-exclusive
 SIBLING branch inside a loop is also flagged, even when a loop-invariant
 condition would keep the push and the read from ever both running, because
@@ -9720,7 +9723,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.26.0...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.27.0...HEAD
+[1.27.0]: https://github.com/nelsonduarte/capa-language/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/nelsonduarte/capa-language/compare/v1.25.1...v1.26.0
 [1.25.1]: https://github.com/nelsonduarte/capa-language/compare/v1.25.0...v1.25.1
 [1.25.0]: https://github.com/nelsonduarte/capa-language/compare/v1.24.0...v1.25.0

@@ -19,6 +19,62 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.27.0: branch-scoped container-mutation taint; match-arm inline-push IFC false negative closed (2026-08-08)
+
+- **A `@secret` pushed inline into a fresh local INSIDE a `match` arm,
+  then read after the `match` or stored into a parameter, leaked unflagged
+  (S1-match; security exception, MINOR).** A plain parameter carries no
+  caller-side `@secret` label, so only the caller's cross-function summary
+  could see the leak; the summary copied each `match` arm's environment in
+  isolation and DISCARDED it, so an inline container mutation
+  (`xs.push(secret)`) in an arm never reached a read after the `match`.
+  The intra-procedural pass, which tracks the push on the flat shared
+  label, flagged the identical shape, and the identical `if` shape was
+  flagged; only the summary lost the arm's taint. No default warning, no
+  `@strict_ifc` error, and the secret reached the public sink at runtime
+  on both backends (reproduced on the released `1.26.0` binary). This is
+  the `match`-arm analogue of the v1.26.0 param-carried read-back false
+  negative: v1.26.0 closed the callee-mutated read-back, this closes the
+  inline container mutation in a `match` arm. The container-mutation taint
+  is now recorded in a separate, per-binding, branch-scoped channel on
+  both tiers: intra (`_ifc.py`) joins it into a binding's label only on a
+  READ, leaving `Symbol.label` / field labels / alias groups / escape
+  tracking flat; summary (`_ifc_summary.py`) routes the inline
+  container-mutator read-back through the existing branch-scoped content
+  channel, leaving `env`'s alias / mutation-target role untouched. Each
+  channel is isolated per branch and deferred-unioned back across `if` /
+  `elif` / `else`, `if ... then ... else`, and `match`, so an arm's push
+  reaches a read after the construct without contaminating a sibling
+  branch. Now a warning by default and a hard error under `@strict_ifc`.
+  Disclosed residuals stay open: inside a `while` / `for` body the taint
+  is intentionally NOT branch-isolated (the two-pass loop walk makes a
+  push anywhere in the body visible to every read in the body), a sound
+  MAY over-approximation that CATCHES the intra loop-carried
+  read-before-write leak (iteration 2 reads iteration 1's secret) and
+  over-reports a loop-nested mutually-exclusive sibling read in the safe
+  direction; the assignment sibling-branch false positive; the general
+  list-aliasing false negatives (`var b = a`, embed-then-mutate,
+  store-then-push, `bag.items.push(...)` on a local struct field); and the
+  cross-function loop-carried read-before-write. Validated by a diff
+  review, an adjudication, an independent focused review (ship), and a
+  pentester pass (no new laundering, no regression, both backends);
+  covered by `tests/test_ifc_branch_scoped_container.py`. Advisory:
+  `docs/advisories/2026-08-08-ifc-match-arm-container-leak.md`.
+
+- **A cross-branch container-push FALSE POSITIVE removed: a direct push
+  of a `@secret` into a fresh local in one branch, read in a
+  mutually-exclusive sibling branch, was flagged on leak-free code (C1;
+  precision fix, OPPOSITE direction; not a security fix).** The
+  intra-procedural pass raised the shared receiver label flatly, so a
+  sibling branch's read saw a push no execution path could observe (a
+  warning by default, a hard error under `@strict_ifc`) on code that
+  cannot leak. The per-branch scoping above makes the sibling read clean
+  for `if` / `elif` / `else` and `match`; the real-leak diagnostics (S1
+  for `if` / `match` / `while`, the both-arms baseline, the cross-function
+  effect, embed-mutated-in-a-branch, and the loop-family leaks) all stay
+  flagged. This is the change behind the 5086 -> 5099 suite step (13 new
+  regression guards in `tests/test_ifc_branch_scoped_container.py`).
+
 ## v1.26.0: cross-function param-carried IFC read-back false negative closed (2026-08-08)
 
 - **A `@secret` parameter laundered through a callee-mutated (or
