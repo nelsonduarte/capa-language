@@ -387,8 +387,17 @@ class _ExpressionsMixin:
         self._ct_reject(
             self._label_of(e.cond), e.cond.pos, "an if-expression condition"
         )
+        # Branch-scoped container-mutation taint, as for the if / match
+        # statement forms: isolate each branch from the pre-expression
+        # snapshot, then union both deltas back.
+        before_ct = dict(self._container_taint_map())
+        self._container_isolate(before_ct)
         then_ty = self._check_expr(e.then_expr)
+        then_ct = self._container_taint
+        self._container_isolate(before_ct)
         else_ty = self._check_expr(e.else_expr)
+        else_ct = self._container_taint
+        self._container_merge(before_ct, [then_ct, else_ct])
         self._pc_label = saved_pc
         if not compatible(then_ty, else_ty):
             self._err(
@@ -446,6 +455,14 @@ class _ExpressionsMixin:
         # arm bodies (and guards) -- a sink there leaks which arm ran.
         saved_pc = self._pc_label
         arm_pc = L.join(saved_pc, scrutinee_label)
+        # Branch-scoped container-mutation taint: each arm starts from the
+        # pre-match snapshot in isolation and its additions are unioned back
+        # after the match, so a push in one arm is not seen by a
+        # mutually-exclusive sibling arm's read but is seen after the match.
+        # A guard cannot be a direct container mutation (the mutators return
+        # Unit, not Bool), so isolating the whole arm loses no in-body push.
+        before_ct = dict(self._container_taint_map())
+        branch_ct: list[dict] = []
         for arm in s.arms:
             self._consumed = set(before)
             self._live_linear = dict(before_live)
@@ -453,6 +470,7 @@ class _ExpressionsMixin:
             self._bind_pattern(arm.pattern, scrutinee_ty, mutable=False)
             self._label_pattern_binds(arm.pattern, scrutinee_label)
             self._pc_label = arm_pc
+            self._container_isolate(before_ct)
             if arm.guard is not None:
                 gty = self._check_expr(arm.guard)
                 if not compatible(TyBool, gty):
@@ -492,9 +510,12 @@ class _ExpressionsMixin:
             if not arm_diverges:
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
+                branch_ct.append(self._container_taint)
 
         # Restore the pc-label raised for the arm bodies (S2.implicit).
         self._pc_label = saved_pc
+        # Union each reachable arm's container-mutation taint back (deferred).
+        self._container_merge(before_ct, branch_ct)
 
         if branch_results:
             merged: set[str] = set()

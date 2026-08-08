@@ -9,6 +9,53 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+A coupled information-flow fix that follows on from `1.26.0`. It closes a
+real `@secret` false NEGATIVE and a `@strict_ifc` false REJECTION, both
+caused by the container-mutation taint being flat / monotone across
+branches while the `1.26.0` cross-function content channel was
+branch-scoped.
+
+**Security.**
+
+- *A `@secret` pushed into a fresh local inside a `match` arm, then read
+  (or stored into a parameter) AFTER the match, leaked unflagged
+  (S1-match).* The intra-procedural pass carried the push on the flat
+  shared label (caught), but the cross-function summary copied the match
+  arm's environment per arm and DISCARDED it, so the arm's taint never
+  reached a read after the match. The identical shape with an `if` was
+  flagged. The secret reached the public sink at runtime on both backends.
+  The summary now routes the inline container-mutator read-back through the
+  branch-scoped content channel (with its deferred union), so a push in a
+  `match` arm reaches a read after the match while `env`'s alias /
+  mutation-target role is left untouched. Ships under the
+  [`STABILITY.md`](STABILITY.md) security exception.
+
+**Fixed.**
+
+- *A direct push of a `@secret` into a fresh local in one branch of an
+  `if` / `elif` / `else` or `match`, read in a mutually-exclusive SIBLING
+  branch, was wrongly flagged (C1): a warning by default and a hard error
+  under `@strict_ifc` on leak-free code that no execution path could leak.*
+  The intra-procedural pass raised the shared receiver label flatly, so a
+  sibling branch's read saw a push it could never observe at runtime. The
+  pass now records the container-mutation taint in a SEPARATE, per-binding,
+  branch-scoped channel joined into a binding's label only on a read; the
+  shared label, field labels, struct-alias groups and escaped-struct
+  tracking stay flat and untouched. Both the intra and summary channels are
+  isolated per branch and deferred-unioned back, uniformly across `if` /
+  `elif` / `else`, `if ... then ... else`, `while`, `for` and `match`.
+
+**Honest scope.** This closes the direct-container-push sibling false
+positive and the `match`-arm-discard false negative. It does NOT close the
+assignment sibling-branch false positive (`x = secret` in one branch, read
+in a sibling), which lives on the shared label via assignment and remains
+open. The general list-aliasing residuals disclosed with `1.26.0` also
+stay open (a list aliased under a second name, `var alias = xs;
+xs.push(secret); read alias`; embed-then-mutate; store-then-push): lists
+are reference types and Capa has no points-to / list-alias analysis. The
+loop-carried read-before-write residual (a read textually before a push
+that a later iteration would feed) likewise stays open.
+
 ## [1.26.0], 2026-08-08
 
 A security patch that closes a cross-function information-flow false

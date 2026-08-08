@@ -1019,12 +1019,21 @@ class _IfcMixin:
         )):
             return L.PUBLIC
 
-        # A name carries its binding's label.
+        # A name carries its binding's label, JOINED with any
+        # branch-scoped container-mutation taint recorded for that binding
+        # (``_check_ifc_container_mutation``): a push of a @secret value into
+        # the container in a branch reaches a read here without polluting the
+        # shared label / alias set.
         if isinstance(e, A.Ident):
             sym = self.bindings.get(id(e))
+            base = L.PUBLIC
             if sym is not None and getattr(sym, "label", None):
-                return L.normalize(sym.label)
-            return L.PUBLIC
+                base = L.normalize(sym.label)
+            if sym is not None:
+                extra = self._container_taint_map().get(id(sym))
+                if extra:
+                    return L.join(base, extra)
+            return base
 
         # Derived values join the labels of every operand that flows
         # into them. Interpolation is a flow: ``"${secret}"`` is
@@ -1628,6 +1637,46 @@ class _IfcMixin:
             for x in node:
                 yield from self._lambda_free_idents(x, locals_)
 
+    # ---- branch-scoped container-mutation taint channel ----------
+    #
+    # A per-binding channel (``id(Symbol) -> label``) recording the taint
+    # a container binding acquired from an in-body mutation
+    # (``xs.push(secret)``). It is kept SEPARATE from the shared
+    # ``Symbol.label`` (which stays flat / monotone, coupled to field / alias
+    # / escape reasoning) and is branch-scoped exactly like the summary's
+    # cross-function content channel: each branch is analyzed from a common
+    # snapshot in isolation, then every branch's delta is unioned back
+    # (``_container_isolate`` / ``_container_merge``). Joined into a binding's
+    # effective label only on a READ (``_compute_label``). ``while`` / ``for``
+    # have a single body and merge naturally (the body mutates the channel in
+    # place); only ``if`` / ``elif`` / ``else`` and ``match`` arms need the
+    # explicit isolate-then-merge.
+
+    def _container_taint_map(self) -> dict:
+        ct = getattr(self, "_container_taint", None)
+        if ct is None:
+            ct = {}
+            self._container_taint = ct
+        return ct
+
+    def _container_isolate(self, baseline: dict) -> dict:
+        """Start a branch from a copy of ``baseline`` and return the map the
+        branch ends with (its own additions), leaving ``baseline`` intact so
+        the next sibling starts clean too."""
+        self._container_taint = dict(baseline)
+        return self._container_taint
+
+    def _container_merge(self, baseline: dict, posts: list) -> None:
+        """Union every branch's container-taint map (from
+        ``_container_isolate``) back into the enclosing scope, so a read
+        AFTER the construct reflects any branch's push while a sibling read
+        did not."""
+        merged = dict(baseline)
+        for post in posts:
+            for key, lbl in post.items():
+                merged[key] = L.join(merged.get(key), lbl)
+        self._container_taint = merged
+
     # ---- implicit flow / pc-label (roadmap S2.implicit) ----------
 
     def _pc_raise(self, *cond_exprs) -> str:
@@ -1904,7 +1953,21 @@ class _IfcMixin:
             return
         sym = self.bindings.get(id(e.receiver))
         if sym is not None:
-            sym.label = L.join(sym.label, L.SECRET)
+            # Record the container-mutation taint in a SEPARATE, per-binding,
+            # BRANCH-SCOPED channel rather than raising the shared
+            # ``sym.label``. The shared label is flat / monotone across
+            # branches and coupled to field labels, struct-alias groups and
+            # escaped-struct tracking; raising it here made a direct push in
+            # one branch leak into a mutually-exclusive sibling branch's read
+            # (a false positive). This channel is isolated per branch and
+            # deferred-unioned out (see ``_check_if`` / ``_check_match_expr``),
+            # and joined into the effective label only when the binding is
+            # READ (``_compute_label``) -- so a sibling read stays clean while
+            # a read AFTER the construct still reflects the push. The shared
+            # label / field labels / alias groups / escape tracking are left
+            # flat and untouched.
+            ct = self._container_taint_map()
+            ct[id(sym)] = L.join(ct.get(id(sym)), L.SECRET)
 
     def _check_no_cap_into_container(self, e: A.MethodCall, recv_ty) -> None:
         """Reject inserting a capability into a container via a

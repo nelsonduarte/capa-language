@@ -182,6 +182,11 @@ class _ItemsMixin:
         # -- it lives entirely within ``_check_block``.
         prev_pc_label = getattr(self, "_pc_label", L.PUBLIC)
         self._pc_label = L.PUBLIC
+        # Fresh per-function branch-scoped container-mutation taint channel
+        # (see ``_ifc._container_taint_map``); saved/restored so a nested
+        # function / lambda body does not clobber the enclosing one.
+        prev_container_taint = getattr(self, "_container_taint", None)
+        self._container_taint = {}
 
         # Capability parameters: collected so the analyzer can
         # warn at the end of the body if any are declared but
@@ -433,6 +438,7 @@ class _ItemsMixin:
         self._cur_fun_id = prev_cur_fun_id
         self._constant_time = prev_constant_time
         self._pc_label = prev_pc_label
+        self._container_taint = prev_container_taint
         self._pop_scope()
         self._pop_type_params()
 

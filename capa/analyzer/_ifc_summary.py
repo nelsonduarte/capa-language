@@ -1425,14 +1425,29 @@ class _SummaryBuilder:
             if not injected:
                 continue
             if isinstance(e.receiver, A.Ident):
-                env[e.receiver.name] = (
-                    env.get(e.receiver.name, set()) | injected
-                )
+                # Reflect the pushed value on a later READ of the receiver
+                # via the branch-scoped CONTENT channel, NOT ``env``. ``env``
+                # is flat/monotone across branches and doubles as the alias /
+                # mutation-TARGET set, so raising it here made a direct push
+                # in one branch leak into a mutually-exclusive sibling
+                # branch's read (a false positive), and it polluted the alias
+                # set with the pushed VALUE's taint (a spurious self-effect:
+                # the pushed value's param index became a mutation target of
+                # the receiver). The content channel is isolated per branch
+                # and deferred-unioned out (``_content_isolated`` /
+                # ``_content_merge``), so a sibling read stays clean while a
+                # read AFTER the construct still reflects the push -- the
+                # exact separation the cross-function content channel already
+                # uses. ``env``'s alias role is left untouched.
+                self._cur_content.setdefault(
+                    e.receiver.name, set(),
+                ).update(injected)
             # The receiver may be a plain parameter (``xs.push(v)``) or
             # a field chain rooted at one (``self.items.push(v)``); the
             # effect is recorded against the ROOT parameter, whole-value
             # -- the same sound over-approximation the field-write path
-            # uses.
+            # uses. It reads ``env`` (the un-polluted alias set), so the
+            # cross-function mutation effect is recorded exactly as before.
             self._record_mutation_effect(e.receiver, injected, env)
 
         # User method call: receiver-type may be unknown at summary

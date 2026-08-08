@@ -618,6 +618,13 @@ class _StatementsMixin:
         # the function/loop exit checks on that path, not here).
         before_live = dict(self._live_linear)
         branch_live: list[dict] = []
+        # Branch-scoped container-mutation taint: each branch starts from the
+        # pre-if snapshot in isolation, and every non-diverging branch's
+        # additions are unioned back after the if, so a push in one branch is
+        # not seen by a mutually-exclusive sibling branch's read but is seen
+        # by a read after the if.
+        before_ct = dict(self._container_taint_map())
+        branch_ct: list[dict] = []
 
         # Roadmap S2.implicit: each branch body is guarded by all the
         # conditions evaluated to reach it, so the pc-label rises by the
@@ -633,10 +640,12 @@ class _StatementsMixin:
         self._consumed = set(before)
         self._live_linear = dict(before_live)
         self._pc_label = acc_pc
+        self._container_isolate(before_ct)
         self._check_block(s.then_block)
         if not _block_diverges(s.then_block):
             branch_results.append(self._consumed)
             branch_live.append(dict(self._live_linear))
+            branch_ct.append(self._container_taint)
 
         for cond, blk in s.elif_arms:
             self._consumed = set(before)
@@ -651,19 +660,23 @@ class _StatementsMixin:
             self._ct_reject(self._label_of(cond), cond.pos, "an elif-condition")
             acc_pc = L.join(acc_pc, self._label_of(cond))
             self._pc_label = acc_pc
+            self._container_isolate(before_ct)
             self._check_block(blk)
             if not _block_diverges(blk):
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
+                branch_ct.append(self._container_taint)
 
         if s.else_block is not None:
             self._consumed = set(before)
             self._live_linear = dict(before_live)
             self._pc_label = acc_pc
+            self._container_isolate(before_ct)
             self._check_block(s.else_block)
             if not _block_diverges(s.else_block):
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
+                branch_ct.append(self._container_taint)
         else:
             # No else: the all-conditions-false path falls
             # through and consumes nothing additional.
@@ -690,6 +703,10 @@ class _StatementsMixin:
         # Restore the pc-label: the implicit-flow raise scoped only to
         # the branch bodies (roadmap S2.implicit).
         self._pc_label = saved_pc
+        # Union each reachable branch's container-mutation taint back into
+        # the enclosing scope (deferred). If every branch diverged, the
+        # baseline stands (nothing reached the merge).
+        self._container_merge(before_ct, branch_ct)
 
     def _check_while(self, s: A.WhileStmt) -> None:
         cty = self._check_expr(s.cond)
