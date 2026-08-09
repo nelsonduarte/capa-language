@@ -88,15 +88,15 @@ Out of scope:
 
 ## Supported versions
 
-Capa is on the `1.x` line (latest `1.27.0`) and is a one-person
+Capa is on the `1.x` line (latest `1.28.0`) and is a one-person
 project. Only the latest tagged release is supported for security fixes.
 I may publish patch releases for the latest minor when a fix is
 significant.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.27.0 (latest) | yes |
-| < 1.27  | no, please upgrade |
+| 1.28.0 (latest) | yes |
+| < 1.28  | no, please upgrade |
 
 ## Published advisories
 
@@ -282,6 +282,27 @@ The 2026-05-25 audit record lives at the repository root in
   and the cross-function loop-carried read-before-write stay open and are
   documented. Affected `1.26.0` and earlier on the `1.x` line, shipped in
   `1.27.0` under the security exception.
+- [`docs/advisories/2026-08-09-ifc-field-receiver-container-leak.md`](docs/advisories/2026-08-09-ifc-field-receiver-container-leak.md):
+  the field-chain-receiver extension of the container-mutation taint. A
+  `@secret` inserted into a container through a **field-chain receiver** on
+  a local struct (`bag.items.push(secret)`, `bag.tags.add(secret)`,
+  `bag.m.set(k, secret)`, nested `o.inner.items.push(secret)`), then read
+  back through that same path into a public sink, leaked unflagged: the
+  container-mutation taint fired only for a plain-identifier receiver, so
+  the field-chain mutation was dropped. No default warning, no `@strict_ifc`
+  error, and the secret reached the sink at runtime on both backends
+  (reproduced on the released `1.27.0` binary). The taint is now keyed on
+  the `(root-binding, field-path)` the container lives at and joined back on
+  a read of that path or a nested path, so the leak warns by default and is
+  a hard error under `@strict_ifc` for `List.push` / `Set.add` / `Map.set`
+  and nested depth, without re-introducing the sibling-field / branch-scope
+  false positives `1.26.0` and `1.27.0` removed. It closes the
+  intra-procedural field-chain read-back on the container's declared root
+  only; three distinct residuals stay open and are documented (a
+  call- / index-rooted receiver, a whole-struct read of the same root, and
+  the different-root points-to aliases), each a tested false negative.
+  Severity low-to-moderate. Affected `1.27.0` and earlier on the `1.x`
+  line, shipped in `1.28.0` under the security exception.
 
 ## Public disclosure
 

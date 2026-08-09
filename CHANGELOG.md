@@ -9,6 +9,81 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.28.0], 2026-08-09
+
+An information-flow soundness fix that follows on from `1.27.0`. It closes
+a `@secret` false NEGATIVE for a container mutated through a FIELD-CHAIN
+receiver (`bag.items.push(secret)`). The `1.27.0` branch-scoped
+container-mutation taint fired only when the mutator's receiver was a plain
+identifier (`xs.push`), so a mutation through a field chain was dropped and
+a later read of that field laundered the secret back to public.
+
+**Security.**
+
+- *A `@secret` inserted into a container through a FIELD-CHAIN receiver on
+  a local struct, then read back into a public sink, leaked unflagged.*
+  Shapes: `bag.items.push(secret)`, `bag.tags.add(secret)`,
+  `bag.m.set(k, secret)`, and nested `o.inner.items.push(secret)`, followed
+  by a read of that same path (`bag.items.get(0)`) into a public sink. The
+  container-mutation taint fired ONLY for a plain-identifier receiver, so
+  the field-chain mutation was dropped: on the released `1.27.0` binary this
+  passed with a clean `capa --check` (no warning), passed under
+  `@strict_ifc` with ZERO errors, and the secret reached the public sink at
+  runtime on BOTH backends -- a strict-tier noninterference false negative.
+  The branch-scoped container-mutation taint is now keyed on the
+  `(root-binding, field-path)` the container lives at (a plain identifier is
+  path `()`, a field chain is its field names) and joined back on a read of
+  that path or a nested path, WITHOUT escaping the root binding. So the leak
+  now warns by default and is a hard error under `@strict_ifc`, on both
+  backends, for `List.push` / `Set.add` / `Map.set` and nested depth, while
+  it does NOT re-introduce the sibling-field / branch-scope false positives
+  that `1.26.0` and `1.27.0` removed (a public sibling field `bag.other` and
+  a mutually-exclusive branch's read stay clean). Ships under the
+  [`STABILITY.md`](STABILITY.md) security exception, and as a MINOR bump for
+  the same reason the earlier information-flow soundness fixes did (`1.2.0`,
+  `1.3.0`, `1.4.0`, `1.15.0`, `1.26.0`, `1.27.0`): it tightens the static
+  analysis so a program that previously compiled clean while laundering a
+  secret now warns by default and is a hard error under `@strict_ifc`. Only
+  programs that were already unsound are affected. Covered by
+  [`tests/test_ifc_branch_scoped_container.py`](tests/test_ifc_branch_scoped_container.py).
+  Advisory:
+  [`docs/advisories/2026-08-09-ifc-field-receiver-container-leak.md`](docs/advisories/2026-08-09-ifc-field-receiver-container-leak.md).
+
+**Honest scope.** This closes the intra-procedural field-chain
+mutate-then-read on the container's DECLARED root only (`List.push` /
+`Set.add` / `Map.set`, nested depth). Three DISTINCT
+residual mechanisms stay open, each an honest, tested false negative that
+leaks at runtime unflagged at both tiers on both backends:
+
+1. *Receiver not rooted at a binding.* A mutator on a call- or
+   index-rooted receiver (`get_items(bag).push(secret)`,
+   `arr[0].items.push(secret)`) has no `(root, field-path)` key at all, so
+   the push is untracked and the read is missed.
+2. *Whole-struct read of the SAME root.* After `bag.items.push(secret)` the
+   taint IS keyed on `(bag, ("items",))`, but reading or passing the WHOLE
+   `bag` -- `"${bag}"` interpolation, a method whose body reads the field
+   (`bag.reveal()`), or passing the whole `bag` to a callee that reads
+   `bag.items` (`foo(bag)`) -- consults only the exact empty-path key
+   `(bag, ())` and never the tainted prefix, so it is missed. This is the
+   bare whole-read asymmetry (a whole-struct read does an exact-key lookup;
+   a field read prefix-scans), NOT a points-to gap; the root IS keyed.
+   Closing it needs field-sensitivity-under-escape (a naive whole-read
+   prefix-scan re-introduces the public-sibling false positives), so it is a
+   design item, not a quick fix. This is the most idiomatic residual
+   (logging or serialising a struct after putting a secret in one field).
+3. *Different-root points-to.* The container is reached through a root the
+   taint is not keyed on -- list-rename (`var lst = bag.items;
+   lst.push(secret); read bag.items`), whole-struct alias (`var b2 = bag;
+   b2.items.push(secret); read bag.items`), embed-then-mutate -- which only
+   a points-to analysis Capa does not have could close.
+
+As a deliberate, SOUND over-approximation, reassigning the root or a field
+to a fresh leak-free value after a push (`bag = Bag { items: [] }` or
+`bag.items = []`) keeps the later read FLAGGED: the taint is monotonic, so
+this is a safe-direction over-report and nothing secret reaches the sink.
+The loop-body over-approximation and the assignment sibling-branch false
+positive disclosed with `1.27.0` stay open and are documented there.
+
 ## [1.27.0], 2026-08-08
 
 A coupled information-flow fix that follows on from `1.26.0`. It closes a
@@ -9723,7 +9798,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.27.0...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.28.0...HEAD
+[1.28.0]: https://github.com/nelsonduarte/capa-language/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/nelsonduarte/capa-language/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/nelsonduarte/capa-language/compare/v1.25.1...v1.26.0
 [1.25.1]: https://github.com/nelsonduarte/capa-language/compare/v1.25.0...v1.25.1

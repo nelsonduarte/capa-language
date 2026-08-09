@@ -19,6 +19,48 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.28.0: field-chain-receiver container-mutation IFC false negative closed (2026-08-09)
+
+- **A `@secret` inserted into a container through a FIELD-CHAIN receiver on
+  a local struct, then read back into a public sink, leaked unflagged
+  (security exception, MINOR).** The `1.27.0` branch-scoped
+  container-mutation taint fired ONLY when the mutator's receiver was a
+  plain identifier (`xs.push`), so a mutation through a field chain
+  (`bag.items.push(secret)`, `bag.tags.add(secret)`, `bag.m.set(k, secret)`,
+  nested `o.inner.items.push(secret)`) was dropped and a later read of that
+  same path (`bag.items.get(0)`) laundered the secret back to public. On the
+  released `1.27.0` binary this passed with a clean `capa --check` (no
+  warning), passed under `@strict_ifc` with ZERO errors, and the secret
+  reached the public sink at runtime on BOTH backends -- a strict-tier
+  noninterference false negative. The branch-scoped container-taint channel
+  is now keyed on the `(root-binding, field-path)` the container lives at (a
+  plain identifier is path `()`, a field chain is its field names): the
+  mutation is recorded there and joined back on a field READ at or below that
+  path, so the leak now warns by default and is a hard error under
+  `@strict_ifc`, on both backends, for `List.push` / `Set.add` / `Map.set`
+  and nested depth. The root binding is kept un-escaped, so a public sibling
+  field (`bag.other`) and a mutually-exclusive branch's read stay clean, with
+  no re-introduction of the false positives `b895ca6` / `4c69a02` removed for
+  the plain-Ident case. The taint is monotonic, so reassigning the root or a
+  field to a fresh leak-free value after a push (`bag = Bag { items: [] }`,
+  `bag.items = []`) keeps the read flagged -- a safe, sound over-report where
+  nothing secret reaches the sink. Keyed on the syntactic root, three
+  DISTINCT residual mechanisms stay open, each a tested, honest false
+  negative that leaks at runtime unflagged at both tiers on both backends:
+  (1) a mutator on a call- / index-rooted receiver (`get_items(bag).push`,
+  `arr[0].items.push`) has no `(root, field-path)` key and is untracked;
+  (2) a whole-struct read of the SAME root (`"${bag}"`, `bag.reveal()`,
+  `foo(bag)`) misses the field taint through the bare whole-read asymmetry
+  (an exact empty-path lookup vs the field read's prefix scan), NOT a
+  points-to gap, and closing it needs field-sensitivity-under-escape; and
+  (3) the different-root points-to residuals (`var lst = bag.items`,
+  `var b2 = bag`, embed-then-mutate), which need a points-to analysis Capa
+  does not have. The loop-body over-approximation and the assignment
+  sibling-branch false positive disclosed with `1.27.0` stay open. Fix
+  commits `8ebd4dc` (analyzer) and `e94f555` (residual disclosure); covered
+  by `tests/test_ifc_branch_scoped_container.py`. Advisory:
+  `docs/advisories/2026-08-09-ifc-field-receiver-container-leak.md`.
+
 ## v1.27.0: branch-scoped container-mutation taint; match-arm inline-push IFC false negative closed (2026-08-08)
 
 - **A `@secret` pushed inline into a fresh local INSIDE a `match` arm,
