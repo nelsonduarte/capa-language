@@ -166,8 +166,8 @@ that is bundled with esbuild, so install the dev dependencies and let
 ```bash
 cd vscode
 npm install
-npx @vscode/vsce package --no-dependencies
-code --install-extension capa-language-0.13.0.vsix
+npx @vscode/vsce package --no-dependencies -o capa-language.vsix
+code --install-extension capa-language.vsix
 ```
 
 `npm run bundle` produces `dist/extension.js` (the entry point named by
