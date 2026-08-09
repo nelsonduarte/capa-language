@@ -299,6 +299,69 @@ class _IfcMixin:
                 return self._container_taint_at(root, tuple(path))
         return None
 
+    def _arg_container_paths(self, arg: A.Expr):
+        """The PARAMETER-RELATIVE container-mutation access paths that are
+        @secret for ``arg`` (a struct passed to a sink-reaching parameter),
+        or ``None`` when ``arg`` is not an Ident-rooted chain (so its paths
+        cannot be determined and the caller must fall back to the
+        conservative whole-value check).
+
+        ``arg``'s root binding and the caller's field prefix to it are
+        resolved, then every ``(root, kpath)`` @secret container-taint key
+        whose ``kpath`` extends the prefix is returned with the prefix
+        STRIPPED, so the paths are relative to the callee's PARAMETER (the
+        same frame the callee's sunk paths are in). Passing ``bag`` (prefix
+        ``()``) tainted at ``("secret_items",)`` yields ``{("secret_items",)}``;
+        passing ``outer.bag`` yields the paths under ``("bag",)`` stripped."""
+        root = self._struct_root_sym(arg)
+        prefix = self._field_path_from_root(arg)
+        if root is None or prefix is None:
+            return None
+        prefix = tuple(prefix)
+        plen = len(prefix)
+        out: set = set()
+        for (kid, kpath), lbl in self._container_taint_map().items():
+            if (
+                kid == id(root)
+                and kpath[:plen] == prefix
+                and L.normalize(lbl) == L.SECRET
+            ):
+                out.add(kpath[plen:])
+        return out
+
+    def _sink_arg_field_cleared(self, arg: A.Expr, sunk_paths) -> bool:
+        """Stage 2 read-side field-qualified check. Return True (SKIP the
+        cross-function sink flag) ONLY when it is provably safe: the
+        argument's @secret label comes PURELY from the container-mutation
+        channel (its BASE label is public), its tainted access paths are
+        determinable, and NONE of them is prefix-compatible with any path
+        the callee actually SINKS for this parameter. Then passing a struct
+        tainted at ``("items",)`` to a callee that sinks only ``("note",)``
+        is clean.
+
+        Conservative on any uncertainty (returns False -> keep flagging),
+        which is the soundness floor: no leak may reopen. Never skips when
+        the callee's sunk paths are unknown/empty, when the whole-value
+        BASE label is @secret (a genuinely secret struct, or the disclosed
+        field-store sibling over-report), when the argument is not
+        Ident-rooted, or when a tainted path is on the same root-to-leaf
+        line as a sunk path (the mirror leak ``m_whole_callee`` etc.). A
+        callee that sinks the WHOLE parameter records the sentinel ``()``,
+        which is prefix-compatible with every tainted path, so it always
+        flags."""
+        if not sunk_paths:
+            return False
+        if L.normalize(self._base_label_of(arg)) == L.SECRET:
+            return False
+        tainted = self._arg_container_paths(arg)
+        if not tainted:
+            return False
+        for t in tainted:
+            for s in sunk_paths:
+                if _prefix_compatible(t, s):
+                    return False
+        return True
+
     def _mark_escapes_for(self, e: A.Expr) -> None:
         """Mark struct bindings that ESCAPE through ``e`` (roadmap S2
         per-field soundness). A struct passed whole to a call, stored in
@@ -2581,6 +2644,7 @@ class _IfcMixin:
         # whole-callable union -- keeps a secret routed to a Net-only param
         # from being fabricated as reaching a sibling param's Fs.
         callee_sink_caps = self._ifc_sink_caps.get(key, {})
+        callee_sink_paths = self._ifc_sink_paths.get(key, {})
         param_tys = getattr(getattr(sym, "ty", None), "params", ())
         for param_idx, arg_idx in enumerate(perm):
             if param_idx not in sink_params:
@@ -2591,6 +2655,14 @@ class _IfcMixin:
             ptype = param_tys[param_idx] if param_idx < len(param_tys) else None
             label = self._sink_param_arg_label(arg, ptype)
             if label is None or L.normalize(label) != L.SECRET:
+                continue
+            # Stage 2 (read-side field precision): a whole struct tainted
+            # only in the container channel is a leak ONLY if the callee
+            # actually sinks a tainted access path -- intersect against the
+            # callee's field-qualified sunk paths for this parameter.
+            if self._sink_arg_field_cleared(
+                arg, callee_sink_paths.get(param_idx),
+            ):
                 continue
             pname = (
                 sym.param_names[param_idx]
@@ -2654,6 +2726,7 @@ class _IfcMixin:
         if not recv_is_dynamic and exact_key in self._ifc_summaries:
             sink_params = self._ifc_summaries[exact_key]
             sink_caps = self._ifc_sink_caps.get(exact_key, {})
+            sink_paths = self._ifc_sink_paths.get(exact_key, {})
         else:
             from ._ifc_summary import methods_by_name
             grouping = methods_by_name(self._ifc_summaries)
@@ -2663,17 +2736,30 @@ class _IfcMixin:
             # ``sink_params`` uses -- so the leak is tagged with only the
             # routed parameter's caps, never a sibling parameter's.
             sink_caps: dict = {}
+            # Field-qualified SUNK PATHS, unioned over candidates under the
+            # SAME by-name over-approximation (a dynamic-dispatch receiver
+            # may sink ANY candidate impl's paths, so the union is the sound
+            # over-report: a tainted path compatible with ANY candidate's
+            # sunk path flags).
+            sink_paths: dict = {}
             for key in grouping.get(e.method, ()):
                 sink_params |= self._ifc_summaries.get(key, frozenset())
                 for pidx, caps in self._ifc_sink_caps.get(key, {}).items():
                     sink_caps.setdefault(pidx, set()).update(caps)
+                for pidx, paths in self._ifc_sink_paths.get(key, {}).items():
+                    sink_paths.setdefault(pidx, set()).update(paths)
         if not sink_params:
             return
 
         has_self = getattr(method_sym, "has_self", False)
         # Receiver = parameter index 0 when the method takes ``self``.
         if has_self and 0 in sink_params:
-            if L.normalize(self._label_of(e.receiver)) == L.SECRET:
+            if (
+                L.normalize(self._label_of(e.receiver)) == L.SECRET
+                and not self._sink_arg_field_cleared(
+                    e.receiver, sink_paths.get(0),
+                )
+            ):
                 self._emit_ifc_call_leak(
                     repr(callee_name), "self (the receiver)", e.receiver.pos,
                     sink_caps.get(0, frozenset()),
@@ -2689,6 +2775,9 @@ class _IfcMixin:
             ptype = param_tys[local_idx] if local_idx < len(param_tys) else None
             label = self._sink_param_arg_label(arg, ptype)
             if label is None or L.normalize(label) != L.SECRET:
+                continue
+            # Stage 2 read-side field precision (see the free-call path).
+            if self._sink_arg_field_cleared(arg, sink_paths.get(full_idx)):
                 continue
             pname = (
                 method_sym.param_names[local_idx]
@@ -3031,6 +3120,20 @@ class _IfcMixin:
             member.label = L.join(getattr(member, "label", None), L.SECRET)
             if getattr(member, "field_labels", None) is not None:
                 self._escaped_struct_syms.add(id(member))
+
+def _prefix_compatible(a: tuple, b: tuple) -> bool:
+    """True when access paths ``a`` and ``b`` lie on the same root-to-leaf
+    line: one is a prefix of the other. Used by the Stage 2 read-side check
+    to decide whether a TAINTED access path is actually SUNK. ``a`` sunk at
+    ``b``: the container taint at ``a`` reaches a sink iff the sunk path
+    ``b`` is at or under ``a`` (``b`` reads into the tainted container) or
+    ``a`` is at or under ``b`` (the tainted sub-path is inside what the
+    callee sinks). The sentinel ``()`` (whole struct / param) is a prefix
+    of everything, so it is compatible with any path -- the conservative
+    catch-all."""
+    n = min(len(a), len(b))
+    return a[:n] == b[:n]
+
 
 def _deepcopy_field_map(node):
     """Recursively copy a per-field label map so a binding's map is

@@ -686,6 +686,14 @@ class Analyzer(
         # a declared-@secret field read and returned) taints the result
         # in the caller -- closes the field-return laundering hole.
         self._ifc_return_effects: dict = {}
+        # Cross-function FIELD-QUALIFIED SINK PATHS (Stage 2): callable_key
+        # -> {param index -> frozenset of parameter-relative field paths
+        # that reach a public sink}. The read-side mirror of the field
+        # effects. At a call passing a container-tainted struct WHOLE, the
+        # call site intersects the argument's tainted access paths against
+        # these SUNK paths, so a struct tainted at one field passed to a
+        # callee that sinks only a sibling is not over-reported.
+        self._ifc_sink_paths: dict = {}
 
     # Type-substitution machinery (_fresh_ty_var, _resolve_ty,
     # _commit_fresh_substitutions, _apply_mapping) lives in
@@ -741,6 +749,7 @@ class Analyzer(
             self._ifc_field_effects,
             self._ifc_return_effects,
             self._ifc_sink_caps,
+            self._ifc_sink_paths,
         ) = compute_ifc_summaries(module, self.global_scope)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:

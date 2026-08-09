@@ -1199,5 +1199,280 @@ class TestReassignRootSafeOverReport(unittest.TestCase):
                     self.assertEqual(_run_wasm(src), "empty\n")
 
 
+# ---- Stage 2: read-side field-qualified cross-function SINK summary. When a
+# whole struct with a container-tainted field is passed to a callee, the call
+# site intersects the argument's tainted access paths against the callee's SUNK
+# access paths, so passing a struct tainted at ``secret_items`` to a callee
+# that sinks only the sibling ``note`` is CLEAN (no leak). The mirror leak
+# (the callee sinks the TAINTED field, or the whole struct) stays FLAGGED. ----
+
+_BAG2 = "type Bag { secret_items: List<String>, note: String }\n"
+
+# CLEAN: pass whole, callee sinks only the clean sibling ``note``.
+SF_CLEAN = (TOK + _BAG2 +
+    "fun show_note(bag: Bag, stdio: Stdio)\n"
+    "    stdio.println(bag.note)\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { secret_items: [], note: \"public\" }\n"
+    "    bag.secret_items.push(secret)\n"
+    "    show_note(bag, stdio)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# CLEAN through a hop: ``relay`` passes the whole struct to ``show_note``; the
+# composed sunk path stays ``("note",)``, disjoint from the tainted
+# ``("secret_items",)``.
+SF_CLEAN_MULTIHOP = (TOK + _BAG2 +
+    "fun show_note(bag: Bag, stdio: Stdio)\n"
+    "    stdio.println(bag.note)\n"
+    "fun relay(bag: Bag, stdio: Stdio)\n"
+    "    show_note(bag, stdio)\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { secret_items: [], note: \"public\" }\n"
+    "    bag.secret_items.push(secret)\n"
+    "    relay(bag, stdio)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_SF_CLEAN = {"pass_whole_clean_sibling": SF_CLEAN,
+             "multihop_clean_sibling": SF_CLEAN_MULTIHOP}
+
+# FLAGGED: pass whole, callee sinks the TAINTED field (the mirror leak; the
+# whole-value carrier the field channel replaced must NOT drop this).
+SF_TAINTED = (TOK + _BAG2 +
+    "fun show_items(bag: Bag, stdio: Stdio)\n"
+    "    match bag.secret_items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { secret_items: [], note: \"public\" }\n"
+    "    bag.secret_items.push(secret)\n"
+    "    show_items(bag, stdio)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# FLAGGED through a hop.
+SF_TAINTED_MULTIHOP = (TOK + _BAG2 +
+    "fun show_items(bag: Bag, stdio: Stdio)\n"
+    "    match bag.secret_items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun relay(bag: Bag, stdio: Stdio)\n"
+    "    show_items(bag, stdio)\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { secret_items: [], note: \"public\" }\n"
+    "    bag.secret_items.push(secret)\n"
+    "    relay(bag, stdio)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# FLAGGED: the callee sinks the WHOLE receiver (a method that reads its own
+# container). The conservative sentinel () sunk path is prefix-compatible with
+# every tainted path, so it always flags.
+SF_DUMP_WHOLE = (TOK + "type Bag { items: List<String> }\n"
+    "impl Bag\n"
+    "    fun dump(self, stdio: Stdio)\n"
+    "        match self.items.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"empty\")\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    bag.items.push(secret)\n"
+    "    bag.dump(stdio)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_SF_TAINTED = {"pass_whole_tainted_field": SF_TAINTED,
+               "multihop_tainted_field": SF_TAINTED_MULTIHOP,
+               "callee_sinks_whole_receiver": SF_DUMP_WHOLE}
+
+
+class TestCrossFnSinkFieldQualified(unittest.TestCase):
+    """Stage 2: the read-side field-qualified sink summary. Passing a whole
+    struct tainted only at one container field to a callee that sinks a CLEAN
+    SIBLING field is not a leak and must be CLEAN (this was a sound over-report
+    the field-keyed container channel introduced when it dropped the whole
+    -value carrier). The MIRROR leak -- the callee sinks the tainted field, or
+    the whole struct -- stays FLAGGED at both tiers, on both backends. The
+    precision composes through a hop (``relay``)."""
+
+    def test_clean_sibling_is_clean(self):
+        for name, src in _SF_CLEAN.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertEqual(len(_flow_errors(rs)), 0,
+                                 [e.message for e in rs.errors])
+
+    def test_clean_sibling_prints_public_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _SF_CLEAN.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "public\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "public\n")
+
+    def test_tainted_or_whole_stays_flagged(self):
+        for name, src in _SF_TAINTED.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_tainted_or_whole_leaks_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _SF_TAINTED.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+# ---- DISCLOSED residual (out of scope): a container captured by a CLOSURE
+# defined BEFORE the push, read through the closure AFTER. The summary does not
+# model that the later push is visible through the earlier-captured binding
+# when the closure is invoked, so it is unflagged -- a lambda flow-sensitivity
+# item, separate from the container channel. A closure defined AFTER the push
+# IS caught (the capture sees the tainted binding). Each leaks at runtime. ----
+
+CC_GETTER = (TOK + "type Bag { items: List<String> }\n"
+    "impl Bag\n"
+    "    fun reveal(self) -> String\n"
+    "        match self.items.get(0)\n"
+    "            Some(x) -> return x\n"
+    "            None -> return \"empty\"\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    let f = fun() -> String => bag.reveal()\n"
+    "    bag.items.push(secret)\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+CC_PLAINLIST = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var xs: List<String> = []\n"
+    "    let f = fun() -> String =>\n"
+    "        match xs.get(0)\n"
+    "            Some(v) -> v\n"
+    "            None -> \"empty\"\n"
+    "    xs.push(secret)\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+CC_HOF = (TOK + "type Bag { items: List<String> }\n"
+    "impl Bag\n"
+    "    fun reveal(self) -> String\n"
+    "        match self.items.get(0)\n"
+    "            Some(x) -> return x\n"
+    "            None -> return \"empty\"\n"
+    "fun apply(g: Fun() -> String) -> String\n"
+    "    return g()\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    let f = fun() -> String => bag.reveal()\n"
+    "    bag.items.push(secret)\n"
+    "    stdio.println(apply(f))\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_CLOSURE_CAPTURE_RESIDUAL = {
+    "getter_via_closure": CC_GETTER,
+    "plain_list_via_closure": CC_PLAINLIST,
+    "hof_invoked_closure": CC_HOF,
+}
+
+
+class TestClosureCaptureBeforePushResidualDisclosed(unittest.TestCase):
+    """DISCLOSED residual (out of scope, a separate lambda flow-sensitivity
+    item): a container captured by a closure defined BEFORE the push and read
+    through the closure AFTER is UNFLAGGED at both tiers, though it leaks the
+    secret at runtime on both backends. Not closed by the container channel or
+    the sink summary (both model straight-line data flow, not the deferred
+    effect of an invocation of an earlier-defined closure). A closure defined
+    AFTER the push is caught. Documented, tested, and honest -- if a future
+    lambda-flow slice closes it, these flip."""
+
+    def test_unflagged_at_both_tiers(self):
+        for name, src in _CLOSURE_CAPTURE_RESIDUAL.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertEqual(len(_flow_errors(rs)), 0,
+                                 [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _CLOSURE_CAPTURE_RESIDUAL.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+# ---- DISCLOSED SAFE over-report (out of scope): a WHOLE-struct value copy
+# ``var b2 = bag`` created AFTER a container push, then reading a CLEAN sibling
+# through the copy. The copy reads ``bag`` whole (which now observes the
+# container taint), collapsing to a whole-value @secret on ``b2``; ``b2`` has no
+# per-field map, so the sibling read falls back to it and is FLAGGED though
+# nothing leaks (it prints the public value). This same whole-value collapse
+# correctly catches a read of the TAINTED field through the copy, so clearing
+# it needs alias-group-aware per-field tracking (a points-to-adjacent change),
+# the same family as the different-root alias residual. A copy made BEFORE the
+# push keeps field precision and is CLEAN. ----
+ALIAS_COPY_AFTER = (TOK +
+    "type Bag { items: List<String>, other: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [], other: \"public\" }\n"
+    "    bag.items.push(secret)\n"
+    "    var b2: Bag = bag\n"
+    "    stdio.println(b2.other)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+ALIAS_COPY_BEFORE = (TOK +
+    "type Bag { items: List<String>, other: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [], other: \"public\" }\n"
+    "    var b2: Bag = bag\n"
+    "    bag.items.push(secret)\n"
+    "    stdio.println(b2.other)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestWholeCopySiblingOverReportDisclosed(unittest.TestCase):
+    """DISCLOSED SAFE over-report: a whole-struct value copy ``var b2 = bag``
+    made AFTER a container push, then reading a clean sibling through the copy,
+    is FLAGGED though nothing leaks (prints the public value). The copy reads
+    ``bag`` whole and collapses to a whole-value @secret on ``b2`` (which has no
+    per-field map), so the sibling falls back to it. This is the sound
+    direction: the same collapse catches a read of the TAINTED field through
+    the copy, so clearing the sibling needs alias-group-aware per-field
+    tracking (a points-to-adjacent change, the different-root alias family). A
+    copy made BEFORE the push keeps field precision and is CLEAN."""
+
+    def test_copy_after_push_over_reports_but_is_safe(self):
+        r = _analyze(ALIAS_COPY_AFTER)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        self.assertEqual(_run_py(ALIAS_COPY_AFTER), "public\n")
+        skip = _wasm_unavailable()
+        if skip is None:
+            self.assertEqual(_run_wasm(ALIAS_COPY_AFTER), "public\n")
+
+    def test_copy_before_push_is_clean(self):
+        r = _analyze(ALIAS_COPY_BEFORE)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        self.assertEqual(_run_py(ALIAS_COPY_BEFORE), "public\n")
+        skip = _wasm_unavailable()
+        if skip is None:
+            self.assertEqual(_run_wasm(ALIAS_COPY_BEFORE), "public\n")
+
+
 if __name__ == "__main__":
     unittest.main()

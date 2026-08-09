@@ -108,14 +108,34 @@ getter, is caught). An internal-secret source taints the caller's
 binding-``j`` unconditionally. This is an explicit data-flow taint,
 default-warn / strict-error like the sink-reaching check.
 
+READ-SIDE FIELD PRECISION (Stage 2, ``sink_paths``). Passing a whole
+struct to a callee no longer over-reports when the callee sinks only a
+CLEAN sibling: the callee's field-qualified SUNK paths (``sink_paths``) are
+intersected against the argument's container-tainted access paths at the
+call site, so ``show_note(bag)`` reading ``bag.note`` is clean while
+``bag`` is tainted at ``bag.secret_items``. The MIRROR leak stays caught:
+a callee that sinks the tainted field, or the whole struct (the
+conservative sentinel ``()`` sunk path), still flags.
+
 CLOSED vs RESIDUAL. A same-root read-back (direct field read, whole read,
-getter, interpolation, or passing the whole struct to a sink-reaching
-callee) is now caught. What genuinely REMAINS a disclosed residual is
-DIFFERENT-ROOT points-to: a container reached through a root the taint is
-not keyed on (an INLINE push through a struct alias, a field-chain rename
-``var lst = bag.items``, or an embed-then-mutate), and a mutator whose
-receiver is not rooted at a binding (a call- / index-rooted receiver).
-Only a points-to analysis, which Capa does not have, could close those.
+getter, interpolation, or passing the whole struct to a callee that sinks
+the tainted path) is caught; passing a whole struct to a callee that sinks
+only a clean sibling is precise (clean). What genuinely REMAINS disclosed:
+
+* DIFFERENT-ROOT points-to: a container reached through a root the taint is
+  not keyed on -- an INLINE push through a struct alias, a whole-struct
+  value copy ``var b2 = bag`` made AFTER the push then a sibling read
+  through the copy (a SAFE over-report, flags but leaks nothing), a
+  field-chain rename ``var lst = bag.items``, or an embed-then-mutate; and
+  a mutator whose receiver is not rooted at a binding (a call- / index-
+  rooted receiver). Only a points-to analysis, which Capa lacks, closes
+  these.
+* CLOSURE-CAPTURE flow: a container captured by a closure defined BEFORE
+  the push and read through the closure AFTER is unflagged (a deferred
+  lambda-flow item; a closure defined AFTER the push is caught).
+* A cross-function FIELD STORE keeps the whole-value carrier, so its
+  sibling read is conservatively flagged (the disclosed field-store
+  sibling over-report); only CONTAINER mutations get sibling precision.
 """
 
 from __future__ import annotations
@@ -169,9 +189,9 @@ _SECRET_SOURCE_METHODS: frozenset = frozenset(m for _c, m in _SECRET_SOURCES)
 
 def compute_ifc_summaries(
     module: A.Module, global_scope,
-) -> tuple[dict, dict, dict, dict]:
+) -> tuple[dict, dict, dict, dict, dict]:
     """Return ``(sink_summaries, field_effects, return_effects,
-    sink_caps)``:
+    sink_caps, sink_paths)``:
 
     * ``sink_summaries``: ``{callable_key: frozenset(sink_reaching
       param indices)}`` -- a value parameter whose value reaches a
@@ -203,11 +223,26 @@ def compute_ifc_summaries(
       routed to reaches -- not the whole-callable union -- so a secret
       that reaches only Net is never tagged with a sibling parameter's
       Fs. It never affects a sink-reaching / warn-or-error decision.
+    * ``sink_paths``: ``{callable_key: {param_idx: frozenset(field_path)}}``
+      -- PER PARAMETER, the ACCESS PATHS of that parameter that actually
+      reach a public sink inside the body, directly or transitively. The
+      read-side field-qualified mirror of ``field_effects``: when a whole
+      struct is passed to a callee, the caller (``_check_ifc_call_summary``
+      in :mod:`._ifc`) INTERSECTS the argument's container-tainted access
+      paths against these SUNK paths and flags only when a tainted path is
+      prefix-compatible with a sunk one, so passing a struct tainted at
+      ``("items",)`` to a callee that sinks only ``("note",)`` is clean.
+      ``field_path`` is the parameter-relative tuple of field names sunk;
+      the sentinel ``()`` means the WHOLE parameter reaches a sink (a bare
+      param sunk, a value derived through a local, an escape, or a k-bound
+      overflow) -- the conservative default, prefix-compatible with every
+      tainted path, so soundness never depends on the precision. Parallel
+      to ``sink_summaries`` and computed on the SAME fixpoint.
 
     ``global_scope`` is the analyzer's populated global scope, used to
     tell user functions / variants / capabilities apart at call sites.
-    All three results are the least fixpoint of the monotone summary
-    operator, so recursion (self or mutual) terminates.
+    All results are the least fixpoint of the monotone summary operator,
+    so recursion (self or mutual) terminates.
     """
     builder = _SummaryBuilder(module, global_scope)
     return builder.run()
@@ -253,6 +288,16 @@ class _SummaryBuilder:
         # the summary already uses yields a determinate (sound, may
         # over-approx) capability here.
         self.sink_caps: dict = {}
+        # callable_key -> {param idx -> set of parameter-relative field
+        # PATHS that actually reach a public sink inside the body, directly
+        # or transitively}. The read-side field-qualified mirror of
+        # ``field_effects``: the call site intersects a whole-struct
+        # argument's container-tainted paths against these SUNK paths, so a
+        # struct tainted at one field passed to a callee that sinks only a
+        # sibling is clean. The sentinel ``()`` means the WHOLE parameter
+        # reaches a sink (conservative default, prefix-compatible with every
+        # tainted path). Parallel to ``summaries`` and on the SAME fixpoint.
+        self.sink_paths: dict = {}
         # callable_key -> {target param idx -> set of source param idx /
         # INTERNAL_SECRET}: the mutation effect -- a field store OR a
         # container mutation (see module docstring).
@@ -365,6 +410,7 @@ class _SummaryBuilder:
                 self.callables[key] = (names, item, False)
                 self.summaries[key] = set()
                 self.sink_caps[key] = {}
+                self.sink_paths[key] = {}
                 self.field_effects[key] = {}
                 self.return_effects[key] = set()
                 self.secret_source_params[key] = self._secret_source_params(
@@ -390,6 +436,7 @@ class _SummaryBuilder:
                     self.callables[key] = (names, method, True)
                     self.summaries[key] = set()
                     self.sink_caps[key] = {}
+                    self.sink_paths[key] = {}
                     self.field_effects[key] = {}
                     self.return_effects[key] = set()
                     self.secret_source_params[key] = (
@@ -574,7 +621,7 @@ class _SummaryBuilder:
             changed = False
             for key in self.callables:
                 names, decl, _is_method = self.callables[key]
-                reaching, effects, returns, scaps = self._analyze_body(
+                reaching, effects, returns, scaps, spaths = self._analyze_body(
                     names, decl, key,
                 )
                 if not reaching <= self.summaries[key]:
@@ -584,6 +631,10 @@ class _SummaryBuilder:
                 # sink caps), merged monotonically exactly like the
                 # field-write effect map so the same fixpoint carries it.
                 if self._merge_effects(self.sink_caps[key], scaps):
+                    changed = True
+                # ``spaths`` (param idx -> set of sunk field paths) is the
+                # read-side mirror, merged on the SAME fixpoint.
+                if self._merge_effects(self.sink_paths[key], spaths):
                     changed = True
                 if self._merge_effects(self.field_effects[key], effects):
                     changed = True
@@ -600,7 +651,11 @@ class _SummaryBuilder:
             k: {p: frozenset(c) for p, c in v.items()}
             for k, v in self.sink_caps.items()
         }
-        return sinks, feffects, reffects, sink_caps
+        sink_paths = {
+            k: {p: frozenset(paths) for p, paths in v.items()}
+            for k, v in self.sink_paths.items()
+        }
+        return sinks, feffects, reffects, sink_caps, sink_paths
 
     @staticmethod
     def _merge_effects(acc: dict, new: dict) -> bool:
@@ -622,7 +677,7 @@ class _SummaryBuilder:
 
     def _analyze_body(
         self, param_names: list[str], decl: A.FunDecl, key,
-    ) -> tuple[set, dict, set, dict]:
+    ) -> tuple[set, dict, set, dict, dict]:
         """Compute (a) which parameter indices of ``decl`` reach a sink,
         (b) the field-write effects, and (c) the return-secret sources,
         using the summaries computed so far for transitive calls.
@@ -700,6 +755,12 @@ class _SummaryBuilder:
         # IT, not to the whole callable).
         sink_caps_local: dict = {}
         self._cur_sink_caps = sink_caps_local
+        # Read-side mirror (Stage 2): PER PARAMETER, the parameter-relative
+        # field PATHS that reach a public sink in this body, accumulated by
+        # the walk in parallel with ``reaching``. ``()`` records the WHOLE
+        # parameter reaching a sink (the conservative default).
+        sink_paths_local: dict = {}
+        self._cur_sink_paths = sink_paths_local
         # Per-callable analysis state consulted inside the walk (which
         # threads only ``env`` / ``reaching`` through its signatures):
         # the names of secret-source-capability params, the accumulating
@@ -746,7 +807,7 @@ class _SummaryBuilder:
         # tail expression's per-branch content isolation is not defeated by
         # a second walk over an already-merged baseline.
         returns |= self._walk_value_block(decl.body, env, reaching)
-        return reaching, effects, returns, sink_caps_local
+        return reaching, effects, returns, sink_caps_local, sink_paths_local
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
         for stmt in block.stmts:
@@ -1350,6 +1411,62 @@ class _SummaryBuilder:
         for s in sources:
             self._cur_sink_caps.setdefault(s, set()).update(caps)
 
+    def _record_sink_paths(self, arg: A.Expr, sources: set) -> None:
+        """Read-side mirror of ``_record_mutation_effect`` for a DIRECT
+        sink on ``arg`` (a built-in sink / panic). For each source param
+        ``p`` in ``sources``, record the PARAMETER-RELATIVE field path of
+        the sunk value: the syntactic field path when ``arg`` is a chain
+        rooted DIRECTLY at param ``p`` (so ``println(bag.note)`` records
+        ``p=bag`` sunk at ``("note",)``), else the sentinel ``()`` meaning
+        the WHOLE param reaches the sink (a bare param, a value derived
+        through a local, or an over-long path -- the conservative default,
+        prefix-compatible with every tainted path)."""
+        root = self._chain_root_name(arg)
+        root_param = self._cur_param_index.get(root) if root is not None \
+            else None
+        fpath = self._chain_field_path(arg)
+        for p in sources:
+            if p == INTERNAL_SECRET:
+                continue
+            if p == root_param and fpath is not None \
+                    and len(fpath) <= _MAX_FIELD_PATH:
+                path = fpath
+            else:
+                path = ()
+            self._cur_sink_paths.setdefault(p, set()).add(path)
+
+    def _propagate_sink_paths(
+        self, arg: A.Expr, sources: set, callee_paths,
+    ) -> None:
+        """Read-side mirror of ``_propagate_callee_effects``: a callee's
+        param sinks at ``callee_paths``; when ``arg`` (bound to it) is
+        rooted at one of MY params, MY param sinks at the COMPOSED path
+        (my access-path prefix to ``arg`` + the callee's sunk path). Falls
+        back to ``()`` (whole param sunk) when the argument is not rooted
+        directly at the param, when a callee path is unkeyable, or when the
+        composed path overflows the k-bound -- always conservative (a
+        wider sunk path flags at least as much)."""
+        if not callee_paths:
+            callee_paths = {()}
+        root = self._chain_root_name(arg)
+        root_param = self._cur_param_index.get(root) if root is not None \
+            else None
+        arg_path = self._chain_field_path(arg)
+        for p in sources:
+            if p == INTERNAL_SECRET:
+                continue
+            if p == root_param and arg_path is not None:
+                for cp in callee_paths:
+                    composed = self._compose_paths(arg_path, cp)
+                    if composed is not None and \
+                            len(composed) <= _MAX_FIELD_PATH:
+                        path = composed
+                    else:
+                        path = ()
+                    self._cur_sink_paths.setdefault(p, set()).add(path)
+            else:
+                self._cur_sink_paths.setdefault(p, set()).add(())
+
     # ---- calls ------------------------------------------------------
 
     def _taint_of_call(self, e: A.Call, env: dict, reaching: set) -> set:
@@ -1384,6 +1501,10 @@ class _SummaryBuilder:
             # completeness invariant that every reaching-growth site pairs
             # with a capability attribution.
             self._attribute_sink_caps(arg_srcs[0], ("Stdio",))
+            # Read-side (Stage 2): record the sunk access path of the
+            # panicked message, so a whole-struct arg is intersected
+            # field-precisely at the call site.
+            self._record_sink_paths(e.args[0], arg_srcs[0])
 
         if not isinstance(e.callee, A.Ident):
             # Non-Ident callee (lambda result, etc.): conservatively
@@ -1415,6 +1536,7 @@ class _SummaryBuilder:
             perm = self._bind_args(e, names)
             sink_params = self.summaries.get(key, set())
             callee_caps = self.sink_caps.get(key, {})
+            callee_sink_paths = self.sink_paths.get(key, {})
             for pidx, arg_idx in perm.items():
                 if (
                     pidx in sink_params
@@ -1427,6 +1549,12 @@ class _SummaryBuilder:
                     # ``pidx`` reaches -- inherit ITS caps, not the union.
                     self._attribute_sink_caps(
                         arg_srcs[arg_idx], callee_caps.get(pidx, ()),
+                    )
+                    # Read-side (Stage 2): compose the callee's sunk paths
+                    # for ``pidx`` with my access path to the argument.
+                    self._propagate_sink_paths(
+                        e.args[arg_idx], arg_srcs[arg_idx],
+                        callee_sink_paths.get(pidx),
                     )
             # Transitive mutation effect: ``g`` writes into its param
             # ``j`` (a field store or a container mutation) from sources
@@ -1519,6 +1647,9 @@ class _SummaryBuilder:
                     # in tests/test_serve_capability.py, which fired when
                     # Serve was first given a ``write``.
                     self._attribute_sink_caps(arg_srcs[pos], (_cap,))
+                    # Read-side (Stage 2): the sunk access path of the
+                    # argument in the built-in sink position.
+                    self._record_sink_paths(e.args[pos], arg_srcs[pos])
 
         # A mutating container method (every entry of the
         # ``_CONTAINER_MUTATORS`` registry -- push / add / set -- so a
@@ -1602,6 +1733,7 @@ class _SummaryBuilder:
             if not sink_params:
                 continue
             callee_caps = self.sink_caps.get(key, {})
+            callee_sink_paths = self.sink_paths.get(key, {})
             # Index 0 is ``self`` -> the receiver.
             if 0 in sink_params and recv_src:
                 reaching |= recv_src
@@ -1609,6 +1741,11 @@ class _SummaryBuilder:
                 # reach exactly the sinks the callee's ``self`` (param 0)
                 # reaches -- inherit param 0's caps, not the union.
                 self._attribute_sink_caps(recv_src, callee_caps.get(0, ()))
+                # Read-side (Stage 2): compose the callee's ``self`` sunk
+                # paths with my access path to the receiver.
+                self._propagate_sink_paths(
+                    e.receiver, recv_src, callee_sink_paths.get(0),
+                )
             # Explicit parameters are names[1:]; bind the call's
             # positional / named args to them.
             explicit = names[1:] if names and names[0] == "self" else names
@@ -1631,6 +1768,12 @@ class _SummaryBuilder:
                     # flowing into this argument.
                     self._attribute_sink_caps(
                         arg_srcs[arg_idx], callee_caps.get(full_pidx, ()),
+                    )
+                    # Read-side (Stage 2): compose the callee's sunk paths
+                    # for ``full_pidx`` with my access path to the argument.
+                    self._propagate_sink_paths(
+                        e.args[arg_idx], arg_srcs[arg_idx],
+                        callee_sink_paths.get(full_pidx),
                     )
 
         # Transitive mutation effect across the (possibly

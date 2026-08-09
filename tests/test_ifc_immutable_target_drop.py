@@ -82,7 +82,7 @@ def _field_effect_targets(src: str, callable_key) -> set:
     module = _parse(src)
     an = Analyzer()
     an.analyze(module)
-    _sinks, feffects, _reffects, _scaps = compute_ifc_summaries(
+    _sinks, feffects, _reffects, _scaps, _spaths = compute_ifc_summaries(
         module, an.global_scope,
     )
     return {key[0] for key in feffects.get(callable_key, {})}
