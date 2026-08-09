@@ -49,10 +49,10 @@ Primary sources:
 
 ## The anatomy of the attack
 
-What enabled it, technically, was **ambient authority**. In JavaScript
-(and Python, and Java, and Go, and almost every mainstream language),
-any code that runs has the same baseline access as any other code in
-the process:
+What enabled it, technically, was **ambient authority**. In server-side
+JavaScript (Node.js), as in Python, Java, Go, and almost every
+mainstream language, any code that runs has the same baseline access as
+any other code in the process:
 
 - It can read environment variables (`process.env.WALLET_KEY`)
 - It can open network sockets (`fetch('https://attacker.com')`)
@@ -72,6 +72,16 @@ plausible stream code, plus an inscrutable obfuscated blob in a
 dependency. The auditor reading the *signatures* of the functions saw
 nothing useful, because the signatures said nothing about what the
 code was allowed to do.
+
+Three of the languages named above did once ship an opt-in,
+in-language way to restrict this authority, and all three have since
+backed it out: Java's `SecurityManager` was deprecated in JDK 17 and
+permanently disabled in JDK 24, .NET's Code Access Security (partial
+trust) is unsupported in .NET 5 and later, and Ruby's `$SAFE` has been
+a no-op since Ruby 3.0. Each bolted a restriction onto an
+always-ambient default rather than starting from confinement, and each
+was abandoned. Authority control does not hold as a retrofit; the case
+for Capa is that it belongs in the type system by construction.
 
 ---
 

@@ -66,10 +66,10 @@ JavaScript AST library; it analyses scopes". The signature gave
 the auditor zero leverage because the language had no notion of
 what a function was allowed to touch.
 
-What enabled the attack was **ambient authority**. In JavaScript,
-Python, Ruby, Go, Java, C#, and almost every mainstream language,
-any code that runs has the same baseline access as any other code
-in the process:
+What enabled the attack was **ambient authority**. In server-side
+JavaScript (Node.js), Python, Ruby, Go, Java, C#, and almost every
+mainstream language, any code that runs has the same baseline access
+as any other code in the process:
 
 - It can read environment variables.
 - It can open files.
@@ -79,6 +79,16 @@ A function that *claims* to be a pure AST analyser is bytewise
 indistinguishable from a function that *also* exfiltrates secrets.
 Both compile, both run, both pass code review unless the reviewer
 manually reads every line of every dependency on every update.
+
+Three of the languages named above did once ship an opt-in,
+in-language way to restrict this authority, and all three have since
+backed it out: Java's `SecurityManager` was deprecated in JDK 17 and
+permanently disabled in JDK 24, .NET's Code Access Security (partial
+trust) is unsupported in .NET 5 and later, and Ruby's `$SAFE` has been
+a no-op since Ruby 3.0. Each bolted a restriction onto an
+always-ambient default rather than starting from confinement, and each
+was abandoned. Authority control does not hold as a retrofit; the case
+for Capa is that it belongs in the type system by construction.
 
 ---
 
