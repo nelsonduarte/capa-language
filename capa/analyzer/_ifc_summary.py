@@ -46,39 +46,63 @@ uniformly across every branching construct (see the content channel in
 MUTATION EFFECTS (closes the cross-function self/param field-write
 false negative, and the container one). Alongside the sink-reaching
 set, every callable also gets a **mutation effect**: a map
-``target_param_idx -> set of sources`` recording that the callee writes
-INTO the object bound to ``target_param_idx`` (``self`` is index 0)
-from a value tainted by either another parameter (the source's index)
-or an internal secret source within the body (the sentinel
-``INTERNAL_SECRET``), directly or transitively (the write happens from
-a value passed to a further call that itself has the effect). It is
-computed to the SAME fixpoint.
+``(target_param_idx, field_path) -> set of sources`` recording that the
+callee writes INTO the object bound to ``target_param_idx`` (``self`` is
+index 0) at the access path ``field_path`` from a value tainted by
+either another parameter (the source's index) or an internal secret
+source within the body (the sentinel ``INTERNAL_SECRET``), directly or
+transitively (the write happens from a value passed to a further call
+that itself has the effect). It is computed to the SAME fixpoint.
 
-Two kinds of write record it, because both mutate a shared heap object
-that the CALLER still holds a reference to:
+FIELD-PATH GRANULARITY (Stage 1). ``field_path`` gives a CONTAINER
+mutation effect access-path (field-sensitive) precision, so a callee that
+pushes a secret into ``bag.items`` records ``(bag_slot, ("items",))``
+rather than a whole-value taint of ``bag``. A ``field_path`` is either the
+tuple of field names from the target PARAMETER down to the mutated
+container -- ``()`` when the parameter IS the container (``xs.push(v)``),
+``("items",)`` for ``self.items.push(v)`` -- or the sentinel ``None`` for
+the WHOLE-VALUE carrier. The field-keyed form is recorded only when the
+write chain is rooted DIRECTLY at the parameter, so the path is exactly
+parameter-relative; otherwise (an aliased / renamed root, a chain that
+cannot be keyed, or a path longer than ``_MAX_FIELD_PATH``) the
+whole-value carrier ``(j, None)`` is kept so the leak stays caught.
+
+The two kinds of write take the channel that MIRRORS the intra-procedural
+pass, because they are observed differently there and the soundness floor
+is that no cross-function leak regresses:
 
 * a FIELD STORE, ``obj.f = v`` (any store op, including the augmented
-  ``obj.f += v``, which can only raise the field's label); and
+  ``obj.f += v``), takes the WHOLE-VALUE carrier (``field_path`` is
+  ``None``). The intra field store (``_ifc_field_store``) raises the
+  struct's COLLAPSED whole-value label, so a later whole / getter read of
+  the struct observes it; keeping the whole-value carrier keeps that
+  coverage. De-collapsing a field store to a per-field caller taint is
+  Stage 2, out of scope here.
 * a CONTAINER MUTATION, ``xs.push(v)`` and every other entry of the
-  ``_CONTAINER_MUTATORS`` registry in :mod:`._ifc`, which is the single
-  source of truth for the mutator set so a mutator added there is
-  carried across the boundary with no further change here. Without
-  this, a secret pushed onto a list / set / map by a CALLEE escaped the
-  analysis entirely while the identical push written inline was caught.
-  The receiver may be a parameter (``xs.push(v)``) or a field chain
-  rooted at one (``self.items.push(v)``); the effect is recorded
-  against the ROOT parameter, whole-value.
+  ``_CONTAINER_MUTATORS`` registry in :mod:`._ifc` (its single source of
+  truth), is FIELD-KEYED. The intra container mutation
+  (``_check_ifc_container_mutation``) records a branch-scoped
+  ``(root, field-path)`` channel that a FIELD read of the path observes
+  but a bare whole read does not (the disclosed whole-read residual). The
+  receiver may be a parameter (``xs.push(v)`` -> path ``()``) or a field
+  chain rooted at one (``self.items.push(v)`` -> path ``("items",)``); the
+  effect is recorded against the ROOT parameter at that field path. Without
+  the effect, a secret pushed onto a list / set / map by a CALLEE escaped
+  the analysis entirely while the identical push written inline was caught.
 
 The call site (see ``_check_ifc_call_field_effect`` /
 ``_check_ifc_method_call_field_effect`` in :mod:`._ifc`) propagates it
-CONSERVATIVELY: when the callee writes into param ``j`` from param
-``i`` and the caller's argument for ``i`` is @secret, the caller's
-binding bound to ``j`` is tainted at WHOLE-VALUE secret (so a later
-read of any field / element of it is caught); an internal-secret
+CONSERVATIVELY: when the callee writes into param ``j`` at ``field_path``
+from param ``i`` and the caller's argument for ``i`` is @secret, the
+caller's binding bound to ``j`` is tainted -- a field-keyed CONTAINER
+effect on the SAME ``(root, field-path)`` branch-scoped
+container-mutation channel the intra-procedural pass uses (so a later read
+of that path is caught while a public sibling field stays clean), a
+whole-value FIELD-STORE effect via the whole-value carrier (a later read
+of any field / element, whole or getter, is caught). An internal-secret
 source taints the caller's binding-``j`` unconditionally. This is an
 explicit data-flow taint, default-warn / strict-error like the
-sink-reaching check, and whole-value (never per-field, never
-per-element) on the caller side -- the sound approximation.
+sink-reaching check.
 """
 
 from __future__ import annotations
@@ -94,6 +118,21 @@ from ._ifc import (
 # (``env.get(...)``) rather than from another parameter. Distinct from
 # any real 0-based parameter index.
 INTERNAL_SECRET = -1
+
+# Access-path length bound for a field-qualified mutation effect (Stage
+# 1). A mutation effect is keyed by ``(target_param_idx, field_path)``,
+# where ``field_path`` is the tuple of field names from the target
+# PARAMETER down to the mutated container / field, or ``None`` for the
+# whole-value carrier. Because ``_propagate_callee_effects`` COMPOSES a
+# caller's access-path prefix with a callee's field path, a recursive
+# call graph could otherwise grow the path without bound and the monotone
+# summary fixpoint would not terminate. Bounding the length -- FlowDroid's
+# k-bound (its default is 5) -- keeps the key space finite: a path longer
+# than the bound collapses to the whole-value carrier (``None``), a sound
+# over-approximation. So the effect map ranges over the FINITE key set
+# ``param_idx x ({None} + field-name-tuples of length <= k)`` and the
+# ascending chain stabilises.
+_MAX_FIELD_PATH = 5
 
 # Capability type names whose source methods (``_SECRET_SOURCES``)
 # produce secret data. Used to recognise an internal secret source at
@@ -124,11 +163,16 @@ def compute_ifc_summaries(
     * ``sink_summaries``: ``{callable_key: frozenset(sink_reaching
       param indices)}`` -- a value parameter whose value reaches a
       public sink inside the body.
-    * ``field_effects``: ``{callable_key: {target_param_idx:
-      frozenset(source_param_idx | INTERNAL_SECRET)}}`` -- the callee
-      writes INTO the object at ``target_param_idx`` from the named
-      source(s), either by storing a field of it or by mutating it
-      through a ``_CONTAINER_MUTATORS`` method.
+    * ``field_effects``: ``{callable_key: {(target_param_idx,
+      field_path): frozenset(source_param_idx | INTERNAL_SECRET)}}`` --
+      the callee writes INTO the object at ``target_param_idx`` at the
+      access path ``field_path`` from the named source(s), either by
+      storing a field of it or by mutating it through a
+      ``_CONTAINER_MUTATORS`` method. ``field_path`` is the tuple of
+      field names from the parameter down to the mutated location
+      (``()`` when the parameter itself is the container), or ``None``
+      for the whole-value carrier (an aliased / renamed / unkeyable
+      root, or a path beyond ``_MAX_FIELD_PATH``).
     * ``return_effects``: ``{callable_key: frozenset(source_param_idx |
       INTERNAL_SECRET)}`` -- the callee returns a value derived from the
       named source(s); the call result is @secret when one fires (a real
@@ -660,6 +704,14 @@ class _SummaryBuilder:
         )
         self._cur_effects = effects
         self._cur_returns = returns
+        # ``param name -> 0-based index`` for THIS callable, so a mutation
+        # chain whose ROOT identifier is a parameter can be keyed at a
+        # parameter-relative field path (Stage 1). A chain rooted at a
+        # local that merely ALIASES a parameter is absent here, so it takes
+        # the whole-value carrier (its field path is not parameter-relative).
+        self._cur_param_index = {
+            pname: idx for idx, pname in enumerate(param_names)
+        }
         # Names of secret consts currently shadowed by a LEXICALLY IN-SCOPE
         # local binding. Consulted (not ``env``) by the const-vs-local
         # decision in ``_taint_of``: ``env`` is a flat, monotonically
@@ -767,16 +819,21 @@ class _SummaryBuilder:
             elif isinstance(stmt.target, A.FieldAccess):
                 # A field store ``obj.f = value`` (or ``obj.a.b = ...``):
                 # if the written object is rooted at a parameter (or a
-                # binding that aliases one), record a field-write effect
-                # from each source flowing into ``value`` onto each
-                # target param the object aliases. Whole-value on both
-                # sides (the conservative, sound granularity). ANY store
-                # op is recorded: an augmented store (``box.f += v``) reads
-                # the old field and joins ``value`` into it, so it can only
+                # binding that aliases one), record a mutation effect from
+                # each source flowing into ``value`` onto each target param
+                # the object aliases. NOT field-keyed (``field_keyable=
+                # False``): the whole-value carrier mirrors the intra field
+                # store, which raises the struct's collapsed whole-value
+                # label, so a later whole / getter read of the struct
+                # observes it (keeping that coverage). ANY store op is
+                # recorded: an augmented store (``box.f += v``) reads the
+                # old field and joins ``value`` into it, so it can only
                 # RAISE the field's label, never lower it -- recording the
                 # effect for every op is sound and closes the augmented-
                 # store cross-function leak.
-                self._record_mutation_effect(stmt.target, src, env)
+                self._record_mutation_effect(
+                    stmt.target, src, env, field_keyable=False,
+                )
         elif isinstance(stmt, A.IfStmt):
             # ``env`` (and each condition) is evaluated in the ORIGINAL
             # interleaved order (cond, body, cond, body ...) so its flat,
@@ -886,6 +943,7 @@ class _SummaryBuilder:
 
     def _record_mutation_effect(
         self, target: A.Expr, value_src: set, env: dict,
+        field_keyable: bool,
     ) -> None:
         """Record a mutation effect for a write into ``target`` -- a
         field store (``target.f = value``) or a container mutation
@@ -894,10 +952,24 @@ class _SummaryBuilder:
         env taint set of the chain's ROOT name (a struct / container
         binding carries the param indices of every param it aliases by
         reference). For each such target param ``j``, every source
-        flowing into the value becomes a mutation effect ``j <-
+        flowing into the value becomes a mutation effect ``(j, path) <-
         source``. A source that is itself a parameter index (or
         ``INTERNAL_SECRET``) is recorded; transitive sources already
-        collapsed into ``value_src`` by ``_taint_of``."""
+        collapsed into ``value_src`` by ``_taint_of``.
+
+        ``field_keyable`` follows the intra-procedural two-channel split
+        (Stage 1): a CONTAINER MUTATION (``True``) is field-keyed, so
+        ``path`` is the parameter-relative field path when the chain is
+        rooted directly at param ``j`` (else the whole-value carrier) and
+        the caller taints only that ``(root, field-path)`` -- a public
+        sibling field / a whole read stays clean (matching the intra
+        container channel, whose whole-read miss is the disclosed
+        residual). A FIELD STORE (``False``) is NOT field-keyed: it takes
+        the whole-value carrier (``path`` is ``None``), because the intra
+        field store raises the struct's COLLAPSED whole-value label, so a
+        whole / getter read observes it -- keeping that coverage (no
+        cross-function leak regresses) is the reason field stores are not
+        de-collapsed here (that is Stage 2)."""
         root = self._chain_root_name(target)
         if root is None:
             return
@@ -911,10 +983,40 @@ class _SummaryBuilder:
         target_params = self._writable_targets(env.get(root, set()))
         if not target_params or not value_src:
             return
+        field_path = self._chain_field_path(target) if field_keyable else None
         for j in target_params:
             if j == INTERNAL_SECRET:
                 continue
-            self._cur_effects.setdefault(j, set()).update(value_src)
+            key = self._mutation_effect_key(j, root, field_path)
+            self._cur_effects.setdefault(key, set()).update(value_src)
+
+    def _mutation_effect_key(self, j: int, root_name: str, field_path):
+        """The effect-map key for a write into target param ``j`` whose
+        chain root is named ``root_name`` at ``field_path`` (a tuple of
+        field names, or ``None``). FIELD-KEYED ``(j, field_path)`` only
+        when the chain is rooted DIRECTLY at param ``j`` -- so
+        ``field_path`` is exactly parameter-relative -- and the path is
+        within the ``_MAX_FIELD_PATH`` bound; otherwise the WHOLE-VALUE
+        carrier ``(j, None)``, the sound fallback for an aliased / renamed
+        root (whose path is not parameter-relative), an unkeyable chain,
+        or an over-long path (kept finite so the fixpoint terminates)."""
+        if (
+            field_path is not None
+            and self._cur_param_index.get(root_name) == j
+            and len(field_path) <= _MAX_FIELD_PATH
+        ):
+            return (j, field_path)
+        return (j, None)
+
+    @staticmethod
+    def _compose_paths(prefix, suffix):
+        """Compose a caller's access-path ``prefix`` (its field path down
+        to the argument) with a callee's ``suffix`` field path, for the
+        transitive effect. A ``None`` (whole-value) on either side
+        collapses the result to whole-value."""
+        if prefix is None or suffix is None:
+            return None
+        return prefix + suffix
 
     def _field_read_is_secret(self, e: A.FieldAccess) -> bool:
         """True if reading field ``e`` yields a value declared
@@ -953,6 +1055,23 @@ class _SummaryBuilder:
         while isinstance(e, A.FieldAccess):
             e = e.receiver
         return e.name if isinstance(e, A.Ident) else None
+
+    @staticmethod
+    def _chain_field_path(e: A.Expr):
+        """The tuple of field names from the chain ROOT down to ``e``
+        (``xs`` -> ``()``, ``bag.items`` -> ``("items",)``, ``b.a.b`` ->
+        ``("a", "b")``), or ``None`` when ``e`` is not an Ident-rooted
+        field chain (a call- / index-rooted receiver has no keyable
+        access path). Mirrors ``_field_path_from_root`` in :mod:`._ifc`,
+        the intra-procedural channel this effect routes onto."""
+        names = []
+        while isinstance(e, A.FieldAccess):
+            names.append(e.field_name)
+            e = e.receiver
+        if not isinstance(e, A.Ident):
+            return None
+        names.reverse()
+        return tuple(names)
 
     # ---- taint of an expression ------------------------------------
 
@@ -1442,13 +1561,19 @@ class _SummaryBuilder:
                 self._cur_content.setdefault(
                     e.receiver.name, set(),
                 ).update(injected)
-            # The receiver may be a plain parameter (``xs.push(v)``) or
-            # a field chain rooted at one (``self.items.push(v)``); the
-            # effect is recorded against the ROOT parameter, whole-value
-            # -- the same sound over-approximation the field-write path
-            # uses. It reads ``env`` (the un-polluted alias set), so the
-            # cross-function mutation effect is recorded exactly as before.
-            self._record_mutation_effect(e.receiver, injected, env)
+            # The receiver may be a plain parameter (``xs.push(v)`` -> path
+            # ``()``) or a field chain rooted at one (``self.items.push(v)``
+            # -> path ``("items",)``); the effect is FIELD-KEYED
+            # (``field_keyable=True``) against the ROOT parameter at that
+            # path, routed by the caller onto the SAME branch-scoped
+            # ``(root, field-path)`` container-mutation channel the
+            # intra-procedural push uses -- so a public sibling field stays
+            # clean, and a bare whole read stays the disclosed residual. It
+            # reads ``env`` (the un-polluted alias set), so the target set
+            # is derived exactly as before.
+            self._record_mutation_effect(
+                e.receiver, injected, env, field_keyable=True,
+            )
 
         # User method call: receiver-type may be unknown at summary
         # time, so over-approximate across every user method of this
@@ -1656,18 +1781,24 @@ class _SummaryBuilder:
         arg_srcs: list, env: dict,
     ) -> None:
         """Inherit a callee's mutation effects at a call site. For
-        each callee target param ``j`` with sources ``S``: the argument
-        bound to ``j`` is the written object; if it is rooted at one of
-        MY bindings, record a mutation effect on every param that
+        each callee target ``(j, callee_path)`` with sources ``S``: the
+        argument bound to ``j`` is the written object; if it is rooted at
+        one of MY bindings, record a mutation effect on every param that
         object aliases, with ``S`` translated from the callee's params
         to my taint (a real source param ``i`` -> the taint of my
-        argument bound to ``i``; ``INTERNAL_SECRET`` stays itself).
-        Conservative and whole-value throughout."""
-        for target_pidx, sources in effects.items():
+        argument bound to ``i``; ``INTERNAL_SECRET`` stays itself). The
+        effect stays FIELD-KEYED by COMPOSING my access-path prefix to
+        the argument with ``callee_path`` (so ``inner`` writing
+        ``bag.items`` reached through my own ``bag`` param keeps the
+        ``("items",)`` path), collapsing to the whole-value carrier when
+        either half is unkeyable (see ``_compose_paths`` /
+        ``_mutation_effect_key``)."""
+        for (target_pidx, callee_path), sources in effects.items():
             arg_idx = perm.get(target_pidx)
             if arg_idx is None or arg_idx >= len(args):
                 continue
-            root = self._chain_root_name(args[arg_idx])
+            arg = args[arg_idx]
+            root = self._chain_root_name(arg)
             if root is None:
                 continue
             translated: set = set()
@@ -1680,6 +1811,9 @@ class _SummaryBuilder:
                         translated |= arg_srcs[src_arg]
             if not translated:
                 continue
+            composed = self._compose_paths(
+                self._chain_field_path(arg), callee_path,
+            )
             # CONTENT channel (additive, distinct from the alias set): the
             # callee wrote ``translated`` INTO the object bound to
             # ``target_pidx`` -- this caller-local -- so a read-back of the
@@ -1693,17 +1827,19 @@ class _SummaryBuilder:
             # overwritten) so it both accumulates straight-line and composes
             # with the deferred per-branch merge (``_content_merge``).
             self._cur_content.setdefault(root, set()).update(translated)
-            # MUTATION-TARGET channel (unchanged): the argument's root
-            # binding taint set doubles as its alias / mutation-TARGET set;
-            # drop provably-immutable parameters so inheriting a callee's
-            # write effect through an immutable-typed argument (a built-in
+            # MUTATION-TARGET channel: the argument's root binding taint
+            # set doubles as its alias / mutation-TARGET set; drop
+            # provably-immutable parameters so inheriting a callee's write
+            # effect through an immutable-typed argument (a built-in
             # capability, an ``Int``, ...) does not mis-record a mutation of
-            # that parameter. Records THIS body's own mutation-effect
-            # summary exactly as before.
+            # that parameter. The effect stays field-keyed on the composed
+            # access path when the argument is rooted directly at param
+            # ``j``, else the whole-value carrier (``_mutation_effect_key``).
             for j in self._writable_targets(env.get(root, set())):
                 if j == INTERNAL_SECRET:
                     continue
-                self._cur_effects.setdefault(j, set()).update(translated)
+                key = self._mutation_effect_key(j, root, composed)
+                self._cur_effects.setdefault(key, set()).update(translated)
 
     # ---- argument binding ------------------------------------------
 

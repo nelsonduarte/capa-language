@@ -2840,13 +2840,14 @@ class _IfcMixin:
         """At a user free-function call, apply the callee's mutation
         effects to the CALLER's bindings. ``perm`` is in parameter
         order: ``e.args[perm[i]]`` is the argument bound to parameter
-        ``i``. The effect ``{j -> sources}`` means the callee writes
-        into the object passed as parameter ``j`` -- storing a field of
-        it, or mutating it through a ``_CONTAINER_MUTATORS`` method --
-        from those sources; when a source fires (a @secret real-param
-        argument, or the unconditional internal-secret sentinel), the
-        caller's binding for parameter ``j`` is tainted whole-value
-        secret."""
+        ``i``. The effect ``{(j, field_path) -> sources}`` means the
+        callee writes into the object passed as parameter ``j`` at
+        ``field_path`` -- storing a field of it, or mutating it through a
+        ``_CONTAINER_MUTATORS`` method -- from those sources; when a
+        source fires (a @secret real-param argument, or the unconditional
+        internal-secret sentinel), the caller's binding for parameter
+        ``j`` is tainted at ``field_path`` (field-keyed on the
+        container-mutation channel) or whole-value (the carrier)."""
         effects = self._ifc_field_effects.get(("fun", sym.name))
         if not effects:
             return
@@ -2860,9 +2861,10 @@ class _IfcMixin:
         parameters follow. Builds the full-order argument list
         (receiver first) and the full-order ``param_idx -> arg_idx``
         map, then applies every candidate impl's effects (the same
-        by-name over-approximation the summary uses) -- whole-value and
-        conservative, so a dynamic-dispatch receiver never drops the
-        taint."""
+        by-name over-approximation the summary uses) -- field-keyed on the
+        container-mutation channel where the effect is keyable, else the
+        whole-value carrier, so a dynamic-dispatch receiver never drops
+        the taint."""
         from ._ifc_summary import methods_by_name
         exact_key = ("method", recv_ty.name, e.method)
         keys = [exact_key] if exact_key in self._ifc_field_effects else \
@@ -2884,9 +2886,12 @@ class _IfcMixin:
 
     def _apply_field_effects(self, effects: dict, perm, args: list) -> None:
         """Shared effect application: ``perm`` maps a callee parameter
-        index to an index into ``args``. For each target param whose
-        effect fires, taint the caller's binding for that target's
-        argument whole-value secret. ``perm`` may be a list (free call,
+        index to an index into ``args``. Each effect is keyed by
+        ``(target_param_idx, field_path)``; for a target whose effect
+        fires, taint the caller's binding for that target's argument --
+        field-keyed at ``field_path`` on the branch-scoped
+        container-mutation channel, or whole-value via the carrier (see
+        ``_apply_one_field_effect``). ``perm`` may be a list (free call,
         parameter-ordered) or a dict (method call, full order)."""
         def arg_for(pidx):
             if isinstance(perm, dict):
@@ -2898,7 +2903,7 @@ class _IfcMixin:
             return args[idx]
 
         from ._ifc_summary import INTERNAL_SECRET
-        for target_pidx, sources in effects.items():
+        for (target_pidx, field_path), sources in effects.items():
             fires = False
             for s in sources:
                 if s == INTERNAL_SECRET:
@@ -2914,7 +2919,48 @@ class _IfcMixin:
             target_arg = arg_for(target_pidx)
             if target_arg is None:
                 continue
+            self._apply_one_field_effect(target_arg, field_path)
+
+    def _apply_one_field_effect(self, target_arg: A.Expr, field_path) -> None:
+        """Apply one fired cross-function mutation effect to the caller's
+        binding rooted at ``target_arg``.
+
+        FIELD-KEYED (``field_path`` a tuple): taint the branch-scoped
+        container-mutation channel at ``(root-binding, caller-prefix +
+        field_path)`` -- the SAME ``(root, field-path)`` access-path
+        channel the intra-procedural container mutation uses -- so a later
+        read of that path is caught (``_container_taint_at`` in
+        ``_compute_label``) while a public sibling field
+        (``bag.other``) and a mutually-exclusive branch's read stay clean.
+        The caller's prefix is composed with the callee's field path, so
+        an argument that is itself a field chain (``fill(outer.bag)``) is
+        keyed at the full path.
+
+        WHOLE-VALUE carrier (the sound fallback that keeps a leak caught
+        with less precision): used when the effect is itself whole-value
+        (``field_path`` is ``None``), when ``target_arg`` is not an
+        Ident-rooted field chain (a call- / index-rooted argument has no
+        keyable access path), or when the target binding is ALIASED (an
+        embed / rename group in ``_struct_aliases``) -- there a read
+        through a DIFFERENT root would miss a field-keyed taint, so the
+        whole-value carrier's alias-group taint is required for
+        soundness."""
+        if field_path is None:
             self._taint_binding_whole_value(target_arg)
+            return
+        root_sym = self._struct_root_sym(target_arg)
+        caller_prefix = self._field_path_from_root(target_arg)
+        if (
+            root_sym is None
+            or caller_prefix is None
+            or id(root_sym) in self._struct_aliases
+        ):
+            self._taint_binding_whole_value(target_arg)
+            return
+        full_path = tuple(caller_prefix) + tuple(field_path)
+        ct = self._container_taint_map()
+        key = (id(root_sym), full_path)
+        ct[key] = L.join(ct.get(key), L.SECRET)
 
     def _taint_binding_whole_value(self, e: A.Expr) -> None:
         """Raise the binding rooted at ``e`` to whole-value @secret and

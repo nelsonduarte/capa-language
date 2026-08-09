@@ -75,14 +75,17 @@ def _sink_errors(r):
 def _field_effect_targets(src: str, callable_key) -> set:
     """The mutation-effect TARGET parameter indices recorded for
     ``callable_key`` in ``src``'s summary, computed exactly as the
-    analyzer computes them (populated global scope, same fixpoint)."""
+    analyzer computes them (populated global scope, same fixpoint). The
+    effect map is keyed by ``(target_param_idx, field_path)`` (Stage 1
+    field-path granularity), so the target parameter index is the first
+    component of each key."""
     module = _parse(src)
     an = Analyzer()
     an.analyze(module)
     _sinks, feffects, _reffects, _scaps = compute_ifc_summaries(
         module, an.global_scope,
     )
-    return set(feffects.get(callable_key, {}))
+    return {key[0] for key in feffects.get(callable_key, {})}
 
 
 def _immutable_params(src: str, callable_key) -> set:
