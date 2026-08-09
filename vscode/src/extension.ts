@@ -10,7 +10,7 @@ import {
 } from "vscode-languageclient/node";
 
 let client: LanguageClient | undefined;
-let outputChannel: vscode.OutputChannel | undefined;
+let outputChannel: vscode.LogOutputChannel | undefined;
 let fileWatcher: vscode.FileSystemWatcher | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 
@@ -125,9 +125,16 @@ function isExecutableFile(full: string): boolean {
     }
 }
 
-function getOutputChannel(): vscode.OutputChannel {
+function getOutputChannel(): vscode.LogOutputChannel {
     if (!outputChannel) {
-        outputChannel = vscode.window.createOutputChannel("Capa Language Server");
+        // A log output channel (not a plain one): vscode-languageclient 10
+        // types `outputChannel` as `LogOutputChannel` and calls its
+        // `error`/`warn`/`info`/`debug` methods and reads `logLevel`, none of
+        // which exist on a plain `OutputChannel`. Our own `appendLine`/`show`
+        // calls keep working because `LogOutputChannel` extends `OutputChannel`.
+        outputChannel = vscode.window.createOutputChannel("Capa Language Server", {
+            log: true,
+        });
         // Dispose the channel when the extension deactivates. The channel is
         // created lazily, so register it here rather than in activate().
         extensionContext?.subscriptions.push(outputChannel);
@@ -250,7 +257,7 @@ async function startClient(config: ServerConfig): Promise<void> {
 }
 
 // vscode-languageclient does not expose the child process or its exit
-// code through a stable public API in 8.x. We attach to it best-effort:
+// code through a stable public API in 10.x. We attach to it best-effort:
 // if the internal handle is reachable we listen for stderr and exit; if
 // not, detection falls back to the start() rejection and close handler.
 function watchChildProcess(

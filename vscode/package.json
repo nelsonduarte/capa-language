@@ -2,7 +2,7 @@
     "name": "capa-language",
     "displayName": "Capa Language",
     "description": "Syntax highlighting and language server client for the Capa programming language",
-    "version": "0.13.0",
+    "version": "0.13.1",
     "publisher": "nelsonduarte",
     "icon": "icon.png",
     "main": "./dist/extension.js",

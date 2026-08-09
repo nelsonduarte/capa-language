@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.13.1
+
+- Type-check gate fixed. `npm run check-types` (`tsc --noEmit`) failed with
+  `TS2307: Cannot find module 'vscode-languageclient/node'` because the
+  config left `moduleResolution` implicit, so tsc used classic `node10`
+  resolution, which cannot read the `exports` map of
+  `vscode-languageclient` 10. The type-check now uses `node16` module
+  resolution (with `module` set to `node16` to satisfy TypeScript, which
+  couples the two), so tsc resolves the package the same way Node does at
+  runtime. The `tsconfig` change itself does not affect the shipped bundle,
+  which is produced by esbuild (`--format=cjs --platform=node`) and does
+  not read `tsconfig`.
+- Output channel is now a log channel, fixing a latent defect the repaired
+  gate surfaced. `vscode-languageclient` 10 types the client's
+  `outputChannel` as `LogOutputChannel` and, at runtime, calls its
+  `error`/`warn`/`info`/`debug` methods and reads `logLevel`. The extension
+  passed a plain `OutputChannel` (created without `{ log: true }`), so those
+  calls would have thrown at runtime whenever the client logged through the
+  channel; the broken type-check had hidden the mismatch. The channel is now
+  created with `{ log: true }`; the extension's own `appendLine`/`show`
+  usage is unaffected because `LogOutputChannel` extends `OutputChannel`.
+- Grammar currency. The built-in capability pattern now includes `Serve`
+  (the tenth capability), so it highlights as a built-in capability rather
+  than a user type. The `extern` keyword (block-opening `extern component
+  ... from "..."`) and the `borrow` binding modifier (the invoke-only
+  companion to `consume`) are now scoped as keywords instead of plain
+  identifiers. No enforcement change; highlighting only.
+- Corrected a stale comment in `src/extension.ts` that referred to
+  `vscode-languageclient` 8.x; the dependency is pinned at `^10.1.0` and
+  the best-effort internal handle it relies on still exists in v10.
+
 ## 0.13.0
 
 - Server auto-detection. The `capa.languageServer.command` setting now

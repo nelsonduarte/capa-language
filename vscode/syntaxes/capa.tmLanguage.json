@@ -93,12 +93,12 @@
                 {
                     "comment": "Block-opening declarations",
                     "name": "keyword.declaration.capa",
-                    "match": "\\b(fun|type|typestate|linear|trait|impl|capability|const|import|as)\\b"
+                    "match": "\\b(fun|type|typestate|linear|trait|impl|capability|const|import|extern|as)\\b"
                 },
                 {
                     "comment": "Visibility / binding storage modifiers",
                     "name": "storage.modifier.capa",
-                    "match": "\\b(pub|let|var|consume)\\b"
+                    "match": "\\b(pub|let|var|consume|borrow)\\b"
                 },
                 {
                     "comment": "Control-flow keywords",
@@ -223,7 +223,7 @@
                 {
                     "comment": "Built-in capabilities",
                     "name": "support.class.capability.capa",
-                    "match": "\\b(Stdio|Fs|Net|Env|Clock|Random|Proc|Db|Unsafe)\\b"
+                    "match": "\\b(Stdio|Fs|Net|Env|Clock|Random|Proc|Db|Serve|Unsafe)\\b"
                 },
                 {
                     "comment": "Built-in generic types and the function-type constructor",
