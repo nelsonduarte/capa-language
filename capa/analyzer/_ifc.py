@@ -238,12 +238,66 @@ class _IfcMixin:
         """Compute and record the security label of ``e`` from its
         already-labelled children, returning it. Called by
         ``_check_expr`` right after typing, so child labels are
-        present. The result is stored in ``self._expr_labels``."""
-        label = self._compute_label(e)
+        present.
+
+        ``_compute_label`` yields the BASE label (data-flow / field-store /
+        declared-field, EXCLUDING the branch-scoped container-mutation
+        channel), cached in ``_expr_base_labels`` so the escaped field-read
+        fallback can read a receiver's base without its container taint.
+        The container-mutation channel is joined in ONCE here as a prefix
+        scan at ``e``'s own access path (``_container_read_taint``): a WHOLE
+        read of a struct sees every field taint of its root (the length-0
+        access-path query ``x.f^0 = x``), a FIELD read only the taints at
+        or below its own path. The full label is stored in
+        ``self._expr_labels``."""
+        base = self._compute_label(e)
+        self._expr_base_labels[id(e)] = base
+        extra = self._container_read_taint(e)
+        label = L.join(base, extra) if extra else base
         self._expr_labels[id(e)] = label
         self._record_field_map(e)
         self._mark_escapes_for(e)
         return label
+
+    def _base_label_of(self, e: A.Expr) -> str:
+        """The recorded BASE label of ``e``: its data-flow / field-store /
+        declared-field label EXCLUDING the branch-scoped container-mutation
+        channel. Consulted only by the escaped field-read fallback in
+        ``_compute_label``, so a field read that cannot resolve a precise
+        per-field label does NOT inherit the receiver's WHOLE-subtree
+        container taint (which would re-taint a clean sibling field); the
+        container channel is instead consulted precisely at the field's own
+        access path via ``_container_read_taint``."""
+        return self._expr_base_labels.get(id(e), L.PUBLIC)
+
+    def _container_read_taint(self, e: A.Expr):
+        """The branch-scoped container-mutation taint OBSERVED by reading
+        ``e``, as a prefix scan over the ``(root-binding, *)`` access-path
+        channel, or ``None`` when ``e`` is not rooted at a binding.
+
+        A WHOLE read of a struct binding (a bare Ident, or a
+        getter / interpolation / pass-whole read routed through it, all of
+        which take the Ident's label) observes EVERY field taint of that
+        root: the length-0 access-path query ``x.f^0 = x`` from the
+        FlowDroid access-path semantics. A FIELD read (``bag.other``)
+        observes only the taints at or below its own path, so a public
+        sibling field stays clean and a bare whole read of the same root
+        that was container-pushed into a field is now caught (closing the
+        cross-function whole / getter read-back that the field-keyed
+        channel introduced). The scan is per ROOT SYMBOL, so a
+        different-root alias / rename / embedding stays a disclosed
+        residual (only a points-to analysis could close it)."""
+        if isinstance(e, A.Ident):
+            sym = self.bindings.get(id(e))
+            if sym is not None:
+                return self._container_taint_at(sym, ())
+            return None
+        if isinstance(e, A.FieldAccess):
+            root = self._struct_root_sym(e)
+            path = self._field_path_from_root(e)
+            if root is not None and path is not None:
+                return self._container_taint_at(root, tuple(path))
+        return None
 
     def _mark_escapes_for(self, e: A.Expr) -> None:
         """Mark struct bindings that ESCAPE through ``e`` (roadmap S2
@@ -1019,21 +1073,18 @@ class _IfcMixin:
         )):
             return L.PUBLIC
 
-        # A name carries its binding's label, JOINED with any
-        # branch-scoped container-mutation taint recorded for that binding
-        # (``_check_ifc_container_mutation``): a push of a @secret value into
-        # the container in a branch reaches a read here without polluting the
-        # shared label / alias set.
+        # A name carries its binding's BASE label. The branch-scoped
+        # container-mutation taint is joined in by ``_label_expr`` via
+        # ``_container_read_taint`` (a whole read of a struct binding
+        # observes every field taint of its root), so it is NOT consulted
+        # here -- keeping ``_compute_label`` the container-free base that
+        # the escaped field-read fallback can read without over-tainting a
+        # clean sibling.
         if isinstance(e, A.Ident):
             sym = self.bindings.get(id(e))
-            base = L.PUBLIC
             if sym is not None and getattr(sym, "label", None):
-                base = L.normalize(sym.label)
-            if sym is not None:
-                extra = self._container_taint_map().get((id(sym), ()))
-                if extra:
-                    return L.join(base, extra)
-            return base
+                return L.normalize(sym.label)
+            return L.PUBLIC
 
         # Derived values join the labels of every operand that flows
         # into them. Interpolation is a flow: ``"${secret}"`` is
@@ -1083,25 +1134,19 @@ class _IfcMixin:
             node = self._precise_field_label(e)
             if node is not None:
                 if isinstance(node, dict):
-                    base = L.join(decl_label, self._collapse_field_map(node))
-                else:
-                    base = L.join(decl_label, L.normalize(node))
-            else:
-                base = L.join(decl_label, self._label_of(e.receiver))
-            # Branch-scoped container-mutation taint recorded on THIS field
-            # path (or a longer path nested under it): a push / add / set of
-            # a @secret into ``bag.items`` reaches a read of ``bag.items``
-            # here without escaping the root binding, so a public sibling
-            # ``bag.other`` read stays clean and a mutually-exclusive
-            # branch's read is not polluted (mirrors the plain-Ident channel
-            # above, keyed on the field path rather than the whole binding).
-            root = self._struct_root_sym(e)
-            path = self._field_path_from_root(e)
-            if root is not None and path is not None:
-                extra = self._container_taint_at(root, tuple(path))
-                if extra:
-                    return L.join(base, extra)
-            return base
+                    return L.join(decl_label, self._collapse_field_map(node))
+                return L.join(decl_label, L.normalize(node))
+            # Escaped / unresolvable: fall back to the receiver's BASE label
+            # (its data-flow / field-store label WITHOUT the container
+            # channel), NOT its full label. A field read must not inherit
+            # the receiver's WHOLE-subtree container taint -- that would
+            # re-taint a clean sibling field (``bag.other`` after a push into
+            # ``bag.items``); the container channel is consulted precisely at
+            # THIS field's own access path by ``_container_read_taint`` in
+            # ``_label_expr``. The receiver's field-store / whole-value label
+            # is still inherited (so a struct raised whole-value, e.g. by a
+            # cross-function field-store carrier, still taints a field read).
+            return L.join(decl_label, self._base_label_of(e.receiver))
 
         # Calls / method-calls. A method call on a built-in source
         # cap (``env.get(...)``) yields secret data regardless of its

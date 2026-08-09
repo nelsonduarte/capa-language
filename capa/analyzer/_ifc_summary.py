@@ -80,10 +80,14 @@ is that no cross-function leak regresses:
   Stage 2, out of scope here.
 * a CONTAINER MUTATION, ``xs.push(v)`` and every other entry of the
   ``_CONTAINER_MUTATORS`` registry in :mod:`._ifc` (its single source of
-  truth), is FIELD-KEYED. The intra container mutation
-  (``_check_ifc_container_mutation``) records a branch-scoped
-  ``(root, field-path)`` channel that a FIELD read of the path observes
-  but a bare whole read does not (the disclosed whole-read residual). The
+  truth), is FIELD-KEYED onto the branch-scoped ``(root, field-path)``
+  container channel the intra container mutation
+  (``_check_ifc_container_mutation``) uses. A FIELD read of the path
+  observes it precisely (a public sibling field stays clean), and a WHOLE
+  read of the root observes it too: ``_compute_label`` prefix-scans the
+  ``(root, *)`` channel for a whole / getter / interpolation / pass-whole
+  read (the length-0 access-path query ``x.f^0 = x``), so a same-root
+  whole read-back is caught without re-tainting a clean sibling. The
   receiver may be a parameter (``xs.push(v)`` -> path ``()``) or a field
   chain rooted at one (``self.items.push(v)`` -> path ``("items",)``); the
   effect is recorded against the ROOT parameter at that field path. Without
@@ -95,14 +99,23 @@ The call site (see ``_check_ifc_call_field_effect`` /
 CONSERVATIVELY: when the callee writes into param ``j`` at ``field_path``
 from param ``i`` and the caller's argument for ``i`` is @secret, the
 caller's binding bound to ``j`` is tainted -- a field-keyed CONTAINER
-effect on the SAME ``(root, field-path)`` branch-scoped
-container-mutation channel the intra-procedural pass uses (so a later read
-of that path is caught while a public sibling field stays clean), a
-whole-value FIELD-STORE effect via the whole-value carrier (a later read
-of any field / element, whole or getter, is caught). An internal-secret
-source taints the caller's binding-``j`` unconditionally. This is an
-explicit data-flow taint, default-warn / strict-error like the
-sink-reaching check.
+effect on the SAME ``(root, field-path)`` branch-scoped container-mutation
+channel the intra-procedural pass uses (so a later read of that path, AND a
+same-root whole / getter / interpolation / pass-whole read-back, is caught
+while a public sibling field stays clean), a whole-value FIELD-STORE effect
+via the whole-value carrier (a later read of any field / element, whole or
+getter, is caught). An internal-secret source taints the caller's
+binding-``j`` unconditionally. This is an explicit data-flow taint,
+default-warn / strict-error like the sink-reaching check.
+
+CLOSED vs RESIDUAL. A same-root read-back (direct field read, whole read,
+getter, interpolation, or passing the whole struct to a sink-reaching
+callee) is now caught. What genuinely REMAINS a disclosed residual is
+DIFFERENT-ROOT points-to: a container reached through a root the taint is
+not keyed on (an INLINE push through a struct alias, a field-chain rename
+``var lst = bag.items``, or an embed-then-mutate), and a mutator whose
+receiver is not rooted at a binding (a call- / index-rooted receiver).
+Only a points-to analysis, which Capa does not have, could close those.
 """
 
 from __future__ import annotations
@@ -957,19 +970,22 @@ class _SummaryBuilder:
         ``INTERNAL_SECRET``) is recorded; transitive sources already
         collapsed into ``value_src`` by ``_taint_of``.
 
-        ``field_keyable`` follows the intra-procedural two-channel split
-        (Stage 1): a CONTAINER MUTATION (``True``) is field-keyed, so
-        ``path`` is the parameter-relative field path when the chain is
-        rooted directly at param ``j`` (else the whole-value carrier) and
-        the caller taints only that ``(root, field-path)`` -- a public
-        sibling field / a whole read stays clean (matching the intra
-        container channel, whose whole-read miss is the disclosed
-        residual). A FIELD STORE (``False``) is NOT field-keyed: it takes
-        the whole-value carrier (``path`` is ``None``), because the intra
-        field store raises the struct's COLLAPSED whole-value label, so a
-        whole / getter read observes it -- keeping that coverage (no
-        cross-function leak regresses) is the reason field stores are not
-        de-collapsed here (that is Stage 2)."""
+        ``field_keyable`` follows the intra-procedural two-channel split:
+        a CONTAINER MUTATION (``True``) is field-keyed, so ``path`` is the
+        parameter-relative field path when the chain is rooted directly at
+        param ``j`` (else the whole-value carrier) and the caller taints
+        only that ``(root, field-path)`` on the branch-scoped container
+        channel. A public SIBLING field stays clean (a field read scans
+        only its own path), while a same-root WHOLE read-back is still
+        caught: ``_compute_label`` prefix-scans the ``(root, *)`` channel
+        for a whole / getter / interpolation / pass-whole read (the
+        length-0 access-path query). A FIELD STORE (``False``) is NOT
+        field-keyed: it takes the whole-value carrier (``path`` is
+        ``None``), because the intra field store raises the struct's
+        COLLAPSED whole-value label -- keeping the whole-value carrier
+        keeps that coverage. De-collapsing a field store to a per-field
+        caller taint (so its sibling gains the same precision) is a later
+        refinement, not needed for soundness."""
         root = self._chain_root_name(target)
         if root is None:
             return

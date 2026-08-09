@@ -42,10 +42,21 @@ a public sibling field (``bag.other``), a mutually-exclusive branch's read,
 and a loop-carried push stay exactly as precise as the plain-identifier
 channel. Set.add / Map.set and depth > 1 are handled uniformly.
 
-Disclosed residuals (still open after this fix). Only the field-chain
-mutate-then-read on the container's DECLARED root is closed here. The open
-cases are three DISTINCT mechanisms, not one class; every one leaks at runtime
-and stays UNFLAGGED at both tiers on both backends:
+CLOSED: WHOLE-STRUCT read of the SAME root. After ``bag.items.push(secret)``
+the taint is keyed on ``(bag, ("items",))``. A read of the WHOLE ``bag`` --
+string interpolation via a to_string method (``"${bag}"``), a method whose
+body reads the field (``bag.reveal()``), or passing the whole ``bag`` to a
+callee that reads ``bag.items`` (``show(bag)``) -- now joins EVERY field taint
+of the root (the length-0 access-path query ``x.f^0 = x``), so it is caught at
+both tiers on both backends. The public-sibling false positives commits
+b895ca6 / 4c69a02 removed stay removed, because the whole-read prefix scan is
+applied only to a WHOLE read, while a FIELD read (``bag.other``) still scans
+only its own path and an escaped field read falls back to the receiver's BASE
+label (no container channel), so a clean sibling stays clean. See
+``TestWholeStructSameRootReadClosed``.
+
+Disclosed residuals (still open, two DISTINCT mechanisms, not one class; each
+leaks at runtime and stays UNFLAGGED at both tiers on both backends):
 
 (1) RECEIVER not rooted at a binding. A mutator called on a call- or
     index-rooted receiver (``get_items(bag).push(secret)``,
@@ -53,35 +64,23 @@ and stays UNFLAGGED at both tiers on both backends:
     so the push itself is untracked and the later read of the same container
     is not caught (see ``TestCallIndexRootedReceiverResidualDisclosed``).
 
-(2) WHOLE-STRUCT read of the SAME root. After ``bag.items.push(secret)`` the
-    taint IS keyed, on ``(bag, ("items",))``. A read of the WHOLE ``bag`` --
-    string interpolation via a to_string method (``"${bag}"``), a method
-    whose body reads the field (``bag.reveal()``), or passing the whole
-    ``bag`` to a callee that reads ``bag.items`` (``foo(bag)``) -- consults
-    only the exact empty-path key ``(bag, ())``, never the tainted prefix, so
-    it is missed. The root IS keyed; the miss is the bare whole-read
-    asymmetry (a whole-struct read does an exact-key lookup, a field read a
-    prefix scan), NOT a points-to gap. A naive whole-read prefix-scan would
-    re-introduce the public-sibling false positives commits b895ca6 / 4c69a02
-    removed, so closing this needs field-sensitivity-under-escape: a design
-    item, not a quick fix (see
-    ``TestWholeStructSameRootReadResidualDisclosed``).
-
-(3) DIFFERENT-root points-to. The container is reached through a root the
+(2) DIFFERENT-root points-to. The container is reached through a root the
     taint is not keyed on, which only a points-to analysis (which Capa does
     not have) could close:
     * rename out of the struct: ``var lst = bag.items; lst.push(secret)``
       taints the fresh local, not the field, so the ``bag.items`` read-back
       is missed -- the plain ``var alias = xs`` rename lifted to a field (see
       ``TestFieldChainRenameResidualDisclosed``);
-    * whole-struct alias: ``var b2 = bag; b2.items.push(secret)`` then
-      ``read bag.items`` mutates the same container through a DIFFERENT root
-      symbol;
+    * whole-struct alias where the mutation is written INLINE through the
+      alias: ``var b2 = bag; b2.items.push(secret)`` then ``read bag.items``
+      mutates the same container through a DIFFERENT root symbol (a
+      CROSS-FUNCTION push through a struct alias IS caught, via the alias
+      group);
     * embed-then-mutate: pushing into a sub-struct's container through its
       own root after embedding it in an outer struct, then reading through
       the outer.
 
-Do not read any single bullet as the ONLY open case.
+Do not read either bullet as the ONLY open case.
 """
 
 import shutil
@@ -706,15 +705,13 @@ _RECV_ROOT_RESIDUAL = {
 }
 
 
-# DISCLOSED residual (mechanism 2, out of scope): reading or passing the
-# WHOLE struct of the SAME root after a field-chain push. The taint IS keyed,
-# on (bag, ("items",)); a whole-struct read consults only the exact empty-path
-# key (bag, ()), never the tainted prefix, so it is missed. This is the
-# bare whole-read asymmetry, NOT a points-to gap: the root is keyed. Three
-# shapes -- interpolating the whole struct through a to_string method, a
+# CLOSED: reading or passing the WHOLE struct of the SAME root after a
+# field-chain push. The taint is keyed on (bag, ("items",)); a WHOLE read now
+# joins every field taint of the root (the length-0 access-path query), so all
+# three shapes -- interpolating the whole struct through a to_string method, a
 # method whose body reads the field (``bag.reveal()``), and passing the whole
-# ``bag`` to a callee that reads ``bag.items`` -- all leak, UNFLAGGED at both
-# tiers on both backends.
+# ``bag`` to a callee that reads ``bag.items`` -- are FLAGGED (warning default,
+# hard error @strict_ifc) and leak s3cr3t at runtime on both backends.
 WS_INTERP = (TOK +
     "type Bag { items: List<String> }\n"
     "impl Bag\n"
@@ -753,11 +750,88 @@ WS_CALLEE = (TOK +
     "    show(bag, stdio)\n"
     "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
 
-_WHOLE_STRUCT_RESIDUAL = {
+_WHOLE_STRUCT_CLOSED = {
     "interpolate_whole_struct": WS_INTERP,
     "method_reads_field": WS_METHOD,
     "pass_whole_struct_to_callee": WS_CALLEE,
 }
+
+
+# CLOSED (the coordinator's CRITICAL): the CROSS-FUNCTION analog. A CALLEE
+# pushes the secret into ``bag.items`` (a field-keyed container effect on the
+# caller's ``(bag, ("items",))`` channel), and the caller reads back the WHOLE
+# struct. Before the whole-read prefix scan this slipped, because dropping the
+# whole-value carrier for the container effect removed the only thing that
+# caught a whole / getter read-back cross-function. All four shapes now FLAG
+# (warning default, hard error @strict_ifc) and leak on both backends.
+MX_GETTER = (TOK +
+    "type Bag { items: List<String> }\n"
+    "impl Bag\n"
+    "    fun reveal(self) -> String\n"
+    "        match self.items.get(0)\n"
+    "            Some(x) -> return x\n"
+    "            None -> return \"empty\"\n"
+    "fun fill(bag: Bag, secret: @secret String)\n"
+    "    bag.items.push(secret)\n"
+    "fun main(stdio: Stdio)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    fill(bag, TOKEN)\n"
+    "    stdio.println(bag.reveal())\n")
+
+MX_INTERP = (TOK +
+    "type Bag { items: List<String> }\n"
+    "impl Bag\n"
+    "    fun to_string(self) -> String\n"
+    "        match self.items.get(0)\n"
+    "            Some(x) -> return x\n"
+    "            None -> return \"empty\"\n"
+    "fun fill(bag: Bag, secret: @secret String)\n"
+    "    bag.items.push(secret)\n"
+    "fun main(stdio: Stdio)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    fill(bag, TOKEN)\n"
+    "    stdio.println(\"${bag}\")\n")
+
+MX_CALLEE = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun fill(bag: Bag, secret: @secret String)\n"
+    "    bag.items.push(secret)\n"
+    "fun show(bag: Bag, stdio: Stdio)\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    fill(bag, TOKEN)\n"
+    "    show(bag, stdio)\n")
+
+# {name: src} -- const-sourced, so each prints the secret at runtime.
+_CROSSFN_WHOLE_READ_CLOSED = {
+    "crossfn_getter": MX_GETTER,
+    "crossfn_interpolate": MX_INTERP,
+    "crossfn_pass_whole": MX_CALLEE,
+}
+
+# The Env-sourced getter variant: the secret enters through ``env.get`` inside
+# the caller, is pushed by the callee, and read back whole through a getter.
+# Analysis MUST flag it (the source is @public-in / @secret content); at
+# runtime ``env`` is unset so it prints the public fallback, which is why this
+# one is asserted on the analysis verdict, not a secret print.
+MX_GETTER_ENV = (
+    "type Bag { items: List<String> }\n"
+    "impl Bag\n"
+    "    fun reveal(self) -> String\n"
+    "        match self.items.get(0)\n"
+    "            Some(x) -> return x\n"
+    "            None -> return \"empty\"\n"
+    "fun fill(bag: Bag, secret: @secret String)\n"
+    "    bag.items.push(secret)\n"
+    "fun main(env: Env, stdio: Stdio)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    match env.get(\"API_KEY\")\n"
+    "        Some(k) -> fill(bag, k)\n"
+    "        None -> fill(bag, \"none\")\n"
+    "    stdio.println(bag.reveal())\n")
 
 
 # DISCLOSED SAFE over-report (must stay FLAGGED): reassigning the container's
@@ -935,38 +1009,153 @@ class TestCallIndexRootedReceiverResidualDisclosed(unittest.TestCase):
                     self.assertEqual(_run_wasm(src), "s3cr3t\n")
 
 
-class TestWholeStructSameRootReadResidualDisclosed(unittest.TestCase):
-    """DISCLOSED residual (mechanism 2, out of scope): reading or passing the
-    WHOLE struct of the SAME root after a field-chain push. The taint IS keyed
-    on (bag, ("items",)); a whole-struct read consults only the exact
-    empty-path key (bag, ()), never the tainted prefix, so it is missed. This
-    is the bare whole-read asymmetry (exact-key lookup vs the field read's
-    prefix scan), NOT a points-to gap -- the root IS keyed. Three shapes --
+class TestWholeStructSameRootReadClosed(unittest.TestCase):
+    """CLOSED (was a disclosed residual): reading or passing the WHOLE struct
+    of the SAME root after a field-chain push. The taint is keyed on
+    (bag, ("items",)); a WHOLE read now joins EVERY field taint of the root
+    (the length-0 access-path query ``x.f^0 = x``), so all three shapes --
     interpolating the whole struct through a to_string method, a method whose
     body reads the field (``bag.reveal()``), and passing the whole ``bag`` to a
-    callee that reads ``bag.items`` -- all leak, UNFLAGGED at both tiers on
-    both backends. Closing this needs field-sensitivity-under-escape (a naive
-    whole-read prefix-scan re-introduces public-sibling false positives), so it
-    is a design item, not a quick fix."""
+    callee that reads ``bag.items`` -- are FLAGGED (warning by default, a hard
+    error under @strict_ifc), both backends printing the secret. The
+    public-sibling precision is preserved because a FIELD read scans only its
+    own path and an escaped field read falls back to the receiver's BASE label
+    (no container channel), so ``bag.other`` stays clean (see
+    ``TestFieldChainReceiverStaysClean``)."""
 
-    def test_unflagged_at_both_tiers(self):
-        for name, src in _WHOLE_STRUCT_RESIDUAL.items():
+    def test_flagged_at_both_tiers(self):
+        for name, src in _WHOLE_STRUCT_CLOSED.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime(self):
+        skip = _wasm_unavailable()
+        for name, src in _WHOLE_STRUCT_CLOSED.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+class TestCrossFnContainerWholeReadClosed(unittest.TestCase):
+    """CLOSED (the coordinator's CRITICAL regression): a CALLEE pushes a secret
+    into ``bag.items`` and the caller reads it back through the WHOLE struct --
+    a getter (``bag.reveal()``), string interpolation (``"${bag}"``), or by
+    passing the whole ``bag`` to a sink-reaching callee (``show(bag)``). Moving
+    the cross-function container-mutation effect onto the field-keyed
+    ``(root, path)`` channel dropped the whole-value carrier that used to catch
+    this, so it briefly slipped; the whole-read prefix scan closes it precisely.
+    All four shapes FLAG (warning default, hard error @strict_ifc); the three
+    const-sourced ones leak the secret on both backends. Locked in so it can
+    never silently re-regress."""
+
+    def test_const_sourced_flag_at_both_tiers(self):
+        for name, src in _CROSSFN_WHOLE_READ_CLOSED.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "main"))
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_const_sourced_leak_on_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _CROSSFN_WHOLE_READ_CLOSED.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+    def test_env_sourced_getter_flags(self):
+        r = _analyze(MX_GETTER_ENV)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(MX_GETTER_ENV, "main"))
+        self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+
+
+# The escaped-sibling clean cases: a CALLEE pushes the secret into one field
+# and the caller reads a DIFFERENT (public) field of the SAME struct AFTER the
+# struct escaped through the call. The whole-read prefix scan must NOT re-taint
+# the sibling: a FIELD read scans only its own path, and an escaped field read
+# falls back to the receiver's BASE label (no container channel). Each prints
+# its public value on both backends.
+XFN_SIBLING_CLEAN = (TOK +
+    "type Bag { items: List<String>, other: List<String> }\n"
+    "fun fill(bag: Bag, secret: @secret String)\n"
+    "    bag.items.push(secret)\n"
+    "fun main(stdio: Stdio)\n"
+    "    var bag: Bag = Bag { items: [], other: [] }\n"
+    "    bag.other.push(\"public\")\n"
+    "    fill(bag, TOKEN)\n"
+    "    match bag.other.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n")
+
+# Nested: push ``bag.inner.items`` cross-function (through ``bag.inner``), read
+# the nested sibling ``bag.inner.other``. The composed path
+# ``(bag, ("inner","items"))`` must not taint ``(bag, ("inner","other"))``.
+XFN_SIBLING_CLEAN_NESTED = (TOK +
+    "type Inner { items: List<String>, other: List<String> }\n"
+    "type Bag { inner: Inner }\n"
+    "fun fill(inner: Inner, secret: @secret String)\n"
+    "    inner.items.push(secret)\n"
+    "fun main(stdio: Stdio)\n"
+    "    var bag: Bag = Bag { inner: Inner { items: [], other: [] } }\n"
+    "    bag.inner.other.push(\"public\")\n"
+    "    fill(bag.inner, TOKEN)\n"
+    "    match bag.inner.other.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n")
+
+_XFN_SIBLING_CLEAN = {
+    "escaped_sibling": XFN_SIBLING_CLEAN,
+    "escaped_sibling_nested": XFN_SIBLING_CLEAN_NESTED,
+}
+
+
+class TestCrossFnEscapedSiblingStaysClean(unittest.TestCase):
+    """No new FP: after a callee pushes a secret into one field and the struct
+    ESCAPES through the call, reading a DIFFERENT public field of the same root
+    stays CLEAN (no warning by default, no error under @strict_ifc), including
+    a nested sibling. The whole-read prefix scan is confined to WHOLE reads; a
+    field read scans only its own path and an escaped field read uses the
+    receiver's BASE label, so ``bag.other`` / ``bag.inner.other`` do not
+    inherit the sibling's container taint. Both backends print the public
+    value."""
+
+    def test_default_tier_is_clean(self):
+        for name, src in _XFN_SIBLING_CLEAN.items():
             with self.subTest(shape=name):
                 r = _analyze(src)
                 self.assertTrue(r.ok, [e.message for e in r.errors])
                 self.assertEqual(len(_flow_warnings(r)), 0,
                                  [w.message for w in r.warnings])
-                rs = _analyze(_strict(src, "leak"))
-                self.assertEqual(len(_flow_errors(rs)), 0,
-                                 [e.message for e in rs.errors])
 
-    def test_leaks_at_runtime(self):
-        skip = _wasm_unavailable()
-        for name, src in _WHOLE_STRUCT_RESIDUAL.items():
+    def test_strict_tier_is_clean(self):
+        for name, src in _XFN_SIBLING_CLEAN.items():
             with self.subTest(shape=name):
-                self.assertEqual(_run_py(src), "s3cr3t\n")
+                r = _analyze(_strict(src, "main"))
+                self.assertEqual(len(_flow_errors(r)), 0,
+                                 [e.message for e in r.errors])
+
+    def test_both_backends_print_public(self):
+        skip = _wasm_unavailable()
+        for name, src in _XFN_SIBLING_CLEAN.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "public\n")
                 if skip is None:
-                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+                    self.assertEqual(_run_wasm(src), "public\n")
 
 
 class TestReassignRootSafeOverReport(unittest.TestCase):

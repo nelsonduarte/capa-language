@@ -434,6 +434,15 @@ class Analyzer(
         # from its children's labels. Read by sink-enforcement /
         # SBOM-emission in later S2 slices.
         self._expr_labels: dict[int, str] = {}
+        # The BASE label of each expression: its data-flow / field-store /
+        # declared-field label EXCLUDING the branch-scoped
+        # container-mutation channel (which ``_label_expr`` joins in once,
+        # as a prefix scan at the read's own access path). Consulted only
+        # by the escaped field-read fallback (``_base_label_of``), so a
+        # field read that cannot resolve a precise per-field label does NOT
+        # inherit the receiver's WHOLE-subtree container taint and a clean
+        # sibling field stays clean.
+        self._expr_base_labels: dict[int, str] = {}
         # Feature #6 (B1). ``id(FunDecl)`` -> list of ``(sink capability,
         # source Pos)`` for each WARN-tier un-audited secret->sink flow in
         # that function's body. Populated at the three warn sites in
