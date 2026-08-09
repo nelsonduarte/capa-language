@@ -42,28 +42,46 @@ a public sibling field (``bag.other``), a mutually-exclusive branch's read,
 and a loop-carried push stay exactly as precise as the plain-identifier
 channel. Set.add / Map.set and depth > 1 are handled uniformly.
 
-Disclosed residuals (still open after this fix): all are the same taint-keyed
--on-the-syntactic-root false negative, all members of the already-disclosed
-list-aliasing class (``var alias = xs``, embed-then-mutate), and all would
-need a points-to analysis (which Capa does not have) to close. Only the
-field-chain mutate-then-read on the container's DECLARED root is closed here;
-these reach the same container through a root the taint is not keyed on, so
-they leak at runtime and stay UNFLAGGED:
+Disclosed residuals (still open after this fix). Only the field-chain
+mutate-then-read on the container's DECLARED root is closed here. The open
+cases are three DISTINCT mechanisms, not one class; every one leaks at runtime
+and stays UNFLAGGED at both tiers on both backends:
 
-* rename out of the struct: ``var lst = bag.items; lst.push(secret)`` taints
-  the fresh local, not the field, so the ``bag.items`` read-back is not caught
-  -- the plain ``var alias = xs`` rename lifted to a field (see
-  ``TestFieldChainRenameResidualDisclosed``);
-* whole-struct alias: ``var b2 = bag; b2.items.push(secret)`` then
-  ``read bag.items`` mutates the same container through a DIFFERENT root
-  symbol, which the root-keyed taint misses;
-* cross-function whole-struct and embed-whole-struct: passing the whole
-  ``bag`` to a callee that reads the field, and embedding a push-mutated sub
-  -struct into an outer struct then reading through it, both reach the
-  container through a root the taint is not keyed on.
+(1) RECEIVER not rooted at a binding. A mutator called on a call- or
+    index-rooted receiver (``get_items(bag).push(secret)``,
+    ``arr[0].items.push(secret)``) has no ``(root, field-path)`` key at all,
+    so the push itself is untracked and the later read of the same container
+    is not caught (see ``TestCallIndexRootedReceiverResidualDisclosed``).
 
-Do not read the rename residual as the ONLY open case; these three are the
-same class and remain open together.
+(2) WHOLE-STRUCT read of the SAME root. After ``bag.items.push(secret)`` the
+    taint IS keyed, on ``(bag, ("items",))``. A read of the WHOLE ``bag`` --
+    string interpolation via a to_string method (``"${bag}"``), a method
+    whose body reads the field (``bag.reveal()``), or passing the whole
+    ``bag`` to a callee that reads ``bag.items`` (``foo(bag)``) -- consults
+    only the exact empty-path key ``(bag, ())``, never the tainted prefix, so
+    it is missed. The root IS keyed; the miss is the bare whole-read
+    asymmetry (a whole-struct read does an exact-key lookup, a field read a
+    prefix scan), NOT a points-to gap. A naive whole-read prefix-scan would
+    re-introduce the public-sibling false positives commits b895ca6 / 4c69a02
+    removed, so closing this needs field-sensitivity-under-escape: a design
+    item, not a quick fix (see
+    ``TestWholeStructSameRootReadResidualDisclosed``).
+
+(3) DIFFERENT-root points-to. The container is reached through a root the
+    taint is not keyed on, which only a points-to analysis (which Capa does
+    not have) could close:
+    * rename out of the struct: ``var lst = bag.items; lst.push(secret)``
+      taints the fresh local, not the field, so the ``bag.items`` read-back
+      is missed -- the plain ``var alias = xs`` rename lifted to a field (see
+      ``TestFieldChainRenameResidualDisclosed``);
+    * whole-struct alias: ``var b2 = bag; b2.items.push(secret)`` then
+      ``read bag.items`` mutates the same container through a DIFFERENT root
+      symbol;
+    * embed-then-mutate: pushing into a sub-struct's container through its
+      own root after embedding it in an outer struct, then reading through
+      the outer.
+
+Do not read any single bullet as the ONLY open case.
 """
 
 import shutil
@@ -652,6 +670,96 @@ FC_RESIDUAL_RENAME = (TOK +
     "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
 
 
+# DISCLOSED residual (mechanism 1, out of scope): the mutator's RECEIVER is
+# rooted at a call or an index, not a binding. ``_container_mutation_key``
+# only tracks a plain identifier or an Ident-rooted field chain, so a call-
+# or index-rooted receiver has no (root, field-path) key at all -- the push
+# is untracked and the later read of the same container is not caught. Both
+# forms leak at runtime, UNFLAGGED at both tiers on both backends. Lists are
+# reference values, so the push through the returned / indexed alias mutates
+# the very container the field read then observes.
+RECV_CALL_ROOTED = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun get_items(bag: Bag) -> List<String>\n"
+    "    return bag.items\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    get_items(bag).push(secret)\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+RECV_INDEX_ROOTED = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var arr: List<Bag> = [Bag { items: [] }]\n"
+    "    arr[0].items.push(secret)\n"
+    "    match arr[0].items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_RECV_ROOT_RESIDUAL = {
+    "call_rooted": RECV_CALL_ROOTED,
+    "index_rooted": RECV_INDEX_ROOTED,
+}
+
+
+# DISCLOSED residual (mechanism 2, out of scope): reading or passing the
+# WHOLE struct of the SAME root after a field-chain push. The taint IS keyed,
+# on (bag, ("items",)); a whole-struct read consults only the exact empty-path
+# key (bag, ()), never the tainted prefix, so it is missed. This is the
+# bare whole-read asymmetry, NOT a points-to gap: the root is keyed. Three
+# shapes -- interpolating the whole struct through a to_string method, a
+# method whose body reads the field (``bag.reveal()``), and passing the whole
+# ``bag`` to a callee that reads ``bag.items`` -- all leak, UNFLAGGED at both
+# tiers on both backends.
+WS_INTERP = (TOK +
+    "type Bag { items: List<String> }\n"
+    "impl Bag\n"
+    "    fun to_string(self) -> String\n"
+    "        match self.items.get(0)\n"
+    "            Some(x) -> return x\n"
+    "            None -> return \"empty\"\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    bag.items.push(secret)\n"
+    "    stdio.println(\"${bag}\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+WS_METHOD = (TOK +
+    "type Bag { items: List<String> }\n"
+    "impl Bag\n"
+    "    fun reveal(self) -> String\n"
+    "        match self.items.get(0)\n"
+    "            Some(x) -> return x\n"
+    "            None -> return \"empty\"\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    bag.items.push(secret)\n"
+    "    stdio.println(bag.reveal())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+WS_CALLEE = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun show(bag: Bag, stdio: Stdio)\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    bag.items.push(secret)\n"
+    "    show(bag, stdio)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_WHOLE_STRUCT_RESIDUAL = {
+    "interpolate_whole_struct": WS_INTERP,
+    "method_reads_field": WS_METHOD,
+    "pass_whole_struct_to_callee": WS_CALLEE,
+}
+
+
 # DISCLOSED SAFE over-report (must stay FLAGGED): reassigning the container's
 # ROOT binding to a fresh, leak-free value AFTER a field-chain push, then
 # reading the field. The container-mutation taint is monotonic -- once the
@@ -672,6 +780,24 @@ FC_REASSIGN_ROOT = (TOK +
     "        None -> stdio.println(\"empty\")\n"
     "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
 
+# Field-GRANULAR reassignment: clear only the field (``bag.items = []``) after
+# the push, then read that same field. Same monotonic over-report -- once the
+# (root, field-path) is tainted it stays tainted, so the read is still flagged
+# though the reassigned field now holds nothing secret (it prints the public
+# "empty"). Clearing the taint on a field reassignment is likewise deliberately
+# NOT done: reassigning the field to ANOTHER tainted value would then become a
+# real false negative.
+FC_REASSIGN_FIELD = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    bag.items.push(secret)\n"
+    "    bag.items = []\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
 # The pre-existing plain-identifier channel the field chain mirrors: push into
 # a fresh local, reassign the local to ``[]``, then read it. Also stays
 # flagged (same monotonic taint), also prints the public "empty".
@@ -685,9 +811,10 @@ PLAIN_REASSIGN_ROOT = (TOK +
     "        None -> stdio.println(\"empty\")\n"
     "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
 
-# {name: src} -- both stay flagged, both print the public "empty".
+# {name: src} -- all stay flagged, all print the public "empty".
 _REASSIGN_OVER_REPORT = {
     "field_chain_reassign_root": FC_REASSIGN_ROOT,
+    "field_chain_reassign_field": FC_REASSIGN_FIELD,
     "plain_identifier_reassign_root": PLAIN_REASSIGN_ROOT,
 }
 
@@ -778,19 +905,85 @@ class TestFieldChainRenameResidualDisclosed(unittest.TestCase):
             self.assertEqual(_run_wasm(FC_RESIDUAL_RENAME), "s3cr3t\n")
 
 
+class TestCallIndexRootedReceiverResidualDisclosed(unittest.TestCase):
+    """DISCLOSED residual (mechanism 1, out of scope): a mutator whose
+    RECEIVER is rooted at a call or an index (``get_items(bag).push(secret)``,
+    ``arr[0].items.push(secret)``), not a binding, has no (root, field-path)
+    key, so the push is untracked and the later read of the same container is
+    NOT caught -- UNFLAGGED at both tiers, a runtime leak on both backends.
+    Honest, documented false negatives, not silently closed. If a future
+    points-to slice reaches call- / index-rooted receivers, these flip (and
+    the disclosure above comes down)."""
+
+    def test_unflagged_at_both_tiers(self):
+        for name, src in _RECV_ROOT_RESIDUAL.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertEqual(len(_flow_errors(rs)), 0,
+                                 [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime(self):
+        skip = _wasm_unavailable()
+        for name, src in _RECV_ROOT_RESIDUAL.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+class TestWholeStructSameRootReadResidualDisclosed(unittest.TestCase):
+    """DISCLOSED residual (mechanism 2, out of scope): reading or passing the
+    WHOLE struct of the SAME root after a field-chain push. The taint IS keyed
+    on (bag, ("items",)); a whole-struct read consults only the exact
+    empty-path key (bag, ()), never the tainted prefix, so it is missed. This
+    is the bare whole-read asymmetry (exact-key lookup vs the field read's
+    prefix scan), NOT a points-to gap -- the root IS keyed. Three shapes --
+    interpolating the whole struct through a to_string method, a method whose
+    body reads the field (``bag.reveal()``), and passing the whole ``bag`` to a
+    callee that reads ``bag.items`` -- all leak, UNFLAGGED at both tiers on
+    both backends. Closing this needs field-sensitivity-under-escape (a naive
+    whole-read prefix-scan re-introduces public-sibling false positives), so it
+    is a design item, not a quick fix."""
+
+    def test_unflagged_at_both_tiers(self):
+        for name, src in _WHOLE_STRUCT_RESIDUAL.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertEqual(len(_flow_errors(rs)), 0,
+                                 [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime(self):
+        skip = _wasm_unavailable()
+        for name, src in _WHOLE_STRUCT_RESIDUAL.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
 class TestReassignRootSafeOverReport(unittest.TestCase):
     """DISCLOSED SAFE over-report (locked in as deliberate behaviour):
-    reassigning the container's ROOT binding to a leak-free value AFTER a push,
-    then reading, stays FLAGGED because the container-mutation taint is
-    monotonic (once tainted, stays tainted). The field-chain channel
-    (``bag.items.push(secret); bag = Bag { items: [] }; read bag.items``)
-    mirrors the pre-existing plain-identifier one (``xs.push(secret); xs = [];
-    read xs``). Clearing the taint on reassignment is deliberately NOT done:
-    reassigning to ANOTHER tainted value would turn it into a real false
-    negative, so the sound (over-report) direction is chosen. Nothing secret
-    reaches the sink -- both shapes print the public "empty" -- so this is a
-    safe precision loss, not a real leak. Do NOT "fix" the analyzer to clear
-    the taint; this test documents and locks in the safe behaviour."""
+    reassigning to a leak-free value AFTER a push, then reading, stays FLAGGED
+    because the container-mutation taint is monotonic (once tainted, stays
+    tainted). Three shapes are covered: reassigning the container's ROOT
+    binding (``bag.items.push(secret); bag = Bag { items: [] }; read
+    bag.items``), reassigning only the FIELD (``bag.items.push(secret);
+    bag.items = []; read bag.items``), and the pre-existing plain-identifier
+    one (``xs.push(secret); xs = []; read xs``). Clearing the taint on ANY of
+    these reassignments is deliberately NOT done: reassigning to ANOTHER
+    tainted value would turn it into a real false negative, so the sound
+    (over-report) direction is chosen. Nothing secret reaches the sink -- all
+    three shapes print the public "empty" -- so this is a safe precision loss,
+    not a real leak. Do NOT "fix" the analyzer to clear the taint; this test
+    documents and locks in the safe behaviour."""
 
     def test_default_tier_flags(self):
         for name, src in _REASSIGN_OVER_REPORT.items():
