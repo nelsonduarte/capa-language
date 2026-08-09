@@ -1030,7 +1030,7 @@ class _IfcMixin:
             if sym is not None and getattr(sym, "label", None):
                 base = L.normalize(sym.label)
             if sym is not None:
-                extra = self._container_taint_map().get(id(sym))
+                extra = self._container_taint_map().get((id(sym), ()))
                 if extra:
                     return L.join(base, extra)
             return base
@@ -1083,9 +1083,25 @@ class _IfcMixin:
             node = self._precise_field_label(e)
             if node is not None:
                 if isinstance(node, dict):
-                    return L.join(decl_label, self._collapse_field_map(node))
-                return L.join(decl_label, L.normalize(node))
-            return L.join(decl_label, self._label_of(e.receiver))
+                    base = L.join(decl_label, self._collapse_field_map(node))
+                else:
+                    base = L.join(decl_label, L.normalize(node))
+            else:
+                base = L.join(decl_label, self._label_of(e.receiver))
+            # Branch-scoped container-mutation taint recorded on THIS field
+            # path (or a longer path nested under it): a push / add / set of
+            # a @secret into ``bag.items`` reaches a read of ``bag.items``
+            # here without escaping the root binding, so a public sibling
+            # ``bag.other`` read stays clean and a mutually-exclusive
+            # branch's read is not polluted (mirrors the plain-Ident channel
+            # above, keyed on the field path rather than the whole binding).
+            root = self._struct_root_sym(e)
+            path = self._field_path_from_root(e)
+            if root is not None and path is not None:
+                extra = self._container_taint_at(root, tuple(path))
+                if extra:
+                    return L.join(base, extra)
+            return base
 
         # Calls / method-calls. A method call on a built-in source
         # cap (``env.get(...)``) yields secret data regardless of its
@@ -1659,6 +1675,24 @@ class _IfcMixin:
             self._container_taint = ct
         return ct
 
+    def _container_taint_at(self, sym, path: tuple):
+        """Join of every branch-scoped container-mutation taint recorded on
+        ``sym`` at ``path`` or a longer path nested under it, or ``None``.
+        Reading a value observes every tainted container AT or BELOW its
+        path (reading ``bag.items`` observes a push into ``bag.items``;
+        reading the sub-struct ``bag.a`` observes a push into ``bag.a.b``),
+        while a disjoint sibling path (``bag.other``) matches nothing and
+        stays public."""
+        ct = self._container_taint_map()
+        if not ct:
+            return None
+        root = id(sym)
+        out = None
+        for (kid, kpath), lbl in ct.items():
+            if kid == root and kpath[:len(path)] == path:
+                out = L.join(out, lbl)
+        return out
+
     def _container_isolate(self, baseline: dict) -> dict:
         """Start a branch from a copy of ``baseline`` and return the map the
         branch ends with (its own additions), leaving ``baseline`` intact so
@@ -1924,25 +1958,50 @@ class _IfcMixin:
 
     # ---- mutable-container taint (roadmap S2) --------------------
 
+    def _container_mutation_key(self, recv: A.Expr):
+        """The ``(id(root-binding), field-path-tuple)`` the mutated
+        container lives at, or ``None`` when the receiver is not rooted at
+        a binding. A plain identifier (``xs``) yields path ``()``; an
+        Ident-rooted field chain (``bag.items``, nested ``bag.a.b``) yields
+        its field names. A receiver rooted at a call / index / any other
+        expression (``foo().items``, ``arr[0].items``) is out of reach and
+        left untracked, exactly as the plain-Ident slice left field chains
+        untracked before."""
+        if isinstance(recv, A.Ident):
+            sym = self.bindings.get(id(recv))
+            return (id(sym), ()) if sym is not None else None
+        if isinstance(recv, A.FieldAccess):
+            sym = self._struct_root_sym(recv)
+            path = self._field_path_from_root(recv)
+            if sym is None or path is None:
+                return None
+            return (id(sym), tuple(path))
+        return None
+
     def _check_ifc_container_mutation(self, e: A.MethodCall, recv_ty) -> None:
         """When a mutating method (``List.push`` / ``Set.add`` /
-        ``Map.set``) is called with a @secret argument, raise the label
-        of the receiver binding so the container is @secret from here
-        on. Without this, ``let m = new_map(); m.set(k, secret); m.get(k)``
-        would launder the secret back to public on the read.
+        ``Map.set``) is called with a @secret argument, record that the
+        mutated container is @secret from here on, keyed on the
+        ``(root-binding, field-path)`` it lives at, so a later read of that
+        path does not launder the secret back to public. Without this,
+        ``let m = new_map(); m.set(k, secret); m.get(k)`` (or the
+        field-chain form ``bag.items.push(secret); bag.items.get(0)``)
+        would come out public on the read.
 
-        Only a plain identifier receiver is handled (the common case);
-        a mutation through a more complex receiver expression is not
-        tracked in this slice. The raise is monotonic (join), so it is
-        sound under conditional / looping mutation: once tainted, the
-        binding stays tainted."""
+        The receiver may be a plain identifier (``xs.push(secret)`` -> path
+        ``()``) or an Ident-rooted field chain (``bag.items.push(secret)``
+        -> path ``("items",)``; nested ``bag.a.b`` -> ``("a", "b")``). A
+        receiver not rooted at a binding is left untracked (a disclosed
+        residual, as before). The record is monotonic (join) and
+        branch-scoped, so it is sound under conditional / looping mutation."""
         cap_name = getattr(recv_ty, "name", None)
         if cap_name is None:
             return
         taint_args = _CONTAINER_MUTATORS.get((cap_name, e.method))
         if not taint_args:
             return
-        if not isinstance(e.receiver, A.Ident):
+        target = self._container_mutation_key(e.receiver)
+        if target is None:
             return
         incoming = L.join_all(
             self._label_of(e.args[idx])
@@ -1951,23 +2010,21 @@ class _IfcMixin:
         )
         if L.normalize(incoming) != L.SECRET:
             return
-        sym = self.bindings.get(id(e.receiver))
-        if sym is not None:
-            # Record the container-mutation taint in a SEPARATE, per-binding,
-            # BRANCH-SCOPED channel rather than raising the shared
-            # ``sym.label``. The shared label is flat / monotone across
-            # branches and coupled to field labels, struct-alias groups and
-            # escaped-struct tracking; raising it here made a direct push in
-            # one branch leak into a mutually-exclusive sibling branch's read
-            # (a false positive). This channel is isolated per branch and
-            # deferred-unioned out (see ``_check_if`` / ``_check_match_expr``),
-            # and joined into the effective label only when the binding is
-            # READ (``_compute_label``) -- so a sibling read stays clean while
-            # a read AFTER the construct still reflects the push. The shared
-            # label / field labels / alias groups / escape tracking are left
-            # flat and untouched.
-            ct = self._container_taint_map()
-            ct[id(sym)] = L.join(ct.get(id(sym)), L.SECRET)
+        # Record the taint in a SEPARATE, per-(binding, field-path),
+        # BRANCH-SCOPED channel rather than raising the shared ``sym.label``
+        # / the per-field ``field_labels`` / the struct-alias groups / the
+        # escaped-struct set. Raising any of those over-taints a public
+        # sibling field and leaks a branch-local push into a
+        # mutually-exclusive sibling branch's read -- the false positives
+        # commits b895ca6 / 4c69a02 removed for the plain-Ident case. This
+        # channel is isolated per branch and deferred-unioned out (see
+        # ``_check_if`` / ``_check_match_expr``), and joined into the
+        # effective label only when the path is READ (``_compute_label``),
+        # so a sibling read stays clean while a read AFTER the construct
+        # still reflects the push. The shared label / field labels / alias
+        # groups / escape tracking are left flat and untouched.
+        ct = self._container_taint_map()
+        ct[target] = L.join(ct.get(target), L.SECRET)
 
     def _check_no_cap_into_container(self, e: A.MethodCall, recv_ty) -> None:
         """Reject inserting a capability into a container via a

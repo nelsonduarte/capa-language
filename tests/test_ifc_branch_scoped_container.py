@@ -30,6 +30,40 @@ carries the push to a read after the construct). Out of scope, still
 disclosed residuals: the ASSIGNMENT sibling-branch false positive (A1), and
 the general list-aliasing false negatives (``var alias = xs``, embed-then
 -mutate).
+
+FIELD-CHAIN RECEIVER (the same channel, keyed on a field path): a mutator
+called on a field chain rather than a plain identifier
+(``bag.items.push(secret)``, ``bag.m.set(k, secret)``, ``bag.tags.add(
+secret)``, nested ``o.inner.items.push``) was silently dropped and leaked.
+It is now recorded on the ``(root-binding, field-path)`` the container lives
+at and joined on a read of that path (or a container of it), so the leak
+closes -- a warning by default, a hard error under ``@strict_ifc`` -- while
+a public sibling field (``bag.other``), a mutually-exclusive branch's read,
+and a loop-carried push stay exactly as precise as the plain-identifier
+channel. Set.add / Map.set and depth > 1 are handled uniformly.
+
+Disclosed residuals (still open after this fix): all are the same taint-keyed
+-on-the-syntactic-root false negative, all members of the already-disclosed
+list-aliasing class (``var alias = xs``, embed-then-mutate), and all would
+need a points-to analysis (which Capa does not have) to close. Only the
+field-chain mutate-then-read on the container's DECLARED root is closed here;
+these reach the same container through a root the taint is not keyed on, so
+they leak at runtime and stay UNFLAGGED:
+
+* rename out of the struct: ``var lst = bag.items; lst.push(secret)`` taints
+  the fresh local, not the field, so the ``bag.items`` read-back is not caught
+  -- the plain ``var alias = xs`` rename lifted to a field (see
+  ``TestFieldChainRenameResidualDisclosed``);
+* whole-struct alias: ``var b2 = bag; b2.items.push(secret)`` then
+  ``read bag.items`` mutates the same container through a DIFFERENT root
+  symbol, which the root-keyed taint misses;
+* cross-function whole-struct and embed-whole-struct: passing the whole
+  ``bag`` to a callee that reads the field, and embedding a push-mutated sub
+  -struct into an outer struct then reading through it, both reach the
+  container through a root the taint is not keyed on.
+
+Do not read the rename residual as the ONLY open case; these three are the
+same class and remain open together.
 """
 
 import shutil
@@ -452,6 +486,335 @@ class TestLoopFamilyLeaksStayFlagged(unittest.TestCase):
                 self.assertIn("s3cr3t", py_out)
                 if skip is None:
                     self.assertEqual(_run_wasm(src), out)
+
+
+# ---- field-chain receiver: a mutator on ``bag.items`` (a field chain),
+# not a plain identifier. The taint is keyed on the (root-binding,
+# field-path) the container lives at, so the leak closes while a public
+# sibling field / a mutually-exclusive branch stays clean. Set.add and
+# Map.set behave identically, and a nested path is keyed in full. ----
+
+FC_LEAK_LIST = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    bag.items.push(secret)\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+FC_LEAK_SET = (TOK +
+    "type Bag { tags: Set<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { tags: new_set() }\n"
+    "    bag.tags.add(secret)\n"
+    "    for t in bag.tags\n"
+    "        stdio.println(t)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+FC_LEAK_MAP = (TOK +
+    "type Bag { m: Map<String, String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { m: new_map() }\n"
+    "    bag.m.set(\"k\", secret)\n"
+    "    match bag.m.get(\"k\")\n"
+    "        Some(v) -> stdio.println(v)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# depth > 1: keyed on the full path ("inner", "items").
+FC_LEAK_NESTED = (TOK +
+    "type Inner { items: List<String>, note: String }\n"
+    "type Outer { inner: Inner }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var o: Outer = Outer { inner: Inner { items: [], note: \"public\" } }\n"
+    "    o.inner.items.push(secret)\n"
+    "    match o.inner.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# push in a branch, read AFTER: the deferred union carries the taint past
+# the construct (the S1 shape for a field chain).
+FC_LEAK_AFTER_BRANCH = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String, flag: Bool)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    if flag\n        bag.items.push(secret)\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN, true)\n")
+
+# push in a loop, read after: the loop body is NOT branch-isolated (a sound
+# over-approximation), so a loop-carried field-chain push stays flagged.
+FC_LEAK_LOOP = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n    var i: Int = 0\n"
+    "    while i < 1\n        bag.items.push(secret)\n        i = i + 1\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_FC_LEAK = {
+    "list_push": FC_LEAK_LIST,
+    "set_add": FC_LEAK_SET,
+    "map_set": FC_LEAK_MAP,
+    "nested_depth2": FC_LEAK_NESTED,
+    "push_in_branch_read_after": FC_LEAK_AFTER_BRANCH,
+    "push_in_loop_read_after": FC_LEAK_LOOP,
+}
+
+
+# The public-sibling read and the mutually-exclusive-branch read stay clean:
+# the taint is keyed on the mutated path, never the whole binding, so it
+# neither escapes the root nor pollutes a sibling / sibling branch. Each
+# prints its PUBLIC value at runtime.
+
+FC_CLEAN_SIBLING = (TOK +
+    "type Bag { items: List<String>, other: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [], other: \"public\" }\n"
+    "    bag.items.push(secret)\n"
+    "    stdio.println(bag.other)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+FC_CLEAN_MAP_SIBLING = (TOK +
+    "type Bag { m: Map<String, String>, other: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { m: new_map(), other: \"public\" }\n"
+    "    bag.m.set(\"k\", secret)\n"
+    "    stdio.println(bag.other)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+FC_CLEAN_NESTED_SIBLING = (TOK +
+    "type Inner { items: List<String>, note: String }\n"
+    "type Outer { inner: Inner }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var o: Outer = Outer { inner: Inner { items: [], note: \"public\" } }\n"
+    "    o.inner.items.push(secret)\n"
+    "    stdio.println(o.inner.note)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# push in the then-branch, read in the mutually-exclusive else. ``main``
+# runs the READ branch (flag = false), printing the public "empty".
+FC_CLEAN_BRANCH = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String, flag: Bool)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    if flag\n        bag.items.push(secret)\n"
+    "    else\n        match bag.items.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN, false)\n")
+
+# The SAME program with the branches flipped (read first, push in the else):
+# the verdict must not depend on branch order. ``main`` runs the READ branch
+# (flag = true), again printing "empty".
+FC_CLEAN_BRANCH_FLIPPED = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String, flag: Bool)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    if flag\n        match bag.items.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"empty\")\n"
+    "    else\n        bag.items.push(secret)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN, true)\n")
+
+# {name: (src, expected_output)}
+_FC_CLEAN = {
+    "sibling_list": (FC_CLEAN_SIBLING, "public\n"),
+    "sibling_map": (FC_CLEAN_MAP_SIBLING, "public\n"),
+    "sibling_nested": (FC_CLEAN_NESTED_SIBLING, "public\n"),
+    "branch_read_in_sibling": (FC_CLEAN_BRANCH, "empty\n"),
+    "branch_read_in_sibling_flipped": (FC_CLEAN_BRANCH_FLIPPED, "empty\n"),
+}
+
+
+# DISCLOSED residual (out of scope, must stay UNFLAGGED): the container is
+# renamed out of the struct into a fresh local before the mutation, then
+# read back through the field. The push taints ``lst``, not ``bag.items``,
+# so the read-back is not caught -- the same points-to residual as the plain
+# ``var alias = xs`` list rename. It leaks at runtime; kept as an honest,
+# documented false negative, NOT silently closed.
+FC_RESIDUAL_RENAME = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    var lst = bag.items\n"
+    "    lst.push(secret)\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+# DISCLOSED SAFE over-report (must stay FLAGGED): reassigning the container's
+# ROOT binding to a fresh, leak-free value AFTER a field-chain push, then
+# reading the field. The container-mutation taint is monotonic -- once the
+# (root, field-path) is tainted it stays tainted -- so the read is still
+# flagged even though the reassigned ``bag`` holds nothing secret (it prints
+# the public "empty" at runtime). This is the deliberately-chosen SOUND
+# direction, exactly mirroring the plain-identifier channel below: clearing
+# the taint on reassignment is NOT done, because a reassignment to ANOTHER
+# tainted value would then become a real false NEGATIVE.
+FC_REASSIGN_ROOT = (TOK +
+    "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    bag.items.push(secret)\n"
+    "    bag = Bag { items: [] }\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# The pre-existing plain-identifier channel the field chain mirrors: push into
+# a fresh local, reassign the local to ``[]``, then read it. Also stays
+# flagged (same monotonic taint), also prints the public "empty".
+PLAIN_REASSIGN_ROOT = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var xs: List<String> = []\n"
+    "    xs.push(secret)\n"
+    "    xs = []\n"
+    "    match xs.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# {name: src} -- both stay flagged, both print the public "empty".
+_REASSIGN_OVER_REPORT = {
+    "field_chain_reassign_root": FC_REASSIGN_ROOT,
+    "plain_identifier_reassign_root": PLAIN_REASSIGN_ROOT,
+}
+
+
+class TestFieldChainReceiverLeakClosed(unittest.TestCase):
+    """A mutator on a field-chain receiver (``bag.items.push(secret)``,
+    ``bag.m.set(k, secret)``, ``bag.tags.add(secret)``, nested
+    ``o.inner.items.push``) taints the (root, field-path) it lives at, so a
+    read of that path is caught -- a warning by default, a hard error under
+    @strict_ifc -- both backends printing the secret. Also covers the
+    deferred-union read-after-branch and the loop over-approximation."""
+
+    def test_default_tier_flags(self):
+        for name, src in _FC_LEAK.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+
+    def test_strict_tier_errors(self):
+        for name, src in _FC_LEAK.items():
+            with self.subTest(shape=name):
+                r = _analyze(_strict(src, "leak"))
+                self.assertFalse(r.ok)
+                self.assertGreaterEqual(len(_flow_errors(r)), 1,
+                                        [e.message for e in r.errors])
+
+    def test_both_backends_print_the_secret(self):
+        skip = _wasm_unavailable()
+        for name, src in _FC_LEAK.items():
+            with self.subTest(shape=name):
+                self.assertIn("s3cr3t", _run_py(src))
+                if skip is None:
+                    self.assertIn("s3cr3t", _run_wasm(src))
+
+
+class TestFieldChainReceiverStaysClean(unittest.TestCase):
+    """Keyed on the mutated path, the taint never escapes the root binding:
+    a public sibling field (``bag.other``, ``o.inner.note``) and a
+    mutually-exclusive branch's read stay clean -- no warning by default, no
+    error under @strict_ifc -- and the verdict is independent of branch
+    order. Both backends print the public value."""
+
+    def test_default_tier_is_clean(self):
+        for name, (src, _out) in _FC_CLEAN.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+
+    def test_strict_tier_is_clean(self):
+        for name, (src, _out) in _FC_CLEAN.items():
+            with self.subTest(shape=name):
+                r = _analyze(_strict(src, "leak"))
+                self.assertEqual(len(_flow_errors(r)), 0,
+                                 [e.message for e in r.errors])
+
+    def test_both_backends_are_leak_free(self):
+        skip = _wasm_unavailable()
+        for name, (src, out) in _FC_CLEAN.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), out)
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), out)
+
+
+class TestFieldChainRenameResidualDisclosed(unittest.TestCase):
+    """DISCLOSED residual (out of scope): renaming the container out of the
+    struct before mutating it (``var lst = bag.items; lst.push(secret)``)
+    taints the fresh local, not ``bag.items``, so the read-back through the
+    field is NOT caught -- the same points-to residual as ``var alias = xs``.
+    An honest, documented false negative that leaks at runtime. If a future
+    points-to slice closes it, this test flips (and the disclosure above
+    comes down)."""
+
+    def test_rename_is_unflagged(self):
+        r = _analyze(FC_RESIDUAL_RENAME)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_rename_leaks_at_runtime(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(FC_RESIDUAL_RENAME), "s3cr3t\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(FC_RESIDUAL_RENAME), "s3cr3t\n")
+
+
+class TestReassignRootSafeOverReport(unittest.TestCase):
+    """DISCLOSED SAFE over-report (locked in as deliberate behaviour):
+    reassigning the container's ROOT binding to a leak-free value AFTER a push,
+    then reading, stays FLAGGED because the container-mutation taint is
+    monotonic (once tainted, stays tainted). The field-chain channel
+    (``bag.items.push(secret); bag = Bag { items: [] }; read bag.items``)
+    mirrors the pre-existing plain-identifier one (``xs.push(secret); xs = [];
+    read xs``). Clearing the taint on reassignment is deliberately NOT done:
+    reassigning to ANOTHER tainted value would turn it into a real false
+    negative, so the sound (over-report) direction is chosen. Nothing secret
+    reaches the sink -- both shapes print the public "empty" -- so this is a
+    safe precision loss, not a real leak. Do NOT "fix" the analyzer to clear
+    the taint; this test documents and locks in the safe behaviour."""
+
+    def test_default_tier_flags(self):
+        for name, src in _REASSIGN_OVER_REPORT.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+
+    def test_strict_tier_errors(self):
+        for name, src in _REASSIGN_OVER_REPORT.items():
+            with self.subTest(shape=name):
+                r = _analyze(_strict(src, "leak"))
+                self.assertFalse(r.ok)
+                self.assertGreaterEqual(len(_flow_errors(r)), 1,
+                                        [e.message for e in r.errors])
+
+    def test_over_report_is_safe_no_secret_reaches_the_sink(self):
+        skip = _wasm_unavailable()
+        for name, src in _REASSIGN_OVER_REPORT.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "empty\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "empty\n")
 
 
 if __name__ == "__main__":
