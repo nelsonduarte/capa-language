@@ -1468,6 +1468,34 @@ CC_SIBLING_OVERREPORT = (_BAG_NOTE +
     "    stdio.println(f())\n"
     "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
 
+# A second disclosed SAFE over-report: the live re-read reads the RAW container
+# taint and is DECLASSIFY-BLIND (unlike the result-label path), so a closure
+# that ``declassify``s its captured value IN-BODY, captured BEFORE the push, is
+# still FLAGGED though the disclosure was sanctioned. Sound (over-report, never
+# leaks). Declassify at the CALL SITE (``declassify(f(), reason: ...)``) is the
+# clean workaround.
+CC_INBODY_DECLASSIFY = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var xs: List<String> = []\n"
+    "    let f: Fun() -> String = fun() -> String =>\n"
+    "        match xs.get(0)\n"
+    "            Some(v) -> declassify(v, reason: \"intended\")\n"
+    "            None -> \"empty\"\n"
+    "    xs.push(secret)\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+CC_CALLSITE_DECLASSIFY = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var xs: List<String> = []\n"
+    "    let f: Fun() -> String = fun() -> String =>\n"
+    "        match xs.get(0)\n"
+    "            Some(v) -> v\n"
+    "            None -> \"empty\"\n"
+    "    xs.push(secret)\n"
+    "    stdio.println(declassify(f(), reason: \"intended\"))\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
 
 class TestClosureCaptureBeforePushClosed(unittest.TestCase):
     """CLOSED (Stage B, capture-side face): a container captured by a closure
@@ -1511,12 +1539,17 @@ class TestCaptureLiveRereadPrecision(unittest.TestCase):
       observed at the other branch's invocation point (clean, prints the
       public value); a push then invoke on the SAME path flags.
     * NO OVER-EAGER FLAG: a closure over a container never pushed stays clean.
-    * DISCLOSED SAFE over-report: the re-read is whole-value on the captured
-      ROOT, so a closure reading only a CLEAN sibling of a container whose
-      OTHER field was pushed FLAGS though it leaks nothing (prints the public
-      value) -- sound (over-report, never under-reports), at parity with the
-      existing ``ALIAS_COPY_AFTER`` whole-value over-report. A field-precise
-      re-read to remove it is a later precision follow-up."""
+    * DISCLOSED SAFE over-reports (sound, never under-report; a field-precise /
+      declassify-aware re-read to remove them is a later precision follow-up):
+      - WHOLE-VALUE on the captured ROOT: a closure reading only a CLEAN
+        sibling of a container whose OTHER field was pushed FLAGS though it
+        leaks nothing (prints the public value), at parity with the existing
+        ``ALIAS_COPY_AFTER`` over-report;
+      - DECLASSIFY-BLIND: the re-read reads the RAW container taint, so a
+        closure that ``declassify``s its captured value IN-BODY (defined before
+        the push) still FLAGS though the disclosure was sanctioned. Declassify
+        at the CALL SITE (``declassify(f(), reason: ...)``) is the clean
+        workaround."""
 
     def test_branch_exclusive_is_clean(self):
         r = _analyze(CC_BRANCH_EXCLUSIVE)
@@ -1565,6 +1598,29 @@ class TestCaptureLiveRereadPrecision(unittest.TestCase):
             self.assertEqual(_run_wasm(CC_BRANCH_EXCLUSIVE), "empty\n")
             self.assertEqual(_run_wasm(CC_BRANCH_SAME), "s3cr3t\n")
             self.assertEqual(_run_wasm(CC_NO_PUSH), "empty\n")
+
+    def test_inbody_declassify_over_reports_callsite_declassify_clean(self):
+        # DISCLOSED SAFE over-report: the live re-read reads the RAW container
+        # taint and is DECLASSIFY-BLIND, so a closure that declassifies its
+        # captured value IN-BODY (defined before the push) still FLAGS at both
+        # tiers though the disclosure was sanctioned. Sound (over-report, never
+        # a missed leak).
+        r = _analyze(CC_INBODY_DECLASSIFY)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_INBODY_DECLASSIFY, "leak"))
+        self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+        # WORKAROUND: declassify at the CALL SITE (declassify(f(), ...)) is the
+        # clean escape hatch -- no flag at either tier.
+        rw = _analyze(CC_CALLSITE_DECLASSIFY)
+        self.assertTrue(rw.ok, [e.message for e in rw.errors])
+        self.assertEqual(len(_flow_warnings(rw)), 0,
+                         [w.message for w in rw.warnings])
+        rws = _analyze(_strict(CC_CALLSITE_DECLASSIFY, "leak"))
+        self.assertEqual(len(_flow_errors(rws)), 0,
+                         [e.message for e in rws.errors])
 
 
 class TestHofInvokedClosureResidualDisclosed(unittest.TestCase):

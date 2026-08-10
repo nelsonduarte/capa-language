@@ -1449,9 +1449,13 @@ class _IfcMixin:
         the taint at any path under the root), so a closure reading only a
         CLEAN SIBLING of a captured container whose other field was pushed is a
         SOUND over-report (flags, never leaks) -- disclosed, at parity with the
-        existing whole-value ``ALIAS_COPY_AFTER`` over-report. The lambda's own
-        parameters / inner binds are excluded (they are not captures), mirroring
-        ``_lambda_capture_label``."""
+        existing whole-value ``ALIAS_COPY_AFTER`` over-report. The re-read is
+        also DECLASSIFY-BLIND: it reads the RAW container taint (unlike
+        ``_lambda_result_labels``), so a closure that ``declassify``s its
+        captured value IN-BODY, captured before the push, still flags -- again a
+        sound over-report; ``declassify(f(), reason: ...)`` at the CALL SITE
+        silences it. The lambda's own parameters / inner binds are excluded
+        (they are not captures), mirroring ``_lambda_capture_label``."""
         locals_: set[str] = {p.name for p in lam.params}
         for stmt in self._lambda_body_stmts(lam):
             self._collect_bound_names(stmt, locals_)
