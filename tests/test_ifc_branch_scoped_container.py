@@ -95,23 +95,31 @@ each leaks at runtime and stays UNFLAGGED at both tiers on both backends):
       resolution -- a reassigned ``var``, an alias, a call-result binding, or
       a lambda invoked inside a higher-order callee -- stay disclosed
       residuals (see ``TestEscapingLambdaSinkResidualDisclosed``);
-    * CAPTURE side -- CLOSED (Stage B) for a LOCALLY-INVOKED closure: a
-      container captured by a closure defined BEFORE a push and read through
-      the closure AFTER, ``let f = fun() => bag.reveal(); bag.items.push(
-      secret); f()``, is now flagged (a warning by default, a hard error under
-      strict). At the invocation of a locally-resolved lambda each captured
-      free binding's CURRENT LIVE label is re-read (the branch-scoped
-      container-taint map + ``sym.label``), not the label cached at the
-      lambda's DEFINITION (see ``TestClosureCaptureBeforePushClosed``). A
-      closure defined AFTER the push was already caught. Branch-sound by
-      construction (the live map is branch-scoped) and whole-value on the
-      captured root, so a closure reading only a CLEAN sibling of a pushed
-      container is a disclosed SAFE over-report (see
-      ``TestCaptureLiveRereadPrecision``). What STAYS disclosed: a closure that
-      ESCAPES local resolution -- invoked inside a higher-order callee
-      (``apply(f)``), or otherwise unresolvable -- since the invocation is not
-      locally resolvable to this lambda (see
-      ``TestHofInvokedClosureResidualDisclosed``).
+    * CAPTURE side -- the RESULT-SINK case is CLOSED (Stage B) for a
+      locally-resolved lambda (let-bound / IIFE): a container captured by a
+      closure defined BEFORE a push and read through the closure AFTER, where
+      the CALLER SINKS THE CLOSURE'S RESULT -- ``let f = fun() => bag.reveal();
+      bag.items.push(secret); stdio.println(f())`` -- is now flagged (a warning
+      by default, a hard error under strict). At the invocation of a
+      locally-resolved lambda each captured free binding's CURRENT LIVE label is
+      re-read (the branch-scoped container-taint map, and for a REFERENCE-typed
+      capture the live ``sym.label``), not the label cached at the lambda's
+      DEFINITION (see ``TestClosureCaptureBeforePushClosed``). A closure defined
+      AFTER the push was already caught. Branch-sound by construction (the live
+      map is branch-scoped). What STAYS disclosed on the capture side:
+      - a sink INTERNAL to the closure body (a side effect, not the result --
+        ``let f = fun() => stdio.println(bag.reveal()); ...; f()``), which needs
+        a future field-store / access-path channel slice, not this label
+        re-read (see ``TestCaptureInternalSinkResidualDisclosed``);
+      - a closure that ESCAPES local resolution -- invoked inside a higher-order
+        callee (``apply(f)``) or otherwise unresolvable (see
+        ``TestHofInvokedClosureResidualDisclosed``);
+      - SAFE over-reports (sound, never leak): the whole-value re-read flags a
+        closure reading only a CLEAN sibling of a pushed container, and REFTYPE
+        flags a captured STRUCT whole-reassigned to a secret (it cannot tell a
+        whole reassign from an in-place field store); a VALUE-typed capture
+        reassigned to a secret is captured by value and is correctly CLEAN (see
+        ``TestCaptureLiveRereadPrecision`` and ``TestCaptureRereadReftype``).
 
 Do not read any single bullet as the ONLY open case.
 """
@@ -1498,16 +1506,21 @@ CC_CALLSITE_DECLASSIFY = (TOK +
 
 
 class TestClosureCaptureBeforePushClosed(unittest.TestCase):
-    """CLOSED (Stage B, capture-side face): a container captured by a closure
-    defined BEFORE the push and read through the closure AFTER, invoked
-    LOCALLY, is now flagged (a warning by default, a hard error under strict).
-    At the invocation of a locally-resolved lambda each captured free binding's
-    CURRENT LIVE label is re-read -- the branch-scoped container-taint map
-    joined with ``sym.label`` -- NOT the label cached at the lambda's
-    definition (before the push). The value still leaks at runtime on both
-    backends (a warning does not block). The HOF-invoked shape stays disclosed
-    (``TestHofInvokedClosureResidualDisclosed``); the SINK-SIDE face was closed
-    in Stage A (``TestSecretIntoLocalLambdaSinkClosed``)."""
+    """CLOSED (Stage B, capture-side RESULT-SINK face): a container captured by
+    a closure defined BEFORE the push and read through the closure AFTER, where
+    the CALLER SINKS THE CLOSURE'S RESULT and the closure is invoked LOCALLY, is
+    now flagged (a warning by default, a hard error under strict). At the
+    invocation of a locally-resolved lambda each captured free binding's CURRENT
+    LIVE label is re-read -- the branch-scoped container-taint map, and for a
+    REFERENCE-typed capture the live ``sym.label`` -- NOT the label cached at
+    the lambda's definition (before the push). The value still leaks at runtime
+    on both backends (a warning does not block).
+
+    Stage B closes the RESULT-sink case only: a sink INTERNAL to the closure
+    body (a side effect) stays a disclosed residual
+    (``TestCaptureInternalSinkResidualDisclosed``), as does the HOF-invoked
+    shape (``TestHofInvokedClosureResidualDisclosed``). The SINK-SIDE face was
+    closed in Stage A (``TestSecretIntoLocalLambdaSinkClosed``)."""
 
     def test_flagged_at_both_tiers(self):
         for name, src in _CLOSURE_CAPTURE_CLOSED.items():
@@ -1646,6 +1659,181 @@ class TestHofInvokedClosureResidualDisclosed(unittest.TestCase):
         self.assertEqual(_run_py(CC_HOF), "s3cr3t\n")
         if skip is None:
             self.assertEqual(_run_wasm(CC_HOF), "s3cr3t\n")
+
+
+# ---- REFTYPE (Finding 2): the capture re-read joins the whole-value
+# ``sym.label`` only for a REFERENCE-typed capture. Three shapes pin the sound
+# boundary. ----
+
+# VALUE-typed (String) capture reassigned to a secret AFTER the closure is
+# defined: captured BY VALUE, so nothing leaks (prints "pub") -- must NOT flag.
+CC_SCALAR_REASSIGN = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var x: String = \"pub\"\n"
+    "    let f: Fun() -> String = fun() -> String => x\n"
+    "    x = secret\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# REFERENCE-typed (struct) capture FIELD-STORED in place then result-sunk: a
+# REAL leak (prints "s3cr3t"), must STAY flagged -- this is why sym.label is
+# kept for reference types (dropping it entirely would clear this leak).
+CC_STRUCT_FIELDSTORE_RESULT = (TOK +
+    "type Box { data: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var box: Box = Box { data: \"pub\" }\n"
+    "    let f: Fun() -> String = fun() -> String => box.data\n"
+    "    box.data = secret\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# REFERENCE-typed (struct) capture WHOLE-REASSIGNED to a secret: captured by
+# value here, so nothing leaks (prints "pub"), yet REFTYPE FLAGS it -- a
+# disclosed SAFE over-rejection (a reference type raises sym.label on a whole
+# reassign identically to an in-place field store, which REFTYPE cannot tell
+# apart). Precedent: the reassigned-var sink recovery also fails closed.
+CC_STRUCT_WHOLE_REASSIGN = (TOK +
+    "type Box { data: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var box: Box = Box { data: \"pub\" }\n"
+    "    let f: Fun() -> String = fun() -> String => box.data\n"
+    "    box = Box { data: secret }\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestCaptureRereadReftype(unittest.TestCase):
+    """REFTYPE (Finding 2): the whole-value ``sym.label`` re-read at a capture
+    invocation fires only for a REFERENCE-typed capture. A VALUE-typed (built-in
+    immutable primitive) capture is captured by value, so a later reassignment
+    is not observed and must not flag; a reference-typed capture keeps the
+    re-read, so a real in-place field-store-then-result-sink leak stays caught.
+
+    The reference-typed re-read cannot tell a WHOLE reassign (by-value, no leak)
+    from an in-place field store (a real leak): both raise the whole-value
+    label. So a captured struct whole-reassigned to a secret is a disclosed SAFE
+    over-rejection (flags but leaks nothing), precedented by the reassigned-var
+    sink recovery failing closed under strict."""
+
+    def test_value_typed_capture_reassign_is_clean(self):
+        # l_a_scalar_reassign: fixed FP. Clean at both tiers, prints "pub".
+        r = _analyze(CC_SCALAR_REASSIGN)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_SCALAR_REASSIGN, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(CC_SCALAR_REASSIGN), "pub\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(CC_SCALAR_REASSIGN), "pub\n")
+
+    def test_reference_typed_fieldstore_result_stays_flagged(self):
+        # s_struct_fieldstore_result: a REAL leak, must stay flagged (proves
+        # dropping sym.label entirely would be unsound). Prints "s3cr3t".
+        r = _analyze(CC_STRUCT_FIELDSTORE_RESULT)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_STRUCT_FIELDSTORE_RESULT, "leak"))
+        self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(CC_STRUCT_FIELDSTORE_RESULT), "s3cr3t\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(CC_STRUCT_FIELDSTORE_RESULT), "s3cr3t\n")
+
+    def test_struct_whole_reassign_over_reports_but_leaks_nothing(self):
+        # s_struct_reassign: disclosed SAFE over-rejection. Flags (REFTYPE keeps
+        # sym.label for a reference type), but prints the PUBLIC value "pub".
+        r = _analyze(CC_STRUCT_WHOLE_REASSIGN)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_STRUCT_WHOLE_REASSIGN, "leak"))
+        self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(CC_STRUCT_WHOLE_REASSIGN), "pub\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(CC_STRUCT_WHOLE_REASSIGN), "pub\n")
+
+
+# ---- DISCLOSED residual (out of scope, Stage B): a sink INTERNAL to the
+# closure body (a side effect, not the result the caller sinks). Stage B's
+# capture re-read carries a captured value's later taint into the closure's
+# RESULT label, so only a caller that sinks that RESULT is caught. A container
+# pushed / a field stored after definition and then SUNK INSIDE the body leaks
+# unflagged. Closable by a future field-store / access-path channel slice, not
+# this label re-read. Each leaks "s3cr3t" on both backends. ----
+CC_INTERNAL_SINK_PUSH = (TOK + "type Bag { items: List<String> }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    let f: Fun() -> Unit = fun() -> Unit =>\n"
+    "        match bag.items.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"empty\")\n"
+    "    bag.items.push(secret)\n"
+    "    f()\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+CC_INTERNAL_SINK_CALLEE = (TOK + "type Bag { items: List<String> }\n"
+    "fun show(bag: Bag, stdio: Stdio)\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [] }\n"
+    "    let f: Fun() -> Unit = fun() -> Unit => show(bag, stdio)\n"
+    "    bag.items.push(secret)\n"
+    "    f()\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+CC_INTERNAL_SINK_FIELDSTORE = (TOK + "type Bag { data: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { data: \"pub\" }\n"
+    "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.data)\n"
+    "    bag.data = secret\n"
+    "    f()\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_CAPTURE_INTERNAL_SINK_RESIDUAL = {
+    "push_sunk_inside_body": CC_INTERNAL_SINK_PUSH,
+    "sink_via_named_callee": CC_INTERNAL_SINK_CALLEE,
+    "fieldstore_printed_inside_body": CC_INTERNAL_SINK_FIELDSTORE,
+}
+
+
+class TestCaptureInternalSinkResidualDisclosed(unittest.TestCase):
+    """DISCLOSED residual (out of scope, Stage B): a captured value mutated
+    after the closure is defined and SUNK INSIDE the closure body (a side
+    effect, not the closure's result). Stage B's capture re-read carries the
+    later taint into the closure's RESULT label only, so a caller that sinks the
+    RESULT is caught but an INTERNAL sink is not. Stays UNFLAGGED at both tiers
+    though it leaks "s3cr3t" on both backends -- via a direct push read inside
+    the body, via a named callee inside the body, and via an in-place field
+    store printed inside the body. Closable by a future field-store /
+    access-path channel slice, not this label re-read. Leaks on main too."""
+
+    def test_unflagged_at_both_tiers(self):
+        for name, src in _CAPTURE_INTERNAL_SINK_RESIDUAL.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertEqual(len(_flow_errors(rs)), 0,
+                                 [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _CAPTURE_INTERNAL_SINK_RESIDUAL.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
 
 
 # ---- CLOSED (Stage A, sink-side lambda-flow): a bare @secret passed to a

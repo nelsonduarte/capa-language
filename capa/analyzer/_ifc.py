@@ -1430,32 +1430,58 @@ class _IfcMixin:
     def _fresh_capture_label(self, lam: A.LambdaExpr) -> str:
         """Re-read the CURRENT LIVE label of each free binding ``lam``
         captures and join them -- the capture-side lambda-flow re-read
-        (Stage B), evaluated at the INVOCATION site.
+        (Stage B), evaluated at the INVOCATION site. It carries a captured
+        value's later taint into the closure's RESULT label, so a caller that
+        sinks that result is caught; a sink INTERNAL to the closure body (a
+        side effect, not the result) is a disclosed residual (Stage B closes
+        the RESULT-sink case only).
 
-        CRITICAL: it consults the LIVE channels DIRECTLY -- the binding's
-        current ``sym.label`` joined with the branch-scoped container-mutation
-        taint (``_container_taint_at(sym, ())``) -- and NEVER the cached
-        ``_lambda_capture_labels`` / ``_label_of`` / ``_expr_labels``, which
-        were stamped when the lambda body was checked at its DEFINITION (the
-        captured container still empty), so re-serving them would silently
-        no-op. Re-reading the live container-taint map is what surfaces a push
-        that happened AFTER the closure was defined.
+        CRITICAL: it consults the LIVE channels DIRECTLY -- the branch-scoped
+        container-mutation taint (``_container_taint_at(sym, ())``) and, for a
+        REFERENCE-typed capture, the binding's current ``sym.label`` -- and
+        NEVER the cached ``_lambda_capture_labels`` / ``_label_of`` /
+        ``_expr_labels``, which were stamped when the lambda body was checked
+        at its DEFINITION (the captured container still empty), so re-serving
+        them would silently no-op. Re-reading the live container-taint map is
+        what surfaces a push that happened AFTER the closure was defined.
+
+        REFTYPE (Finding 2, the sound fix). The container-mutation taint is
+        re-read for EVERY capture (an in-place ``xs.push`` / ``bag.f = v`` is
+        observed through the shared binding). The whole-value ``sym.label`` is
+        re-read ONLY for a REFERENCE-typed capture (a struct / container:
+        mutable and shared, so a later in-place field store IS seen through the
+        closure -- ``s_struct_fieldstore_result`` stays flagged). It is SKIPPED
+        for a VALUE-typed capture -- a built-in immutable primitive
+        (String / Int / Float / Bool / Char), told apart by
+        ``_capture_is_value_typed`` -- because a primitive is captured BY VALUE,
+        so a later REASSIGNMENT of the binding is not observed by the closure;
+        re-reading its raised ``sym.label`` was a false positive
+        (``l_a_scalar_reassign`` flagged though it prints the public value).
 
         Branch-soundness is BY CONSTRUCTION: ``_container_taint`` is the live,
         branch-scoped map (``_container_isolate`` / ``_container_merge``), so a
         push in a mutually-exclusive ``then`` branch is simply not in the map
         at an ``else`` branch's invocation point, and re-reading there cannot
-        observe it. The re-read is WHOLE-VALUE on each captured root (it joins
-        the taint at any path under the root), so a closure reading only a
-        CLEAN SIBLING of a captured container whose other field was pushed is a
-        SOUND over-report (flags, never leaks) -- disclosed, at parity with the
-        existing whole-value ``ALIAS_COPY_AFTER`` over-report. The re-read is
-        also DECLASSIFY-BLIND: it reads the RAW container taint (unlike
-        ``_lambda_result_labels``), so a closure that ``declassify``s its
-        captured value IN-BODY, captured before the push, still flags -- again a
-        sound over-report; ``declassify(f(), reason: ...)`` at the CALL SITE
-        silences it. The lambda's own parameters / inner binds are excluded
-        (they are not captures), mirroring ``_lambda_capture_label``."""
+        observe it.
+
+        DISCLOSED SAFE over-reports (sound, never a missed leak):
+        * WHOLE-VALUE on each captured root: a closure reading only a CLEAN
+          SIBLING of a captured container whose other field was pushed flags
+          (at parity with the existing ``ALIAS_COPY_AFTER`` over-report);
+        * DECLASSIFY-BLIND: the re-read reads the RAW taint (unlike
+          ``_lambda_result_labels``), so a closure that ``declassify``s its
+          captured value IN-BODY still flags -- ``declassify(f(), reason: ...)``
+          at the CALL SITE silences it;
+        * REF-TYPE WHOLE-REASSIGN: a captured STRUCT whole-reassigned to a
+          secret after definition (``bag = Bag { data: secret }``) flags though
+          a struct is captured by value here and nothing leaks -- REFTYPE keeps
+          ``sym.label`` for a reference type and cannot tell a whole reassign
+          from an in-place field store (both raise the whole-value label). A
+          strict-tier over-rejection, with precedent in the reassigned-``var``
+          sink recovery that also fails closed under strict.
+
+        The lambda's own parameters / inner binds are excluded (they are not
+        captures), mirroring ``_lambda_capture_label``."""
         locals_: set[str] = {p.name for p in lam.params}
         for stmt in self._lambda_body_stmts(lam):
             self._collect_bound_names(stmt, locals_)
@@ -1464,10 +1490,51 @@ class _IfcMixin:
             sym = self.bindings.get(id(ident))
             if sym is None:
                 continue
-            cur = L.normalize(getattr(sym, "label", None) or L.PUBLIC)
+            # The container-mutation taint is re-read for every capture (an
+            # in-place push / field store is observed through the shared
+            # binding), whatever the capture's type.
             ct = self._container_taint_at(sym, ())
-            label = L.join(label, L.join(cur, ct) if ct else cur)
+            if ct:
+                label = L.join(label, ct)
+            # The whole-value ``sym.label`` is re-read only for a
+            # REFERENCE-typed capture; a value-typed (built-in immutable
+            # primitive) capture is captured by value, so a later reassignment
+            # is not observed by the closure and re-reading it would be a false
+            # positive.
+            if not self._capture_is_value_typed(sym):
+                label = L.join(
+                    label,
+                    L.normalize(getattr(sym, "label", None) or L.PUBLIC),
+                )
         return label
+
+    def _capture_is_value_typed(self, sym) -> bool:
+        """True when ``sym``'s resolved type is a built-in immutable PRIMITIVE
+        (String / Int / Float / Bool / Char) -- captured BY VALUE, so a later
+        REASSIGNMENT of the binding is not observed through a closure that
+        captured it. Consulted by the capture re-read (``_fresh_capture_label``,
+        Finding 2) to skip the whole-value ``sym.label`` re-read for such a
+        capture while keeping it for a reference type.
+
+        Reuses ``PRIMITIVE_NAMES`` and the built-in-origin (``BUILTIN_POS``)
+        test of the mutation-effect precision predicate
+        (``_name_is_builtin_immutable`` in :mod:`._ifc_summary`): the resolved
+        type must be a bare ``TyName`` whose name is a primitive AND resolves to
+        the ACTUAL built-in symbol, so a user ``type String { ... }`` (a mutable
+        struct shadowing the name) is NOT treated as value-typed and keeps its
+        sound whole-value re-read. Conservative: any non-primitive, generic /
+        argument-bearing, unresolved, or user-shadowed type is reference-typed
+        (returns False), so the re-read is never dropped where a leak could
+        hide."""
+        from ..typesys import TyName, PRIMITIVE_NAMES
+        from ..builtins import BUILTIN_POS
+        ty = getattr(sym, "ty", None)
+        if not isinstance(ty, TyName) or getattr(ty, "args", None):
+            return False
+        if ty.name not in PRIMITIVE_NAMES:
+            return False
+        tsym = self.global_scope.lookup(ty.name)
+        return tsym is not None and tsym.pos == BUILTIN_POS
 
     def _call_arg_closure_label(self, e: A.Call) -> str:
         """The join of the capture labels of any CLOSURE LITERALS passed

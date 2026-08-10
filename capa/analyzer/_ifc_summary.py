@@ -151,16 +151,25 @@ only a clean sibling is precise (clean). What genuinely REMAINS disclosed:
     conditionally selected. On any ambiguity the call site falls back to NO
     check (a conservative MISS, never a wrong-target guess); closing these
     needs higher-order CFA / points-to Capa lacks.
-  - the CAPTURE-SIDE face is CLOSED (Stage B) for a LOCALLY-INVOKED closure:
-    a container captured by a closure defined BEFORE a push and read through
-    the closure AFTER, ``let f = fun() => bag.reveal(); bag.items.push(secret);
-    f()``, is now flagged. The fix is in the label path (``_callee_label`` /
-    ``_fresh_capture_label`` in :mod:`._ifc`, NOT this summary): at a
-    locally-resolved lambda invocation each captured free binding's CURRENT
-    LIVE label is re-read from the branch-scoped container-taint map (never the
-    label cached at the lambda's DEFINITION). A closure that ESCAPES to a
-    higher-order callee (``apply(f)``) stays the disclosed residual (the
-    invocation is not locally resolvable).
+  - the CAPTURE-SIDE RESULT-SINK face is CLOSED (Stage B) for a
+    locally-resolved lambda (let-bound / IIFE): a container captured by a
+    closure defined BEFORE a push and read through the closure AFTER, where the
+    CALLER SINKS THE CLOSURE'S RESULT -- ``let f = fun() => bag.reveal();
+    bag.items.push(secret); stdio.println(f())`` -- is now flagged. The fix is
+    in the label path (``_callee_label`` / ``_fresh_capture_label`` in
+    :mod:`._ifc`, NOT this summary): at a locally-resolved lambda invocation
+    each captured free binding's CURRENT LIVE label is re-read from the
+    branch-scoped container-taint map (and, for a REFERENCE-typed capture, the
+    live ``sym.label``), never the label cached at the lambda's DEFINITION. What
+    STAYS disclosed on the capture side: (a) a sink INTERNAL to the closure body
+    (a side effect, not the result -- ``let f = fun() => stdio.println(
+    bag.reveal()); bag.items.push(secret); f()``), which a future
+    field-store / access-path channel slice would close, not this label re-read;
+    (b) a closure that ESCAPES to a higher-order callee (``apply(f)``), whose
+    invocation is not locally resolvable; and (c) a captured STRUCT whole-
+    reassigned to a secret after definition (a SAFE strict-tier over-rejection:
+    REFTYPE keeps ``sym.label`` for a reference type and cannot tell a whole
+    reassign from an in-place field store).
 * A cross-function FIELD STORE keeps the whole-value carrier, so its
   sibling read is conservatively flagged (the disclosed field-store
   sibling over-report); only CONTAINER mutations get sibling precision.
