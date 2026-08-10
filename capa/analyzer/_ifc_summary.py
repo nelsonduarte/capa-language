@@ -151,10 +151,16 @@ only a clean sibling is precise (clean). What genuinely REMAINS disclosed:
     conditionally selected. On any ambiguity the call site falls back to NO
     check (a conservative MISS, never a wrong-target guess); closing these
     needs higher-order CFA / points-to Capa lacks.
-  - the CAPTURE-SIDE face (Stage B): a container captured by a closure
-    defined BEFORE a push and read through the closure AFTER stays unflagged;
-    the lambda's capture / flow labels are still stamped at its DEFINITION and
-    a later mutation of a captured binding is not re-reflected.
+  - the CAPTURE-SIDE face is CLOSED (Stage B) for a LOCALLY-INVOKED closure:
+    a container captured by a closure defined BEFORE a push and read through
+    the closure AFTER, ``let f = fun() => bag.reveal(); bag.items.push(secret);
+    f()``, is now flagged. The fix is in the label path (``_callee_label`` /
+    ``_fresh_capture_label`` in :mod:`._ifc`, NOT this summary): at a
+    locally-resolved lambda invocation each captured free binding's CURRENT
+    LIVE label is re-read from the branch-scoped container-taint map (never the
+    label cached at the lambda's DEFINITION). A closure that ESCAPES to a
+    higher-order callee (``apply(f)``) stays the disclosed residual (the
+    invocation is not locally resolvable).
 * A cross-function FIELD STORE keeps the whole-value carrier, so its
   sibling read is conservatively flagged (the disclosed field-store
   sibling over-report); only CONTAINER mutations get sibling precision.

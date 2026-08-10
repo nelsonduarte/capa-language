@@ -1399,15 +1399,71 @@ class _IfcMixin:
         this is the binding's label -- which carries the closure's captured
         secret. A top-level function symbol has no label, so this returns
         PUBLIC and ordinary calls are unaffected. A lambda literal callee
-        (an immediately-invoked closure) reads its recorded capture label."""
+        (an immediately-invoked closure) reads its recorded capture label.
+
+        Stage B (capture-side lambda-flow): when the callee resolves through
+        ``_binding_lambdas`` to ONE certain lambda literal, its captured free
+        bindings are RE-READ LIVE at THIS invocation site
+        (``_fresh_capture_label``) and joined in, so a container captured
+        BEFORE a later mutation and read through the closure AFTER is caught
+        (``let f = fun () => bag.reveal(); bag.items.push(secret); f()``). The
+        binding's cached ``sym.label`` was stamped at the lambda's DEFINITION
+        (before the mutation), so it alone would miss the leak. Only a locally
+        resolved lambda is re-read; an escaping / HOF-invoked closure stays the
+        disclosed residual."""
         if isinstance(callee, A.Ident):
             sym = self.bindings.get(id(callee))
-            if sym is not None and getattr(sym, "label", None):
-                return L.normalize(sym.label)
-            return L.PUBLIC
+            base = (
+                L.normalize(sym.label)
+                if sym is not None and getattr(sym, "label", None)
+                else L.PUBLIC
+            )
+            if sym is not None:
+                lam = self._binding_lambdas.get(id(sym))
+                if isinstance(lam, A.LambdaExpr):
+                    return L.join(base, self._fresh_capture_label(lam))
+            return base
         if isinstance(callee, A.LambdaExpr):
             return self._lambda_capture_labels.get(id(callee), L.PUBLIC)
         return self._label_of(callee)
+
+    def _fresh_capture_label(self, lam: A.LambdaExpr) -> str:
+        """Re-read the CURRENT LIVE label of each free binding ``lam``
+        captures and join them -- the capture-side lambda-flow re-read
+        (Stage B), evaluated at the INVOCATION site.
+
+        CRITICAL: it consults the LIVE channels DIRECTLY -- the binding's
+        current ``sym.label`` joined with the branch-scoped container-mutation
+        taint (``_container_taint_at(sym, ())``) -- and NEVER the cached
+        ``_lambda_capture_labels`` / ``_label_of`` / ``_expr_labels``, which
+        were stamped when the lambda body was checked at its DEFINITION (the
+        captured container still empty), so re-serving them would silently
+        no-op. Re-reading the live container-taint map is what surfaces a push
+        that happened AFTER the closure was defined.
+
+        Branch-soundness is BY CONSTRUCTION: ``_container_taint`` is the live,
+        branch-scoped map (``_container_isolate`` / ``_container_merge``), so a
+        push in a mutually-exclusive ``then`` branch is simply not in the map
+        at an ``else`` branch's invocation point, and re-reading there cannot
+        observe it. The re-read is WHOLE-VALUE on each captured root (it joins
+        the taint at any path under the root), so a closure reading only a
+        CLEAN SIBLING of a captured container whose other field was pushed is a
+        SOUND over-report (flags, never leaks) -- disclosed, at parity with the
+        existing whole-value ``ALIAS_COPY_AFTER`` over-report. The lambda's own
+        parameters / inner binds are excluded (they are not captures), mirroring
+        ``_lambda_capture_label``."""
+        locals_: set[str] = {p.name for p in lam.params}
+        for stmt in self._lambda_body_stmts(lam):
+            self._collect_bound_names(stmt, locals_)
+        label = L.PUBLIC
+        for ident in self._lambda_free_idents(lam.body, locals_):
+            sym = self.bindings.get(id(ident))
+            if sym is None:
+                continue
+            cur = L.normalize(getattr(sym, "label", None) or L.PUBLIC)
+            ct = self._container_taint_at(sym, ())
+            label = L.join(label, L.join(cur, ct) if ct else cur)
+        return label
 
     def _call_arg_closure_label(self, e: A.Call) -> str:
         """The join of the capture labels of any CLOSURE LITERALS passed

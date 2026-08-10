@@ -293,12 +293,14 @@ a disclosed sound over-report; each is asserted in
    lambda-flow item, and it is more general than the whole-struct read closed
    here (it needs no container, capture, or push-ordering). It is **not**
    closed by this release and is tracked for a separate lambda-flow fix. As of
-   `1.29.0` both faces were asserted as disclosed residuals; a subsequent
-   Stage A change closes the **sink-side** face for a locally-resolvable lambda
-   or an IIFE (now asserted in `TestSecretIntoLocalLambdaSinkClosed`, with the
-   escaping shapes in `TestEscapingLambdaSinkResidualDisclosed`), while the
-   **capture-side** face stays disclosed in
-   `TestClosureCaptureBeforePushResidualDisclosed` (deferred to Stage B).
+   `1.29.0` both faces were asserted as disclosed residuals; subsequent changes
+   close them for a locally-resolvable / locally-invoked closure: Stage A the
+   **sink-side** face for a local lambda or an IIFE (now asserted in
+   `TestSecretIntoLocalLambdaSinkClosed`, escaping shapes in
+   `TestEscapingLambdaSinkResidualDisclosed`), and Stage B the **capture-side**
+   face via a live capture re-read at the invocation (now asserted in
+   `TestClosureCaptureBeforePushClosed`, with the HOF-invoked shape still
+   disclosed in `TestHofInvokedClosureResidualDisclosed`).
 
 2. **Different-root points-to (still open).** The container is reached
    through a root the taint is not keyed on, which only a points-to analysis

@@ -95,12 +95,23 @@ each leaks at runtime and stays UNFLAGGED at both tiers on both backends):
       resolution -- a reassigned ``var``, an alias, a call-result binding, or
       a lambda invoked inside a higher-order callee -- stay disclosed
       residuals (see ``TestEscapingLambdaSinkResidualDisclosed``);
-    * CAPTURE side -- still disclosed (deferred to Stage B): a container
-      captured by a closure defined BEFORE a push and read through the closure
-      AFTER (see ``TestClosureCaptureBeforePushResidualDisclosed``); a closure
-      defined AFTER the push is caught. The analyzer still stamps a lambda's
-      capture / flow labels at its DEFINITION and does not re-reflect a later
-      mutation of a captured binding.
+    * CAPTURE side -- CLOSED (Stage B) for a LOCALLY-INVOKED closure: a
+      container captured by a closure defined BEFORE a push and read through
+      the closure AFTER, ``let f = fun() => bag.reveal(); bag.items.push(
+      secret); f()``, is now flagged (a warning by default, a hard error under
+      strict). At the invocation of a locally-resolved lambda each captured
+      free binding's CURRENT LIVE label is re-read (the branch-scoped
+      container-taint map + ``sym.label``), not the label cached at the
+      lambda's DEFINITION (see ``TestClosureCaptureBeforePushClosed``). A
+      closure defined AFTER the push was already caught. Branch-sound by
+      construction (the live map is branch-scoped) and whole-value on the
+      captured root, so a closure reading only a CLEAN sibling of a pushed
+      container is a disclosed SAFE over-report (see
+      ``TestCaptureLiveRereadPrecision``). What STAYS disclosed: a closure that
+      ESCAPES local resolution -- invoked inside a higher-order callee
+      (``apply(f)``), or otherwise unresolvable -- since the invocation is not
+      locally resolvable to this lambda (see
+      ``TestHofInvokedClosureResidualDisclosed``).
 
 Do not read any single bullet as the ONLY open case.
 """
@@ -1352,12 +1363,13 @@ class TestCrossFnSinkFieldQualified(unittest.TestCase):
                     self.assertEqual(_run_wasm(src), "s3cr3t\n")
 
 
-# ---- DISCLOSED residual (out of scope): a container captured by a CLOSURE
-# defined BEFORE the push, read through the closure AFTER. The summary does not
-# model that the later push is visible through the earlier-captured binding
-# when the closure is invoked, so it is unflagged -- a lambda flow-sensitivity
-# item, separate from the container channel. A closure defined AFTER the push
-# IS caught (the capture sees the tainted binding). Each leaks at runtime. ----
+# ---- CLOSED (Stage B, capture-side lambda-flow): a container captured by a
+# CLOSURE defined BEFORE the push, read through the closure AFTER, and invoked
+# LOCALLY. At the invocation the closure's captured free bindings are re-read
+# LIVE (the branch-scoped container-taint map + ``sym.label``), so the later
+# push is now visible through the earlier-captured binding -- a warning by
+# default, a hard error under strict. A closure defined AFTER the push was
+# already caught. Each still leaks at runtime (a warning does not block). ----
 
 CC_GETTER = (TOK + "type Bag { items: List<String> }\n"
     "impl Bag\n"
@@ -1383,6 +1395,14 @@ CC_PLAINLIST = (TOK +
     "    stdio.println(f())\n"
     "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
 
+_CLOSURE_CAPTURE_CLOSED = {
+    "getter_via_closure": CC_GETTER,
+    "plain_list_via_closure": CC_PLAINLIST,
+}
+
+# ---- DISCLOSED residual (out of scope, Stage B): the captured closure ESCAPES
+# to a higher-order callee, so its invocation is not locally resolvable to this
+# lambda and the live re-read does not apply. Stays UNFLAGGED, still leaks. ----
 CC_HOF = (TOK + "type Bag { items: List<String> }\n"
     "impl Bag\n"
     "    fun reveal(self) -> String\n"
@@ -1398,48 +1418,178 @@ CC_HOF = (TOK + "type Bag { items: List<String> }\n"
     "    stdio.println(apply(f))\n"
     "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
 
-_CLOSURE_CAPTURE_RESIDUAL = {
-    "getter_via_closure": CC_GETTER,
-    "plain_list_via_closure": CC_PLAINLIST,
-    "hof_invoked_closure": CC_HOF,
-}
+# ---- capture-side live-re-read PRECISION shapes (branch-soundness, no-push
+# clean, and the disclosed whole-value sibling over-report). Shared Bag with a
+# clean ``note`` sibling and a getter for it. ----
+_BAG_NOTE = (TOK + "type Bag { items: List<String>, note: String }\n"
+    "impl Bag\n"
+    "    fun reveal(self) -> String\n"
+    "        match self.items.get(0)\n"
+    "            Some(x) -> return x\n"
+    "            None -> return \"empty\"\n"
+    "    fun getnote(self) -> String\n"
+    "        return self.note\n")
+
+# Push in the ``then`` branch, invoke in the mutually-exclusive ``else``: the
+# live container-taint map is branch-scoped, so the push is not in the map at
+# the invocation point -> NOT flagged. ``main`` runs the else (prints "empty").
+CC_BRANCH_EXCLUSIVE = (_BAG_NOTE +
+    "fun leak(stdio: Stdio, secret: @secret String, cond: Bool)\n"
+    "    var bag: Bag = Bag { items: [], note: \"pub\" }\n"
+    "    let f: Fun() -> String = fun() -> String => bag.reveal()\n"
+    "    if cond\n        bag.items.push(secret)\n"
+    "    else\n        stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN, false)\n")
+
+# Push then invoke in the SAME path -> flagged (prints the secret).
+CC_BRANCH_SAME = (_BAG_NOTE +
+    "fun leak(stdio: Stdio, secret: @secret String, cond: Bool)\n"
+    "    var bag: Bag = Bag { items: [], note: \"pub\" }\n"
+    "    let f: Fun() -> String = fun() -> String => bag.reveal()\n"
+    "    if cond\n        bag.items.push(secret)\n        stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN, true)\n")
+
+# No push at all: the captured binding is genuinely clean -> clean.
+CC_NO_PUSH = (_BAG_NOTE +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [], note: \"pub\" }\n"
+    "    let f: Fun() -> String = fun() -> String => bag.reveal()\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# The disclosed SAFE over-report: the closure reads only the CLEAN ``note``,
+# but its other field ``items`` was pushed. The live re-read is whole-value on
+# the captured root ``bag``, so it FLAGS though nothing leaks (prints "pub").
+CC_SIBLING_OVERREPORT = (_BAG_NOTE +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [], note: \"pub\" }\n"
+    "    let f: Fun() -> String = fun() -> String => bag.getnote()\n"
+    "    bag.items.push(secret)\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
 
 
-class TestClosureCaptureBeforePushResidualDisclosed(unittest.TestCase):
-    """DISCLOSED residual (out of scope): a container captured by a closure
-    defined BEFORE the push and read through the closure AFTER is UNFLAGGED at
-    both tiers, though it leaks the secret at runtime on both backends. Not
-    closed by the container channel or the sink summary (both model
-    straight-line data flow, not the deferred effect of an invocation of an
-    earlier-defined closure). A closure defined AFTER the push is caught.
+class TestClosureCaptureBeforePushClosed(unittest.TestCase):
+    """CLOSED (Stage B, capture-side face): a container captured by a closure
+    defined BEFORE the push and read through the closure AFTER, invoked
+    LOCALLY, is now flagged (a warning by default, a hard error under strict).
+    At the invocation of a locally-resolved lambda each captured free binding's
+    CURRENT LIVE label is re-read -- the branch-scoped container-taint map
+    joined with ``sym.label`` -- NOT the label cached at the lambda's
+    definition (before the push). The value still leaks at runtime on both
+    backends (a warning does not block). The HOF-invoked shape stays disclosed
+    (``TestHofInvokedClosureResidualDisclosed``); the SINK-SIDE face was closed
+    in Stage A (``TestSecretIntoLocalLambdaSinkClosed``)."""
 
-    This is the CAPTURE-SIDE face of the lambda-flow-sensitivity item, deferred
-    to Stage B; its SINK-SIDE face -- a bare @secret passed to a locally-
-    resolvable lambda that sinks it -- is now CLOSED (Stage A, see
-    ``TestSecretIntoLocalLambdaSinkClosed``). This face stems from the analyzer
-    stamping a lambda's capture/flow labels at its DEFINITION and not
-    re-reflecting a later mutation of a captured binding; closing it needs the
-    capture-side half of the lambda-flow slice. Documented, tested, and honest
-    -- if that slice lands, these flip."""
-
-    def test_unflagged_at_both_tiers(self):
-        for name, src in _CLOSURE_CAPTURE_RESIDUAL.items():
+    def test_flagged_at_both_tiers(self):
+        for name, src in _CLOSURE_CAPTURE_CLOSED.items():
             with self.subTest(shape=name):
                 r = _analyze(src)
                 self.assertTrue(r.ok, [e.message for e in r.errors])
-                self.assertEqual(len(_flow_warnings(r)), 0,
-                                 [w.message for w in r.warnings])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
                 rs = _analyze(_strict(src, "leak"))
-                self.assertEqual(len(_flow_errors(rs)), 0,
-                                 [e.message for e in rs.errors])
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
 
     def test_leaks_at_runtime_both_backends(self):
         skip = _wasm_unavailable()
-        for name, src in _CLOSURE_CAPTURE_RESIDUAL.items():
+        for name, src in _CLOSURE_CAPTURE_CLOSED.items():
             with self.subTest(shape=name):
                 self.assertEqual(_run_py(src), "s3cr3t\n")
                 if skip is None:
                     self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+class TestCaptureLiveRereadPrecision(unittest.TestCase):
+    """Precision of the Stage B live capture re-read: branch-soundness, a
+    genuinely-clean capture, and the disclosed whole-value sibling
+    over-report.
+
+    * BRANCH-SOUND: the re-read consults the LIVE, branch-scoped
+      container-taint map, so a push in a mutually-exclusive branch is not
+      observed at the other branch's invocation point (clean, prints the
+      public value); a push then invoke on the SAME path flags.
+    * NO OVER-EAGER FLAG: a closure over a container never pushed stays clean.
+    * DISCLOSED SAFE over-report: the re-read is whole-value on the captured
+      ROOT, so a closure reading only a CLEAN sibling of a container whose
+      OTHER field was pushed FLAGS though it leaks nothing (prints the public
+      value) -- sound (over-report, never under-reports), at parity with the
+      existing ``ALIAS_COPY_AFTER`` whole-value over-report. A field-precise
+      re-read to remove it is a later precision follow-up."""
+
+    def test_branch_exclusive_is_clean(self):
+        r = _analyze(CC_BRANCH_EXCLUSIVE)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_BRANCH_EXCLUSIVE, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+
+    def test_branch_same_path_is_flagged(self):
+        r = _analyze(CC_BRANCH_SAME)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_BRANCH_SAME, "leak"))
+        self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+
+    def test_no_push_is_clean(self):
+        r = _analyze(CC_NO_PUSH)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_sibling_over_report_flags_but_leaks_nothing(self):
+        # SOUND over-report: flags (whole-value re-read on the captured root),
+        # but prints the PUBLIC value on both backends (nothing leaks).
+        r = _analyze(CC_SIBLING_OVERREPORT)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(CC_SIBLING_OVERREPORT), "pub\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(CC_SIBLING_OVERREPORT), "pub\n")
+
+    def test_branch_and_same_path_run_values(self):
+        # Runtime witnesses: the exclusive case prints public "empty"; the
+        # same-path case leaks the secret (a warning does not block).
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(CC_BRANCH_EXCLUSIVE), "empty\n")
+        self.assertEqual(_run_py(CC_BRANCH_SAME), "s3cr3t\n")
+        self.assertEqual(_run_py(CC_NO_PUSH), "empty\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(CC_BRANCH_EXCLUSIVE), "empty\n")
+            self.assertEqual(_run_wasm(CC_BRANCH_SAME), "s3cr3t\n")
+            self.assertEqual(_run_wasm(CC_NO_PUSH), "empty\n")
+
+
+class TestHofInvokedClosureResidualDisclosed(unittest.TestCase):
+    """DISCLOSED residual (out of scope, Stage B): the captured closure ESCAPES
+    to a higher-order callee (``apply(f)`` where ``apply(g)`` calls ``g()``),
+    so its invocation is not locally resolvable to this lambda and the live
+    capture re-read (which fires only at a locally-resolved invocation) does
+    not apply. Stays UNFLAGGED at both tiers though it leaks the secret on both
+    backends. Closing it needs higher-order resolution of the invoked closure.
+    Leaks on main too; disclosed for honesty."""
+
+    def test_unflagged_at_both_tiers(self):
+        r = _analyze(CC_HOF)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_HOF, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime_both_backends(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(CC_HOF), "s3cr3t\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(CC_HOF), "s3cr3t\n")
 
 
 # ---- CLOSED (Stage A, sink-side lambda-flow): a bare @secret passed to a
@@ -1557,8 +1707,10 @@ class TestSecretIntoLocalLambdaSinkClosed(unittest.TestCase):
 
     ESCAPING lambdas the caller cannot resolve to one certain literal stay
     DISCLOSED residuals below; the CAPTURE-SIDE face (a container captured by a
-    closure defined before a push, read after) stays disclosed in
-    ``TestClosureCaptureBeforePushResidualDisclosed`` (deferred to Stage B)."""
+    closure defined before a push, read after) is CLOSED for a locally-invoked
+    closure in Stage B (``TestClosureCaptureBeforePushClosed``), with the
+    HOF-invoked shape still disclosed
+    (``TestHofInvokedClosureResidualDisclosed``)."""
 
     def test_lambda_indirection_is_flagged(self):
         for name, src in (("let-bound", HO_LAMBDA_SINK), ("iife", HO_IIFE_SINK)):
