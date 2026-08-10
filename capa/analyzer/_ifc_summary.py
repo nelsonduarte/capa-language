@@ -130,9 +130,18 @@ only a clean sibling is precise (clean). What genuinely REMAINS disclosed:
   a mutator whose receiver is not rooted at a binding (a call- / index-
   rooted receiver). Only a points-to analysis, which Capa lacks, closes
   these.
-* CLOSURE-CAPTURE flow: a container captured by a closure defined BEFORE
-  the push and read through the closure AFTER is unflagged (a deferred
-  lambda-flow item; a closure defined AFTER the push is caught).
+* LAMBDA-FLOW sensitivity (a single deferred item, two faces). A lambda's
+  capture / flow labels are stamped at its DEFINITION and the analyzer
+  neither re-reflects a later mutation of a captured binding nor threads a
+  caller's taint into a LOCALLY-INVOKED lambda's parameter that reaches a
+  sink. So BOTH (a) a container captured by a closure defined BEFORE a
+  push and read through the closure AFTER, and (b) a bare @secret (or a
+  tainted container) passed to a local lambda that sinks it -- e.g.
+  ``let g = fun(s) => sink_str(s, stdio); g(secret)`` -- are unflagged and
+  leak, while the corresponding NON-lambda shapes (a closure defined after
+  the push; a direct named call ``sink_str(secret, stdio)``) are caught.
+  Closing this needs a separate lambda-flow slice, not the container
+  channel or the sink summary (both of which model straight-line flow).
 * A cross-function FIELD STORE keeps the whole-value carrier, so its
   sibling read is conservatively flagged (the disclosed field-store
   sibling over-report); only CONTAINER mutations get sibling precision.

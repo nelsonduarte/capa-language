@@ -55,8 +55,8 @@ only its own path and an escaped field read falls back to the receiver's BASE
 label (no container channel), so a clean sibling stays clean. See
 ``TestWholeStructSameRootReadClosed``.
 
-Disclosed residuals (still open, two DISTINCT mechanisms, not one class; each
-leaks at runtime and stays UNFLAGGED at both tiers on both backends):
+Disclosed residuals (still open, three DISTINCT mechanisms, not one class;
+each leaks at runtime and stays UNFLAGGED at both tiers on both backends):
 
 (1) RECEIVER not rooted at a binding. A mutator called on a call- or
     index-rooted receiver (``get_items(bag).push(secret)``,
@@ -76,11 +76,28 @@ leaks at runtime and stays UNFLAGGED at both tiers on both backends):
       mutates the same container through a DIFFERENT root symbol (a
       CROSS-FUNCTION push through a struct alias IS caught, via the alias
       group);
+    * a whole-struct value copy ``var b2 = bag`` made AFTER the push then a
+      sibling read through the copy (a SAFE over-report -- flags but leaks
+      nothing; see ``TestWholeCopySiblingOverReportDisclosed``);
     * embed-then-mutate: pushing into a sub-struct's container through its
       own root after embedding it in an outer struct, then reading through
       the outer.
 
-Do not read either bullet as the ONLY open case.
+(3) LAMBDA-FLOW sensitivity, a single deferred item with TWO faces (the
+    analyzer stamps a lambda's capture / flow labels at its DEFINITION and
+    neither re-reflects a later mutation of a captured binding nor threads a
+    caller's taint into a locally-invoked lambda's parameter that reaches a
+    sink):
+    * CAPTURE side: a container captured by a closure defined BEFORE a push
+      and read through the closure AFTER (see
+      ``TestClosureCaptureBeforePushResidualDisclosed``); a closure defined
+      AFTER the push is caught;
+    * SINK side: a bare @secret passed to a local lambda that sinks it,
+      ``let g = fun(s) => sink_str(s, stdio); g(secret)`` (see
+      ``TestSecretIntoLocalLambdaSinkResidualDisclosed``); the direct named
+      call ``sink_str(secret, stdio)`` is caught.
+
+Do not read any single bullet as the ONLY open case.
 """
 
 import shutil
@@ -1384,14 +1401,21 @@ _CLOSURE_CAPTURE_RESIDUAL = {
 
 
 class TestClosureCaptureBeforePushResidualDisclosed(unittest.TestCase):
-    """DISCLOSED residual (out of scope, a separate lambda flow-sensitivity
-    item): a container captured by a closure defined BEFORE the push and read
-    through the closure AFTER is UNFLAGGED at both tiers, though it leaks the
-    secret at runtime on both backends. Not closed by the container channel or
-    the sink summary (both model straight-line data flow, not the deferred
-    effect of an invocation of an earlier-defined closure). A closure defined
-    AFTER the push is caught. Documented, tested, and honest -- if a future
-    lambda-flow slice closes it, these flip."""
+    """DISCLOSED residual (out of scope): a container captured by a closure
+    defined BEFORE the push and read through the closure AFTER is UNFLAGGED at
+    both tiers, though it leaks the secret at runtime on both backends. Not
+    closed by the container channel or the sink summary (both model
+    straight-line data flow, not the deferred effect of an invocation of an
+    earlier-defined closure). A closure defined AFTER the push is caught.
+
+    This is the CAPTURE-SIDE face of a single deferred lambda-flow-sensitivity
+    item; its SINK-SIDE face -- a bare @secret passed to a local lambda that
+    sinks it -- is ``TestSecretIntoLocalLambdaSinkResidualDisclosed``. Both
+    stem from the analyzer stamping a lambda's capture/flow labels at its
+    DEFINITION and not re-reflecting a later mutation nor threading a caller's
+    taint into a locally-invoked lambda's parameter-sink; both need the same
+    separate lambda-flow slice. Documented, tested, and honest -- if that slice
+    lands, these flip."""
 
     def test_unflagged_at_both_tiers(self):
         for name, src in _CLOSURE_CAPTURE_RESIDUAL.items():
@@ -1411,6 +1435,73 @@ class TestClosureCaptureBeforePushResidualDisclosed(unittest.TestCase):
                 self.assertEqual(_run_py(src), "s3cr3t\n")
                 if skip is None:
                     self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+# ---- DISCLOSED residual (out of scope, the SAME deferred lambda-flow item as
+# the capture-before-push residual above, its sink-side face): a bare @secret
+# passed to a LOCAL LAMBDA that sinks it leaks unflagged -- no container, no
+# capture, no push-ordering. The analyzer stamps a lambda's flow labels at its
+# DEFINITION and does not thread the caller's taint into a locally-invoked
+# lambda's parameter that reaches a sink, so ``g(secret)`` where
+# ``g = fun(s) => sink_str(s, stdio)`` is missed. The NAMED-call control
+# (``sink_str(secret, stdio)`` directly) IS flagged, pinning the gap to the
+# lambda indirection. Pre-existing (leaks on 1.28.0 and earlier). ----
+HO_LAMBDA_SINK = (TOK +
+    "fun sink_str(s: String, stdio: Stdio)\n"
+    "    stdio.println(s)\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    let g: Fun(String) -> Unit = "
+    "fun(s: String) -> Unit => sink_str(s, stdio)\n"
+    "    g(secret)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# The control: the SAME sink reached by a DIRECT named call is flagged, so the
+# residual is specifically the local-lambda indirection, not the sink itself.
+HO_NAMED_CONTROL = (TOK +
+    "fun sink_str(s: String, stdio: Stdio)\n"
+    "    stdio.println(s)\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    sink_str(secret, stdio)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestSecretIntoLocalLambdaSinkResidualDisclosed(unittest.TestCase):
+    """DISCLOSED residual (out of scope): a bare @secret passed to a LOCAL
+    LAMBDA that sinks it leaks UNFLAGGED at both tiers, though it prints the
+    secret at runtime on both backends. This is the sink-side face of the SAME
+    deferred lambda-flow-sensitivity item as the capture-before-push closure
+    residual: the analyzer fixes a lambda's capture/flow labels at its
+    definition and does not thread a caller's taint into a locally-invoked
+    lambda's parameter that reaches a sink. The NAMED-call control -- the same
+    sink reached by a direct call ``sink_str(secret, stdio)`` -- IS flagged, so
+    the test pins the gap to the lambda indirection, not the sink. If a future
+    lambda-flow slice closes it, the residual assertion flips."""
+
+    def test_lambda_indirection_is_unflagged(self):
+        r = _analyze(HO_LAMBDA_SINK)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(HO_LAMBDA_SINK, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+
+    def test_lambda_indirection_leaks_both_backends(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(HO_LAMBDA_SINK), "s3cr3t\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(HO_LAMBDA_SINK), "s3cr3t\n")
+
+    def test_named_call_control_is_flagged(self):
+        # The gap is the lambda indirection: the SAME sink via a direct named
+        # call must be caught (a warning by default, a hard error under strict).
+        r = _analyze(HO_NAMED_CONTROL)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(HO_NAMED_CONTROL, "leak"))
+        self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
 
 
 # ---- DISCLOSED SAFE over-report (out of scope): a WHOLE-struct value copy
