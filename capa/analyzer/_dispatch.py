@@ -357,6 +357,13 @@ class _DispatchMixin:
                                 f"{ty_str(fun_ty)})",
                                 e.pos,
                             )
+                        # Sink-side lambda-flow (IFC): when this
+                        # function-typed local resolves to one certain
+                        # lambda literal, a @secret argument bound to a
+                        # lambda parameter that reaches a public sink inside
+                        # the body is a boundary leak, mirroring the
+                        # cross-function named-call summary check.
+                        self._check_ifc_local_lambda_call(e, sym)
                         return fun_ty.ret
                     else:
                         self._err(
@@ -380,6 +387,12 @@ class _DispatchMixin:
         # as before, so a legitimately-unresolved inline callee is not newly
         # rejected.
         callee_ty = self._resolve_ty(self._check_expr(e.callee))
+        # Sink-side lambda-flow (IFC): an immediately-invoked lambda literal
+        # ``(fun(s) => sink_str(s, stdio))(secret)`` whose body sinks its
+        # parameter is the IIFE face of the same leak the named-local check
+        # closes; its summary is keyed by the literal's id (no binding to
+        # resolve). Kept consistent with the ``let g = fun...; g(x)`` case.
+        self._check_ifc_iife_call(e)
         if isinstance(callee_ty, TyFun):
             if len(callee_ty.params) != len(arg_tys):
                 self._err(

@@ -2674,6 +2674,79 @@ class _IfcMixin:
                 callee_sink_caps.get(param_idx, frozenset()),
             )
 
+    def _check_ifc_local_lambda_call(self, e: A.Call, sym) -> None:
+        """Sink-side lambda-flow check at a call ``g(args)`` whose callee
+        ``g`` is a LOCAL / parameter / constant that resolves to ONE certain
+        lambda literal. The lambda body carries its own sink-reaching
+        summary (keyed by ``("lambda", id)`` in :mod:`._ifc_summary`), so a
+        @secret argument bound to a lambda parameter that reaches a public
+        sink inside the body is flagged at the call, mirroring the named-call
+        check (``_check_ifc_call_summary``).
+
+        The lambda is recovered from ``_binding_lambdas`` -- the SAME
+        resolution the higher-order sink boundary already uses -- which
+        records the single literal a ``let`` / fresh ``var`` introduces and
+        POISONS to ``None`` on any reassignment. So a reassigned ``var``, an
+        alias, or a call-result binding resolves to ``None`` here and is a
+        conservative MISS (a disclosed escaping residual), never a
+        wrong-target guess: the check only ever runs against the exact lambda
+        the binding certainly denotes."""
+        lam = self._binding_lambdas.get(id(sym))
+        if isinstance(lam, A.LambdaExpr):
+            self._apply_lambda_sink_summary(e, lam, repr(sym.name))
+
+    def _check_ifc_iife_call(self, e: A.Call) -> None:
+        """Sink-side lambda-flow check at an immediately-invoked lambda
+        literal ``(fun(s) => sink_str(s, stdio))(args)``. The callee IS the
+        lambda literal, so its ``("lambda", id)`` summary is recovered
+        directly with no binding resolution. Keeps the boundary consistent
+        with the named-local case (``let g = fun...; g(x)`` caught, but
+        ``(fun...)(x)`` not caught, would be inconsistent)."""
+        if isinstance(e.callee, A.LambdaExpr):
+            self._apply_lambda_sink_summary(e, e.callee, "the closure")
+
+    def _apply_lambda_sink_summary(
+        self, e: A.Call, lam: A.LambdaExpr, callee_label: str,
+    ) -> None:
+        """Apply lambda ``lam``'s sink-reaching summary to the actual
+        arguments of call ``e``, verbatim with the named-call path
+        (``_check_ifc_call_summary``): a @secret argument bound to a
+        sink-reaching lambda parameter is flagged, threading the argument
+        label through ``_sink_param_arg_label``, the read-side field-qualified
+        clear-gate through ``_sink_arg_field_cleared``, and the warn/strict
+        emitter through ``_emit_ifc_call_leak``. Argument binding is POSITIONAL
+        -- a lambda ``Fun`` type carries no parameter names. Never applies a
+        summary to a target that was not resolved: an absent summary (the
+        lambda sinks no parameter) is a no-op."""
+        from ..typesys import TyFun
+        key = ("lambda", id(lam))
+        sink_params = self._ifc_summaries.get(key)
+        if not sink_params:
+            return
+        sink_caps = self._ifc_sink_caps.get(key, {})
+        sink_paths = self._ifc_sink_paths.get(key, {})
+        fun_ty = self.types.get(id(lam))
+        param_tys = fun_ty.params if isinstance(fun_ty, TyFun) else ()
+        for pidx, arg in enumerate(e.args):
+            if pidx not in sink_params:
+                continue
+            ptype = param_tys[pidx] if pidx < len(param_tys) else None
+            label = self._sink_param_arg_label(arg, ptype)
+            if label is None or L.normalize(label) != L.SECRET:
+                continue
+            # Stage 2 read-side field precision (see the named free-call path).
+            if self._sink_arg_field_cleared(arg, sink_paths.get(pidx)):
+                continue
+            pname = (
+                lam.params[pidx].name
+                if pidx < len(lam.params)
+                else f"argument {pidx + 1}"
+            )
+            self._emit_ifc_call_leak(
+                callee_label, pname, arg.pos,
+                sink_caps.get(pidx, frozenset()),
+            )
+
     def _check_ifc_method_call_summary(
         self, e: A.MethodCall, type_sym, method_sym,
         recv_ty, perm: list[int],

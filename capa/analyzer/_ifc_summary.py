@@ -130,18 +130,26 @@ only a clean sibling is precise (clean). What genuinely REMAINS disclosed:
   a mutator whose receiver is not rooted at a binding (a call- / index-
   rooted receiver). Only a points-to analysis, which Capa lacks, closes
   these.
-* LAMBDA-FLOW sensitivity (a single deferred item, two faces). A lambda's
-  capture / flow labels are stamped at its DEFINITION and the analyzer
-  neither re-reflects a later mutation of a captured binding nor threads a
-  caller's taint into a LOCALLY-INVOKED lambda's parameter that reaches a
-  sink. So BOTH (a) a container captured by a closure defined BEFORE a
-  push and read through the closure AFTER, and (b) a bare @secret (or a
-  tainted container) passed to a local lambda that sinks it -- e.g.
-  ``let g = fun(s) => sink_str(s, stdio); g(secret)`` -- are unflagged and
-  leak, while the corresponding NON-lambda shapes (a closure defined after
-  the push; a direct named call ``sink_str(secret, stdio)``) are caught.
-  Closing this needs a separate lambda-flow slice, not the container
-  channel or the sink summary (both of which model straight-line flow).
+* LAMBDA-FLOW sensitivity. The SINK-SIDE face -- a bare @secret passed to a
+  LOCALLY-RESOLVABLE lambda (or an IIFE) whose body sinks its parameter,
+  ``let g = fun(s) => sink_str(s, stdio); g(secret)`` -- is now CLOSED
+  (Stage A): every lambda literal is registered as a synthetic callable
+  ``("lambda", id)`` and summarised on this same fixpoint, and the call site
+  (``_check_ifc_local_lambda_call`` / ``_check_ifc_iife_call`` in
+  :mod:`._ifc`) applies that summary to the actual arguments exactly as the
+  named-call check does. What STAYS disclosed:
+  - ESCAPING lambdas the caller cannot resolve to one certain literal: a
+    reassigned ``var`` (poisoned to ``None`` by ``_record_binding_lambda``),
+    an alias ``let g2 = g``, a call-result binding ``let g = mk()``, a
+    lambda passed to a higher-order function and invoked there, returned then
+    invoked, stored in a struct / list then invoked, recursive, or
+    conditionally selected. On any ambiguity the call site falls back to NO
+    check (a conservative MISS, never a wrong-target guess); closing these
+    needs higher-order CFA / points-to Capa lacks.
+  - the CAPTURE-SIDE face (Stage B): a container captured by a closure
+    defined BEFORE a push and read through the closure AFTER stays unflagged;
+    the lambda's capture / flow labels are still stamped at its DEFINITION and
+    a later mutation of a captured binding is not re-reflected.
 * A cross-function FIELD STORE keeps the whole-value carrier, so its
   sibling read is conservatively flagged (the disclosed field-store
   sibling over-report); only CONTAINER mutations get sibling precision.
@@ -149,11 +157,29 @@ only a clean sibling is precise (clean). What genuinely REMAINS disclosed:
 
 from __future__ import annotations
 
+import dataclasses
+
 from .. import capa_ast as A
 from ._ifc import (
     _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
     _pattern_bound_names,
 )
+
+
+class _LambdaCallable:
+    """A lambda literal presented to the per-body summary walk as a
+    callable. ``body`` is a value BLOCK: an expression-bodied lambda's
+    single expression is wrapped in a one-statement block, so the shared
+    ``_walk_value_block`` walker treats it exactly like a named function's
+    trailing implicit-return expression, and an in-body sink is walked the
+    same way. Only ``body`` is consulted by ``_analyze_body`` (the parameter
+    facts are pre-computed from the lambda's own ``params`` at registration),
+    so a minimal carrier is all that is needed."""
+
+    __slots__ = ("body",)
+
+    def __init__(self, body: A.Block) -> None:
+        self.body = body
 
 
 # Sentinel source for a field written from an internal secret source
@@ -374,6 +400,7 @@ class _SummaryBuilder:
         self._collect_secret_fields()
         self._collect_secret_consts()
         self._collect_callables()
+        self._collect_lambda_callables()
 
     def _collect_secret_fields(self) -> None:
         """Populate ``struct_field_labels`` from every struct (and
@@ -463,6 +490,68 @@ class _SummaryBuilder:
                     self.methods_by_name.setdefault(
                         method.name, []
                     ).append(key)
+
+    def _collect_lambda_callables(self) -> None:
+        """Register every lambda literal anywhere in the module as a
+        SYNTHETIC callable keyed by ``("lambda", id(lambda_expr))``, so the
+        SAME sink-reaching / sink-path fixpoint that summarises a named
+        function also summarises a lambda body. The sink-side lambda-flow
+        check (``_check_ifc_local_lambda_call`` / ``_check_ifc_iife_call`` in
+        :mod:`._ifc`) then consults this summary at a locally-resolvable or
+        IIFE lambda invocation, exactly as the named-call path consults a
+        function's summary -- closing the leak where a bare @secret passed to
+        a local lambda that sinks its parameter escaped the analysis while the
+        direct named call was caught.
+
+        Keyed by the AST node's ``id``, which is stable for the single parsed
+        module both this builder and the analyzer's main walk share, so the
+        call site recovers the exact per-lambda summary. Registered AFTER the
+        named callables so the ``("lambda", id)`` keys never collide with a
+        ``("fun", name)`` / ``("method", ...)`` key, and they are inert to
+        every existing consumer (the named-call checks look summaries up by
+        their own keys; ``methods_by_name`` filters to method keys), so no
+        named-function summary changes. The parameter facts are computed from
+        the lambda's OWN ``params`` exactly as for a named function; the body
+        is wrapped in a value block (``_LambdaCallable``) so an
+        expression-bodied lambda is walked by the same block walker."""
+        for lam in self._iter_lambdas(self.module):
+            key = ("lambda", id(lam))
+            names = [p.name for p in lam.params]
+            body = lam.body if isinstance(lam.body, A.Block) else A.Block(
+                pos=lam.pos,
+                stmts=[A.ExprStmt(pos=lam.pos, expr=lam.body)],
+            )
+            self.callables[key] = (names, _LambdaCallable(body), False)
+            self.summaries[key] = set()
+            self.sink_caps[key] = {}
+            self.sink_paths[key] = {}
+            self.field_effects[key] = {}
+            self.return_effects[key] = set()
+            self.secret_source_params[key] = self._secret_source_params(
+                lam.params,
+            )
+            self.param_struct_types[key] = self._param_struct_types(
+                lam.params,
+            )
+            self.param_type_names[key] = self._param_type_names(lam.params)
+            self.immutable_params[key] = self._immutable_param_idxs(
+                lam.params,
+            )
+
+    @staticmethod
+    def _iter_lambdas(node):
+        """Yield every ``LambdaExpr`` reachable from ``node`` (a nested
+        lambda inside another lambda's body is yielded too, so each gets its
+        own summary keyed by its own id). A dataclass walk mirroring
+        ``_lambda_return_exprs`` in :mod:`._ifc`."""
+        if isinstance(node, A.LambdaExpr):
+            yield node
+        if dataclasses.is_dataclass(node):
+            for f in dataclasses.fields(node):
+                yield from _SummaryBuilder._iter_lambdas(getattr(node, f.name))
+        elif isinstance(node, (list, tuple)):
+            for x in node:
+                yield from _SummaryBuilder._iter_lambdas(x)
 
     def _param_struct_types(self, params, owner: str = None) -> dict:
         """``{param name: struct type name}`` for parameters whose
