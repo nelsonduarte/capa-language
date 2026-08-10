@@ -88,15 +88,15 @@ Out of scope:
 
 ## Supported versions
 
-Capa is on the `1.x` line (latest `1.28.0`) and is a one-person
+Capa is on the `1.x` line (latest `1.29.0`) and is a one-person
 project. Only the latest tagged release is supported for security fixes.
 I may publish patch releases for the latest minor when a fix is
 significant.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.28.0 (latest) | yes |
-| < 1.28  | no, please upgrade |
+| 1.29.0 (latest) | yes |
+| < 1.29  | no, please upgrade |
 
 ## Published advisories
 
@@ -303,6 +303,35 @@ The 2026-05-25 audit record lives at the repository root in
   the different-root points-to aliases), each a tested false negative.
   Severity low-to-moderate. Affected `1.27.0` and earlier on the `1.x`
   line, shipped in `1.28.0` under the security exception.
+- [`docs/advisories/2026-08-10-ifc-cross-function-whole-struct-read.md`](docs/advisories/2026-08-10-ifc-cross-function-whole-struct-read.md):
+  the whole-struct-read closure of `1.28.0`'s disclosed residual. A
+  `@secret` pushed **inline** into a container field of a local struct
+  (`bag.items.push(secret)`, keyed on `(bag, ("items",))`), then read back
+  by reading or passing the **whole** struct, leaked unflagged: whole-struct
+  interpolation (`"${bag}"`), a getter or method whose receiver is the
+  struct (`bag.reveal()`, `bag.dump(stdio)`), and passing the whole struct
+  to a sink-reaching callee (`show(bag)`, including one that sinks the
+  tainted field among clean siblings). A whole-value read consulted only the
+  exact empty-path key and never the tainted field prefix, so no default
+  warning and no `@strict_ifc` error fired and the secret reached the sink
+  at run time on both backends (this was `1.28.0`'s disclosed residual #2,
+  reproduced on the released `1.28.0` binary). A whole-aggregate read now
+  prefix-scans the `(root, field-path)` container channel, so the leak warns
+  by default and is a hard error under `@strict_ifc`, on both backends, for
+  `List.push` / `Set.add` / `Map.set` and nested depth. The same release
+  moves the cross-function container-mutation effect onto the field-keyed
+  channel (a clean sibling of a callee-pushed struct is no longer
+  over-reported, a false positive `1.28.0` still had) and adds a
+  field-qualified sink summary (passing a whole struct to a callee that
+  sinks only a clean sibling stays clean); the callee-push whole-read was
+  already caught on `1.28.0` and stays caught. The closed claim is scoped to
+  the enumerated read shapes: a lambda-flow residual (a `@secret` passed to
+  a local lambda that sinks it, and a container captured by a closure
+  defined before a push) stays open and is the more general, pre-existing
+  gap tracked for a separate fix, alongside the different-root points-to
+  aliases, a call- / index-rooted receiver, and two sound over-reports, each
+  tested. Severity low-to-moderate. Affected `1.28.0` and earlier on the
+  `1.x` line, shipped in `1.29.0` under the security exception.
 
 ## Public disclosure
 

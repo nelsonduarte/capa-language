@@ -9,6 +9,98 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.29.0], 2026-08-10
+
+An information-flow soundness fix that follows on from `1.28.0`. It closes
+`1.28.0`'s disclosed residual: a `@secret` pushed INLINE into a container
+field of a local struct, then read back by reading or passing the WHOLE
+struct, leaked to a public sink unflagged. `1.28.0` keyed the
+container-mutation taint on `(root-binding, field-path)` and caught a FIELD
+read of the pushed path (`bag.items.get(0)`), but a WHOLE-value read did an
+exact empty-path lookup and never consulted the tainted field prefix, so the
+whole struct laundered the secret back to public.
+
+**Security.**
+
+- *A `@secret` pushed inline into a container field of a local struct, then
+  read back by reading or passing the WHOLE struct, leaked unflagged.*
+  Shapes, each after `bag.items.push(secret)` on a caller-local struct:
+  whole-struct interpolation (`"${bag}"` through a `to_string` method), a
+  getter or method whose receiver is the struct (`bag.reveal()`,
+  `bag.dump(stdio)`), and passing the whole struct to a sink-reaching callee
+  (`show(bag)`, including a callee that sinks the tainted field among clean
+  siblings). A whole-value read consulted only the exact empty-path key
+  `(bag, ())` and never the tainted `(bag, ("items",))` prefix, so on the
+  released `1.28.0` binary these passed a clean `capa --check` (no warning),
+  passed under `@strict_ifc` with ZERO errors, and the secret reached the
+  public sink at runtime on BOTH backends -- a strict-tier noninterference
+  false negative, and exactly the whole-struct-read residual `1.28.0`
+  disclosed. A whole-aggregate read now prefix-scans the `(root, field-path)`
+  container channel (the length-0 access-path query `x.f^0 = x`): the
+  effective label is split into a container-free base plus a container
+  contribution joined in once at the read's own access path, so a WHOLE read
+  sees every field taint of its root while a FIELD read still sees only
+  taints at or below its own path and an escaped field read falls back to the
+  base label. The leak now warns by default and is a hard error under
+  `@strict_ifc`, on both backends, for `List.push` / `Set.add` / `Map.set`
+  and nested depth, while a public sibling field (`bag.other`) stays clean.
+  Ships under the [`STABILITY.md`](STABILITY.md) security exception, and as a
+  MINOR bump for the same reason the earlier information-flow soundness fixes
+  did (`1.2.0`, `1.3.0`, `1.4.0`, `1.15.0`, `1.26.0`, `1.27.0`, `1.28.0`): it
+  tightens the static analysis so a program that previously compiled clean
+  while laundering a secret now warns by default and is a hard error under
+  `@strict_ifc`. Only programs that were already unsound are affected.
+  Covered by
+  [`tests/test_ifc_branch_scoped_container.py`](tests/test_ifc_branch_scoped_container.py).
+  Advisory:
+  [`docs/advisories/2026-08-10-ifc-cross-function-whole-struct-read.md`](docs/advisories/2026-08-10-ifc-cross-function-whole-struct-read.md).
+
+**Also a precision gain (not a security claim).** The same release moves the
+CROSS-FUNCTION container-mutation effect onto the field-keyed
+`(root, field-path)` channel, so a clean sibling field read after a callee
+pushes a secret into a DIFFERENT field (`fill(bag, secret)` then reading
+`bag.other`) is no longer flagged -- a false positive `1.28.0` still emitted.
+A read-side field-qualified SINK summary was also added, so passing a whole
+struct to a callee that sinks only a clean sibling (`show_note(bag)` where
+`show_note` sinks `bag.note`) stays clean rather than being over-tainted by
+the whole-read prefix scan. The callee-push whole-read (a callee pushes into
+`bag.items`, the caller reads the whole `bag` back) was already caught on
+`1.28.0` and stays caught; a within-release regression that briefly dropped
+it is locked out by a regression test.
+
+**Honest scope.** This closes the WHOLE-struct read of the container's
+DECLARED root after an inline field-chain push, and nothing more. Distinct
+residual mechanisms stay open, each an honest, tested false negative or a
+disclosed sound over-report; do NOT read the closed claim as "any same-root
+read-back is caught":
+
+1. *Lambda-flow sensitivity (the most serious open residual, and more
+   general than what this release closes).* A lambda's capture / flow labels
+   are stamped at its DEFINITION; the analyzer neither re-reflects a later
+   mutation of a captured binding nor threads a caller's taint into a
+   locally-invoked lambda's parameter that reaches a sink. So a bare
+   `@secret` passed to a local lambda that sinks it
+   (`let g = fun(s) => sink_str(s, stdio); g(secret)`) and a container
+   captured by a closure defined BEFORE a push and read through the closure
+   AFTER both leak unflagged at both tiers on both backends. Pre-existing
+   (`1.28.0` and earlier), a separate deferred lambda-flow fix, NOT closed
+   here. The non-lambda controls -- a direct named call, and a closure
+   defined AFTER the push -- are caught.
+2. *Different-root points-to.* An inline push through a struct alias
+   (`var b2 = bag; b2.items.push(secret); read bag.items`), a field-chain
+   rename (`var lst = bag.items; lst.push(secret)`), embed-then-mutate, and a
+   mutator receiver rooted at a call or an index rather than a binding
+   (`get_bag(bag).items.push`) are reached through a root the taint is not
+   keyed on, which only a points-to analysis Capa does not have could close.
+3. *Two sound over-reports (over-report, never leak).* Reading a clean
+   sibling through a WHOLE-value alias binding taken AFTER the push
+   (`var b2 = bag; read b2.other`) and a clean sibling of a cross-function
+   FIELD STORE (field stores keep the whole-value carrier by design) both
+   flag though nothing secret reaches the sink; both are disclosed.
+
+The loop-body over-approximation and the assignment sibling-branch false
+positive disclosed with `1.27.0` stay open and are documented there.
+
 ## [1.28.0], 2026-08-09
 
 An information-flow soundness fix that follows on from `1.27.0`. It closes
@@ -9798,7 +9890,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.28.0...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.29.0...HEAD
+[1.29.0]: https://github.com/nelsonduarte/capa-language/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/nelsonduarte/capa-language/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/nelsonduarte/capa-language/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/nelsonduarte/capa-language/compare/v1.25.1...v1.26.0

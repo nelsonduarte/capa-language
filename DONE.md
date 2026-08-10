@@ -19,6 +19,51 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.29.0: whole-struct-read container-mutation IFC false negative closed (2026-08-10)
+
+- **A `@secret` pushed INLINE into a container field of a local struct, then
+  read back by reading or passing the WHOLE struct, leaked unflagged
+  (security exception, MINOR).** `1.28.0` keyed the branch-scoped
+  container-mutation taint on `(root-binding, field-path)` and caught a FIELD
+  read of the pushed path (`bag.items.get(0)`), but a WHOLE-value read did an
+  exact empty-path lookup and never consulted the tainted field prefix. So
+  after `bag.items.push(secret)` on a caller-local struct, reading the whole
+  `bag` back -- whole-struct interpolation (`"${bag}"`), a getter or method
+  whose receiver is the struct (`bag.reveal()`, `bag.dump(stdio)`), or
+  passing the whole struct to a sink-reaching callee (`show(bag)`, including
+  one that sinks the tainted field among clean siblings) -- laundered the
+  secret back to public. On the released `1.28.0` binary this passed a clean
+  `capa --check` (no warning), passed under `@strict_ifc` with ZERO errors,
+  and the secret reached the public sink at runtime on BOTH backends -- a
+  strict-tier noninterference false negative, and exactly the
+  whole-struct-read residual `1.28.0` disclosed. A whole-aggregate read now
+  prefix-scans the `(root, field-path)` container channel (the length-0
+  access-path query `x.f^0 = x`): the effective label is split into a
+  container-free base plus a container contribution joined in at the read's
+  own access path, so a WHOLE read sees every field taint of its root while a
+  FIELD read still sees only taints at or below its own path and an escaped
+  field read falls back to the base label. The leak now warns by default and
+  is a hard error under `@strict_ifc`, on both backends, for
+  `List.push` / `Set.add` / `Map.set` and nested depth, while a public
+  sibling field (`bag.other`) stays clean. As a coupled precision gain (not a
+  security claim), the CROSS-FUNCTION container-mutation effect moved onto the
+  field-keyed channel, so a clean sibling read after a callee pushes into a
+  DIFFERENT field is no longer over-reported (a false positive `1.28.0` had),
+  and a read-side field-qualified sink summary keeps a whole struct passed to
+  a callee that sinks only a clean sibling clean; the callee-push whole-read
+  was already caught on `1.28.0` and stays caught, locked by a regression
+  test. Distinct residuals stay open, each tested: lambda-flow sensitivity (a
+  `@secret` passed to a local lambda that sinks it, and a container captured
+  by a closure defined before a push -- the most general, pre-existing gap,
+  tracked for a separate fix), the different-root points-to aliases
+  (`var b2 = bag`, `var lst = bag.items`, embed-then-mutate, a call- /
+  index-rooted receiver), and two sound over-reports (a clean sibling through
+  a whole-value alias taken after the push, and a clean sibling of a
+  cross-function field store). Fix commits `5934f48`, `a05b4ae`, `1a41a8a`
+  (analyzer) and `f554eea` (residual disclosure); covered by
+  `tests/test_ifc_branch_scoped_container.py`. Advisory:
+  `docs/advisories/2026-08-10-ifc-cross-function-whole-struct-read.md`.
+
 ## v1.28.0: field-chain-receiver container-mutation IFC false negative closed (2026-08-09)
 
 - **A `@secret` inserted into a container through a FIELD-CHAIN receiver on
