@@ -6104,6 +6104,64 @@ class TestNamedArguments(unittest.TestCase):
             errs,
         )
 
+    def test_named_args_on_first_class_local_lambda_rejected(self):
+        # A function-typed VALUE carries no parameter names, so a NAMED
+        # argument cannot bind soundly: the type checker binds positionally
+        # while the Python transpiler emits kwargs, so a named-arg first-class
+        # call diverges between the backends (and can reorder a @secret into an
+        # un-sunk slot). Reject it. Positional first-class calls stay allowed.
+        errs = errors_of(
+            'fun app(a: String, b: String, stdio: Stdio)\n'
+            '    stdio.println(b)\n'
+            'fun main(stdio: Stdio)\n'
+            '    let g: Fun(String, String) -> Unit = '
+            'fun(a: String, b: String) -> Unit => app(a, b, stdio)\n'
+            '    g(b: "y", a: "x")\n'
+        )
+        self.assertTrue(
+            any("named arguments are not supported" in e for e in errs),
+            errs,
+        )
+
+    def test_named_args_on_iife_rejected(self):
+        # The immediately-invoked-lambda form of the same first-class call.
+        errs = errors_of(
+            'fun app(a: String, b: String, stdio: Stdio)\n'
+            '    stdio.println(b)\n'
+            'fun main(stdio: Stdio)\n'
+            '    (fun(a: String, b: String) -> Unit => '
+            'app(a, b, stdio))(b: "y", a: "x")\n'
+        )
+        self.assertTrue(
+            any("named arguments are not supported" in e for e in errs),
+            errs,
+        )
+
+    def test_named_args_on_fun_typed_parameter_rejected(self):
+        # A ``Fun``-typed PARAMETER is a first-class value too: named args are
+        # unsound there as well.
+        errs = errors_of(
+            'fun run(f: Fun(String, String) -> Unit)\n'
+            '    f(b: "y", a: "x")\n'
+        )
+        self.assertTrue(
+            any("named arguments are not supported" in e for e in errs),
+            errs,
+        )
+
+    def test_positional_first_class_call_still_ok(self):
+        # The sound path: positional arguments at a first-class call are
+        # accepted and type-checked as before.
+        r = check(
+            'fun app(a: String, b: String, stdio: Stdio)\n'
+            '    stdio.println(b)\n'
+            'fun main(stdio: Stdio)\n'
+            '    let g: Fun(String, String) -> Unit = '
+            'fun(a: String, b: String) -> Unit => app(a, b, stdio)\n'
+            '    g("x", "y")\n'
+        )
+        self.assertTrue(r.ok, r.errors)
+
 
 # =============================================================
 # "Did you mean?" suggestions

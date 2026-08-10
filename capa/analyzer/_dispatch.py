@@ -140,6 +140,33 @@ class _DispatchMixin:
 
         return assigned  # type: ignore[return-value]
 
+    def _reject_named_args_first_class(self, e: A.Call, where: str) -> bool:
+        """Reject a NAMED argument at a FIRST-CLASS / lambda call site -- a
+        callee that is a ``TyFun``-typed VALUE (a lambda binding, an IIFE, a
+        ``Fun``-typed parameter, or a call / method result). Such a value
+        carries NO parameter names, so a named argument has no sound binding:
+        the type checker can only bind POSITIONALLY, but the Python transpiler
+        emits kwargs (honouring the names) while the Wasm backend binds
+        positionally, so a named-argument first-class call DIVERGES between the
+        two backends -- and can slip an IFC leak past the boundary when the
+        names reorder a @secret into an un-sunk slot. Positional arguments stay
+        allowed (the sound path).
+
+        Only the FIRST-CLASS callee is affected. A named ``fun`` / method /
+        variant / foreign-component call DOES carry parameter names and keeps
+        the sound named-argument path (``_resolve_named_args``); this helper is
+        never reached on that path. Returns True when a named argument was
+        found (and the diagnostic emitted), so the caller can skip the
+        positional binding it would otherwise run."""
+        if not any(n is not None for n in e.arg_names):
+            return False
+        self._err(
+            f"named arguments are not supported at {where}; a function value "
+            f"carries no parameter names, so pass the arguments positionally",
+            e.pos,
+        )
+        return True
+
     def _check_call(self, e: A.Call) -> Ty:
         # Evaluate args first so their types populate ``self.types``;
         # the aliasing check needs that for FieldAccess paths
@@ -349,6 +376,15 @@ class _DispatchMixin:
                         # an i64 fallback that the validator
                         # rejected at runtime.)
                         fun_ty = sym.ty
+                        # A NAMED argument cannot bind soundly to a
+                        # function-typed VALUE (it carries no parameter
+                        # names): reject it, before the positional binding /
+                        # IFC check that would otherwise misbind it and
+                        # diverge between the backends.
+                        if self._reject_named_args_first_class(
+                            e, f"a call to the function value {sym.name!r}",
+                        ):
+                            return fun_ty.ret
                         if len(fun_ty.params) != len(arg_tys):
                             self._err(
                                 f"call to {sym.name!r}: expected "
@@ -387,13 +423,21 @@ class _DispatchMixin:
         # as before, so a legitimately-unresolved inline callee is not newly
         # rejected.
         callee_ty = self._resolve_ty(self._check_expr(e.callee))
-        # Sink-side lambda-flow (IFC): an immediately-invoked lambda literal
-        # ``(fun(s) => sink_str(s, stdio))(secret)`` whose body sinks its
-        # parameter is the IIFE face of the same leak the named-local check
-        # closes; its summary is keyed by the literal's id (no binding to
-        # resolve). Kept consistent with the ``let g = fun...; g(x)`` case.
-        self._check_ifc_iife_call(e)
         if isinstance(callee_ty, TyFun):
+            # A NAMED argument cannot bind soundly to a first-class callee (a
+            # lambda / IIFE / Fun-typed value carries no parameter names), so
+            # reject it before the positional binding / IFC check below.
+            if self._reject_named_args_first_class(
+                e, "a first-class function call",
+            ):
+                return callee_ty.ret
+            # Sink-side lambda-flow (IFC): an immediately-invoked lambda
+            # literal ``(fun(s) => sink_str(s, stdio))(secret)`` whose body
+            # sinks its parameter is the IIFE face of the same leak the
+            # named-local check closes; its summary is keyed by the literal's
+            # id (no binding to resolve). Kept consistent with the
+            # ``let g = fun...; g(x)`` case.
+            self._check_ifc_iife_call(e)
             if len(callee_ty.params) != len(arg_tys):
                 self._err(
                     f"call: expected {len(callee_ty.params)} arguments, got "

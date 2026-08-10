@@ -137,7 +137,12 @@ only a clean sibling is precise (clean). What genuinely REMAINS disclosed:
   ``("lambda", id)`` and summarised on this same fixpoint, and the call site
   (``_check_ifc_local_lambda_call`` / ``_check_ifc_iife_call`` in
   :mod:`._ifc`) applies that summary to the actual arguments exactly as the
-  named-call check does. What STAYS disclosed:
+  named-call check does. "Sinks its parameter" here means the parameter
+  reaches a sink DIRECTLY or via a NAMED callee: a sink reached ONLY through a
+  nested LOCAL-lambda invocation inside the body (``let inner = fun(t) =>
+  sink_str(t, stdio); let g = fun(s) => inner(s); g(secret)``) is opaque to
+  the summary walk (which resolves calls to NAMED callees only, the same
+  limitation named callables have) and stays unflagged. What STAYS disclosed:
   - ESCAPING lambdas the caller cannot resolve to one certain literal: a
     reassigned ``var`` (poisoned to ``None`` by ``_record_binding_lambda``),
     an alias ``let g2 = g``, a call-result binding ``let g = mk()``, a
@@ -513,7 +518,17 @@ class _SummaryBuilder:
         named-function summary changes. The parameter facts are computed from
         the lambda's OWN ``params`` exactly as for a named function; the body
         is wrapped in a value block (``_LambdaCallable``) so an
-        expression-bodied lambda is walked by the same block walker."""
+        expression-bodied lambda is walked by the same block walker.
+
+        OPACITY (disclosed residual): the body walk resolves a call only to a
+        NAMED (``fun`` / method) callee, never to a LOCAL-lambda binding -- the
+        SAME limitation named callables have -- so a sink reached ONLY through
+        a nested LOCAL-lambda invocation inside the body (``let inner = fun(t)
+        => sink_str(t, stdio); let g = fun(s) => inner(s); g(secret)``) is
+        opaque to this summary and stays unflagged (it leaks on both backends,
+        as on main). So the sink-reaching a lambda summary captures is a sink
+        the parameter reaches DIRECTLY or via a NAMED callee, not one reached
+        only through another LOCAL lambda."""
         for lam in self._iter_lambdas(self.module):
             key = ("lambda", id(lam))
             names = [p.name for p in lam.params]

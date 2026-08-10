@@ -1655,6 +1655,49 @@ class TestEscapingLambdaSinkResidualDisclosed(unittest.TestCase):
                     self.assertEqual(_run_wasm(src), "s3cr3t\n")
 
 
+# ---- DISCLOSED residual (out of scope, Stage A): a sink reached ONLY through a
+# nested LOCAL-lambda invocation inside the body. The summary walk resolves a
+# body's calls to NAMED (fun / method) callees only, never to a LOCAL-lambda
+# binding (the same limitation named callables have), so ``g``'s body calling
+# a sibling local lambda ``inner(s)`` does not surface ``inner``'s sink. So
+# "sinks its parameter" means directly or via a NAMED callee; this stays
+# unflagged though it leaks on both backends (as on main). ----
+HO_NESTED_LOCAL_LAMBDA = (TOK + _SINK +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    let inner: Fun(String) -> Unit = "
+    "fun(t: String) -> Unit => sink_str(t, stdio)\n"
+    "    let g: Fun(String) -> Unit = fun(s: String) -> Unit => inner(s)\n"
+    "    g(secret)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestNestedLocalLambdaSinkOpaqueResidualDisclosed(unittest.TestCase):
+    """DISCLOSED residual (out of scope, Stage A): a bare @secret passed to a
+    local lambda whose body reaches a sink ONLY through a NESTED LOCAL-lambda
+    invocation -- ``let inner = fun(t) => sink_str(t, stdio); let g = fun(s) =>
+    inner(s); g(secret)`` -- stays UNFLAGGED at both tiers though it leaks on
+    both backends. The summary walk resolves a body's calls to NAMED
+    (fun / method) callees only, never to a LOCAL-lambda binding, so ``inner``'s
+    sink is opaque to ``g``'s summary. This is the same limitation named
+    callables have; "sinks its parameter" (Stage A) means directly or via a
+    NAMED callee. Leaks on main too (not a regression), disclosed for honesty."""
+
+    def test_unflagged_at_both_tiers(self):
+        r = _analyze(HO_NESTED_LOCAL_LAMBDA)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(HO_NESTED_LOCAL_LAMBDA, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime_both_backends(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(HO_NESTED_LOCAL_LAMBDA), "s3cr3t\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(HO_NESTED_LOCAL_LAMBDA), "s3cr3t\n")
+
+
 # ---- DISCLOSED SAFE over-report (out of scope): a WHOLE-struct value copy
 # ``var b2 = bag`` created AFTER a container push, then reading a CLEAN sibling
 # through the copy. The copy reads ``bag`` whole (which now observes the
