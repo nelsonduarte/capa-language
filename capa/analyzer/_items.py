@@ -187,6 +187,17 @@ class _ItemsMixin:
         # function / lambda body does not clobber the enclosing one.
         prev_container_taint = getattr(self, "_container_taint", None)
         self._container_taint = {}
+        # Flat (NOT branch-scoped) set of bindings that were ever the target
+        # of a precisely-tracked field store or container push, i.e. that
+        # have a field-KEYED entry on the (branch-scoped) container channel at
+        # some point. The capture re-read (``_fresh_capture_label``) consults
+        # it to tell a whole-value ``sym.label`` raised by a precise mutation
+        # (trust the branch-scoped, field-precise channel) from one raised by
+        # a whole reassign / alias / annotation (fall back to ``sym.label``),
+        # so a branch-exclusive field store stays branch-sound. Saved /
+        # restored per function like the channel itself.
+        prev_container_seeded = getattr(self, "_container_seeded_syms", None)
+        self._container_seeded_syms = set()
 
         # Capability parameters: collected so the analyzer can
         # warn at the end of the body if any are declared but
@@ -439,6 +450,7 @@ class _ItemsMixin:
         self._constant_time = prev_constant_time
         self._pc_label = prev_pc_label
         self._container_taint = prev_container_taint
+        self._container_seeded_syms = prev_container_seeded
         self._pop_scope()
         self._pop_type_params()
 

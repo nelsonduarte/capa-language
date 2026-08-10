@@ -1445,68 +1445,182 @@ class _IfcMixin:
         them would silently no-op. Re-reading the live container-taint map is
         what surfaces a push that happened AFTER the closure was defined.
 
-        REFTYPE (Finding 2, the sound fix). The container-mutation taint is
-        re-read for EVERY capture (an in-place ``xs.push`` / ``bag.f = v`` is
-        observed through the shared binding). The whole-value ``sym.label`` is
-        re-read ONLY for a REFERENCE-typed capture (a struct / container:
-        mutable and shared, so a later in-place field store IS seen through the
-        closure -- ``s_struct_fieldstore_result`` stays flagged). It is SKIPPED
-        for a VALUE-typed capture -- a built-in immutable primitive
-        (String / Int / Float / Bool / Char), told apart by
+        FIELD-PRECISE (the R2 fix). How the body READS each capture decides
+        the granularity (``_capture_read_paths``). A WHOLE / undeterminable
+        read (a bare use, a method receiver ``bag.reveal()``, an argument)
+        observes EVERY container taint on the root (``_container_taint_at(sym,
+        ())``) plus -- for a reference type -- the whole-value ``sym.label``. A
+        read at determinable FIELD PATHS only (``box.note``) observes only the
+        branch-scoped container taints PREFIX-COMPATIBLE with those paths
+        (``_capture_container_taint``), so a closure reading a CLEAN SIBLING of
+        a field stored / pushed after its definition is no longer over-tainted,
+        while reading the STORED path (``s_struct_fieldstore_result``,
+        ``r2ctl_capture_samefield``) stays flagged. An in-place field store now
+        SEEDS that branch-scoped channel (``_seed_container_taint``), so it is
+        observed exactly like a push.
+
+        REFTYPE. The whole-value ``sym.label`` is re-read only for a
+        REFERENCE-typed capture, and only when the binding was NOT precisely
+        container-seeded (``_container_seeded``): then any secrecy on it is a
+        whole reassign / alias / annotation the field-precise channel cannot
+        see, so re-reading it keeps the disclosed whole-reassign over-report
+        and the aliasing catch. When the binding WAS precisely seeded, the
+        branch-scoped field-precise channel governs and the collapsed
+        whole-value label is deliberately NOT re-read (that is what removes the
+        R2 sibling over-report while staying branch-sound). ``sym.label`` is
+        always SKIPPED for a VALUE-typed capture -- a built-in immutable
+        primitive (String / Int / Float / Bool / Char), told apart by
         ``_capture_is_value_typed`` -- because a primitive is captured BY VALUE,
-        so a later REASSIGNMENT of the binding is not observed by the closure;
-        re-reading its raised ``sym.label`` was a false positive
-        (``l_a_scalar_reassign`` flagged though it prints the public value).
+        so a later REASSIGNMENT is not observed (``l_a_scalar_reassign``).
 
         Branch-soundness is BY CONSTRUCTION: ``_container_taint`` is the live,
         branch-scoped map (``_container_isolate`` / ``_container_merge``), so a
-        push in a mutually-exclusive ``then`` branch is simply not in the map
-        at an ``else`` branch's invocation point, and re-reading there cannot
-        observe it.
+        push / store in a mutually-exclusive ``then`` branch is simply not in
+        the map at an ``else`` branch's invocation point; the ``_container_
+        seeded`` flat mark gates only the whole-value ``sym.label`` re-read, so
+        a branch-exclusive field store stays clean at the sibling branch.
 
         DISCLOSED SAFE over-reports (sound, never a missed leak):
-        * WHOLE-VALUE on each captured root: a closure reading only a CLEAN
-          SIBLING of a captured container whose other field was pushed flags
-          (at parity with the existing ``ALIAS_COPY_AFTER`` over-report);
+        * WHOLE-VALUE on a WHOLE-read capture: a closure reading a captured
+          container through a getter / whole read whose OTHER field was pushed
+          flags (the read is whole, so the length-0 query observes the push),
+          at parity with the ``ALIAS_COPY_AFTER`` over-report;
         * DECLASSIFY-BLIND: the re-read reads the RAW taint (unlike
           ``_lambda_result_labels``), so a closure that ``declassify``s its
           captured value IN-BODY still flags -- ``declassify(f(), reason: ...)``
           at the CALL SITE silences it;
         * REF-TYPE WHOLE-REASSIGN: a captured STRUCT whole-reassigned to a
           secret after definition (``bag = Bag { data: secret }``) flags though
-          a struct is captured by value here and nothing leaks -- REFTYPE keeps
-          ``sym.label`` for a reference type and cannot tell a whole reassign
-          from an in-place field store (both raise the whole-value label). A
-          strict-tier over-rejection, with precedent in the reassigned-``var``
-          sink recovery that also fails closed under strict.
+          a struct is captured by value here and nothing leaks -- the reassign
+          leaves no precise container seed, so ``sym.label`` is re-read and
+          cannot tell it from an in-place field store. A strict-tier
+          over-rejection, with precedent in the reassigned-``var`` sink
+          recovery that also fails closed under strict.
 
         The lambda's own parameters / inner binds are excluded (they are not
         captures), mirroring ``_lambda_capture_label``."""
+        seeded = self._container_seeded()
+        label = L.PUBLIC
+        for sym, paths, whole in self._capture_read_paths(lam).values():
+            value_typed = self._capture_is_value_typed(sym)
+            if whole or not paths:
+                # WHOLE / undeterminable read of the capture (a bare use, a
+                # method receiver, an argument): observe EVERY container taint
+                # on the root (the length-0 query), plus -- for a reference
+                # type -- the flat whole-value ``sym.label``. A value-typed
+                # (built-in immutable primitive) capture is captured by value,
+                # so its later reassignment is not observed and ``sym.label``
+                # is skipped.
+                ct = self._container_taint_at(sym, ())
+                if ct:
+                    label = L.join(label, ct)
+                if not value_typed:
+                    label = L.join(
+                        label,
+                        L.normalize(getattr(sym, "label", None) or L.PUBLIC),
+                    )
+            else:
+                # FIELD-PRECISE read: the closure reads the capture only at
+                # determinable field paths, so observe only the branch-scoped
+                # container taints PREFIX-COMPATIBLE with a read path (an
+                # in-place field store / push at, above, or below a read path
+                # is seen; a disjoint CLEAN SIBLING is not -- the R2 fix).
+                ct = self._capture_container_taint(sym, paths)
+                if ct:
+                    label = L.join(label, ct)
+                # A reference type's whole-value ``sym.label`` is re-read ONLY
+                # when the binding was NOT precisely container-seeded: then any
+                # secrecy on it is a whole reassign / alias / annotation (a
+                # whole-value taint the field-precise channel cannot see), and
+                # re-reading it keeps the disclosed whole-reassign over-report
+                # and any aliasing catch. When it WAS precisely seeded, the
+                # branch-scoped field-precise channel above governs (so a
+                # branch-exclusive store stays branch-sound), and the collapsed
+                # whole-value label is deliberately NOT re-read.
+                if not value_typed and id(sym) not in seeded:
+                    label = L.join(
+                        label,
+                        L.normalize(getattr(sym, "label", None) or L.PUBLIC),
+                    )
+        return label
+
+    def _capture_container_taint(self, sym, paths):
+        """Join every branch-scoped container-mutation taint on ``sym`` whose
+        access path is PREFIX-COMPATIBLE with any read path in ``paths`` (one
+        is a prefix of the other), or ``None``. A whole / sub-struct read
+        observes a nested field store / push, and a read INTO a stored secret
+        sub-struct observes it too, while a disjoint sibling path matches
+        nothing. The field-precise analogue of ``_container_taint_at(sym, ())``
+        used by the capture re-read."""
+        ct = self._container_taint_map()
+        if not ct:
+            return None
+        root = id(sym)
+        out = None
+        for (kid, kpath), lbl in ct.items():
+            if kid != root:
+                continue
+            if any(_prefix_compatible(kpath, tuple(p)) for p in paths):
+                out = L.join(out, lbl)
+        return out
+
+    def _capture_read_paths(self, lam: A.LambdaExpr) -> dict:
+        """For each free binding ``lam`` captures, how its body READS it:
+        ``{id(sym): (sym, {field-path, ...}, whole)}``. A maximal
+        Ident-rooted field chain (``box.a.b``) contributes its parameter-
+        relative path; a BARE use of the root -- a method receiver
+        (``box.reveal()``), an argument, a scrutinee, a whole value -- sets
+        ``whole`` (an undeterminable / whole read that falls back to the
+        whole-value re-read). Binding identity (not name) matches the root, so
+        a nested lambda's same-named parameter is not confused with the
+        capture. The lambda's own params / inner binds are excluded."""
         locals_: set[str] = {p.name for p in lam.params}
         for stmt in self._lambda_body_stmts(lam):
             self._collect_bound_names(stmt, locals_)
-        label = L.PUBLIC
-        for ident in self._lambda_free_idents(lam.body, locals_):
-            sym = self.bindings.get(id(ident))
-            if sym is None:
-                continue
-            # The container-mutation taint is re-read for every capture (an
-            # in-place push / field store is observed through the shared
-            # binding), whatever the capture's type.
-            ct = self._container_taint_at(sym, ())
-            if ct:
-                label = L.join(label, ct)
-            # The whole-value ``sym.label`` is re-read only for a
-            # REFERENCE-typed capture; a value-typed (built-in immutable
-            # primitive) capture is captured by value, so a later reassignment
-            # is not observed by the closure and re-reading it would be a false
-            # positive.
-            if not self._capture_is_value_typed(sym):
-                label = L.join(
-                    label,
-                    L.normalize(getattr(sym, "label", None) or L.PUBLIC),
-                )
-        return label
+        out: dict = {}
+        self._walk_capture_reads(lam.body, locals_, out)
+        return {k: (v[0], v[1], v[2]) for k, v in out.items()}
+
+    def _walk_capture_reads(self, node, locals_: set, out: dict) -> None:
+        """Recursive walk backing ``_capture_read_paths``. A maximal
+        Ident-rooted field chain rooted at a NON-local binding records its
+        path and is not descended into; a bare captured Ident records a whole
+        read; everything else recurses generically (so a capture nested in a
+        call receiver / index / argument is still found)."""
+        import dataclasses
+        if isinstance(node, A.FieldAccess):
+            root_ident = node
+            while isinstance(root_ident, A.FieldAccess):
+                root_ident = root_ident.receiver
+            path = self._field_path_from_root(node)
+            if (
+                isinstance(root_ident, A.Ident)
+                and root_ident.name not in locals_
+                and path
+            ):
+                sym = self.bindings.get(id(root_ident))
+                if sym is not None:
+                    entry = out.setdefault(id(sym), [sym, set(), False])
+                    entry[1].add(tuple(path))
+                    return
+            self._walk_capture_reads(node.receiver, locals_, out)
+            return
+        if isinstance(node, A.Ident):
+            if node.name not in locals_:
+                sym = self.bindings.get(id(node))
+                if sym is not None:
+                    entry = out.setdefault(id(sym), [sym, set(), False])
+                    entry[2] = True
+            return
+        if node is None or isinstance(node, str):
+            return
+        if dataclasses.is_dataclass(node):
+            for f in dataclasses.fields(node):
+                self._walk_capture_reads(getattr(node, f.name), locals_, out)
+            return
+        if isinstance(node, (list, tuple)):
+            for x in node:
+                self._walk_capture_reads(x, locals_, out)
 
     def _capture_is_value_typed(self, sym) -> bool:
         """True when ``sym``'s resolved type is a built-in immutable PRIMITIVE
@@ -1910,6 +2024,31 @@ class _IfcMixin:
             self._container_taint = ct
         return ct
 
+    def _container_seeded(self) -> set:
+        """The flat (NOT branch-scoped) set of bindings ever field-KEYED on
+        the container channel by a precise field store / container push.
+        Reset per function in ``_check_fn``; lazily created for a context
+        (a nested lambda check) that runs before the reset."""
+        seeded = getattr(self, "_container_seeded_syms", None)
+        if seeded is None:
+            seeded = set()
+            self._container_seeded_syms = seeded
+        return seeded
+
+    def _seed_container_taint(self, sym, path: tuple, incoming) -> None:
+        """Record a field-KEYED container-mutation taint on ``sym`` at
+        ``path`` (a precise field store or container push), monotone and
+        SECRET-only, and flat-mark ``sym`` as container-seeded. The taint
+        goes on the branch-scoped ``(root, field-path)`` channel; the flat
+        mark is a separate, non-branch-scoped record the capture re-read
+        consults for branch-soundness (see ``_container_seeded``)."""
+        if L.normalize(incoming) != L.SECRET:
+            return
+        ct = self._container_taint_map()
+        key = (id(sym), tuple(path))
+        ct[key] = L.join(ct.get(key), incoming)
+        self._container_seeded().add(id(sym))
+
     def _container_taint_at(self, sym, path: tuple):
         """Join of every branch-scoped container-mutation taint recorded on
         ``sym`` at ``path`` or a longer path nested under it, or ``None``.
@@ -2257,9 +2396,12 @@ class _IfcMixin:
         # effective label only when the path is READ (``_compute_label``),
         # so a sibling read stays clean while a read AFTER the construct
         # still reflects the push. The shared label / field labels / alias
-        # groups / escape tracking are left flat and untouched.
+        # groups / escape tracking are left flat and untouched. The binding
+        # is also flat-marked container-seeded (``_container_seeded``) so the
+        # capture re-read trusts this branch-scoped, field-precise channel.
         ct = self._container_taint_map()
         ct[target] = L.join(ct.get(target), L.SECRET)
+        self._container_seeded().add(target[0])
 
     def _check_no_cap_into_container(self, e: A.MethodCall, recv_ty) -> None:
         """Reject inserting a capability into a container via a
@@ -2483,6 +2625,19 @@ class _IfcMixin:
                                 else L.PUBLIC, incoming)
         root.label = L.join(getattr(root, "label", None),
                             self._collapse_field_map(root.field_labels))
+        # Also seed the branch-scoped ``(root, field-path)`` container channel
+        # at the STORED path (this precise, non-aliased, non-escaped,
+        # resolvable-path store only), mirroring a container push. It is
+        # REDUNDANT for same-body reads -- the per-field map above already
+        # governs them field-precisely -- but the per-field map is FLAT while
+        # the container channel is BRANCH-SCOPED (``_container_isolate`` /
+        # ``_container_merge``), so this is what gives the field-precise
+        # capture re-read (``_fresh_capture_label``) and the cross-function
+        # apply a branch-isolated, access-path source: a closure re-reading a
+        # CLEAN SIBLING of a field stored after its definition is no longer
+        # over-tainted, while a read of the stored path stays caught. Monotone
+        # and SECRET-only (``_seed_container_taint``).
+        self._seed_container_taint(root, tuple(path), incoming)
 
     # ---- sink enforcement (roadmap S2.4) -------------------------
 
@@ -3292,9 +3447,7 @@ class _IfcMixin:
             self._taint_binding_whole_value(target_arg)
             return
         full_path = tuple(caller_prefix) + tuple(field_path)
-        ct = self._container_taint_map()
-        key = (id(root_sym), full_path)
-        ct[key] = L.join(ct.get(key), L.SECRET)
+        self._seed_container_taint(root_sym, full_path, L.SECRET)
 
     def _taint_binding_whole_value(self, e: A.Expr) -> None:
         """Raise the binding rooted at ``e`` to whole-value @secret and

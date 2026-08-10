@@ -1971,6 +1971,128 @@ class TestCaptureRereadReftype(unittest.TestCase):
             self.assertEqual(_run_wasm(CC_STRUCT_WHOLE_REASSIGN), "pub\n")
 
 
+# ---- Commit 3: field-precise capture re-read of an in-place FIELD STORE. A
+# closure that re-reads a CLEAN SIBLING field of a struct whose OTHER field was
+# stored after the closure was defined is no longer over-tainted: the re-read
+# observes the branch-scoped container channel at the field paths the closure
+# ACTUALLY reads (an in-place field store now seeds that channel), not the
+# whole-value ``sym.label``. The same-field read stays a real leak; a
+# branch-exclusive store stays branch-sound (the flat container-seeded mark
+# gates only the whole-value fallback); the monotone overwrite over-report
+# stays flagged. ----
+
+_BOX_SF = "type Box { secret_field: String, note: String }\n"
+
+# CLEAN: the closure reads the public sibling ``note``; the field store into
+# ``secret_field`` after the closure is defined does not taint it (prints
+# "public").
+CAP_FS_SIBLING = (TOK + _BOX_SF +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var box: Box = Box { secret_field: \"x\", note: \"public\" }\n"
+    "    let f: Fun() -> String = fun() -> String => box.note\n"
+    "    box.secret_field = secret\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# FLAGGED: the closure reads the STORED field ``secret_field`` -- a real leak
+# (prints "s3cr3t").
+CAP_FS_SAME_FIELD = (TOK + _BOX_SF +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var box: Box = Box { secret_field: \"x\", note: \"public\" }\n"
+    "    let f: Fun() -> String = fun() -> String => box.secret_field\n"
+    "    box.secret_field = secret\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# BRANCH-SOUND CLEAN: the store into ``secret_field`` is in the ``then`` branch,
+# the closure reading the SAME field is invoked in the mutually-exclusive
+# ``else``; the branch-scoped channel has no store at the else invocation, so
+# it is clean (``main`` runs the else, prints "public").
+CAP_FS_BRANCH_EXCLUSIVE = (TOK + _BOX_SF +
+    "fun leak(stdio: Stdio, secret: @secret String, cond: Bool)\n"
+    "    var box: Box = Box { secret_field: \"x\", note: \"public\" }\n"
+    "    let f: Fun() -> String = fun() -> String => box.secret_field\n"
+    "    if cond\n        box.secret_field = secret\n"
+    "    else\n        stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN, false)\n")
+
+# MONOTONE OVERWRITE over-report: an in-place field store to secret then to a
+# public value, then reading it, stays FLAGGED (the channel joins, never
+# clears) though the field holds nothing secret at the sink (prints
+# "public-again"). Intra, no closure.
+CAP_FS_OVERWRITE = (TOK + "type Bag { data: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { data: \"pub\" }\n"
+    "    bag.data = secret\n"
+    "    bag.data = \"public-again\"\n"
+    "    stdio.println(bag.data)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestCaptureFieldStoreFieldPrecise(unittest.TestCase):
+    """Commit 3: the reference-typed capture re-read is field-precise for an
+    in-place field store (which now seeds the branch-scoped container
+    channel). A closure reading a CLEAN SIBLING of a field stored after its
+    definition is no longer flagged; the same-field read stays a real leak; a
+    branch-exclusive store stays branch-sound; the monotone overwrite
+    over-report stays flagged."""
+
+    def test_capture_sibling_is_clean(self):
+        r = _analyze(CAP_FS_SIBLING)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(CAP_FS_SIBLING, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+
+    def test_capture_sibling_prints_public_both_backends(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(CAP_FS_SIBLING), "public\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(CAP_FS_SIBLING), "public\n")
+
+    def test_capture_same_field_stays_flagged(self):
+        r = _analyze(CAP_FS_SAME_FIELD)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(CAP_FS_SAME_FIELD, "leak"))
+        self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+
+    def test_capture_same_field_leaks_both_backends(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(CAP_FS_SAME_FIELD), "s3cr3t\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(CAP_FS_SAME_FIELD), "s3cr3t\n")
+
+    def test_branch_exclusive_store_is_branch_sound_clean(self):
+        r = _analyze(CAP_FS_BRANCH_EXCLUSIVE)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(CAP_FS_BRANCH_EXCLUSIVE, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        # The else path never stores, so the closure reads the initial
+        # ``secret_field`` value ("x"); nothing secret is printed.
+        self.assertEqual(_run_py(CAP_FS_BRANCH_EXCLUSIVE), "x\n")
+
+    def test_monotone_overwrite_over_reports(self):
+        # Sound over-report: the channel joins and never clears, so reading a
+        # field re-stored to a public value after a secret store still flags
+        # though it prints the public value.
+        r = _analyze(CAP_FS_OVERWRITE)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(CAP_FS_OVERWRITE, "leak"))
+        self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+        self.assertEqual(_run_py(CAP_FS_OVERWRITE), "public-again\n")
+
+
 # ---- DISCLOSED residual (out of scope, Stage B): a sink INTERNAL to the
 # closure body (a side effect, not the result the caller sinks). Stage B's
 # capture re-read carries a captured value's later taint into the closure's
