@@ -1492,6 +1492,96 @@ class TestCrossFnFieldStoreFieldKeyed(unittest.TestCase):
                     self.assertEqual(_run_wasm(src), "s3cr3t\n")
 
 
+# ---- Commit 2: field-key the summary CONTENT channel. The channel a callee's
+# mutation effect writes into a caller-local is now keyed by ``(root,
+# field-path)`` and read FIELD-PRECISELY, so sinking a genuinely CLEAN SIBLING
+# of a cross-function-mutated struct produces NO warning (closing the R3
+# residual coarse warning that survived at the caller after Commit 1), while a
+# sink of the mutated path still warns. Covers both the FIELD-STORE effect
+# (Commit 1) and the CONTAINER-mutation effect (1.29.0). ----
+
+_BAG_ITEMS = "type Bag { items: List<String>, note: String }\n"
+_FILL_PUSH = ("fun fill(bag: Bag, secret: @secret String)\n"
+              "    bag.items.push(secret)\n")
+
+# CLEAN: callee pushes ``items``, caller sinks the public sibling ``note``.
+XCC_SIBLING = (TOK + _BAG_ITEMS + _FILL_PUSH +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [], note: \"public\" }\n"
+    "    fill(bag, secret)\n"
+    "    stdio.println(bag.note)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# CLEAN: callee mutates, caller sinks a CONSTANT (nothing from ``bag``).
+XCC_PROBE = (TOK + _BAG_ITEMS + _FILL_PUSH +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [], note: \"public\" }\n"
+    "    fill(bag, secret)\n"
+    "    stdio.println(\"constant only\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# FLAGGED: callee pushes ``items``, caller reads the mutated container path and
+# sinks it -- the content channel must still carry the taint on the read path.
+XCC_TAINTED_PATH = (TOK + _BAG_ITEMS + _FILL_PUSH +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [], note: \"public\" }\n"
+    "    fill(bag, secret)\n"
+    "    match bag.items.get(0)\n"
+    "        Some(x) -> stdio.println(x)\n"
+    "        None -> stdio.println(\"empty\")\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_XCC_CLEAN = {"container_push_sibling": XCC_SIBLING,
+              "constant_after_mutation": XCC_PROBE,
+              "field_store_sibling": XFS_SIBLING}
+
+
+class TestCrossFnContentFieldPrecise(unittest.TestCase):
+    """Commit 2: the summary content channel is field-keyed on ``(root,
+    field-path)`` and read field-precisely. Sinking a genuinely CLEAN SIBLING
+    of a cross-function-mutated struct now produces NO warning at ANY tier
+    (R3's residual coarse warning is closed, for both the field-store and the
+    container-mutation effect), while a sink of the mutated path still warns
+    (soundness: the precision gain never drops a leak)."""
+
+    def test_clean_sibling_no_warning_at_any_tier(self):
+        for name, src in _XCC_CLEAN.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertEqual(len(_flow_errors(rs)), 0,
+                                 [e.message for e in rs.errors])
+
+    def test_clean_sibling_prints_public_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src, out in (("container_push_sibling", XCC_SIBLING, "public\n"),
+                               ("constant_after_mutation", XCC_PROBE,
+                                "constant only\n"),
+                               ("field_store_sibling", XFS_SIBLING, "public\n")):
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), out)
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), out)
+
+    def test_mutated_path_sink_still_warns(self):
+        r = _analyze(XCC_TAINTED_PATH)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(XCC_TAINTED_PATH, "leak"))
+        self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+
+    def test_mutated_path_sink_leaks_both_backends(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(XCC_TAINTED_PATH), "s3cr3t\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(XCC_TAINTED_PATH), "s3cr3t\n")
+
+
 # ---- CLOSED (Stage B, capture-side lambda-flow): a container captured by a
 # CLOSURE defined BEFORE the push, read through the closure AFTER, and invoked
 # LOCALLY. At the invocation the closure's captured free bindings are re-read

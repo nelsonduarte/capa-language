@@ -835,13 +835,21 @@ class _SummaryBuilder:
         reaching: set = set()
         effects: dict = {}
         returns: set = set()
-        # The additive CONTENT channel: ``name -> set of source-param /
-        # INTERNAL_SECRET`` that a CALLEE wrote INTO the object bound to
-        # ``name`` (a container mutation / field store recorded as the
-        # callee's mutation effect and inherited here). It is joined into
-        # the ``_taint_of`` result on a READ of the name, so a read-back of
-        # a caller-local the callee mutated reflects the injected taint --
-        # WITHOUT feeding the alias / mutation-TARGET derivation, which
+        # The additive, FIELD-KEYED CONTENT channel: ``name -> {field-path
+        # -> set of source-param / INTERNAL_SECRET}`` that a CALLEE wrote
+        # INTO the object bound to ``name`` at that access path (a container
+        # mutation / field store recorded as the callee's field-keyed
+        # mutation effect and inherited here), plus the ``None`` key for the
+        # whole-value carrier (an aliased / unkeyable effect). It is joined
+        # into the ``_taint_of`` result on a READ, FIELD-PRECISELY: a WHOLE
+        # read of the name (a bare Ident) observes every field-path (the
+        # length-0 access-path query ``x.f^0 = x``), while a FIELD read
+        # (``bag.note``) observes only the taints AT OR BELOW its own path
+        # (plus the whole-value ``None`` carrier), so a public sibling of a
+        # mutated field stays clean and a read-back of the mutated path is
+        # still caught (see ``_content_at`` / ``_content_contribution``,
+        # mirroring the intra-procedural ``_container_taint_at``). The
+        # channel does NOT feed the alias / mutation-TARGET derivation, which
         # stays ``env``-only (the two channels are kept distinct on
         # purpose). Reset per body; only ever unioned into (never
         # overwritten).
@@ -988,7 +996,7 @@ class _SummaryBuilder:
         is unchanged (flat for ``if`` / ``while`` / ``for``, copied per
         ``match`` arm)."""
         saved = self._cur_content
-        self._cur_content = {k: set(v) for k, v in saved.items()}
+        self._cur_content = self._content_copy(saved)
         walk()
         post = self._cur_content
         self._cur_content = saved
@@ -999,10 +1007,88 @@ class _SummaryBuilder:
         into the enclosing content, so a read AFTER the construct reflects
         any branch's cross-function mutation (a fresh local mutated in one
         arm and read past the construct is caught). Deferred to after all
-        branches, so it never contaminates a sibling branch's read."""
+        branches, so it never contaminates a sibling branch's read. The
+        union is per ``(name, field-path)`` bucket (the channel is
+        field-keyed)."""
         for post in posts:
-            for name, srcs in post.items():
-                self._cur_content.setdefault(name, set()).update(srcs)
+            for name, bucket in post.items():
+                dst = self._cur_content.setdefault(name, {})
+                for path, srcs in bucket.items():
+                    dst.setdefault(path, set()).update(srcs)
+
+    @staticmethod
+    def _content_copy(m: dict) -> dict:
+        """A deep copy of the field-keyed content map ``{name -> {path ->
+        set}}`` down to fresh source sets, so a branch's isolated content
+        can grow without mutating the enclosing snapshot."""
+        return {
+            name: {path: set(srcs) for path, srcs in bucket.items()}
+            for name, bucket in m.items()
+        }
+
+    def _content_write(self, root: str, path, srcs: set) -> None:
+        """Add ``srcs`` to the content channel for ``root`` at access
+        ``path`` (a field-path tuple, or ``None`` for the whole-value
+        carrier). Joined, never overwritten, so it accumulates straight-line
+        and composes with the deferred per-branch merge."""
+        self._cur_content.setdefault(root, {}).setdefault(path, set()).update(
+            srcs,
+        )
+
+    def _content_at(self, root: str, path: tuple) -> set:
+        """The content-channel taint OBSERVED by reading ``root`` at
+        ``path``: the union of the sources recorded at ``path`` or any path
+        NESTED under it (so a WHOLE read at ``()`` observes every field's
+        taint -- the length-0 access-path query), plus the whole-value
+        ``None`` carrier which EVERY read observes. Mirrors the
+        intra-procedural ``_container_taint_at`` prefix scan, so a public
+        sibling of a mutated field (a disjoint path) matches nothing and
+        stays clean."""
+        bucket = self._cur_content.get(root)
+        if not bucket:
+            return set()
+        out: set = set()
+        n = len(path)
+        for kpath, srcs in bucket.items():
+            if kpath is None or kpath[:n] == path:
+                out |= srcs
+        return out
+
+    def _content_contribution(self, e: A.Expr) -> set:
+        """The content-channel taint a read of the field-access chain ``e``
+        observes, scanned at ``e``'s OWN access path (``_content_at``), or
+        the empty set when ``e`` is not an Ident-rooted chain (so its path
+        cannot be determined). Used by the FIELD-read taint so a clean
+        sibling of a cross-function-mutated field is not over-tainted."""
+        root = self._chain_root_name(e)
+        path = self._chain_field_path(e)
+        if root is None or path is None:
+            return set()
+        return self._content_at(root, tuple(path))
+
+    def _base_taint_of(self, e: A.Expr, env: dict, reaching: set) -> set:
+        """The data-flow taint of ``e`` EXCLUDING the content channel. The
+        content channel is folded in ONCE at the access path of the READ (by
+        ``_taint_of``), so an intermediate field-chain receiver does not
+        contribute the whole-root content to a field read of a clean
+        sibling. Differs from ``_taint_of`` only for an Ident / FieldAccess
+        base (it drops the content join); every other shape (a call, an
+        index, ...) has no content entry of its own, so it delegates to
+        ``_taint_of`` unchanged (preserving that shape's ``reaching`` side
+        effects)."""
+        if isinstance(e, A.Ident):
+            if (
+                e.name in self.secret_consts
+                and e.name not in self._shadowed_consts
+            ):
+                return {INTERNAL_SECRET}
+            return set(env.get(e.name, set()))
+        if isinstance(e, A.FieldAccess):
+            recv_src = self._base_taint_of(e.receiver, env, reaching)
+            if self._field_read_is_secret(e):
+                return recv_src | {INTERNAL_SECRET}
+            return recv_src
+        return self._taint_of(e, env, reaching)
 
     def _walk_stmt(self, stmt: A.Stmt, env: dict, reaching: set) -> None:
         if isinstance(stmt, A.LetStmt):
@@ -1317,12 +1403,12 @@ class _SummaryBuilder:
             # Join the ADDITIVE content channel: a callee that mutated this
             # local's interior (recorded cross-function in
             # ``_propagate_callee_effects``) raised its content label, and a
-            # read-back must reflect it. Additive only -- ``env`` alone
-            # remains the alias / mutation-target set consulted elsewhere.
-            return (
-                set(env.get(e.name, set()))
-                | self._cur_content.get(e.name, set())
-            )
+            # read-back must reflect it. A bare Ident is a WHOLE read, so it
+            # observes EVERY field-path recorded on the name (the length-0
+            # access-path query ``_content_at(name, ())``). Additive only --
+            # ``env`` alone remains the alias / mutation-target set consulted
+            # elsewhere.
+            return set(env.get(e.name, set())) | self._content_at(e.name, ())
         if isinstance(e, (
             A.IntLit, A.FloatLit, A.StringLit, A.CharLit,
             A.BoolLit, A.UnitLit,
@@ -1349,18 +1435,21 @@ class _SummaryBuilder:
                 | self._taint_of(e.index, env, reaching)
             )
         if isinstance(e, A.FieldAccess):
-            recv_src = self._taint_of(e.receiver, env, reaching)
-            # A field whose declared type is ``@secret`` (``type Emp {
-            # iban: @secret String }``) is an internal secret source when
-            # READ: the value carries the INTERNAL_SECRET sentinel so it
-            # reaches a sink / return cross-function, mirroring the
-            # intra-procedural declared-field-label rule. Precise when the
-            # receiver is a parameter whose struct type we resolved; a
-            # by-name over-approximation (any struct declares this field
-            # @secret) otherwise -- sound, never under-reports.
-            if self._field_read_is_secret(e):
-                return recv_src | {INTERNAL_SECRET}
-            return recv_src
+            # The BASE data-flow taint (the receiver walked for its
+            # ``reaching`` side effects, a declared-@secret field of ``type
+            # Emp { iban: @secret String }`` folded in via ``_base_taint_of``
+            # / ``_field_read_is_secret``) EXCLUDING the content channel,
+            # joined with the content channel scanned at THIS read's OWN
+            # access path. So a callee that mutated a DIFFERENT field of the
+            # receiver does not over-taint this clean sibling, while a read
+            # of the mutated path (or a WHOLE read of the receiver) still
+            # observes it. Sound, never under-reports (the declared-field
+            # rule is unchanged; only the field-insensitive content join is
+            # narrowed to the read's own path).
+            return (
+                self._base_taint_of(e, env, reaching)
+                | self._content_contribution(e)
+            )
         if isinstance(e, A.RangeExpr):
             return (
                 self._taint_of(e.start, env, reaching)
@@ -1497,7 +1586,7 @@ class _SummaryBuilder:
         # escape into the enclosing body's content map (whether the lambda
         # is ever invoked is unknown), mirroring the env copy above.
         saved_content = self._cur_content
-        self._cur_content = {k: set(v) for k, v in saved_content.items()}
+        self._cur_content = self._content_copy(saved_content)
         try:
             if isinstance(e.body, A.Block):
                 lambda_returns |= self._walk_value_block(
@@ -1844,10 +1933,10 @@ class _SummaryBuilder:
                 # ``_content_merge``), so a sibling read stays clean while a
                 # read AFTER the construct still reflects the push -- the
                 # exact separation the cross-function content channel already
-                # uses. ``env``'s alias role is left untouched.
-                self._cur_content.setdefault(
-                    e.receiver.name, set(),
-                ).update(injected)
+                # uses. ``env``'s alias role is left untouched. The receiver
+                # IS the container here (a bare Ident), so the content is
+                # recorded at path ``()`` -- observed by a WHOLE read of it.
+                self._content_write(e.receiver.name, (), injected)
             # The receiver may be a plain parameter (``xs.push(v)`` -> path
             # ``()``) or a field chain rooted at one (``self.items.push(v)``
             # -> path ``("items",)``); the effect is FIELD-KEYED
@@ -2122,10 +2211,15 @@ class _SummaryBuilder:
             # taint derives only from a built-in-immutable param the
             # precision fix drops), yet the callee still mutated its
             # interior. Gating this on the target set would reopen the
-            # false negative. Keyed by the chain ROOT name; JOINED (never
-            # overwritten) so it both accumulates straight-line and composes
-            # with the deferred per-branch merge (``_content_merge``).
-            self._cur_content.setdefault(root, set()).update(translated)
+            # false negative. FIELD-KEYED at the ``composed`` access path
+            # (the caller's prefix to ``arg`` + the callee's field path), so
+            # a read-back of a CLEAN SIBLING of the mutated field stays clean
+            # while the mutated path and a whole read still observe it; a
+            # ``None`` composed path (an aliased / unkeyable effect) takes the
+            # whole-value carrier that EVERY read observes. JOINED (never
+            # overwritten) so it accumulates straight-line and composes with
+            # the deferred per-branch merge (``_content_merge``).
+            self._content_write(root, composed, translated)
             # MUTATION-TARGET channel: the argument's root binding taint
             # set doubles as its alias / mutation-TARGET set; drop
             # provably-immutable parameters so inheriting a callee's write
