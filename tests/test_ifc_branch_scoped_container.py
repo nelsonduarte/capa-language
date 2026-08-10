@@ -2187,6 +2187,107 @@ class TestCaptureFieldStoreFieldPrecise(unittest.TestCase):
         self.assertEqual(_run_py(CAP_FS_OVERWRITE), "public-again\n")
 
 
+# ---- Regression: SEED then ESCAPE then a whole-value-early-return STORE. A
+# binding precisely seeded at one field, that then ESCAPES (passed to a callee
+# / bound to an alias), then takes an IN-PLACE field store into ANOTHER field
+# which -- because the binding is now escaped / aliased -- raises the collapsed
+# ``sym.label`` WITHOUT a precise seed. The field-precise capture channel would
+# miss that store, so the binding is marked whole-value-DIRTY and the re-read
+# re-consults ``sym.label``. Only the closure's read field decides the catch;
+# escaping WITHOUT a secret second store stays clean (no over-report). ----
+
+_BOX_AB = "type Box { a: String, b: String }\n"
+_BOX_AB_LIT = "    var box: Box = Box { a: \"pa\", b: \"pb\" }\n"
+
+# Escape via a call between the seed and the second store; the closure reads the
+# ESCAPED-stored field ``b`` -- a real leak (in-place store on the shared object).
+A2_ESCAPE_BETWEEN = (TOK + _BOX_AB +
+    "fun touch(box: Box)\n    return\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n" + _BOX_AB_LIT +
+    "    let f: Fun() -> String = fun() -> String => box.b\n"
+    "    box.a = secret\n"
+    "    touch(box)\n"
+    "    box.b = secret\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# Escape via an alias bind instead of a call.
+A2_ALIAS_ESCAPE = (TOK + _BOX_AB +
+    "fun leak(stdio: Stdio, secret: @secret String)\n" + _BOX_AB_LIT +
+    "    let f: Fun() -> String = fun() -> String => box.b\n"
+    "    box.a = secret\n"
+    "    let y: Box = box\n"
+    "    box.b = secret\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# Control: the closure reads the SEEDED field ``a`` (also secret) -- flags via
+# the branch-scoped seed, independent of the dirty mark.
+A2_CTRL_READA = (TOK + _BOX_AB +
+    "fun touch(box: Box)\n    return\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n" + _BOX_AB_LIT +
+    "    let f: Fun() -> String = fun() -> String => box.a\n"
+    "    box.a = secret\n"
+    "    touch(box)\n"
+    "    box.b = secret\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_A2_FLAGGED = {"escape_between_stores": A2_ESCAPE_BETWEEN,
+               "alias_between_stores": A2_ALIAS_ESCAPE,
+               "reads_seeded_field": A2_CTRL_READA}
+
+# Precision guard: seed ``a``, ESCAPE, but NO secret store into ``b``; the
+# closure reads ``b`` -- stays CLEAN (the binding is not dirtied by a public /
+# absent second store, and the field-precise channel has no ``b`` taint).
+A2_CLEAN_NO_SECOND_STORE = (TOK + _BOX_AB +
+    "fun touch(box: Box)\n    return\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n" + _BOX_AB_LIT +
+    "    let f: Fun() -> String = fun() -> String => box.b\n"
+    "    box.a = secret\n"
+    "    touch(box)\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestCaptureEscapedStoreReconsult(unittest.TestCase):
+    """A precisely-seeded binding that ESCAPES and then takes an in-place field
+    store through a whole-value early-return is marked whole-value-DIRTY, so the
+    field-precise capture re-read re-consults ``sym.label`` and the escaped
+    store is not silently laundered. Escaping without a secret second store
+    stays clean (no over-report), so the field the closure reads decides the
+    catch."""
+
+    def test_escaped_store_flags(self):
+        for name, src in _A2_FLAGGED.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_escaped_store_leaks_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _A2_FLAGGED.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+    def test_escape_without_second_store_is_clean(self):
+        r = _analyze(A2_CLEAN_NO_SECOND_STORE)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(A2_CLEAN_NO_SECOND_STORE, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        self.assertEqual(_run_py(A2_CLEAN_NO_SECOND_STORE), "pb\n")
+
+
 # ---- DISCLOSED residual (out of scope, Stage B): a sink INTERNAL to the
 # closure body (a side effect, not the result the caller sinks). Stage B's
 # capture re-read carries a captured value's later taint into the closure's

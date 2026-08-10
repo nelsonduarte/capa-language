@@ -1461,15 +1461,20 @@ class _IfcMixin:
 
         REFTYPE. The whole-value ``sym.label`` is re-read only for a
         REFERENCE-typed capture, and only when the binding was NOT precisely
-        container-seeded (``_container_seeded``): then any secrecy on it is a
-        whole reassign / alias / annotation the field-precise channel cannot
-        see, so re-reading it keeps the disclosed whole-reassign over-report
-        and the aliasing catch. When the binding WAS precisely seeded, the
-        branch-scoped field-precise channel governs and the collapsed
-        whole-value label is deliberately NOT re-read (that is what removes the
-        R2 sibling over-report while staying branch-sound). ``sym.label`` is
-        always SKIPPED for a VALUE-typed capture -- a built-in immutable
-        primitive (String / Int / Float / Bool / Char), told apart by
+        container-seeded (``_container_seeded``) OR is whole-value-DIRTY
+        (``_container_whole_dirty``). Not seeded: its secrecy is a whole
+        reassign / alias / annotation the field-precise channel cannot see, so
+        re-reading it keeps the disclosed whole-reassign over-report and the
+        aliasing catch. Dirty: a precisely-seeded binding that ALSO took an
+        IN-PLACE field store through a whole-value early-return -- an escaped /
+        aliased / unresolvable-path store raising ``sym.label`` WITHOUT a
+        precise seed -- which the field-precise channel would miss, so its
+        whole-value label must be re-consulted. When the binding was precisely
+        seeded AND is not dirty, the branch-scoped field-precise channel
+        governs and the collapsed whole-value label is deliberately NOT re-read
+        (that removes the R2 sibling over-report while staying branch-sound).
+        ``sym.label`` is always SKIPPED for a VALUE-typed capture -- a built-in
+        immutable primitive (String / Int / Float / Bool / Char), told apart by
         ``_capture_is_value_typed`` -- because a primitive is captured BY VALUE,
         so a later REASSIGNMENT is not observed (``l_a_scalar_reassign``).
 
@@ -1500,6 +1505,7 @@ class _IfcMixin:
         The lambda's own parameters / inner binds are excluded (they are not
         captures), mirroring ``_lambda_capture_label``."""
         seeded = self._container_seeded()
+        dirty = self._container_whole_dirty()
         label = L.PUBLIC
         for sym, paths, whole in self._capture_read_paths(lam).values():
             value_typed = self._capture_is_value_typed(sym)
@@ -1528,16 +1534,22 @@ class _IfcMixin:
                 ct = self._capture_container_taint(sym, paths)
                 if ct:
                     label = L.join(label, ct)
-                # A reference type's whole-value ``sym.label`` is re-read ONLY
-                # when the binding was NOT precisely container-seeded: then any
-                # secrecy on it is a whole reassign / alias / annotation (a
-                # whole-value taint the field-precise channel cannot see), and
-                # re-reading it keeps the disclosed whole-reassign over-report
-                # and any aliasing catch. When it WAS precisely seeded, the
-                # branch-scoped field-precise channel above governs (so a
-                # branch-exclusive store stays branch-sound), and the collapsed
-                # whole-value label is deliberately NOT re-read.
-                if not value_typed and id(sym) not in seeded:
+                # A reference type's whole-value ``sym.label`` is re-read when
+                # the binding is NOT precisely container-seeded (its secrecy is
+                # a whole reassign / alias / annotation the field-precise
+                # channel cannot see -- keeping the disclosed whole-reassign
+                # over-report and the aliasing catch) OR when it is
+                # whole-value-DIRTY (a precisely-seeded binding that ALSO took
+                # an in-place field store through a whole-value early-return:
+                # an escaped / aliased / unresolvable-path store that raised
+                # sym.label without a precise seed, so the field-precise
+                # channel would miss it). When it was precisely seeded AND is
+                # not dirty, the branch-scoped field-precise channel governs
+                # (so a branch-exclusive store stays branch-sound), and the
+                # collapsed whole-value label is deliberately NOT re-read.
+                if not value_typed and (
+                    id(sym) not in seeded or id(sym) in dirty
+                ):
                     label = L.join(
                         label,
                         L.normalize(getattr(sym, "label", None) or L.PUBLIC),
@@ -2034,6 +2046,26 @@ class _IfcMixin:
             seeded = set()
             self._container_seeded_syms = seeded
         return seeded
+
+    def _container_whole_dirty(self) -> set:
+        """The flat set of bindings whose ``sym.label`` was raised to secret
+        by an IN-PLACE field store that took a whole-value early-return
+        (alias group / escaped / unresolvable path), so was NOT precisely
+        seeded. The capture re-read re-consults ``sym.label`` for these even
+        if they were precisely seeded elsewhere. Reset per function."""
+        dirty = getattr(self, "_container_whole_dirty_syms", None)
+        if dirty is None:
+            dirty = set()
+            self._container_whole_dirty_syms = dirty
+        return dirty
+
+    def _mark_whole_value_dirty(self, sym, incoming) -> None:
+        """Flag ``sym`` whole-value-dirty when an in-place field store raising
+        its collapsed label took a whole-value early-return without a precise
+        seed. SECRET-only: a public early-returned store leaves the binding's
+        field-precise channel authoritative, so it does not dirty it."""
+        if sym is not None and L.normalize(incoming) == L.SECRET:
+            self._container_whole_dirty().add(id(sym))
 
     def _seed_container_taint(self, sym, path: tuple, incoming) -> None:
         """Record a field-KEYED container-mutation taint on ``sym`` at
@@ -2611,6 +2643,11 @@ class _IfcMixin:
             for member in group:
                 member.label = L.join(getattr(member, "label", None), incoming)
                 self._escaped_struct_syms.add(id(member))
+                # This in-place store raises the member's whole-value label
+                # WITHOUT a precise field seed (aliasing is not field-keyable),
+                # so the field-precise capture re-read cannot see it: mark the
+                # member whole-value-dirty so the re-read re-consults sym.label.
+                self._mark_whole_value_dirty(member, incoming)
             return
         # Always keep the collapsed label monotonically correct: a store
         # of a secret into any field of the binding makes the whole value
@@ -2619,10 +2656,12 @@ class _IfcMixin:
         if getattr(root, "field_labels", None) is None or \
                 id(root) in self._escaped_struct_syms:
             root.label = L.join(getattr(root, "label", None), incoming)
+            self._mark_whole_value_dirty(root, incoming)
             return
         path = self._field_path_from_root(target)
         if not path:
             root.label = L.join(getattr(root, "label", None), incoming)
+            self._mark_whole_value_dirty(root, incoming)
             return
         node = root.field_labels
         for name in path[:-1]:
@@ -2631,6 +2670,7 @@ class _IfcMixin:
                 # The store reaches into something not tracked as a
                 # struct sub-map; fall back to raising the whole value.
                 root.label = L.join(getattr(root, "label", None), incoming)
+                self._mark_whole_value_dirty(root, incoming)
                 return
             node = nxt
         leaf = path[-1]

@@ -198,6 +198,16 @@ class _ItemsMixin:
         # restored per function like the channel itself.
         prev_container_seeded = getattr(self, "_container_seeded_syms", None)
         self._container_seeded_syms = set()
+        # Flat set of bindings whose collapsed ``sym.label`` was raised to
+        # secret by an IN-PLACE field store that took a whole-value
+        # early-return (alias group / escaped / unresolvable path) and so was
+        # NOT precisely container-seeded. The capture re-read must re-consult
+        # ``sym.label`` for such a binding even if it was ALSO precisely
+        # seeded elsewhere, because the field-precise channel does not see the
+        # early-returned store (see ``_fresh_capture_label``). Saved / restored
+        # per function like the seeded set.
+        prev_container_dirty = getattr(self, "_container_whole_dirty_syms", None)
+        self._container_whole_dirty_syms = set()
 
         # Capability parameters: collected so the analyzer can
         # warn at the end of the body if any are declared but
@@ -451,6 +461,7 @@ class _ItemsMixin:
         self._pc_label = prev_pc_label
         self._container_taint = prev_container_taint
         self._container_seeded_syms = prev_container_seeded
+        self._container_whole_dirty_syms = prev_container_dirty
         self._pop_scope()
         self._pop_type_params()
 
