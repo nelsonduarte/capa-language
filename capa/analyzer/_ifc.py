@@ -2049,21 +2049,42 @@ class _IfcMixin:
         ct[key] = L.join(ct.get(key), incoming)
         self._container_seeded().add(id(sym))
 
+    def _seed_container_leaves(self, sym, base_path: tuple, node) -> None:
+        """Seed the container channel at the SECRET LEAVES of ``node`` (a
+        per-field label map or a leaf label) under ``base_path``. A whole-
+        struct field store (``o.inner = Inner { x: secret }``) seeds the exact
+        leaf ``(o, ("inner", "x"))`` rather than the collapsed interior node,
+        so a public sub-leaf of the stored struct is NOT over-tainted by the
+        prefix-compatible ancestor direction of ``_container_taint_at`` while
+        the secret leaf is still observed by a read at, above, or below it."""
+        if isinstance(node, dict):
+            for name, child in node.items():
+                self._seed_container_leaves(sym, base_path + (name,), child)
+        else:
+            self._seed_container_taint(sym, base_path, node)
+
     def _container_taint_at(self, sym, path: tuple):
         """Join of every branch-scoped container-mutation taint recorded on
-        ``sym`` at ``path`` or a longer path nested under it, or ``None``.
-        Reading a value observes every tainted container AT or BELOW its
+        ``sym`` at a PREFIX-COMPATIBLE path (one path is a prefix of the
+        other), or ``None``. Reading a value observes a taint AT or BELOW its
         path (reading ``bag.items`` observes a push into ``bag.items``;
-        reading the sub-struct ``bag.a`` observes a push into ``bag.a.b``),
-        while a disjoint sibling path (``bag.other``) matches nothing and
-        stays public."""
+        reading the sub-struct ``bag.a`` observes a push into ``bag.a.b``)
+        AND a taint at an ANCESTOR of its path (reading ``o.inner.x`` observes
+        a whole-value store into ``o.inner`` -- the cross-function
+        field-store effect keyed at the interior node), while a DISJOINT
+        sibling path (``bag.other``) matches nothing and stays public.
+        A field store seeds at LEAF granularity (``_seed_container_leaves``),
+        so a whole-struct store's public sub-leaf is NOT over-tainted by the
+        ancestor direction; a cross-function effect seeds at its (coarser)
+        interior path, a sound over-approximation of the callee's unknown
+        sub-structure."""
         ct = self._container_taint_map()
         if not ct:
             return None
         root = id(sym)
         out = None
         for (kid, kpath), lbl in ct.items():
-            if kid == root and kpath[:len(path)] == path:
+            if kid == root and _prefix_compatible(kpath, path):
                 out = L.join(out, lbl)
         return out
 
@@ -2626,18 +2647,24 @@ class _IfcMixin:
         root.label = L.join(getattr(root, "label", None),
                             self._collapse_field_map(root.field_labels))
         # Also seed the branch-scoped ``(root, field-path)`` container channel
-        # at the STORED path (this precise, non-aliased, non-escaped,
-        # resolvable-path store only), mirroring a container push. It is
-        # REDUNDANT for same-body reads -- the per-field map above already
-        # governs them field-precisely -- but the per-field map is FLAT while
-        # the container channel is BRANCH-SCOPED (``_container_isolate`` /
-        # ``_container_merge``), so this is what gives the field-precise
-        # capture re-read (``_fresh_capture_label``) and the cross-function
-        # apply a branch-isolated, access-path source: a closure re-reading a
-        # CLEAN SIBLING of a field stored after its definition is no longer
-        # over-tainted, while a read of the stored path stays caught. Monotone
-        # and SECRET-only (``_seed_container_taint``).
-        self._seed_container_taint(root, tuple(path), incoming)
+        # for this precise, non-aliased, non-escaped, resolvable-path store,
+        # mirroring a container push. It is REDUNDANT for same-body reads --
+        # the per-field map above already governs them field-precisely -- but
+        # the per-field map is FLAT while the container channel is
+        # BRANCH-SCOPED (``_container_isolate`` / ``_container_merge``), so
+        # this is what gives the field-precise capture re-read
+        # (``_fresh_capture_label``) and the cross-function apply a
+        # branch-isolated, access-path source: a closure re-reading a CLEAN
+        # SIBLING of a field stored after its definition is no longer
+        # over-tainted, while a read of the stored path stays caught. Seeded at
+        # LEAF granularity for a whole-struct store (``_seed_container_leaves``
+        # walks the stored sub-map), so a public sub-leaf is not over-tainted
+        # by the prefix-compatible ancestor scan; a scalar store seeds its own
+        # leaf. Monotone and SECRET-only.
+        if isinstance(sub, dict):
+            self._seed_container_leaves(root, tuple(path), sub)
+        else:
+            self._seed_container_taint(root, tuple(path), incoming)
 
     # ---- sink enforcement (roadmap S2.4) -------------------------
 

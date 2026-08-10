@@ -187,7 +187,7 @@ import dataclasses
 from .. import capa_ast as A
 from ._ifc import (
     _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
-    _pattern_bound_names,
+    _pattern_bound_names, _prefix_compatible,
 )
 
 
@@ -844,11 +844,14 @@ class _SummaryBuilder:
         # into the ``_taint_of`` result on a READ, FIELD-PRECISELY: a WHOLE
         # read of the name (a bare Ident) observes every field-path (the
         # length-0 access-path query ``x.f^0 = x``), while a FIELD read
-        # (``bag.note``) observes only the taints AT OR BELOW its own path
-        # (plus the whole-value ``None`` carrier), so a public sibling of a
-        # mutated field stays clean and a read-back of the mutated path is
-        # still caught (see ``_content_at`` / ``_content_contribution``,
-        # mirroring the intra-procedural ``_container_taint_at``). The
+        # (``bag.note``) observes the taints on any PREFIX-COMPATIBLE path
+        # (its own, an ancestor whose secret sub-struct it reads into, or a
+        # descendant nested under it) plus the whole-value ``None`` carrier,
+        # so a read-back of the mutated path (and a store at an interior
+        # ancestor of it) is caught while a DISJOINT public sibling of a
+        # mutated field stays clean (see ``_content_at`` /
+        # ``_content_contribution``, the same prefix-compatible relation the
+        # sink summary and the capture side use). The
         # channel does NOT feed the alias / mutation-TARGET derivation, which
         # stays ``env``-only (the two channels are kept distinct on
         # purpose). Reset per body; only ever unioned into (never
@@ -1037,20 +1040,24 @@ class _SummaryBuilder:
 
     def _content_at(self, root: str, path: tuple) -> set:
         """The content-channel taint OBSERVED by reading ``root`` at
-        ``path``: the union of the sources recorded at ``path`` or any path
-        NESTED under it (so a WHOLE read at ``()`` observes every field's
-        taint -- the length-0 access-path query), plus the whole-value
-        ``None`` carrier which EVERY read observes. Mirrors the
-        intra-procedural ``_container_taint_at`` prefix scan, so a public
-        sibling of a mutated field (a disjoint path) matches nothing and
-        stays clean."""
+        ``path``: the union of the sources recorded at any PREFIX-COMPATIBLE
+        path (``_prefix_compatible`` -- one path is a prefix of the other),
+        plus the whole-value ``None`` carrier which EVERY read observes. Two
+        directions matter and both are sound: a WHOLE / sub-struct read at a
+        SHORTER path observes a store NESTED under it (a read at ``()``
+        observes every field -- the length-0 query), and a read at a LONGER
+        path observes a store at an ANCESTOR (a callee that stores a whole
+        secret sub-struct at ``o.inner`` is observed by a read of
+        ``o.inner.x``). A DISJOINT sibling (``("note",)`` vs
+        ``("secret_field",)``) is prefix-INcompatible and stays clean, so
+        field precision is kept. Mirrors the sink-summary / capture-side
+        prefix-compatible relation."""
         bucket = self._cur_content.get(root)
         if not bucket:
             return set()
         out: set = set()
-        n = len(path)
         for kpath, srcs in bucket.items():
-            if kpath is None or kpath[:n] == path:
+            if kpath is None or _prefix_compatible(kpath, path):
                 out |= srcs
         return out
 

@@ -1582,6 +1582,100 @@ class TestCrossFnContentFieldPrecise(unittest.TestCase):
             self.assertEqual(_run_wasm(XCC_TAINTED_PATH), "s3cr3t\n")
 
 
+# ---- Regression: ANCESTOR-store / DESCENDANT-read. A store of a whole secret
+# sub-struct at an INTERIOR node (``o.inner = Inner { x: secret }``) must be
+# observed by a read of a field NESTED under it (``o.inner.x``). The content
+# channel and the intra container channel scan PREFIX-COMPATIBLE paths (either
+# is a prefix of the other), not at-or-below only, so the ancestor store and
+# the descendant read meet. A whole-struct store is seeded at LEAF granularity
+# so a PUBLIC sub-leaf of the stored struct is not over-tainted. ----
+
+_INNER = "type Inner { x: String }\ntype Outer { inner: Inner, note: String }\n"
+_FILL_ANC = ("fun fill(o: Outer, secret: @secret String)\n"
+             "    o.inner = Inner { x: secret }\n")
+_OUTER_LIT = "    var o: Outer = Outer { inner: Inner { x: \"pub\" }, note: \"n\" }\n"
+
+# Cross-function: callee stores at the interior ``o.inner``, caller reads the
+# descendant ``o.inner.x`` into a sink.
+FN_ANCESTOR = (TOK + _INNER + _FILL_ANC +
+    "fun leak(stdio: Stdio, secret: @secret String)\n" + _OUTER_LIT +
+    "    fill(o, secret)\n"
+    "    stdio.println(o.inner.x)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# Cross-function, re-store the descendant into a fresh struct literal then sink
+# it (the descendant is laundered through a struct field).
+FN_RESTORE_DESC = (TOK + _INNER + "type Sink2 { v: String }\n" + _FILL_ANC +
+    "fun leak(stdio: Stdio, secret: @secret String)\n" + _OUTER_LIT +
+    "    fill(o, secret)\n"
+    "    var s2: Sink2 = Sink2 { v: o.inner.x }\n"
+    "    stdio.println(s2.v)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# Intra: the ancestor store and the descendant read in the same body. Caught by
+# the per-field map (which masks the intra container channel's own scan), so
+# this pins that the intra path stays caught alongside the container change.
+INTRA_ANCESTOR = (TOK + _INNER +
+    "fun leak(stdio: Stdio, secret: @secret String)\n" + _OUTER_LIT +
+    "    o.inner = Inner { x: secret }\n"
+    "    stdio.println(o.inner.x)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_ANC_FLAGGED = {"cross_fn_descendant_read": FN_ANCESTOR,
+                "cross_fn_restore_descendant": FN_RESTORE_DESC,
+                "intra_descendant_read": INTRA_ANCESTOR}
+
+# Precision guard: an intra whole-struct store with a PUBLIC sub-leaf. Reading
+# the public sub-leaf stays CLEAN (leaf-granular seeding), reading the secret
+# sub-leaf flags. Proves the ancestor scan does not over-taint a clean sub-leaf.
+_INNER2 = "type Inner { sx: String, clean: String }\ntype Outer { inner: Inner, note: String }\n"
+ANC_CLEAN_SUBLEAF = (TOK + _INNER2 +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var o: Outer = Outer { inner: Inner { sx: \"a\", clean: \"b\" }, note: \"n\" }\n"
+    "    o.inner = Inner { sx: secret, clean: \"public\" }\n"
+    "    stdio.println(o.inner.clean)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestAncestorStoreDescendantRead(unittest.TestCase):
+    """A store of a whole secret sub-struct at an interior node is observed by
+    a read of a field nested under it (prefix-compatible access-path scan),
+    cross-function and intra, at both tiers and both backends. A whole-struct
+    store is seeded at leaf granularity, so a public sub-leaf stays clean."""
+
+    def test_descendant_read_flags(self):
+        for name, src in _ANC_FLAGGED.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_descendant_read_leaks_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _ANC_FLAGGED.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+    def test_public_subleaf_stays_clean(self):
+        r = _analyze(ANC_CLEAN_SUBLEAF)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(ANC_CLEAN_SUBLEAF, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(ANC_CLEAN_SUBLEAF), "public\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(ANC_CLEAN_SUBLEAF), "public\n")
+
+
 # ---- CLOSED (Stage B, capture-side lambda-flow): a container captured by a
 # CLOSURE defined BEFORE the push, read through the closure AFTER, and invoked
 # LOCALLY. At the invocation the closure's captured free bindings are re-read
