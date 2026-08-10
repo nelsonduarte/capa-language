@@ -88,15 +88,15 @@ Out of scope:
 
 ## Supported versions
 
-Capa is on the `1.x` line (latest `1.29.0`) and is a one-person
+Capa is on the `1.x` line (latest `1.30.0`) and is a one-person
 project. Only the latest tagged release is supported for security fixes.
 I may publish patch releases for the latest minor when a fix is
 significant.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.29.0 (latest) | yes |
-| < 1.29  | no, please upgrade |
+| 1.30.0 (latest) | yes |
+| < 1.30  | no, please upgrade |
 
 ## Published advisories
 
@@ -332,6 +332,30 @@ The 2026-05-25 audit record lives at the repository root in
   aliases, a call- / index-rooted receiver, and two sound over-reports, each
   tested. Severity low-to-moderate. Affected `1.28.0` and earlier on the
   `1.x` line, shipped in `1.29.0` under the security exception.
+- [`docs/advisories/2026-08-10-ifc-lambda-flow-sensitivity.md`](docs/advisories/2026-08-10-ifc-lambda-flow-sensitivity.md):
+  the lambda-flow closure of the residual `1.29.0` disclosed as its most
+  serious open item. A `@secret` reaching a public sink through a
+  **locally-resolved** lambda (a `let`-bound lambda invoked in the same scope,
+  or an IIFE `(fun...)(x)`) leaked unflagged: the parameter-sink face
+  (`let g = fun(s) => sink_str(s, stdio); g(secret)`) and the
+  container-capture-**result**-sink face
+  (`let f = fun() => bag.reveal(); bag.items.push(secret); stdio.println(f())`).
+  The named-call boundary was already caught, so the gap was the lambda
+  indirection; on `1.29.0` these passed a clean `capa --check`, passed under
+  `@strict_ifc` with ZERO errors, and reached the sink at run time on both
+  backends. Each lambda literal now carries a sink-reaching summary applied at
+  a locally-resolved invocation, and each captured binding's CURRENT LIVE label
+  is re-read at the invocation, so both faces warn by default and are a hard
+  error under `@strict_ifc` on both backends. A coupled correctness fix rejects
+  a NAMED argument at a first-class / lambda call (a `Fun` value carries no
+  parameter names), closing a silent Python / Wasm divergence that could
+  reorder a `@secret` into an un-sunk slot. The closed claim is scoped to
+  locally-resolved lambdas for the parameter-sink and capture-result-sink
+  cases: a sink INTERNAL to a closure body, closures that ESCAPE local
+  resolution, a sink via a NESTED LOCAL lambda, and struct-field-store flows
+  through captures stay open documented residuals, alongside two sound
+  over-reports, each tested. Severity low-to-moderate. Affected `1.29.0` and
+  earlier on the `1.x` line, shipped in `1.30.0` under the security exception.
 
 ## Public disclosure
 

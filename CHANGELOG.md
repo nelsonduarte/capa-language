@@ -9,6 +9,106 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.30.0], 2026-08-10
+
+An information-flow soundness fix that follows on from `1.29.0`. It closes the
+lambda-flow residual `1.29.0` disclosed as its most serious open item: a
+`@secret` that reaches a public sink through a LOCALLY-RESOLVED lambda (a
+`let`-bound lambda invoked in the same scope, or an immediately-invoked
+`(fun...)(x)`) was not flagged, while the identical flow through a direct named
+call was. A lambda's flow / capture labels were stamped at its DEFINITION and
+the `Fun`-typed call branch did no information-flow work, so the lambda
+indirection laundered the secret past both the default warning and the
+`@strict_ifc` hard error.
+
+**Security.**
+
+- *A `@secret` passed to a locally-resolved lambda whose body sinks its
+  parameter leaked unflagged.* Shapes: a `let`-bound lambda
+  (`let g = fun(s) => sink_str(s, stdio); g(secret)`) and an IIFE
+  (`(fun(s) => sink_str(s, stdio))(secret)`), whose body sinks its parameter
+  directly or through a NAMED callee. The direct named call
+  `sink_str(secret, stdio)` was already caught, so the gap was the lambda
+  indirection, not the sink. On `1.29.0` and earlier these passed a clean
+  `capa --check` (no warning), passed under `@strict_ifc` with ZERO errors, and
+  the secret reached the public sink at runtime on BOTH backends -- a
+  strict-tier noninterference false negative. Each lambda literal now carries
+  its own sink-reaching summary (keyed by its id, the same summary machinery
+  the `1.29.0` fix built), resolved to the invoked lambda through the existing
+  binding resolution and applied at the call site exactly as the named-call
+  check does. The leak now warns by default and is a hard error under
+  `@strict_ifc`, on both backends. A lambda that does not sink its parameter, a
+  public argument, an in-body `declassify`, and a sibling lambda that does not
+  sink stay clean (no false positive, per-target exact).
+
+- *A container captured by a closure defined BEFORE a mutation, read through
+  the closure's RESULT after, leaked unflagged.* Example:
+  `let f = fun() => bag.reveal(); bag.items.push(secret); stdio.println(f())`.
+  The captured labels were stamped when the closure was defined (`bag` still
+  empty) and the later push was never re-reflected. At the invocation of a
+  locally-resolved lambda each captured binding's CURRENT LIVE label is now
+  re-read (the branch-scoped container-mutation taint, and for a
+  REFERENCE-typed capture the live whole-value label), so the later push is
+  visible through the earlier-captured binding: a warning by default, a hard
+  error under `@strict_ifc`, on both backends. A value-typed primitive is
+  captured by value, so its later reassignment is correctly ignored.
+  Branch-sound by construction (the live map is branch-scoped): a push in a
+  mutually-exclusive branch is not observed at the other branch's invocation.
+
+Each leak still runs at runtime (a warning does not block). Ships under the
+[`STABILITY.md`](STABILITY.md) security exception, and as a MINOR bump for the
+same reason the earlier information-flow soundness fixes did (`1.2.0`, `1.3.0`,
+`1.4.0`, `1.15.0`, `1.26.0`, `1.27.0`, `1.28.0`, `1.29.0`): it tightens the
+static analysis so a program that previously compiled clean while laundering a
+secret now warns by default and is a hard error under `@strict_ifc`. Only
+programs that were already unsound are affected. Covered by
+[`tests/test_ifc_branch_scoped_container.py`](tests/test_ifc_branch_scoped_container.py).
+Advisory:
+[`docs/advisories/2026-08-10-ifc-lambda-flow-sensitivity.md`](docs/advisories/2026-08-10-ifc-lambda-flow-sensitivity.md).
+
+**Also a coupled correctness fix (a silent backend divergence).** A NAMED
+argument at a first-class / lambda call site (`g(b: secret, a: "pub")`) was
+type-checked POSITIONALLY, but the Python backend honoured the names while the
+Wasm backend bound positionally -- a silent divergence that on `1.29.0` printed
+`s3cr3t` on `--run` and `pub` on `--run --wasm`, and could reorder a `@secret`
+into an un-sunk slot. A `Fun`-typed value carries no parameter names, so a
+named argument has no sound binding; such a call is now REJECTED at compile
+time (identical on both backends) with `named arguments are not supported at a
+call to the function value 'g'; a function value carries no parameter names, so
+pass the arguments positionally`. Positional first-class calls stay allowed;
+the named-function / method / variant path (which does carry parameter names)
+is untouched.
+
+**Honest scope.** This flags secret flows through LOCALLY-RESOLVED lambdas
+(`let`-bound / IIFE) for the PARAMETER-SINK and the
+container-capture-RESULT-SINK cases, and nothing more. Do NOT read this as
+"lambdas are closed": distinct residual mechanisms stay open, each an honest,
+tested false negative or a disclosed sound over-report:
+
+1. *A sink INTERNAL to the closure body* (a side effect, not the result): a
+   locally-resolved closure that captures a value mutated after definition and
+   SINKS it inside its own body leaks unflagged. The container-mutation form is
+   a tracked next slice; the struct field-store form needs a field-store
+   access-path channel Capa does not yet have.
+2. *Closures that ESCAPE local resolution*: a reassigned `var`, an alias
+   `let g2 = g`, a call-result binding, a closure passed to a higher-order
+   callee then invoked, returned then invoked, stored in a struct / list then
+   invoked, recursive, or conditionally selected -- each needs a higher-order
+   control-flow / points-to analysis Capa does not have.
+3. *A sink reached only through a NESTED LOCAL lambda* invoked inside the body:
+   the summary resolves a body's calls to NAMED callees only, so "sinks its
+   parameter" means directly or via a NAMED callee.
+4. *Two sound over-reports (over-report, never leak)*: a captured STRUCT
+   whole-reassigned to a secret after definition (a reference type, so a whole
+   reassign cannot be told from an in-place field store -- a safe strict-tier
+   over-rejection), and an in-body `declassify` inside a captured closure (the
+   whole-value re-read is declassify-blind -- declassify at the CALL SITE to
+   silence).
+
+The whole-struct-read closure and its residuals from `1.29.0`, the loop-body
+over-approximation, and the assignment sibling-branch false positive disclosed
+with `1.27.0` stay open and are documented there.
+
 ## [1.29.0], 2026-08-10
 
 An information-flow soundness fix that follows on from `1.28.0`. It closes
@@ -9890,7 +9990,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.29.0...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.30.0...HEAD
+[1.30.0]: https://github.com/nelsonduarte/capa-language/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/nelsonduarte/capa-language/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/nelsonduarte/capa-language/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/nelsonduarte/capa-language/compare/v1.26.0...v1.27.0

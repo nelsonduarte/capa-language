@@ -19,6 +19,51 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.30.0: lambda-flow IFC false negatives closed (2026-08-10)
+
+- **A `@secret` reaching a public sink through a LOCALLY-RESOLVED lambda leaked
+  unflagged (security exception, MINOR).** This closes the lambda-flow residual
+  `1.29.0` disclosed as its most serious open item. Two faces, both on `1.29.0`
+  and earlier passing a clean `capa --check`, passing under `@strict_ifc` with
+  ZERO errors, and reaching the sink at run time on BOTH backends. (1) The
+  PARAMETER-SINK face: a bare `@secret` passed to a `let`-bound lambda
+  (`let g = fun(s) => sink_str(s, stdio); g(secret)`) or an IIFE
+  (`(fun(s) => sink_str(s, stdio))(secret)`) whose body sinks its parameter,
+  directly or via a NAMED callee. The direct named call `sink_str(secret,
+  stdio)` was already caught, so the gap was the lambda indirection. Each lambda
+  literal now carries its own sink-reaching summary (keyed by its id, the same
+  summary machinery the `1.29.0` fix built), resolved to the invoked lambda
+  through the existing binding resolution and applied at the call site as the
+  named-call check does. (2) The container-capture-RESULT-SINK face: a container
+  captured by a closure defined BEFORE a push and read through the closure's
+  RESULT after (`let f = fun() => bag.reveal(); bag.items.push(secret);
+  stdio.println(f())`); the captured labels were stamped at the lambda's
+  definition and the push never re-reflected. At the invocation of a
+  locally-resolved lambda each captured binding's CURRENT LIVE label is now
+  re-read (the branch-scoped container taint, and for a REFERENCE-typed capture
+  the live whole-value label; a value-typed primitive is captured by value and
+  its later reassignment correctly ignored). Both faces now warn by default and
+  are a hard error under `@strict_ifc`, on both backends; branch-sound by
+  construction. As a coupled correctness fix (not a new IFC flag), a NAMED
+  argument at a first-class / lambda call is now REJECTED at compile time (a
+  `Fun` value carries no parameter names), closing a silent Python / Wasm
+  divergence that on `1.29.0` printed `s3cr3t` on `--run` and `pub` on
+  `--run --wasm` and could reorder a `@secret` into an un-sunk slot. Distinct
+  residuals stay open, each tested: a sink INTERNAL to the closure body (a
+  future field-store / access-path channel slice), closures that ESCAPE local
+  resolution (reassigned `var`, alias, call-result binding, passed to a
+  higher-order callee, returned / stored / recursive / conditionally selected --
+  needing higher-order CFA / points-to Capa lacks), a sink via a NESTED LOCAL
+  lambda (the summary resolves NAMED callees only), and two sound over-reports
+  (a captured struct whole-reassigned to a secret, and an in-body `declassify`
+  in a captured closure -- declassify at the call site to silence). Fix commits
+  `d8a31c5` (Stage A, sink-side), `5189908` (named-arg rejection +
+  nested-local-lambda disclosure), `099e2bc` (Stage B, capture-side result
+  sink), `ff65822` (declassify-blind over-report disclosure), and `38dff85`
+  (REFTYPE the capture re-read + honest wording); covered by
+  `tests/test_ifc_branch_scoped_container.py`. Advisory:
+  `docs/advisories/2026-08-10-ifc-lambda-flow-sensitivity.md`.
+
 ## v1.29.0: whole-struct-read container-mutation IFC false negative closed (2026-08-10)
 
 - **A `@secret` pushed INLINE into a container field of a local struct, then
