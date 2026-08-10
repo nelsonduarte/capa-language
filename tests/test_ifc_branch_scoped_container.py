@@ -1371,6 +1371,127 @@ class TestCrossFnSinkFieldQualified(unittest.TestCase):
                     self.assertEqual(_run_wasm(src), "s3cr3t\n")
 
 
+# ---- Commit 1: cross-function FIELD-STORE field-keying. A callee that stores
+# into a struct field (``bag.secret_field = secret``) records a FIELD-KEYED
+# ``(param, field-path)`` effect exactly like a container mutation, routed by
+# the caller onto the same ``(root, field-path)`` branch-scoped container
+# channel. So a caller reading a CLEAN SIBLING field after the call is no
+# longer flagged as an ERROR under strict (was the R3 whole-struct-read
+# over-report), while the leak-catching cases are preserved: a read of the
+# STORED path, a WHOLE / getter read, and a pass-whole to a callee sinking the
+# stored path all stay flagged. An ALIASED field-store root (the callee stores
+# through ``var inner = bag``) is not parameter-relative, so it keeps the
+# WHOLE-VALUE carrier -- the cross-function whole-value leak never regresses. --
+
+_BAG_SF = "type Bag { secret_field: String, note: String }\n"
+_FILL = ("fun fill(bag: Bag, secret: @secret String)\n"
+         "    bag.secret_field = secret\n")
+
+# CLEAN SIBLING: the callee stores ``secret_field``, the caller reads the
+# public ``note`` -- no strict ERROR (prints "public").
+XFS_SIBLING = (TOK + _BAG_SF + _FILL +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { secret_field: \"x\", note: \"public\" }\n"
+    "    fill(bag, secret)\n"
+    "    stdio.println(bag.note)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# STORED-FIELD read: reading the very field the callee stored -- a real leak,
+# stays flagged (prints "s3cr3t").
+XFS_SAME_FIELD = (TOK + _BAG_SF + _FILL +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { secret_field: \"x\", note: \"public\" }\n"
+    "    fill(bag, secret)\n"
+    "    stdio.println(bag.secret_field)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# PASS-WHOLE to a callee that sinks the STORED path -- the read-side sink
+# summary is prefix-compatible, so it stays flagged (prints "s3cr3t").
+XFS_PASS_WHOLE = (TOK + _BAG_SF + _FILL +
+    "fun show(bag: Bag, stdio: Stdio)\n"
+    "    stdio.println(bag.secret_field)\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { secret_field: \"x\", note: \"public\" }\n"
+    "    fill(bag, secret)\n"
+    "    show(bag, stdio)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# WHOLE / getter read (``reveal`` reads ``self.secret_field``): the length-0
+# prefix scan over ``(root, *)`` observes the stored path, stays flagged.
+XFS_WHOLE_GETTER = (TOK + _BAG_SF +
+    "impl Bag\n"
+    "    fun reveal(self) -> String\n"
+    "        return self.secret_field\n" + _FILL +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { secret_field: \"x\", note: \"public\" }\n"
+    "    fill(bag, secret)\n"
+    "    stdio.println(bag.reveal())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# ALIASED field-store root: the callee stores through ``var inner = bag`` (a
+# reference alias), which is not parameter-relative, so the effect keeps the
+# WHOLE-VALUE carrier. The caller's read-back stays flagged (prints "s3cr3t").
+XFS_ALIAS = (TOK + _BAG_SF +
+    "fun fill(bag: Bag, secret: @secret String)\n"
+    "    var inner: Bag = bag\n"
+    "    inner.secret_field = secret\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { secret_field: \"x\", note: \"public\" }\n"
+    "    fill(bag, secret)\n"
+    "    stdio.println(bag.secret_field)\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_XFS_FLAGGED = {
+    "stored_field_read": XFS_SAME_FIELD,
+    "pass_whole_to_stored_sink": XFS_PASS_WHOLE,
+    "whole_getter_read": XFS_WHOLE_GETTER,
+    "aliased_store_root": XFS_ALIAS,
+}
+
+
+class TestCrossFnFieldStoreFieldKeyed(unittest.TestCase):
+    """Commit 1: a cross-function field store is field-keyed on the
+    ``(root, field-path)`` container channel, so a clean sibling read after
+    the call no longer raises a strict ERROR, while every leak-catching shape
+    stays flagged (the stored-field read, the pass-whole to a sink of the
+    stored path, the whole / getter read, and the aliased-root whole-value
+    fallback)."""
+
+    def test_clean_sibling_closes_strict_error(self):
+        # The R3 strict-tier ERROR is closed: reading the public sibling
+        # ``note`` after a callee stores ``secret_field`` is not an error.
+        # (The residual default-tier warning is closed by Commit 2; here we
+        # pin only the strict-error closure this commit is responsible for.)
+        rs = _analyze(_strict(XFS_SIBLING, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+
+    def test_clean_sibling_prints_public_both_backends(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(XFS_SIBLING), "public\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(XFS_SIBLING), "public\n")
+
+    def test_leak_shapes_stay_flagged(self):
+        for name, src in _XFS_FLAGGED.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_leak_shapes_leak_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _XFS_FLAGGED.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
 # ---- CLOSED (Stage B, capture-side lambda-flow): a container captured by a
 # CLOSURE defined BEFORE the push, read through the closure AFTER, and invoked
 # LOCALLY. At the invocation the closure's captured free bindings are re-read

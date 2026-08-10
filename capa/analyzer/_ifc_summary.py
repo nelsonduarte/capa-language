@@ -67,17 +67,20 @@ parameter-relative; otherwise (an aliased / renamed root, a chain that
 cannot be keyed, or a path longer than ``_MAX_FIELD_PATH``) the
 whole-value carrier ``(j, None)`` is kept so the leak stays caught.
 
-The two kinds of write take the channel that MIRRORS the intra-procedural
-pass, because they are observed differently there and the soundness floor
-is that no cross-function leak regresses:
+Both kinds of write route onto the SAME field-keyed ``(root, field-path)``
+branch-scoped container channel the intra-procedural pass uses, because the
+soundness floor is that no cross-function leak regresses while a clean
+sibling is not over-tainted:
 
 * a FIELD STORE, ``obj.f = v`` (any store op, including the augmented
-  ``obj.f += v``), takes the WHOLE-VALUE carrier (``field_path`` is
-  ``None``). The intra field store (``_ifc_field_store``) raises the
-  struct's COLLAPSED whole-value label, so a later whole / getter read of
-  the struct observes it; keeping the whole-value carrier keeps that
-  coverage. De-collapsing a field store to a per-field caller taint is
-  Stage 2, out of scope here.
+  ``obj.f += v``), is FIELD-KEYED at the STORED field's path
+  (``bag.secret_field = v`` -> ``("secret_field",)``). A FIELD read of that
+  path, a WHOLE / getter / interpolation / pass-whole read (the length-0
+  prefix scan over ``(root, *)``), or passing the whole struct to a callee
+  that sinks the stored path all observe it, while a public SIBLING field
+  (``bag.note``) stays clean. The intra field store (``_ifc_field_store``)
+  still raises the struct's COLLAPSED whole-value label for the same-body
+  reads, so no same-body coverage is lost.
 * a CONTAINER MUTATION, ``xs.push(v)`` and every other entry of the
   ``_CONTAINER_MUTATORS`` registry in :mod:`._ifc` (its single source of
   truth), is FIELD-KEYED onto the branch-scoped ``(root, field-path)``
@@ -170,9 +173,11 @@ only a clean sibling is precise (clean). What genuinely REMAINS disclosed:
     reassigned to a secret after definition (a SAFE strict-tier over-rejection:
     REFTYPE keeps ``sym.label`` for a reference type and cannot tell a whole
     reassign from an in-place field store).
-* A cross-function FIELD STORE keeps the whole-value carrier, so its
-  sibling read is conservatively flagged (the disclosed field-store
-  sibling over-report); only CONTAINER mutations get sibling precision.
+* A cross-function FIELD STORE is field-keyed at the stored field's path,
+  so a clean sibling of it stays clean, at parity with a container
+  mutation; only an ALIASED / renamed / unkeyable field-store root keeps
+  the whole-value carrier (the sibling is then conservatively flagged), the
+  same points-to residual container mutations already have.
 """
 
 from __future__ import annotations
@@ -1023,18 +1028,26 @@ class _SummaryBuilder:
                 # if the written object is rooted at a parameter (or a
                 # binding that aliases one), record a mutation effect from
                 # each source flowing into ``value`` onto each target param
-                # the object aliases. NOT field-keyed (``field_keyable=
-                # False``): the whole-value carrier mirrors the intra field
-                # store, which raises the struct's collapsed whole-value
-                # label, so a later whole / getter read of the struct
-                # observes it (keeping that coverage). ANY store op is
-                # recorded: an augmented store (``box.f += v``) reads the
-                # old field and joins ``value`` into it, so it can only
-                # RAISE the field's label, never lower it -- recording the
-                # effect for every op is sound and closes the augmented-
-                # store cross-function leak.
+                # the object aliases. FIELD-KEYED (``field_keyable=True``),
+                # exactly like a container mutation: the effect is recorded
+                # against the ROOT parameter at the STORED field's path
+                # (``bag.secret_field = v`` -> ``("secret_field",)``), routed
+                # by the caller onto the SAME ``(root, field-path)``
+                # branch-scoped container channel. So a later read of a CLEAN
+                # SIBLING field (``bag.note``) stays clean, while a read of the
+                # stored path, a whole / getter read (the length-0 prefix
+                # scan), or passing the whole struct to a callee that sinks the
+                # stored path still flags. The keying is applied ONLY when the
+                # chain is rooted DIRECTLY at the param within ``_MAX_FIELD_PATH``
+                # (``_mutation_effect_key``); an aliased / renamed / over-long
+                # root keeps the whole-value carrier, so the cross-function
+                # whole-value leak never regresses. ANY store op is recorded: an
+                # augmented store (``box.f += v``) reads the old field and joins
+                # ``value`` into it, so it can only RAISE the field's label,
+                # never lower it -- recording the effect for every op is sound
+                # and closes the augmented-store cross-function leak.
                 self._record_mutation_effect(
-                    stmt.target, src, env, field_keyable=False,
+                    stmt.target, src, env, field_keyable=True,
                 )
         elif isinstance(stmt, A.IfStmt):
             # ``env`` (and each condition) is evaluated in the ORIGINAL
@@ -1159,22 +1172,21 @@ class _SummaryBuilder:
         ``INTERNAL_SECRET``) is recorded; transitive sources already
         collapsed into ``value_src`` by ``_taint_of``.
 
-        ``field_keyable`` follows the intra-procedural two-channel split:
-        a CONTAINER MUTATION (``True``) is field-keyed, so ``path`` is the
-        parameter-relative field path when the chain is rooted directly at
-        param ``j`` (else the whole-value carrier) and the caller taints
-        only that ``(root, field-path)`` on the branch-scoped container
-        channel. A public SIBLING field stays clean (a field read scans
-        only its own path), while a same-root WHOLE read-back is still
-        caught: ``_compute_label`` prefix-scans the ``(root, *)`` channel
-        for a whole / getter / interpolation / pass-whole read (the
-        length-0 access-path query). A FIELD STORE (``False``) is NOT
-        field-keyed: it takes the whole-value carrier (``path`` is
-        ``None``), because the intra field store raises the struct's
-        COLLAPSED whole-value label -- keeping the whole-value carrier
-        keeps that coverage. De-collapsing a field store to a per-field
-        caller taint (so its sibling gains the same precision) is a later
-        refinement, not needed for soundness."""
+        ``field_keyable`` is ``True`` for BOTH a container mutation and a
+        field store, so ``path`` is the parameter-relative field path when
+        the chain is rooted directly at param ``j`` (else the whole-value
+        carrier) and the caller taints only that ``(root, field-path)`` on
+        the branch-scoped container channel. A public SIBLING field stays
+        clean (a field read scans only its own path), while a same-root
+        WHOLE read-back is still caught: ``_compute_label`` prefix-scans the
+        ``(root, *)`` channel for a whole / getter / interpolation /
+        pass-whole read (the length-0 access-path query). The field store
+        keys at the STORED field's path (``bag.secret_field = v`` ->
+        ``("secret_field",)``); a container mutation keys at the container's
+        path (``bag.items.push(v)`` -> ``("items",)``). Both fall back to the
+        whole-value carrier (``path`` becomes ``None``) for an aliased /
+        renamed / unkeyable root or an over-long path, so a cross-function
+        whole-value leak never regresses (see ``_mutation_effect_key``)."""
         root = self._chain_root_name(target)
         if root is None:
             return
