@@ -106,11 +106,14 @@ each leaks at runtime and stays UNFLAGGED at both tiers on both backends):
       capture the live ``sym.label``), not the label cached at the lambda's
       DEFINITION (see ``TestClosureCaptureBeforePushClosed``). A closure defined
       AFTER the push was already caught. Branch-sound by construction (the live
-      map is branch-scoped). What STAYS disclosed on the capture side:
+      map is branch-scoped). Also CLOSED (the R1 fix):
       - a sink INTERNAL to the closure body (a side effect, not the result --
-        ``let f = fun() => stdio.println(bag.reveal()); ...; f()``), which needs
-        a future field-store / access-path channel slice, not this label
-        re-read (see ``TestCaptureInternalSinkResidualDisclosed``);
+        ``let f = fun() => stdio.println(bag.reveal()); ...; f()``) is now
+        flagged at the invocation. Each lambda carries a CAPTURE-side sink-path
+        summary and the invocation checks the LIVE label of each summarised
+        capture path, so a taint that arrived after the closure was defined is
+        caught (see ``TestCaptureInternalSinkResidualDisclosed``).
+      What STAYS disclosed on the capture side:
       - a closure that ESCAPES local resolution -- invoked inside a higher-order
         callee (``apply(f)``) or otherwise unresolvable (see
         ``TestHofInvokedClosureResidualDisclosed``);
@@ -2443,26 +2446,29 @@ _CAPTURE_INTERNAL_SINK_RESIDUAL = {
 
 
 class TestCaptureInternalSinkResidualDisclosed(unittest.TestCase):
-    """DISCLOSED residual (out of scope, Stage B): a captured value mutated
-    after the closure is defined and SUNK INSIDE the closure body (a side
-    effect, not the closure's result). Stage B's capture re-read carries the
-    later taint into the closure's RESULT label only, so a caller that sinks the
-    RESULT is caught but an INTERNAL sink is not. Stays UNFLAGGED at both tiers
-    though it leaks "s3cr3t" on both backends -- via a direct push read inside
-    the body, via a named callee inside the body, and via an in-place field
-    store printed inside the body. Closable by a future field-store /
-    access-path channel slice, not this label re-read. Leaks on main too."""
+    """CLOSED (the R1 fix): a captured value mutated AFTER the closure is
+    defined and SUNK INSIDE the closure body (a side effect, not the result)
+    is now flagged at the invocation -- a warning by default, a hard error
+    under @strict_ifc. Each lambda carries a CAPTURE-side sink-path summary
+    (which capture access paths reach a public sink in the body); at a
+    locally-resolved invocation the LIVE label of each summarised capture path
+    is checked, so a taint that arrived after the closure was defined is
+    caught. Covered here: a direct push read inside the body, a sink via a
+    NAMED callee inside the body, and an in-place field store printed inside
+    the body. The value still leaks "s3cr3t" on both backends (a warning does
+    not block execution); the three shapes only READ the captured struct
+    field, so both backends run. Leaks on main too."""
 
-    def test_unflagged_at_both_tiers(self):
+    def test_flagged_at_both_tiers(self):
         for name, src in _CAPTURE_INTERNAL_SINK_RESIDUAL.items():
             with self.subTest(shape=name):
                 r = _analyze(src)
                 self.assertTrue(r.ok, [e.message for e in r.errors])
-                self.assertEqual(len(_flow_warnings(r)), 0,
-                                 [w.message for w in r.warnings])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
                 rs = _analyze(_strict(src, "leak"))
-                self.assertEqual(len(_flow_errors(rs)), 0,
-                                 [e.message for e in rs.errors])
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
 
     def test_leaks_at_runtime_both_backends(self):
         skip = _wasm_unavailable()

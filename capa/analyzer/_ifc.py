@@ -1504,56 +1504,74 @@ class _IfcMixin:
 
         The lambda's own parameters / inner binds are excluded (they are not
         captures), mirroring ``_lambda_capture_label``."""
-        seeded = self._container_seeded()
-        dirty = self._container_whole_dirty()
         label = L.PUBLIC
         for sym, paths, whole in self._capture_read_paths(lam).values():
-            value_typed = self._capture_is_value_typed(sym)
-            if whole or not paths:
-                # WHOLE / undeterminable read of the capture (a bare use, a
-                # method receiver, an argument): observe EVERY container taint
-                # on the root (the length-0 query), plus -- for a reference
-                # type -- the flat whole-value ``sym.label``. A value-typed
-                # (built-in immutable primitive) capture is captured by value,
-                # so its later reassignment is not observed and ``sym.label``
-                # is skipped.
-                ct = self._container_taint_at(sym, ())
-                if ct:
-                    label = L.join(label, ct)
-                if not value_typed:
-                    label = L.join(
-                        label,
-                        L.normalize(getattr(sym, "label", None) or L.PUBLIC),
-                    )
-            else:
-                # FIELD-PRECISE read: the closure reads the capture only at
-                # determinable field paths, so observe only the branch-scoped
-                # container taints PREFIX-COMPATIBLE with a read path (an
-                # in-place field store / push at, above, or below a read path
-                # is seen; a disjoint CLEAN SIBLING is not -- the R2 fix).
-                ct = self._capture_container_taint(sym, paths)
-                if ct:
-                    label = L.join(label, ct)
-                # A reference type's whole-value ``sym.label`` is re-read when
-                # the binding is NOT precisely container-seeded (its secrecy is
-                # a whole reassign / alias / annotation the field-precise
-                # channel cannot see -- keeping the disclosed whole-reassign
-                # over-report and the aliasing catch) OR when it is
-                # whole-value-DIRTY (a precisely-seeded binding that ALSO took
-                # an in-place field store through a whole-value early-return:
-                # an escaped / aliased / unresolvable-path store that raised
-                # sym.label without a precise seed, so the field-precise
-                # channel would miss it). When it was precisely seeded AND is
-                # not dirty, the branch-scoped field-precise channel governs
-                # (so a branch-exclusive store stays branch-sound), and the
-                # collapsed whole-value label is deliberately NOT re-read.
-                if not value_typed and (
-                    id(sym) not in seeded or id(sym) in dirty
-                ):
-                    label = L.join(
-                        label,
-                        L.normalize(getattr(sym, "label", None) or L.PUBLIC),
-                    )
+            label = L.join(label, self._capture_live_label(sym, paths, whole))
+        return label
+
+    def _capture_live_label(self, sym, paths, whole) -> str:
+        """The CURRENT LIVE label a single capture ``sym`` contributes, given
+        how the closure body accesses it: ``whole`` (or an empty ``paths``
+        set) for a WHOLE / undeterminable read, else the determinable field
+        ``paths``. A pure function of ``sym`` + ``paths`` + ``whole`` and the
+        live channels (the branch-scoped container-taint map, the flat
+        container-seeded / whole-value-dirty marks, and ``sym.label``); it
+        consults NO cached def-time label. Factored out of
+        ``_fresh_capture_label`` so BOTH the RESULT re-read (which joins it
+        over the closure's READ paths) and the capture-INTERNAL-sink check
+        (``_apply_lambda_capture_sink_summary``, which passes the SUNK paths)
+        share one gate. See ``_fresh_capture_label`` for the full rationale of
+        each arm (WHOLE vs FIELD-PRECISE, the REFTYPE ``sym.label`` re-read,
+        the value-typed capture-by-value skip, branch-soundness by
+        construction)."""
+        value_typed = self._capture_is_value_typed(sym)
+        label = L.PUBLIC
+        if whole or not paths:
+            # WHOLE / undeterminable read of the capture (a bare use, a
+            # method receiver, an argument): observe EVERY container taint
+            # on the root (the length-0 query), plus -- for a reference
+            # type -- the flat whole-value ``sym.label``. A value-typed
+            # (built-in immutable primitive) capture is captured by value,
+            # so its later reassignment is not observed and ``sym.label``
+            # is skipped.
+            ct = self._container_taint_at(sym, ())
+            if ct:
+                label = L.join(label, ct)
+            if not value_typed:
+                label = L.join(
+                    label,
+                    L.normalize(getattr(sym, "label", None) or L.PUBLIC),
+                )
+        else:
+            # FIELD-PRECISE read: the closure reads the capture only at
+            # determinable field paths, so observe only the branch-scoped
+            # container taints PREFIX-COMPATIBLE with a read path (an
+            # in-place field store / push at, above, or below a read path
+            # is seen; a disjoint CLEAN SIBLING is not -- the R2 fix).
+            ct = self._capture_container_taint(sym, paths)
+            if ct:
+                label = L.join(label, ct)
+            # A reference type's whole-value ``sym.label`` is re-read when
+            # the binding is NOT precisely container-seeded (its secrecy is
+            # a whole reassign / alias / annotation the field-precise
+            # channel cannot see -- keeping the disclosed whole-reassign
+            # over-report and the aliasing catch) OR when it is
+            # whole-value-DIRTY (a precisely-seeded binding that ALSO took
+            # an in-place field store through a whole-value early-return:
+            # an escaped / aliased / unresolvable-path store that raised
+            # sym.label without a precise seed, so the field-precise
+            # channel would miss it). When it was precisely seeded AND is
+            # not dirty, the branch-scoped field-precise channel governs
+            # (so a branch-exclusive store stays branch-sound), and the
+            # collapsed whole-value label is deliberately NOT re-read.
+            if not value_typed and (
+                id(sym) not in self._container_seeded()
+                or id(sym) in self._container_whole_dirty()
+            ):
+                label = L.join(
+                    label,
+                    L.normalize(getattr(sym, "label", None) or L.PUBLIC),
+                )
         return label
 
     def _capture_container_taint(self, sym, paths):
@@ -3070,6 +3088,7 @@ class _IfcMixin:
         lam = self._binding_lambdas.get(id(sym))
         if isinstance(lam, A.LambdaExpr):
             self._apply_lambda_sink_summary(e, lam, repr(sym.name))
+            self._apply_lambda_capture_sink_summary(e, lam, repr(sym.name))
 
     def _check_ifc_iife_call(self, e: A.Call) -> None:
         """Sink-side lambda-flow check at an immediately-invoked lambda
@@ -3080,6 +3099,7 @@ class _IfcMixin:
         ``(fun...)(x)`` not caught, would be inconsistent)."""
         if isinstance(e.callee, A.LambdaExpr):
             self._apply_lambda_sink_summary(e, e.callee, "the closure")
+            self._apply_lambda_capture_sink_summary(e, e.callee, "the closure")
 
     def _apply_lambda_sink_summary(
         self, e: A.Call, lam: A.LambdaExpr, callee_label: str,
@@ -3121,6 +3141,51 @@ class _IfcMixin:
             self._emit_ifc_call_leak(
                 callee_label, pname, arg.pos,
                 sink_caps.get(pidx, frozenset()),
+            )
+
+    def _apply_lambda_capture_sink_summary(
+        self, e: A.Call, lam: A.LambdaExpr, callee_label: str,
+    ) -> None:
+        """Apply lambda ``lam``'s CAPTURE-sink summary at the invocation ``e``
+        (the R1 fix): a captured value whose LIVE label is @secret AND that
+        reaches a public sink INSIDE the body is flagged at the invocation
+        position. Orthogonal / additive to ``_apply_lambda_sink_summary`` (the
+        parameter check) -- neither removes the other's flag.
+
+        The lambda's captures are resolved by IDENTITY (``_capture_read_paths``,
+        the same resolution the RESULT re-read uses), then matched by NAME to
+        the per-lambda ``capture_sink_paths`` summary (a name resolves to one
+        binding inside a lambda body, so name -> sym is 1:1 here). For each
+        summarised capture the LIVE label at its SUNK paths is taken with the
+        SHARED ``_capture_live_label`` gate (whole vs field-precise, the
+        REFTYPE re-read, the value-typed capture-by-value skip -- so a
+        value-typed scalar reassigned after definition stays clean, and a
+        disjoint clean-sibling read is not over-tainted). Only a live @secret
+        capture is flagged; the label re-read is declassify-blind exactly like
+        the RESULT re-read, but the SUMMARY already dropped an in-body
+        declassify (no sunk path recorded), so a closure that declassifies the
+        value it sinks carries no summary entry and stays clean.
+
+        Warn by default, hard error under ``@strict_ifc`` -- the same two-tier
+        discipline as the parameter check, via ``_emit_ifc_call_leak``."""
+        summary = self._ifc_capture_sink_paths.get(("lambda", id(lam)))
+        if not summary:
+            return
+        by_name = {
+            sym.name: sym
+            for sym, _paths, _whole in self._capture_read_paths(lam).values()
+        }
+        for name, sink_paths in summary.items():
+            sym = by_name.get(name)
+            if sym is None:
+                continue
+            whole = () in sink_paths
+            field_paths = {p for p in sink_paths if p}
+            live = self._capture_live_label(sym, field_paths, whole)
+            if L.normalize(live) != L.SECRET:
+                continue
+            self._emit_ifc_call_leak(
+                callee_label, f"the captured {name!r}", e.pos, frozenset(),
             )
 
     def _check_ifc_method_call_summary(
