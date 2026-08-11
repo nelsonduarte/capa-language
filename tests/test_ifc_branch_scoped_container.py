@@ -2288,6 +2288,115 @@ class TestCaptureEscapedStoreReconsult(unittest.TestCase):
         self.assertEqual(_run_py(A2_CLEAN_NO_SECOND_STORE), "pb\n")
 
 
+# ---- Regression: CROSS-FUNCTION WHOLE-VALUE effect on an ALREADY-SEEDED
+# binding. A binding precisely seeded at one field (by an intra push / store or
+# a cross-function field-keyed effect), then whole-value-tainted by a callee
+# that mutates it through a LOCAL ALIAS handle (so the effect is the whole-value
+# carrier ``(param, None)``, applied by ``_taint_binding_whole_value``). That
+# raise is NOT backed by a precise seed at the affected field, so it routes
+# through the whole-value CHOKE-POINT (``_raise_whole_value_label``) and marks
+# the binding whole-value-DIRTY; a closure that reads the whole-value-tainted
+# field then re-consults ``sym.label`` instead of the field-precise channel
+# that cannot see it. ----
+
+_ACCT = "type Account { balance: String, audit_tag: String }\n"
+
+# Natural form: the callee tags ``audit_tag`` (field-keyed seed) then updates
+# ``balance`` through a local alias handle (whole-value effect); the closure
+# renders ``balance``.
+CWV_NATURAL = (TOK + _ACCT +
+    "fun apply_fee(acct: Account, secret: @secret String)\n"
+    "    acct.audit_tag = secret\n"
+    "    var handle: Account = acct\n"
+    "    handle.balance = secret\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var acct: Account = Account { balance: \"0.00\", audit_tag: \"t\" }\n"
+    "    let render: Fun() -> String = fun() -> String => acct.balance\n"
+    "    apply_fee(acct, secret)\n"
+    "    stdio.println(render())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_BOX_SP = "type Box { shown: String, poison: String }\n"
+
+# Minimal: an intra push-like poison (a direct field store seed on ``poison``)
+# then a cross-function whole-value effect (aliased callee store on ``shown``);
+# the closure reads ``shown``.
+CWV_MINIMAL = (TOK + _BOX_SP +
+    "fun fill(box: Box, secret: @secret String)\n"
+    "    var inner: Box = box\n"
+    "    inner.shown = secret\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var box: Box = Box { shown: \"public\", poison: \"p2\" }\n"
+    "    let f: Fun() -> String = fun() -> String => box.shown\n"
+    "    box.poison = secret\n"
+    "    fill(box, secret)\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# Cross-function field-keyed poison, then cross-function whole-value effect; the
+# closure reads the whole-value-tainted field.
+CWV_TWO_CALLEES = (TOK + "type Box { a: String, b: String }\n"
+    "fun tag(box: Box, secret: @secret String)\n"
+    "    box.a = secret\n"
+    "fun taint(box: Box, secret: @secret String)\n"
+    "    var h: Box = box\n"
+    "    h.b = secret\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var box: Box = Box { a: \"pa\", b: \"pb\" }\n"
+    "    let f: Fun() -> String = fun() -> String => box.b\n"
+    "    tag(box, secret)\n"
+    "    taint(box, secret)\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# Container push seed + cross-function whole-value effect; the closure reads the
+# whole-value-tainted field ``note`` (disjoint from the pushed ``items``).
+CWV_PUSH_SEED = (TOK + "type Bag { items: List<String>, note: String }\n"
+    "fun fill(bag: Bag, secret: @secret String)\n"
+    "    var inner: Bag = bag\n"
+    "    inner.note = secret\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { items: [], note: \"pub\" }\n"
+    "    let f: Fun() -> String = fun() -> String => bag.note\n"
+    "    bag.items.push(secret)\n"
+    "    fill(bag, secret)\n"
+    "    stdio.println(f())\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+_CWV_FLAGGED = {"natural_alias_handle": CWV_NATURAL,
+                "minimal_store_seed": CWV_MINIMAL,
+                "two_callees": CWV_TWO_CALLEES,
+                "push_seed": CWV_PUSH_SEED}
+
+
+class TestCaptureCrossFnWholeValueReconsult(unittest.TestCase):
+    """A cross-function whole-value effect on an already-seeded binding routes
+    through the whole-value choke-point and marks it whole-value-dirty, so a
+    closure reading the whole-value-tainted field re-consults ``sym.label`` and
+    the flow is caught (a warning by default, a strict error), leaking on both
+    backends. This closes the third variant of the seeded/dirty capture-gate
+    leak class; the choke-point makes the gate sound by construction."""
+
+    def test_flagged_at_both_tiers(self):
+        for name, src in _CWV_FLAGGED.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_leaks_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _CWV_FLAGGED.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
 # ---- DISCLOSED residual (out of scope, Stage B): a sink INTERNAL to the
 # closure body (a side effect, not the result the caller sinks). Stage B's
 # capture re-read carries a captured value's later taint into the closure's

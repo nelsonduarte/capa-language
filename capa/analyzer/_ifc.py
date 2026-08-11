@@ -2067,6 +2067,34 @@ class _IfcMixin:
         if sym is not None and L.normalize(incoming) == L.SECRET:
             self._container_whole_dirty().add(id(sym))
 
+    def _raise_whole_value_label(self, sym, incoming) -> None:
+        """The single CHOKE-POINT for raising a struct binding's COLLAPSED
+        whole-value label OUTSIDE the precise field-store leaf path: an
+        aliased / escaped / unresolvable-path field store, or a cross-function
+        whole-value mutation effect. It raises the label AND marks the binding
+        whole-value-DIRTY, because such a raise is NOT backed by a precise
+        ``(root, field-path)`` seed, so the field-precise capture channel
+        cannot see it and the capture gate (``_fresh_capture_label``) must
+        re-consult ``sym.label`` for it.
+
+        Routing EVERY non-seed whole-value raise here is what keeps the capture
+        gate SOUND BY CONSTRUCTION: a whole-value taint added through this
+        helper cannot silently suppress the re-read (which was the CRITICAL-2
+        / CRITICAL-3 leak class). The two whole-value raises that deliberately
+        do NOT go through here are (a) the precise field-store LEAF path, whose
+        secrecy IS seeded (``_seed_container_taint`` / ``_seed_container_leaves``),
+        and (b) a whole REASSIGN ``box = <secret>`` (an Ident-target assign in
+        ``_check_assign``), which rebinds the variable to a NEW object the
+        closure -- holding the OLD one -- cannot observe, so it is captured by
+        value and must NOT dirty the binding (else the disclosed
+        whole-reassign over-report would flip to a false negative's opposite).
+        The remaining ``sym.label`` raises are on FRESH, not-yet-seeded
+        bindings (a ``let`` / ``var`` / const introduction, a pattern-bound
+        local, a fresh alias target), which the gate already re-consults via
+        the NOT-seeded arm, so dirtying them is unnecessary."""
+        sym.label = L.join(getattr(sym, "label", None), incoming)
+        self._mark_whole_value_dirty(sym, incoming)
+
     def _seed_container_taint(self, sym, path: tuple, incoming) -> None:
         """Record a field-KEYED container-mutation taint on ``sym`` at
         ``path`` (a precise field store or container push), monotone and
@@ -2641,27 +2669,27 @@ class _IfcMixin:
         group = self._struct_aliases.get(id(root))
         if group is not None:
             for member in group:
-                member.label = L.join(getattr(member, "label", None), incoming)
+                # Whole-value CHOKE-POINT: an aliased store is not
+                # field-keyable, so it raises the member's whole-value label
+                # WITHOUT a precise seed and marks it whole-value-dirty (the
+                # capture re-read re-consults sym.label). Also escape it.
+                self._raise_whole_value_label(member, incoming)
                 self._escaped_struct_syms.add(id(member))
-                # This in-place store raises the member's whole-value label
-                # WITHOUT a precise field seed (aliasing is not field-keyable),
-                # so the field-precise capture re-read cannot see it: mark the
-                # member whole-value-dirty so the re-read re-consults sym.label.
-                self._mark_whole_value_dirty(member, incoming)
             return
         # Always keep the collapsed label monotonically correct: a store
         # of a secret into any field of the binding makes the whole value
         # at least that secret. This preserves the pre-existing
-        # whole-value soundness even when per-field tracking is absent.
+        # whole-value soundness even when per-field tracking is absent. Each
+        # of these early-returns raises the whole-value label without a
+        # precise seed, so it routes through the CHOKE-POINT (dirtying the
+        # binding) rather than assigning ``root.label`` directly.
         if getattr(root, "field_labels", None) is None or \
                 id(root) in self._escaped_struct_syms:
-            root.label = L.join(getattr(root, "label", None), incoming)
-            self._mark_whole_value_dirty(root, incoming)
+            self._raise_whole_value_label(root, incoming)
             return
         path = self._field_path_from_root(target)
         if not path:
-            root.label = L.join(getattr(root, "label", None), incoming)
-            self._mark_whole_value_dirty(root, incoming)
+            self._raise_whole_value_label(root, incoming)
             return
         node = root.field_labels
         for name in path[:-1]:
@@ -2669,8 +2697,7 @@ class _IfcMixin:
             if not isinstance(nxt, dict):
                 # The store reaches into something not tracked as a
                 # struct sub-map; fall back to raising the whole value.
-                root.label = L.join(getattr(root, "label", None), incoming)
-                self._mark_whole_value_dirty(root, incoming)
+                self._raise_whole_value_label(root, incoming)
                 return
             node = nxt
         leaf = path[-1]
@@ -3530,14 +3557,21 @@ class _IfcMixin:
         cross-function whole-value taint must reach all of them. Mirror
         ``_ifc_field_store``'s alias-group path exactly: taint AND escape
         every member, so a later read of any field of any aliased binding
-        is caught."""
+        is caught.
+
+        The label raise goes through ``_raise_whole_value_label`` (the
+        whole-value CHOKE-POINT), so each member is marked whole-value-DIRTY:
+        this cross-function taint is NOT backed by a precise field seed at the
+        affected path, so a closure that captured the binding and reads the
+        tainted FIELD must re-consult ``sym.label`` rather than the
+        field-precise channel that cannot see it (the CRITICAL-3 leak)."""
         sym = self._struct_root_sym(e)
         if sym is None:
             return
         group = self._struct_aliases.get(id(sym))
         members = group if group is not None else [sym]
         for member in members:
-            member.label = L.join(getattr(member, "label", None), L.SECRET)
+            self._raise_whole_value_label(member, L.SECRET)
             if getattr(member, "field_labels", None) is not None:
                 self._escaped_struct_syms.add(id(member))
 
