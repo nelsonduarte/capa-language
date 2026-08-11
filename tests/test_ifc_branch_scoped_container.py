@@ -157,6 +157,19 @@ def _flow_errors(r):
     return [e for e in r.errors if "information-flow" in e.message]
 
 
+def _capture_flow_warnings(r):
+    """Only the CAPTURE-internal-sink invocation-site warnings (the R1
+    check), told apart by the ``as the captured`` phrasing of
+    ``_apply_lambda_capture_sink_summary``'s diagnostic. Used to assert a
+    before-def shape is NOT flagged a SECOND time by the invocation check on
+    top of the def-time body check."""
+    return [w for w in r.warnings if "as the captured" in w.message]
+
+
+def _capture_flow_errors(r):
+    return [e for e in r.errors if "as the captured" in e.message]
+
+
 def _capture(thunk) -> str:
     import io
     import sys
@@ -2473,6 +2486,506 @@ class TestCaptureInternalSinkResidualDisclosed(unittest.TestCase):
     def test_leaks_at_runtime_both_backends(self):
         skip = _wasm_unavailable()
         for name, src in _CAPTURE_INTERNAL_SINK_RESIDUAL.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+# ---- CLOSED (the R1 fix): the ARRIVAL shapes the mechanism catches, each a
+# capture whose taint arrives AFTER the closure is defined and is sunk INSIDE
+# the body -- reached DIRECTLY, through a NAMED callee, or after the taint is
+# delivered by a NAMED callee's field-write effect. Every one flags (a warning
+# by default, a hard error under @strict_ifc) and still leaks "s3cr3t" on both
+# backends; all only READ the captured struct/container field, so both backends
+# run. The capture is read through: an index into a captured container, a tuple
+# destructure, a two-named-helper hop, a chained-method read, a match scrutinee
+# then a bound var, a string interpolation, an alias into a local, a launder
+# into another container, a method that sinks ``self``, and (arrival) a named
+# callee's field-write effect after definition. ----
+_TWO_HOP = ("fun sink2(bag: Bag, stdio: Stdio)\n    stdio.println(bag.data)\n"
+            "fun sink1(bag: Bag, stdio: Stdio)\n    sink2(bag, stdio)\n")
+_FILL = "fun fill(bag: Bag, secret: @secret String)\n    bag.data = secret\n"
+_REVEAL_SELF = ("impl Bag\n    fun leak_self(self, stdio: Stdio)\n"
+                "        stdio.println(self.data)\n")
+
+_CAPTURE_INTERNAL_SINK_ARRIVAL = {
+    "index_into_captured_container": (
+        TOK + "type Bag { items: List<String> }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { items: [] }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.items[0])\n"
+        "    bag.items.push(secret)\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "tuple_destructure": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit =>\n"
+        "        let pair: (String, String) = (bag.data, \"y\")\n"
+        "        let (a, b): (String, String) = pair\n"
+        "        stdio.println(a)\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "two_named_helper_hop": (
+        TOK + "type Bag { data: String }\n" + _TWO_HOP +
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => sink1(bag, stdio)\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "chained_method_read": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = "
+        "fun() -> Unit => stdio.println(bag.data.trim())\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "match_scrutinee_bound_var": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit =>\n"
+        "        match bag.data\n            x -> stdio.println(x)\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "interpolation": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = "
+        "fun() -> Unit => stdio.println(\"${bag.data}\")\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "alias_into_local": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit =>\n"
+        "        let y: Bag = bag\n        stdio.println(y.data)\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "launder_into_another_container": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit =>\n"
+        "        var tmp: List<String> = []\n        tmp.push(bag.data)\n"
+        "        match tmp.get(0)\n"
+        "            Some(x) -> stdio.println(x)\n"
+        "            None -> stdio.println(\"e\")\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "method_sinks_self": (
+        TOK + "type Bag { data: String }\n" + _REVEAL_SELF +
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => bag.leak_self(stdio)\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "named_callee_fieldwrite_arrival": (
+        TOK + "type Bag { data: String }\n" + _FILL +
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.data)\n"
+        "    fill(bag, secret)\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+}
+
+
+class TestCaptureInternalSinkArrivalShapesClosed(unittest.TestCase):
+    """CLOSED (the R1 fix): every ARRIVAL shape of a live-secret capture sunk
+    INSIDE a locally-resolved closure flags at the invocation -- a warning by
+    default, a hard error under @strict_ifc -- and still leaks "s3cr3t" on both
+    backends. The capture reaches the sink directly, through a NAMED callee, or
+    after the taint is delivered by a NAMED callee's field-write effect, and is
+    read through an index, a tuple destructure, a two-helper hop, a chained
+    method, a match scrutinee, an interpolation, an alias into a local, a
+    launder into another container, or a method that sinks ``self``. All only
+    READ the captured struct/container field, so both backends run."""
+
+    def test_flagged_at_both_tiers(self):
+        for name, src in _CAPTURE_INTERNAL_SINK_ARRIVAL.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_capture_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertGreaterEqual(len(_capture_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _CAPTURE_INTERNAL_SINK_ARRIVAL.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+# ---- NO false positive (the R1 fix): a capture whose live label at its sunk
+# paths is NOT @secret is never flagged. A genuinely-public never-mutated
+# capture, a branch-EXCLUSIVE mutation (invoke in the sibling branch), a clean
+# DISJOINT sibling read (a direct field read, prefix-incompatible with the
+# stored field), and an in-body DECLASSIFY of the sunk value all stay clean at
+# both tiers. Each is stored with its expected runtime output (the public
+# value, or the declassified secret, which is an intended disclosure). ----
+_CAPTURE_INTERNAL_SINK_CLEAN = {
+    "public_never_mutated": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.data)\n"
+        "    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n", "pub\n"),
+    "branch_exclusive_mutation": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String, flag: Bool)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.data)\n"
+        "    if flag\n        bag.data = secret\n    else\n        f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN, false)\n", "pub\n"),
+    "clean_disjoint_sibling": (
+        TOK + "type Box { secret_field: String, note: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var box: Box = Box { secret_field: \"pub\", note: \"n\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(box.note)\n"
+        "    box.secret_field = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n", "n\n"),
+    "in_body_declassify": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => "
+        "stdio.println(declassify(bag.data, reason: \"ok\"))\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n", "s3cr3t\n"),
+}
+
+
+class TestCaptureInternalSinkNoFalsePositive(unittest.TestCase):
+    """NO false positive (the R1 fix): a capture whose live label at its sunk
+    paths is not @secret is never flagged. A public never-mutated capture, a
+    branch-exclusive mutation invoked in the sibling branch, a clean disjoint
+    sibling read, and an in-body declassify all stay clean at both tiers on
+    both backends. The declassify shape prints the secret (an intended
+    disclosure); the others print the public value."""
+
+    def test_clean_at_both_tiers(self):
+        for name, (src, _out) in _CAPTURE_INTERNAL_SINK_CLEAN.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertEqual(len(_flow_errors(rs)), 0,
+                                 [e.message for e in rs.errors])
+
+    def test_runtime_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, (src, out) in _CAPTURE_INTERNAL_SINK_CLEAN.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), out)
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), out)
+
+
+# ---- NO false positive (v11, value-typed capture): a built-in immutable
+# String scalar captured BY VALUE then reassigned to a secret AFTER the closure
+# is defined, sunk INSIDE the body. The ``_capture_is_value_typed`` gate keeps
+# it clean (a later reassignment is not observed through a by-value capture);
+# it prints the public "pub" at runtime. BACKEND GUARD: a closure that captures
+# a bare SCALAR local and uses it as a sink argument fails to compile on --wasm
+# (a pre-existing codegen bug: ``unknown local $x``), so this is Python-only,
+# like CC_SCALAR_REASSIGN. ----
+CC_INTERNAL_SINK_SCALAR = (TOK +
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var x: String = \"pub\"\n"
+    "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(x)\n"
+    "    x = secret\n    f()\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestCaptureInternalSinkScalarValueTyped(unittest.TestCase):
+    """NO false positive (v11): a value-typed (built-in immutable String)
+    capture reassigned to a secret after the closure is defined and sunk INSIDE
+    the body stays clean at both tiers -- it is captured by value, so the later
+    reassignment is not observed and nothing leaks (prints "pub"). Python-only:
+    a bare-scalar capture used as a sink argument fails to compile on --wasm (a
+    pre-existing codegen bug), the same guard the CC_SCALAR_REASSIGN result
+    shape uses."""
+
+    def test_value_typed_capture_is_clean_python(self):
+        r = _analyze(CC_INTERNAL_SINK_SCALAR)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_INTERNAL_SINK_SCALAR, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        self.assertEqual(_run_py(CC_INTERNAL_SINK_SCALAR), "pub\n")
+
+
+# ---- DISCLOSED SAFE over-report (the R1 fix, parity with the result-sink
+# whole-read over-report): a closure that internally sinks a captured struct
+# through a WHOLE / method read (``bag.reveal()``, which reveals only a public
+# field) flags when a DIFFERENT field is stored a secret after definition,
+# because a whole read observes every field taint (the length-0 query). It
+# flags but leaks nothing -- ``reveal`` returns the public field, so it prints
+# "pub". Sound (never a missed leak); the same whole-read collapse catches a
+# reveal of the tainted field. ----
+CC_INTERNAL_SINK_WHOLE_SIBLING = (TOK +
+    "type Bag { shown: String, hidden: String }\n"
+    "impl Bag\n    fun reveal(self) -> String\n        return self.shown\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { shown: \"pub\", hidden: \"h\" }\n"
+    "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.reveal())\n"
+    "    bag.hidden = secret\n    f()\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestCaptureInternalSinkWholeReadSiblingOverReportDisclosed(
+        unittest.TestCase):
+    """DISCLOSED SAFE over-report (the R1 fix): a closure that internally sinks
+    a captured struct through a WHOLE / method read whose method reveals only a
+    public field is FLAGGED when a DIFFERENT field is stored a secret after
+    definition, though nothing leaks (it prints the public value). A whole read
+    observes every field taint (the length-0 query), so it cannot tell the
+    clean field it reveals from the stored sibling -- the sound direction, at
+    parity with the result-sink whole-read over-report
+    (``TestCaptureLiveRereadPrecision``). A field-precise read of a clean
+    sibling stays clean (``TestCaptureInternalSinkNoFalsePositive``)."""
+
+    def test_whole_read_sibling_over_reports_but_is_safe(self):
+        r = _analyze(CC_INTERNAL_SINK_WHOLE_SIBLING)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        self.assertEqual(_run_py(CC_INTERNAL_SINK_WHOLE_SIBLING), "pub\n")
+        skip = _wasm_unavailable()
+        if skip is None:
+            self.assertEqual(_run_wasm(CC_INTERNAL_SINK_WHOLE_SIBLING), "pub\n")
+
+
+# ---- BEFORE-DEF shapes (the R1 fix): a store / push BEFORE the closure is
+# defined leaves the field already secret at definition, so the def-time body
+# check flags the internal sink AND the invocation-site capture-sink check flags
+# it again (its live label is @secret at the invocation). Both are SOUND and on
+# a genuine leak: they differ in message AND position, so they read as two
+# findings, not a contradiction. No suppression gate is used -- a per-name
+# whole-value snapshot cannot tell a secret NON-SUNK sibling from the sunk path
+# (it would mask a real launder-through-a-container leak, see
+# ``TestCaptureInternalSinkWholeLaunderMaskingClosed``), and flag-more is always
+# sound. Each still leaks on both backends. ----
+_CAPTURE_INTERNAL_SINK_BEFORE_DEF = {
+    "before_def_fieldstore": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    bag.data = secret\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.data)\n"
+        "    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "before_def_push": (
+        TOK + "type Bag { items: List<String> }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { items: [] }\n"
+        "    bag.items.push(secret)\n"
+        "    let f: Fun() -> Unit = fun() -> Unit =>\n"
+        "        match bag.items.get(0)\n"
+        "            Some(x) -> stdio.println(x)\n"
+        "            None -> stdio.println(\"e\")\n"
+        "    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+}
+
+
+class TestCaptureInternalSinkBeforeDefFlagged(unittest.TestCase):
+    """BEFORE-DEF shapes (the R1 fix): a store / push BEFORE the closure is
+    defined is caught by BOTH the def-time body check (the field is already
+    secret at definition) AND the invocation-site capture-sink check (its live
+    label is @secret at the invocation). Both fire on a genuine leak and differ
+    in message and position, so the duplicate is a sound over-report, not a
+    contradiction. No suppression gate is used: it cannot soundly tell a secret
+    non-sunk sibling from the sunk path (see
+    ``TestCaptureInternalSinkWholeLaunderMaskingClosed``). Each still leaks on
+    both backends."""
+
+    def test_flagged_at_both_tiers_including_invocation(self):
+        for name, src in _CAPTURE_INTERNAL_SINK_BEFORE_DEF.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                self.assertGreaterEqual(len(_capture_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+                self.assertGreaterEqual(len(_capture_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _CAPTURE_INTERNAL_SINK_BEFORE_DEF.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+                if skip is None:
+                    self.assertEqual(_run_wasm(src), "s3cr3t\n")
+
+
+# ---- CLOSED (the R1 fix, gate-masking regression guard): a capture whose
+# ACTUALLY-SUNK field rises secret AFTER the closure is defined, while a
+# DIFFERENT (non-sunk) field of the same struct is already secret BEFORE the
+# def, must FLAG. A per-name whole-value def-time snapshot would read the secret
+# non-sunk sibling (the length-0 query) and wrongly conclude the capture was
+# already secret at def, masking this real leak -- the def-time body check does
+# NOT cover it, because it reads the sunk field field-precisely (public at def).
+# So no def-time-secret suppression gate is used; the invocation check flags
+# whenever the live sunk-path label is @secret (flag-more is always sound). ----
+# WHOLE-() sunk path: the sunk field is laundered through a local container, so
+# the summary records the whole-capture sentinel.
+CC_MASK_WHOLE_LAUNDER = (TOK +
+    "type Bag { shown: String, hidden: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var bag: Bag = Bag { shown: \"pub\", hidden: \"h\" }\n"
+    "    bag.hidden = secret\n"
+    "    let f: Fun() -> Unit = fun() -> Unit =>\n"
+    "        var tmp: List<String> = []\n        tmp.push(bag.shown)\n"
+    "        match tmp.get(0)\n"
+    "            Some(x) -> stdio.println(x)\n"
+    "            None -> stdio.println(\"e\")\n"
+    "    bag.shown = secret\n    f()\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+# The control: identical but WITHOUT the before-def secret sibling. It flagged
+# even before the fix -- the masking case must reach the SAME verdict.
+CC_MASK_WHOLE_LAUNDER_CONTROL = CC_MASK_WHOLE_LAUNDER.replace(
+    "    bag.hidden = secret\n", "", 1)
+
+# MIXED field-precise: one sunk field (``a``) is secret BEFORE the def (the
+# def-time check covers it) and a second sunk field (``b``) rises AFTER the def
+# (only the invocation check covers it). Both leak; the after-def field must be
+# caught even though a sibling sunk field was already secret at def.
+CC_MASK_MIXED_FIELD = (TOK + "type Box { a: String, b: String }\n"
+    "fun leak(stdio: Stdio, secret: @secret String)\n"
+    "    var box: Box = Box { a: \"pa\", b: \"pb\" }\n"
+    "    box.a = secret\n"
+    "    let f: Fun() -> Unit = fun() -> Unit =>\n"
+    "        stdio.println(box.a)\n        stdio.println(box.b)\n"
+    "    box.b = secret\n    f()\n"
+    "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n")
+
+
+class TestCaptureInternalSinkWholeLaunderMaskingClosed(unittest.TestCase):
+    """CLOSED (the R1 fix, regression guard against a gate-induced missed leak):
+    a capture whose ACTUALLY-SUNK field rises secret AFTER the closure is
+    defined must flag even when a DIFFERENT non-sunk field of the same struct is
+    already secret BEFORE the def. A per-name whole-value def-time snapshot would
+    read the secret non-sunk sibling and mask the leak, which the def-time body
+    check does not cover (it reads the sunk field field-precisely, public at
+    def). The whole-launder case (the sunk field laundered through a local
+    container, recorded as the whole-capture sentinel) and the mixed
+    field-precise case (a def-secret sunk field plus an after-def sunk field)
+    both flag at both tiers and leak on both backends."""
+
+    def test_whole_launder_masking_flags(self):
+        r = _analyze(CC_MASK_WHOLE_LAUNDER)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_capture_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_MASK_WHOLE_LAUNDER, "leak"))
+        self.assertGreaterEqual(len(_capture_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+
+    def test_control_without_before_def_sibling_also_flags(self):
+        r = _analyze(CC_MASK_WHOLE_LAUNDER_CONTROL)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_capture_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+
+    def test_mixed_field_precise_after_def_field_flags(self):
+        r = _analyze(CC_MASK_MIXED_FIELD)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_capture_flow_warnings(r)), 1,
+                                [w.message for w in r.warnings])
+        rs = _analyze(_strict(CC_MASK_MIXED_FIELD, "leak"))
+        self.assertGreaterEqual(len(_capture_flow_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+
+    def test_masking_shapes_leak_both_backends(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(CC_MASK_WHOLE_LAUNDER), "s3cr3t\n")
+        self.assertEqual(_run_py(CC_MASK_MIXED_FIELD), "s3cr3t\ns3cr3t\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(CC_MASK_WHOLE_LAUNDER), "s3cr3t\n")
+            self.assertEqual(_run_wasm(CC_MASK_MIXED_FIELD), "s3cr3t\ns3cr3t\n")
+
+
+# ---- DISCLOSED residuals (out of scope, the R1 fix does NOT close these): a
+# capture-internal sink reached ONLY through a nested LOCAL-lambda binding
+# inside the body (v12 -- the summary is opaque to a nested local lambda, the
+# same limitation named callables have), and a closure that ESCAPES local
+# resolution -- invoked inside a higher-order callee (``apply(f)``), or bound
+# through an alias ``let g = f`` -- (v14 -- not locally resolvable via
+# ``_binding_lambdas``). Both stay UNFLAGGED at both tiers though they leak on
+# both backends; closing them needs higher-order / points-to Capa lacks. ----
+_CAPTURE_INTERNAL_SINK_STILL_RESIDUAL = {
+    "nested_local_lambda_sink": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let inner: Fun() -> Unit = "
+        "fun() -> Unit => stdio.println(bag.data)\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => inner()\n"
+        "    bag.data = secret\n    f()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "escaping_hof_invoked": (
+        TOK + "type Bag { data: String }\n"
+        "fun apply(g: Fun() -> Unit)\n    g()\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.data)\n"
+        "    bag.data = secret\n    apply(f)\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+    "escaping_alias": (
+        TOK + "type Bag { data: String }\n"
+        "fun leak(stdio: Stdio, secret: @secret String)\n"
+        "    var bag: Bag = Bag { data: \"pub\" }\n"
+        "    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.data)\n"
+        "    bag.data = secret\n"
+        "    let g: Fun() -> Unit = f\n    g()\n"
+        "fun main(stdio: Stdio)\n    leak(stdio, TOKEN)\n"),
+}
+
+
+class TestCaptureInternalSinkResidualStillDisclosed(unittest.TestCase):
+    """DISCLOSED residuals (out of scope): a capture-internal sink reached ONLY
+    through a nested LOCAL-lambda binding (v12 -- opaque to the summary, the
+    same limitation named callables have), and a closure that ESCAPES local
+    resolution -- invoked inside a higher-order callee or bound through an alias
+    (v14 -- not locally resolvable). Both stay UNFLAGGED at both tiers though
+    they leak "s3cr3t" on both backends. Closing them needs higher-order /
+    points-to analysis Capa lacks; if such a slice lands, these flip."""
+
+    def test_unflagged_at_both_tiers(self):
+        for name, src in _CAPTURE_INTERNAL_SINK_STILL_RESIDUAL.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertEqual(len(_flow_errors(rs)), 0,
+                                 [e.message for e in rs.errors])
+
+    def test_leaks_at_runtime_both_backends(self):
+        skip = _wasm_unavailable()
+        for name, src in _CAPTURE_INTERNAL_SINK_STILL_RESIDUAL.items():
             with self.subTest(shape=name):
                 self.assertEqual(_run_py(src), "s3cr3t\n")
                 if skip is None:
