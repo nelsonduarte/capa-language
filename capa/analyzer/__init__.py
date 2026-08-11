@@ -694,6 +694,16 @@ class Analyzer(
         # these SUNK paths, so a struct tainted at one field passed to a
         # callee that sinks only a sibling is not over-reported.
         self._ifc_sink_paths: dict = {}
+        # Cross-function CAPTURE-SIDE SINK PATHS (the R1 fix): ("lambda", id)
+        # -> {capture name -> frozenset of capture-relative field paths that
+        # reach a public sink inside the closure body} (``()`` = the whole
+        # capture). The capture-side mirror of ``_ifc_sink_paths``. At a
+        # locally-resolved lambda invocation the call site
+        # (``_apply_lambda_capture_sink_summary``) checks the LIVE label of
+        # each summarised capture path, catching a captured value whose label
+        # rose AFTER the closure was defined and is sunk INSIDE the body (a
+        # side effect, not the result).
+        self._ifc_capture_sink_paths: dict = {}
 
     # Type-substitution machinery (_fresh_ty_var, _resolve_ty,
     # _commit_fresh_substitutions, _apply_mapping) lives in
@@ -750,6 +760,7 @@ class Analyzer(
             self._ifc_return_effects,
             self._ifc_sink_caps,
             self._ifc_sink_paths,
+            self._ifc_capture_sink_paths,
         ) = compute_ifc_summaries(module, self.global_scope)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:

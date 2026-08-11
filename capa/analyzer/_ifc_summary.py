@@ -249,9 +249,9 @@ _SECRET_SOURCE_METHODS: frozenset = frozenset(m for _c, m in _SECRET_SOURCES)
 
 def compute_ifc_summaries(
     module: A.Module, global_scope,
-) -> tuple[dict, dict, dict, dict, dict]:
+) -> tuple[dict, dict, dict, dict, dict, dict]:
     """Return ``(sink_summaries, field_effects, return_effects,
-    sink_caps, sink_paths)``:
+    sink_caps, sink_paths, capture_sink_paths)``:
 
     * ``sink_summaries``: ``{callable_key: frozenset(sink_reaching
       param indices)}`` -- a value parameter whose value reaches a
@@ -298,6 +298,17 @@ def compute_ifc_summaries(
       overflow) -- the conservative default, prefix-compatible with every
       tainted path, so soundness never depends on the precision. Parallel
       to ``sink_summaries`` and computed on the SAME fixpoint.
+    * ``capture_sink_paths``: ``{("lambda", id): {capture_name:
+      frozenset(field_path)}}`` -- PER LAMBDA, the access paths of each
+      CAPTURED free binding that reach a public sink INSIDE the body (``()``
+      = the whole capture). The capture-side mirror of ``sink_paths``: the
+      call site (``_apply_lambda_capture_sink_summary`` in :mod:`._ifc`)
+      checks the LIVE label of each summarised capture path at a
+      locally-resolved lambda invocation, catching a captured value whose
+      label ROSE AFTER the closure was defined and is sunk inside the body.
+      Computed ONCE after the fixpoint (it only reads the final named
+      summaries), by seeding each lambda's captures as sources in the SAME
+      declassify-aware body walk.
 
     ``global_scope`` is the analyzer's populated global scope, used to
     tell user functions / variants / capabilities apart at call sites.
@@ -422,6 +433,19 @@ class _SummaryBuilder:
         # ``sym.label`` on the const's global symbol. Pre-computed once so
         # each identifier costs a set membership test, not a lookup.
         self.secret_consts: set[str] = set()
+        # ("lambda", id) -> the original ``A.LambdaExpr`` node, kept so the
+        # post-fixpoint capture pass can recover the lambda's parameters and
+        # unwrapped body to compute its FREE identifiers (its captures).
+        self._lambda_nodes: dict = {}
+        # ("lambda", id) -> {capture NAME -> frozenset of capture-relative
+        # field PATHS that reach a public sink INSIDE the body} (``()`` = the
+        # whole capture reaches a sink). The capture-side mirror of the
+        # parameter ``sink_paths``: computed AFTER the parameter fixpoint by
+        # seeding each lambda's captures as sources and running the SAME
+        # declassify-aware body walk. Consulted at a locally-resolved lambda
+        # invocation to catch a captured value whose label ROSE AFTER the
+        # closure was defined and is SUNK inside the body.
+        self.capture_sink_paths: dict = {}
         self._collect_secret_fields()
         self._collect_secret_consts()
         self._collect_callables()
@@ -551,6 +575,7 @@ class _SummaryBuilder:
         only through another LOCAL lambda."""
         for lam in self._iter_lambdas(self.module):
             key = ("lambda", id(lam))
+            self._lambda_nodes[key] = lam
             names = [p.name for p in lam.params]
             body = lam.body if isinstance(lam.body, A.Block) else A.Block(
                 pos=lam.pos,
@@ -788,7 +813,21 @@ class _SummaryBuilder:
             k: {p: frozenset(paths) for p, paths in v.items()}
             for k, v in self.sink_paths.items()
         }
-        return sinks, feffects, reffects, sink_caps, sink_paths
+        # Capture-side sink paths (the R1 fix). Computed ONCE here, after the
+        # parameter fixpoint has stabilised: the capture pass only READS the
+        # (now final) named summaries -- composing a named helper's
+        # ``sink_paths`` through ``_propagate_sink_paths`` -- and feeds no
+        # other summary, so it needs no fixpoint of its own.
+        capture_sink_paths: dict = {}
+        for key, lam in self._lambda_nodes.items():
+            cp = self._capture_sink_paths_of(key, lam)
+            if cp:
+                capture_sink_paths[key] = {
+                    name: frozenset(paths) for name, paths in cp.items()
+                }
+        self.capture_sink_paths = capture_sink_paths
+        return sinks, feffects, reffects, sink_caps, sink_paths, \
+            capture_sink_paths
 
     @staticmethod
     def _merge_effects(acc: dict, new: dict) -> bool:
@@ -1646,6 +1685,99 @@ class _SummaryBuilder:
             return
         for s in sources:
             self._cur_sink_caps.setdefault(s, set()).update(caps)
+
+    def _capture_sink_paths_of(self, key, lam: A.LambdaExpr) -> dict:
+        """Which CAPTURED ``(root, field-path)`` access paths reach a public
+        sink INSIDE ``lam``'s body -- keyed by capture NAME, with ``()`` the
+        whole-capture sentinel (the R1 fix). The capture-side mirror of the
+        parameter ``sink_paths``: the lambda body's FREE identifiers (its
+        captures) are seeded as sources and the SAME declassify-aware body
+        walk records, per capture, the paths that reach a sink. A sink reached
+        via a NAMED HELPER is seen through for free (``_propagate_sink_paths``
+        composes the helper's own ``sink_paths``); an in-body ``declassify``
+        records no path (``_taint_of_call`` returns no source for it), so it
+        stays clean by construction.
+
+        Runs OUTSIDE the parameter fixpoint (it only reads the final named
+        summaries), on a fresh set of ``_cur_*`` walk state seeded for the
+        captures rather than the parameters. The capture root names index to
+        THEMSELVES, so a sink on a capture's own field chain records a
+        capture-relative path (``println(bag.data)`` -> ``bag`` sunk at
+        ``("data",)``) while an aliased / call-rooted sunk value falls back to
+        the whole-capture sentinel ``()`` -- exactly the parameter rule."""
+        free = self._lambda_free_names(lam)
+        if not free:
+            return {}
+        # Reuse the value-block wrapper already built for this lambda so an
+        # expression body is walked exactly like a named function's trailing
+        # implicit-return expression.
+        body = self.callables[key][1].body
+        env = {name: {name} for name in free}
+        reaching: set = set()
+        self._cur_content = {}
+        self._cur_sink_caps = {}
+        sink_paths_local: dict = {}
+        self._cur_sink_paths = sink_paths_local
+        self._cur_secret_source_params = self.secret_source_params.get(
+            key, set(),
+        )
+        self._cur_param_struct_types = self.param_struct_types.get(key, {})
+        self._cur_param_type_names = self.param_type_names.get(key, {})
+        self._cur_immutable_params = self.immutable_params.get(
+            key, frozenset(),
+        )
+        self._cur_effects = {}
+        self._cur_returns = set()
+        self._cur_param_index = {name: name for name in free}
+        self._shadowed_consts = set()
+        self._walk_value_block(body, env, reaching)
+        # Keys are capture-name source keys (``_record_sink_paths`` skips
+        # ``INTERNAL_SECRET``); the ``in free`` filter is a belt-and-braces
+        # guard against any non-capture source leaking through.
+        return {
+            name: set(paths) for name, paths in sink_paths_local.items()
+            if name in free
+        }
+
+    def _lambda_free_names(self, lam: A.LambdaExpr) -> set:
+        """The names ``lam``'s body uses but does NOT bind -- its captures.
+        Computed syntactically: every identifier in the body minus the
+        lambda's own parameters and its top-level ``let`` / ``var`` binds.
+        Mirrors the analyzer's ``_capture_read_paths`` bound set, so the call
+        site's identity-based capture resolution and this summary agree on
+        what counts as a capture. An over-approximation (a nested-block bind,
+        or a nested lambda's own parameter, counts as free) is harmless: the
+        walk rebinds a nested local at its ``let`` so its seed is discarded,
+        a nested lambda masks its own parameters, and the call site intersects
+        these names against the resolved captures."""
+        bound = {p.name for p in lam.params}
+        if isinstance(lam.body, A.Block):
+            for stmt in lam.body.stmts:
+                if isinstance(stmt, A.LetStmt):
+                    bound.update(_pattern_bound_names(stmt.pattern))
+                elif isinstance(stmt, A.VarStmt):
+                    bound.add(stmt.name)
+        out: set = set()
+        self._collect_free_names(lam.body, bound, out)
+        return out
+
+    def _collect_free_names(self, node, bound: set, out: set) -> None:
+        """Add every identifier NAME reachable from ``node`` that is not in
+        ``bound`` to ``out``. A generic dataclass / list walk, the name-only
+        analogue of the analyzer's ``_lambda_free_idents``."""
+        if isinstance(node, A.Ident):
+            if node.name not in bound:
+                out.add(node.name)
+            return
+        if node is None or isinstance(node, str):
+            return
+        if dataclasses.is_dataclass(node):
+            for f in dataclasses.fields(node):
+                self._collect_free_names(getattr(node, f.name), bound, out)
+            return
+        if isinstance(node, (list, tuple)):
+            for x in node:
+                self._collect_free_names(x, bound, out)
 
     def _record_sink_paths(self, arg: A.Expr, sources: set) -> None:
         """Read-side mirror of ``_record_mutation_effect`` for a DIRECT
