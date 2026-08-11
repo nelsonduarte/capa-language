@@ -19,6 +19,47 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.30.1: cross-function and capture-side field-store sibling over-reports removed (2026-08-11)
+
+- **Two disclosed information-flow false positives closed; no leak closed,
+  PATCH.** The IFC analyzer no longer raises spurious diagnostics on two
+  leak-free field-store shapes, closing the two sound over-reports disclosed
+  with `1.29.0` / `1.30.0`:
+  - a caller reading a public SIBLING field of a struct whose OTHER field a
+    callee stored a secret into (`fill(bag, secret)` doing
+    `bag.secret_field = secret`, then reading `bag.note`), which `1.30.0`
+    flagged as both a default warning and an `@strict_ifc` hard error (R3 of
+    `2026-08-10-ifc-cross-function-whole-struct-read.md`);
+  - a closure re-reading a CLEAN SIBLING field of a struct whose OTHER field
+    was stored into after the closure was defined
+    (`let f = fun() => box.note; box.secret_field = secret; f()`), which
+    `1.30.0` flagged (R2 of `2026-08-10-ifc-lambda-flow-sensitivity.md`).
+  A direct field store is now field-sensitive on the `(root, field-path)`
+  access-path channel, at parity with the container-mutation channel: a store
+  rooted directly at the binding taints only the stored path, so a disjoint
+  sibling read stays clean, while a read of the stored path, a whole / getter
+  read, a pass-whole to a callee sinking the stored path, and an ancestor store
+  read back through a descendant path all stay flagged (a warning by default, a
+  hard error under `@strict_ifc`, both backends). An aliased / renamed /
+  over-long root keeps the whole-value carrier, so no cross-function
+  whole-value flow loses coverage. Ships as a PATCH under the `STABILITY.md`
+  patch rule (a bug fix that makes the analyzer's behaviour match its documented
+  purpose), NOT under the security exception; no advisory, no GHSA.
+- **Maintenance invariant (capture gate).** The field-precise capture re-read
+  suppresses the whole-value `sym.label` only for a binding whose secrecy is in
+  the field-precise channel. Its soundness now rests on a single choke-point:
+  every whole-value label raise OUTSIDE the precise field-store leaf path (an
+  aliased / escaped / unresolvable-path store, and the cross-function
+  whole-value carrier) routes through `_raise_whole_value_label`, which raises
+  the label AND marks the binding whole-value-dirty, so the gate re-consults
+  `sym.label` for it. A new raise path that bypasses the choke-point would
+  reopen the gate; route it through the helper.
+- Commits `7490d6a`..`67cea58`; covered by
+  `tests/test_ifc_branch_scoped_container.py` (`TestCrossFnFieldStoreFieldKeyed`,
+  `TestCrossFnContentFieldPrecise`, `TestAncestorStoreDescendantRead`,
+  `TestCaptureFieldStoreFieldPrecise`, `TestCaptureEscapedStoreReconsult`,
+  `TestCaptureCrossFnWholeValueReconsult`).
+
 ## v1.30.0: lambda-flow IFC false negatives closed (2026-08-10)
 
 - **A `@secret` reaching a public sink through a LOCALLY-RESOLVED lambda leaked

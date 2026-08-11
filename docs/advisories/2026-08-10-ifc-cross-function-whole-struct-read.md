@@ -343,11 +343,29 @@ and are deliberately disclosed rather than "fixed".
    A copy made **before** the push keeps field precision and is clean.
    Asserted in `TestWholeCopySiblingOverReportDisclosed`.
 
-2. **Clean sibling of a cross-function field store.** A callee that does a
-   whole-value field store (`bag.secret_field = secret`) keeps the
-   whole-value carrier by design (a whole or getter read must still observe
-   it), so a later read of a clean sibling of that struct is flagged though
-   nothing leaks.
+2. **Clean sibling of a cross-function field store. RESOLVED in `1.30.1`.** On
+   `1.29.0` / `1.30.0` a callee that did a field store (`bag.secret_field =
+   secret`) recorded a WHOLE-VALUE cross-function effect (a whole or getter
+   read had to observe it), so a caller reading a clean sibling (`bag.note`) of
+   that struct was flagged though nothing leaks -- both a default warning and
+   an `@strict_ifc` hard error. `1.30.1` field-keys the cross-function
+   field-store effect on the `(root, field-path)` access-path channel, at
+   parity with a container mutation, so a disjoint sibling read stays clean
+   while a read of the stored path, a whole / getter read, a pass-whole to a
+   callee that sinks the stored path, and a store at an interior node read back
+   through a descendant path all stay flagged (a warning by default, a hard
+   error under `@strict_ifc`, both backends). This is a false-positive removal,
+   not a leak fix: it ships as a PATCH under the
+   [`STABILITY.md`](../../STABILITY.md) patch rule, with no new advisory. The
+   keying applies only to a store rooted DIRECTLY at the parameter within the
+   tracked field-path bound; an aliased / renamed / over-long root keeps the
+   whole-value carrier, so its sibling stays conservatively flagged (a residual
+   over-report, at parity with container mutations), and a struct reached
+   through a container VALUE or ELEMENT (held as a `Map` value or a `List` /
+   tuple element, mutated through its own binding and read via `.get(...)` /
+   destructuring) is the pre-existing different-root points-to residual of
+   section 2 above, which still leaks on `1.30.0` and `1.30.1` alike. Asserted
+   in `TestCrossFnFieldStoreFieldKeyed` and `TestCrossFnContentFieldPrecise`.
 
 The monotone reassignment over-report and the loop-body over-approximation
 disclosed with `1.27.0` and `1.28.0` also stay open and are documented there.

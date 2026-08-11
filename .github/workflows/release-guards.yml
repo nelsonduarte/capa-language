@@ -37,7 +37,7 @@ name: release-guards
 #       # cannot pin is a guard someone else can edit under you. Replace
 #       # the placeholder with the SHA of the revision you audited, and
 #       # keep the trailing version comment so a reader knows what it is.
-#       uses: nelsonduarte/capa-language/.github/workflows/release-guards.yml@REPLACE_WITH_AUDITED_SHA  # v1.30.0
+#       uses: nelsonduarte/capa-language/.github/workflows/release-guards.yml@REPLACE_WITH_AUDITED_SHA  # v1.30.1
 #       # Grant the guards READ and nothing else, explicitly. Without
 #       # this line the called workflow inherits the CALLER's
 #       # workflow-level grant, and in a release workflow that includes

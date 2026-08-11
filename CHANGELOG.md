@@ -9,6 +9,54 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.30.1], 2026-08-11
+
+A precision release. It removes two spurious information-flow diagnostics and
+changes the behaviour of no correct program. No leak is closed, so it carries
+**no security advisory** and ships as a **PATCH** under the
+[`STABILITY.md`](STABILITY.md) patch rule ("Fixes a bug so the actual
+behaviour matches the documented behaviour"), NOT under the security exception
+the earlier information-flow releases (`1.2.0` .. `1.30.0`) used. Nothing is
+added and nothing is removed; the direction of the only change is
+accept-more, so it cannot break a `1.x` program.
+
+**Fewer false positives.** Two leak-free field-store shapes that `1.30.0`
+over-reported are now accepted at every tier:
+
+- *A caller reading a public SIBLING field of a struct whose OTHER field a
+  callee stored a secret into.* `fill(bag, secret)` where `fill` does
+  `bag.secret_field = secret`, then reading the public `bag.note`: `1.30.0`
+  raised both a default warning and an `@strict_ifc` hard error though nothing
+  leaks. It is now clean. The
+  [`2026-08-10-ifc-cross-function-whole-struct-read.md`](docs/advisories/2026-08-10-ifc-cross-function-whole-struct-read.md)
+  advisory disclosed this as a sound over-report; it is now resolved there.
+- *A closure re-reading a CLEAN SIBLING field of a struct whose OTHER field was
+  stored into after the closure was defined.* `let f = fun() => box.note`,
+  then `box.secret_field = secret`, then `f()`: `1.30.0` flagged the sibling
+  read though nothing leaks. It is now clean. The
+  [`2026-08-10-ifc-lambda-flow-sensitivity.md`](docs/advisories/2026-08-10-ifc-lambda-flow-sensitivity.md)
+  advisory disclosed this as a sound over-report; it is now resolved there.
+
+The mechanism is field sensitivity for a direct field store: a
+`bag.secret_field = secret` store is now keyed on the `(root, field-path)`
+access-path channel exactly as a container mutation (`bag.items.push(...)`)
+already was, so a read of a disjoint sibling path is no longer tainted by it.
+The keying applies only when the store is rooted DIRECTLY at the binding within
+the tracked field-path bound; an aliased, renamed, or over-long root keeps the
+whole-value carrier, so no cross-function whole-value flow loses coverage.
+
+**No leak `1.30.0` flagged is dropped.** A read of the stored field, a whole /
+getter read, passing the whole struct to a callee that sinks the stored path,
+and a store into an interior node read back through a descendant path all stay
+flagged: a warning by default and a hard error under `@strict_ifc`, on both
+backends. Correct programs, syntax, the public API, diagnostic wording, and
+runtime behaviour are unchanged; no new diagnostic is introduced. The disclosed
+residuals in both advisories stay open, including the element- and value-rooted
+points-to false negatives (a struct held as a `Map` value or a `List` element,
+mutated through its own binding and read via `.get(...)`), which leak on
+`1.30.0` as well and are pre-existing, not introduced here. Covered by
+[`tests/test_ifc_branch_scoped_container.py`](tests/test_ifc_branch_scoped_container.py).
+
 ## [1.30.0], 2026-08-10
 
 An information-flow soundness fix that follows on from `1.29.0`. It closes the
@@ -9990,7 +10038,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.30.0...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.30.1...HEAD
+[1.30.1]: https://github.com/nelsonduarte/capa-language/compare/v1.30.0...v1.30.1
 [1.30.0]: https://github.com/nelsonduarte/capa-language/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/nelsonduarte/capa-language/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/nelsonduarte/capa-language/compare/v1.27.0...v1.28.0

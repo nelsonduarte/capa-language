@@ -326,8 +326,11 @@ cases, and nothing more. **Do not read the closed claim as "lambdas are
 closed."** A sink internal to a closure body, closures that escape local
 resolution, a sink via a nested local lambda, and struct-field-store flows
 through captures remain documented residuals requiring higher-order /
-points-to analysis or the field-store access-path channel Capa does not yet
-have. The following stay open, each an honest, tested false negative that leaks
+points-to analysis, or -- for the capture-internal struct field-store case --
+the capture-internal-sink summary that would consume the field-store
+access-path channel (a `1.30.1` update: that channel now EXISTS, so this case
+no longer waits on a channel Capa lacks; see residual 1). The following stay
+open, each an honest, tested false negative that leaks
 at run time UNFLAGGED at both tiers on both backends, or a disclosed sound
 over-report; each is asserted in
 [`tests/test_ifc_branch_scoped_container.py`](../../tests/test_ifc_branch_scoped_container.py).
@@ -342,7 +345,12 @@ over-report; each is asserted in
    through a named callee inside the body, and an in-place struct field store
    printed inside the body. The container-mutation form is closable with a
    capture-sink summary and is a tracked next slice; the struct field-store
-   form needs a **field-store access-path channel** Capa does not yet have.
+   form is the same slice over the field-store `(root, field-path)` access-path
+   channel (a `1.30.1` update: that channel now EXISTS -- `1.30.1` field-keyed
+   the direct field store -- so closing this no longer waits on a channel Capa
+   lacks; the remaining work is the capture-internal-sink summary that consumes
+   it). This residual itself STAYS OPEN: the capture re-read still carries a
+   field store into the closure's RESULT label only, not into an internal sink.
    Asserted in `TestCaptureInternalSinkResidualDisclosed`.
 
 2. **Closures that ESCAPE local resolution (still open).** A closure the caller
@@ -374,19 +382,41 @@ print the public value at run time). They over-report, never under-report, and
 are deliberately disclosed rather than "fixed".
 
 1. **A captured STRUCT whole-reassigned to a secret after the closure is
-   defined.** The Face-2 re-read keeps the whole-value label for a
-   reference-typed capture, and a reference type raises that label on a whole
-   reassign (`box = Box { data: secret }`) identically to an in-place field
-   store -- which the re-read **cannot tell apart**. So a captured struct
+   defined (still open).** A whole reassign (`box = Box { data: secret }`)
+   rebinds the variable to a NEW object and leaves no precise field seed, so the
+   reference-typed capture re-read falls back to the binding's whole-value label
+   and cannot tell it from a genuine in-place store. So a captured struct
    whole-reassigned to a secret FLAGS under `@strict_ifc` though it is captured
    by value and prints the public value at run time: a safe strict-tier
    over-rejection, precedented by the reassigned-`var` sink recovery also
    failing closed. (A value-typed **primitive** capture reassigned to a secret
    is correctly clean, because a primitive is captured by value; that is the
-   `38dff85` correction, not an over-report.) Also, the whole-value re-read is
-   on the captured **root**, so a closure reading only a CLEAN sibling of a
-   pushed container FLAGS though it leaks nothing. Asserted in
-   `TestCaptureRereadReftype` and `TestCaptureLiveRereadPrecision`.
+   `38dff85` correction, not an over-report.) Asserted in
+   `TestCaptureRereadReftype`.
+
+   *Clean sibling read of a captured struct: RESOLVED for a DIRECT FIELD read in
+   `1.30.1`; still open for a WHOLE / method read.* On `1.29.0` / `1.30.0` the
+   capture re-read joined the whole-value label of the captured **root**, so a
+   closure reading only a clean sibling (`box.note`) of a struct whose OTHER
+   field was stored into or pushed to after the closure was defined FLAGGED
+   though nothing leaks. `1.30.1` makes the capture re-read field-precise
+   (`1580715`): a read at a determinable FIELD PATH observes only the
+   branch-scoped container taints prefix-compatible with that path, so a
+   disjoint clean sibling now stays clean (asserted in
+   `TestCaptureFieldStoreFieldPrecise`). This is a false-positive removal, not a
+   leak fix; it ships as a PATCH with no new advisory. It does NOT close a
+   WHOLE / undeterminable read: a closure that reads the captured root through a
+   METHOD receiver (`bag.getnote()`), a bare use, or an argument cannot be
+   resolved to a field path, so it still observes every container taint on the
+   root and still over-reports (asserted, still flagging, in
+   `TestCaptureLiveRereadPrecision`). A read of the stored / pushed path, and
+   every leak the re-read caught, stay flagged. The gate's soundness now rests
+   on a maintenance invariant: every whole-value label raise OUTSIDE the precise
+   field-store leaf path (an aliased / escaped / unresolvable-path store, and
+   the cross-function whole-value carrier) routes through a single choke-point
+   (`_raise_whole_value_label`) that also marks the binding whole-value-dirty,
+   so the field-precise re-read never silently suppresses a whole-value taint it
+   cannot see.
 
 2. **An in-body `declassify` inside a captured closure.** The Face-2 re-read
    reads the RAW branch-scoped container taint and is **declassify-blind**
@@ -400,11 +430,13 @@ are deliberately disclosed rather than "fixed".
 
 The whole-struct-read closure and its residuals from `1.29.0`, the loop-body
 over-approximation, and the assignment sibling-branch false positive disclosed
-with `1.27.0` also stay open and are documented there. The tracked plan for the
-field-store family of residual 1 is a **field-store access-path channel** slice
-(the same access-path model this fix and the `1.29.0` container fixes build
-on), which would carry an in-place struct field store into the closure's
-internal-sink path.
+with `1.27.0` also stay open and are documented there. As a `1.30.1` update,
+the field-store `(root, field-path)` access-path channel the tracked plan for
+the field-store family of residual 1 named now EXISTS (`1.30.1` field-keyed the
+direct field store, the same access-path model this fix and the `1.29.0`
+container fixes build on). Residual 1 STAYS OPEN: the remaining slice is the
+capture-internal-sink summary that would carry an in-place struct field store
+from that channel into the closure's internal-sink path.
 
 ## Credit
 
