@@ -9,6 +9,72 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.31.0], 2026-08-11
+
+An information-flow soundness fix that follows on from `1.30.0` and `1.30.1`. It
+closes the **locally-resolved-direct / named-callee** portion of the
+capture-internal-sink residual `1.30.0` disclosed as its residual 1: a `@secret`
+captured by a locally-resolved closure (a `let`-bound lambda invoked in the same
+scope, or an IIFE) and SUNK INSIDE the closure body (a side effect, not the
+returned result), where the taint arrives AFTER the closure is defined, was not
+flagged. The body was type-checked once at the closure's definition, when the
+captured field was still public, and never re-checked at the invocation, so the
+`1.30.0` capture re-read -- which carries a later taint into the closure's RESULT
+label only -- missed it. The secret laundered past both the default warning and
+the `@strict_ifc` hard error.
+
+**Security.**
+
+- *A live-`@secret` capture sunk inside a locally-resolved closure body leaked
+  unflagged.* Example: `let f = fun() => stdio.println(bag.data); bag.data =
+  secret; f()`. Each lambda now carries a **capture-side sink-path summary** (the
+  read-side mirror of the parameter sink-path summary): after the parameter
+  fixpoint, its captures are seeded as sources and the same declassify-aware body
+  walk records, per capture, the field paths that reach a public sink in the
+  body. At a locally-resolved invocation the **live** label of each summarised
+  capture path is checked against the field-precise branch-scoped container-taint
+  channel (built on the `1.30.1` field-store access-path channel), and a live
+  `@secret` capture is flagged at the invocation: a warning by default, a hard
+  error under `@strict_ifc`, on both backends. The sink is reached directly or
+  through a NAMED callee; the capture is read at a determinable field path or
+  through a whole / interpolation / method read; the taint is delivered by a field
+  store, a container push, or a cross-function field-write effect. The
+  launder-through-a-captured-container masking shape (an actually-sunk field that
+  rises secret after the def while a different field was secret before it) is
+  caught: the check uses NO def-time suppression gate, because a per-name
+  whole-value snapshot cannot tell a secret non-sunk sibling from the sunk path.
+  An in-body `declassify` of the sunk value, a genuinely-public never-mutated
+  capture, a branch-exclusive mutation, a field-precise clean disjoint sibling
+  read, and a value-typed scalar reassigned after the def (captured by value) all
+  stay clean (no false positive).
+
+Each leak still runs at runtime (a warning does not block). Ships under the
+[`STABILITY.md`](STABILITY.md) security exception, and as a MINOR bump for the
+same reason the earlier information-flow soundness fixes did (`1.2.0`, `1.3.0`,
+`1.4.0`, `1.15.0`, `1.26.0`, `1.27.0`, `1.28.0`, `1.29.0`, `1.30.0`): it tightens
+the static analysis so a program that previously compiled clean while laundering
+a secret now warns by default and is a hard error under `@strict_ifc`. Only
+programs that were already unsound are affected. (`1.30.1` was by contrast a
+PATCH: it only removed false positives.) Covered by
+[`tests/test_ifc_branch_scoped_container.py`](tests/test_ifc_branch_scoped_container.py).
+Advisory:
+[`docs/advisories/2026-08-11-ifc-capture-internal-sink.md`](docs/advisories/2026-08-11-ifc-capture-internal-sink.md).
+
+**Scope, honestly.** This is NOT "capture-internal sinks closed". A
+capture-internal sink reached ONLY through a NESTED LOCAL lambda binding is
+itself a locally-resolved outer closure whose nested-only sink is still missed;
+escaping / aliased (`let g = f; g()`) / higher-order (`apply(f)`) / returned
+closures, the different-root / element-rooted points-to family (a container
+renamed out of the struct, a call- / index-rooted receiver, a struct held as a
+`Map` value or `List` element read via `.get(...)`), and a summary-tier
+loop-carried read-before-write all stay open, tested residuals that leak
+unflagged at both tiers on both backends. Two sound over-reports are disclosed:
+a WHOLE / method read of a CLEAN sibling of a mutated struct flags though nothing
+leaks (parity with the result-sink over-report), and a before-def secret now
+carries a duplicate diagnostic (the def-time flag plus the new invocation-site
+flag) on genuinely-leaking code. All disclosed in the advisory's "Scope and known
+residuals".
+
 ## [1.30.1], 2026-08-11
 
 A precision release. It removes two spurious information-flow diagnostics and
@@ -10038,7 +10104,8 @@ systems and three Python versions.
   (`Capa-EBNF.md`) translated to English and synchronised with the
   implementation.
 
-[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.30.1...HEAD
+[Unreleased]: https://github.com/nelsonduarte/capa-language/compare/v1.31.0...HEAD
+[1.31.0]: https://github.com/nelsonduarte/capa-language/compare/v1.30.1...v1.31.0
 [1.30.1]: https://github.com/nelsonduarte/capa-language/compare/v1.30.0...v1.30.1
 [1.30.0]: https://github.com/nelsonduarte/capa-language/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/nelsonduarte/capa-language/compare/v1.28.0...v1.29.0

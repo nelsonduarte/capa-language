@@ -19,6 +19,56 @@ pending item in [`TODO.md`](TODO.md).
 
 ---
 
+## v1.31.0: capture-internal-sink IFC false negative closed (2026-08-11)
+
+- **A live-`@secret` capture SUNK INSIDE a locally-resolved closure body leaked
+  unflagged (security exception, MINOR).** This closes the
+  locally-resolved-direct / named-callee portion of `1.30.0`'s disclosed
+  residual 1: a `@secret` captured by a `let`-bound lambda (or an IIFE) and sunk
+  inside the closure body as a SIDE EFFECT (not the returned result), where the
+  taint arrives AFTER the closure is defined (`let f = fun() =>
+  stdio.println(bag.data); bag.data = secret; f()`). The body was type-checked
+  once at the closure's definition (field still public) and never re-checked at
+  the invocation, so the `1.30.0` capture re-read (which carries a later taint
+  into the closure's RESULT label only) missed it. On `1.30.1` and earlier it
+  passed a clean `capa --check`, passed under `@strict_ifc` with ZERO errors,
+  and reached the sink at run time on BOTH backends.
+- **Mechanism.** Each lambda now carries a per-lambda CAPTURE-side sink-path
+  summary (the read-side mirror of the parameter sink-path summary): after the
+  parameter fixpoint, its captures are seeded as sources and the same
+  declassify-aware body walk records, per capture, the field paths that reach a
+  public sink in the body (a NAMED helper composes in through its own sink-path
+  summary; an in-body `declassify` records no path). At a locally-resolved
+  invocation the LIVE label of each summarised capture path is checked against
+  the field-precise branch-scoped container-taint channel (built on the `1.30.1`
+  field-store access-path channel) through the shared `_capture_live_label` gate,
+  and a live `@secret` capture is flagged at the invocation position: a warning
+  by default, a hard error under `@strict_ifc`. No def-time suppression gate is
+  used (a per-name whole-value snapshot cannot tell a secret non-sunk sibling
+  from the sunk path), so the launder-through-a-captured-container masking shape
+  is caught and a before-def secret carries a sound duplicate (def-time plus
+  invocation) diagnostic.
+- **Scope, honestly (NOT "capture-internal sinks closed").** Still open, tested
+  residuals that leak unflagged: a sink reached ONLY through a NESTED LOCAL
+  lambda (the outer closure IS locally resolved, but the nested-only sink is
+  opaque to the summary); escaping / aliased / higher-order / returned closures;
+  the different-root / element-rooted points-to family (rename out of a struct, a
+  call- / index-rooted receiver, a struct held as a `Map` value or `List` element
+  read via `.get(...)`); and a summary-tier loop-carried read-before-write. Two
+  sound over-reports disclosed: a WHOLE / method read of a CLEAN sibling of a
+  mutated struct flags though nothing leaks, and a before-def secret carries a
+  duplicate diagnostic on genuinely-leaking code.
+- Commits `1daae28`..`9771149`; covered by
+  `tests/test_ifc_branch_scoped_container.py`
+  (`TestCaptureInternalSinkArrivalShapesClosed`,
+  `TestCaptureInternalSinkNoFalsePositive`,
+  `TestCaptureInternalSinkScalarValueTyped`,
+  `TestCaptureInternalSinkWholeReadSiblingOverReportDisclosed`,
+  `TestCaptureInternalSinkBeforeDefFlagged`,
+  `TestCaptureInternalSinkWholeLaunderMaskingClosed`,
+  `TestCaptureInternalSinkResidualStillDisclosed`). Advisory:
+  `docs/advisories/2026-08-11-ifc-capture-internal-sink.md`.
+
 ## v1.30.1: cross-function and capture-side field-store sibling over-reports removed (2026-08-11)
 
 - **Two disclosed information-flow false positives closed; no leak closed,

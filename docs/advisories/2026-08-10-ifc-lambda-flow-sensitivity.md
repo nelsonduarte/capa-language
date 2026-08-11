@@ -324,34 +324,49 @@ This fix flags secret flows through **locally-resolved** lambdas (`let`-bound
 / IIFE) for the **parameter-sink** and the **container-capture-result-sink**
 cases, and nothing more. **Do not read the closed claim as "lambdas are
 closed."** A sink internal to a closure body, closures that escape local
-resolution, a sink via a nested local lambda, and struct-field-store flows
-through captures remain documented residuals requiring higher-order /
-points-to analysis, or -- for the capture-internal struct field-store case --
-the capture-internal-sink summary that would consume the field-store
-access-path channel (a `1.30.1` update: that channel now EXISTS, so this case
-no longer waits on a channel Capa lacks; see residual 1). The following stay
-open, each an honest, tested false negative that leaks
+resolution, and a sink via a nested local lambda remain documented residuals
+requiring higher-order / points-to analysis. The capture-internal
+struct-field-store case (residual 1) is now **RESOLVED in `1.31.0`** for its
+locally-resolved-direct / named-callee portion: `1.31.0` landed the
+capture-internal-sink summary that consumes the field-store access-path channel
+`1.30.1` built (see
+[`2026-08-11-ifc-capture-internal-sink.md`](2026-08-11-ifc-capture-internal-sink.md)),
+so the nested-local-lambda and escaping portions of residual 1 are what stay
+open. The following stay open, each an honest, tested false negative that leaks
 at run time UNFLAGGED at both tiers on both backends, or a disclosed sound
 over-report; each is asserted in
 [`tests/test_ifc_branch_scoped_container.py`](../../tests/test_ifc_branch_scoped_container.py).
 
-1. **A sink INTERNAL to the closure body (still open).** A locally-resolved
-   closure that captures a value mutated after its definition and SINKS it
-   **inside its own body** (a side effect, not the result the caller sinks --
-   `f()` returns `Unit` and prints the secret itself) leaks unflagged. Stage
-   B's capture re-read carries the later taint into the closure's **result**
-   label only, so a caller that sinks the RESULT is caught but an internal sink
-   is not. Three shapes: a container pushed then read inside the body, a sink
+1. **A sink INTERNAL to the closure body. RESOLVED in `1.31.0` for the
+   locally-resolved-direct / named-callee portion; the nested-local-lambda and
+   escaping portions stay open.** A locally-resolved closure that captures a
+   value mutated after its definition and SINKS it **inside its own body** (a
+   side effect, not the result the caller sinks -- `f()` returns `Unit` and
+   prints the secret itself) leaked unflagged on `1.30.0` / `1.30.1`. Stage B's
+   capture re-read carried the later taint into the closure's **result** label
+   only, so a caller that sank the RESULT was caught but an internal sink was
+   not. Three shapes: a container pushed then read inside the body, a sink
    through a named callee inside the body, and an in-place struct field store
-   printed inside the body. The container-mutation form is closable with a
-   capture-sink summary and is a tracked next slice; the struct field-store
-   form is the same slice over the field-store `(root, field-path)` access-path
-   channel (a `1.30.1` update: that channel now EXISTS -- `1.30.1` field-keyed
-   the direct field store -- so closing this no longer waits on a channel Capa
-   lacks; the remaining work is the capture-internal-sink summary that consumes
-   it). This residual itself STAYS OPEN: the capture re-read still carries a
-   field store into the closure's RESULT label only, not into an internal sink.
-   Asserted in `TestCaptureInternalSinkResidualDisclosed`.
+   printed inside the body. As foreseen here, the fix is a capture-internal-sink
+   summary over the field-store `(root, field-path)` access-path channel that
+   `1.30.1` built. `1.31.0` lands that summary (see
+   [`2026-08-11-ifc-capture-internal-sink.md`](2026-08-11-ifc-capture-internal-sink.md)):
+   each lambda carries a capture-side sink-path summary, and at a
+   locally-resolved invocation the LIVE label of each summarised capture path is
+   checked, so a taint delivered by a field store, a container push, or a
+   cross-function field-write effect, reached directly or through a NAMED callee,
+   arriving after the closure is defined, now flags -- a warning by default, a
+   hard error under `@strict_ifc`, on both backends. The former
+   `TestCaptureInternalSinkResidualDisclosed` is flipped to CLOSED and the arrival
+   corpus is pinned in `TestCaptureInternalSinkArrivalShapesClosed`. Two portions
+   STAY OPEN and remain here as disclosed residuals, each a runtime leak: a sink
+   reached ONLY through a NESTED LOCAL lambda inside the body (the outer closure
+   IS locally resolved, but the nested-only sink is opaque to the summary, the
+   same limitation named callables have -- `nested_local_lambda_sink` in
+   `TestCaptureInternalSinkResidualStillDisclosed`), and a closure that ESCAPES
+   local resolution (an alias `let g = f; g()`, a higher-order `apply(f)`, or a
+   returned closure -- `escaping_alias` / `escaping_hof_invoked` in the same
+   class, and residual 2 below).
 
 2. **Closures that ESCAPE local resolution (still open).** A closure the caller
    cannot resolve to one certain lambda literal is not reached by either the
@@ -430,13 +445,14 @@ are deliberately disclosed rather than "fixed".
 
 The whole-struct-read closure and its residuals from `1.29.0`, the loop-body
 over-approximation, and the assignment sibling-branch false positive disclosed
-with `1.27.0` also stay open and are documented there. As a `1.30.1` update,
-the field-store `(root, field-path)` access-path channel the tracked plan for
-the field-store family of residual 1 named now EXISTS (`1.30.1` field-keyed the
-direct field store, the same access-path model this fix and the `1.29.0`
-container fixes build on). Residual 1 STAYS OPEN: the remaining slice is the
-capture-internal-sink summary that would carry an in-place struct field store
-from that channel into the closure's internal-sink path.
+with `1.27.0` also stay open and are documented there. As a `1.31.0` update,
+residual 1's remaining slice -- the capture-internal-sink summary that carries a
+field store (or a container push, or a cross-function field-write effect) from
+the `1.30.1` field-store `(root, field-path)` access-path channel into the
+closure's internal-sink path -- has LANDED (see
+[`2026-08-11-ifc-capture-internal-sink.md`](2026-08-11-ifc-capture-internal-sink.md)).
+Residual 1 is therefore RESOLVED for its locally-resolved-direct / named-callee
+portion; only its nested-local-lambda and escaping portions stay open.
 
 ## Credit
 

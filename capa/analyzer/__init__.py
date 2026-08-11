@@ -700,9 +700,12 @@ class Analyzer(
         # capture). The capture-side mirror of ``_ifc_sink_paths``. At a
         # locally-resolved lambda invocation the call site
         # (``_apply_lambda_capture_sink_summary``) checks the LIVE label of
-        # each summarised capture path, catching a captured value whose label
-        # rose AFTER the closure was defined and is sunk INSIDE the body (a
-        # side effect, not the result).
+        # each summarised capture path, flagging a captured value whose live
+        # label at those sunk paths is @secret and is sunk INSIDE the body (a
+        # side effect, not the result) -- whether the taint arrived AFTER or
+        # BEFORE the closure was defined (no def-time suppression gate, so a
+        # before-def secret is soundly re-flagged on top of the def-time body
+        # check).
         self._ifc_capture_sink_paths: dict = {}
 
     # Type-substitution machinery (_fresh_ty_var, _resolve_ty,

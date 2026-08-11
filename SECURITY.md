@@ -88,15 +88,15 @@ Out of scope:
 
 ## Supported versions
 
-Capa is on the `1.x` line (latest `1.30.1`) and is a one-person
+Capa is on the `1.x` line (latest `1.31.0`) and is a one-person
 project. Only the latest tagged release is supported for security fixes.
 I may publish patch releases for the latest minor when a fix is
 significant.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.30.1 (latest) | yes |
-| < 1.30.1 | no, please upgrade |
+| 1.31.0 (latest) | yes |
+| < 1.31.0 | no, please upgrade |
 
 ## Published advisories
 
@@ -356,6 +356,26 @@ The 2026-05-25 audit record lives at the repository root in
   through captures stay open documented residuals, alongside two sound
   over-reports, each tested. Severity low-to-moderate. Affected `1.29.0` and
   earlier on the `1.x` line, shipped in `1.30.0` under the security exception.
+- [`docs/advisories/2026-08-11-ifc-capture-internal-sink.md`](docs/advisories/2026-08-11-ifc-capture-internal-sink.md):
+  the locally-resolved-direct / named-callee closure of `1.30.0`'s disclosed
+  residual 1. A live-`@secret` capture SUNK INSIDE a locally-resolved closure
+  body (a side effect, not the returned result), where the taint arrives AFTER
+  the closure is defined, leaked unflagged: the body was type-checked once at
+  the closure's definition (field still public) and never re-checked at the
+  invocation. On `1.30.1` and earlier it passed a clean `capa --check`, passed
+  under `@strict_ifc` with ZERO errors, and reached the sink on both backends.
+  Each lambda now carries a capture-side sink-path summary, and at a
+  locally-resolved invocation the LIVE label of each summarised capture path is
+  checked against the `1.30.1` field-store access-path channel, so a taint
+  delivered by a field store, a container push, or a cross-function field-write
+  effect, reached directly or through a NAMED callee, warns by default and is a
+  hard error under `@strict_ifc` on both backends. NOT "capture-internal sinks
+  closed": a sink reached only through a NESTED LOCAL lambda, escaping / aliased
+  / higher-order / returned closures, the different-root / element-rooted
+  points-to family, and a summary-tier loop-carried read-before-write stay open
+  documented residuals, alongside two sound over-reports, each tested. Severity
+  low-to-moderate. Affected `1.30.1` and earlier on the `1.x` line, shipped in
+  `1.31.0` under the security exception.
 
 ## Public disclosure
 
