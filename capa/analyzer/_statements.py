@@ -233,7 +233,7 @@ class _StatementsMixin:
         if not isinstance(s.value, (A.MethodCall, A.Call)):
             self._check_no_capability(actual, s.pos, "a 'let' binding")
         self._reject_nested_struct_in_binding(s.pattern)
-        self._bind_pattern(s.pattern, actual, mutable=False)
+        self._bind_pattern(s.pattern, actual, mutable=False, init_expr=s.value)
         # Roadmap S2.3: the binding's label is the join of any declared
         # ``@secret``/``@public`` annotation and the label of the RHS
         # value -- so ``let x = secret_value`` makes x secret even
@@ -322,6 +322,20 @@ class _StatementsMixin:
             self._check_no_capability(actual, s.pos, "a 'var' binding")
         if self.scope.lookup_local(s.name) is not None:
             self._err(f"duplicate declaration of {s.name!r}", s.pos)
+        else:
+            # A ``var`` inside a lambda body that shadows a name from an
+            # ENCLOSING scope crosses the lambda boundary the same way a
+            # shadowing ``let`` / pattern-bind does, and the two backends
+            # compile it differently. ``var`` does not go through
+            # ``_bind_pattern``, so the closure-shadow check is applied
+            # here directly (blanket for an enclosing parameter / local,
+            # capture-aware for a module const / function -- including a
+            # self-referential ``var S = S`` whose RHS reads the const).
+            enclosing = self._enclosing_scope_local(s.name, s.pos, s.value)
+            if enclosing is not None:
+                self._err(
+                    self._closure_shadow_message(s.name, enclosing), s.pos,
+                )
         _decl_label = s.type_expr.label if s.type_expr is not None else None
         _var_label = self._join_decl_and_value_label(_decl_label, s.value)
         # Roadmap S2 (per-field IFC, soundness): mark any whole-struct
@@ -838,7 +852,7 @@ class _StatementsMixin:
         try:
             snap = self._snapshot_for_dry_run()
             self._push_scope()
-            self._bind_pattern(s.pattern, elem_ty, mutable=False)
+            self._bind_pattern(s.pattern, elem_ty, mutable=False, init_expr=s.iter)
             self._label_pattern_binds(s.pattern, iter_label)
             for stmt in s.body.stmts:
                 self._check_stmt(stmt)
@@ -848,7 +862,7 @@ class _StatementsMixin:
 
             self._consumed |= consumed_in_body
             self._push_scope()
-            self._bind_pattern(s.pattern, elem_ty, mutable=False)
+            self._bind_pattern(s.pattern, elem_ty, mutable=False, init_expr=s.iter)
             self._label_pattern_binds(s.pattern, iter_label)
             for stmt in s.body.stmts:
                 self._check_stmt(stmt)

@@ -247,15 +247,22 @@ class Scope:
 
     ``is_function_root`` marks the boundary of a function or lambda
     body. The block-shadow check stops its parent-walk at this
-    marker so that a lambda body that declares a ``let`` with the
-    same name as a captured outer-function local is not falsely
-    flagged: the lambda compiles to a Python ``def`` / ``lambda``
-    whose function scope makes the inner binding a fresh local,
-    not an overwrite of the outer one.
+    marker so that a ``let`` within one function body cannot be
+    reported as shadowing a same-named binding in another function.
+
+    ``is_lambda_root`` narrows that further: it is True only for a
+    LAMBDA body's root scope (not a top-level function's). The
+    closure-shadow check uses it to reject a ``let`` / ``var`` /
+    pattern-bind inside a lambda body that shadows a name from an
+    ENCLOSING scope in a way the two backends compile differently
+    (the Wasm lowerer keeps the inner closure's lexical capture of
+    the outer binding; the Python transpiler function-scopes the
+    redeclared name), so it is rejected backend-independently.
     """
     symbols: dict[str, Symbol] = field(default_factory=dict)
     parent: Optional["Scope"] = None
     is_function_root: bool = False
+    is_lambda_root: bool = False
 
     def lookup(self, name: str) -> Optional[Symbol]:
         s = self.symbols.get(name)
@@ -594,6 +601,14 @@ class Analyzer(
         # outside, that is an error because the lambda may be called
         # multiple times.
         self._lambda_local_names_stack: list[set[str]] = []
+        # Stack of the LambdaExpr AST nodes whose bodies are currently
+        # being checked (innermost last). The closure-shadow check reads
+        # the top entry to decide, for a lambda-body binding that shadows
+        # a module-level const / function, whether the shadowed name is
+        # referenced BEFORE that binding (the exact divergence condition).
+        # Pushed / popped in ``_check_lambda`` alongside the lambda's
+        # scope, so the top always matches the nearest lambda-root scope.
+        self._lambda_ast_stack: list = []
         # Lambda parameter / return-type inference. A lambda whose
         # parameter or return types are omitted (``xs.map(fun (x) => x
         # + 1)``) is checked LAZILY: the first ``_check_lambda`` pass
@@ -919,8 +934,14 @@ class Analyzer(
                 e.pos,
             )
 
-    def _push_scope(self, is_function_root: bool = False) -> None:
-        self.scope = Scope(parent=self.scope, is_function_root=is_function_root)
+    def _push_scope(
+        self, is_function_root: bool = False, is_lambda_root: bool = False,
+    ) -> None:
+        self.scope = Scope(
+            parent=self.scope,
+            is_function_root=is_function_root,
+            is_lambda_root=is_lambda_root,
+        )
 
     def _pop_scope(self) -> None:
         assert self.scope.parent is not None

@@ -120,13 +120,19 @@ class _ExpressionsMixin:
             # No longer pending: it now has a context to infer from.
             self._pending_inferred_lambdas.pop(id(e), None)
 
-        # Mark the lambda's scope as a function-root so the
-        # block-shadow check (in _bind_pattern) stops its parent
-        # walk here: a ``let`` inside the lambda body that shadows
-        # a captured outer-function local is fine -- the lambda
-        # compiles to a Python ``def`` / ``lambda`` whose function
-        # scope makes the inner binding a fresh local.
-        self._push_scope(is_function_root=True)
+        # Mark the lambda's scope as a function-root (so the
+        # same-function block-shadow check stops its parent walk
+        # here) AND as a lambda-root: the closure-shadow check reads
+        # the latter to reject a ``let`` / ``var`` / pattern-bind in
+        # this body that shadows a parameter or local of an ENCLOSING
+        # scope, which the two backends compile differently (the
+        # Python transpiler raises ``UnboundLocalError`` while the
+        # Wasm lowerer keeps the outer capture and discloses it).
+        self._push_scope(is_function_root=True, is_lambda_root=True)
+        # Track this lambda's AST so the closure-shadow check can inspect
+        # its body (for a module const / function shadow, whether the name
+        # is referenced before the shadowing binding). Popped on exit.
+        self._lambda_ast_stack.append(e)
         param_tys: list[Ty] = []
         param_names: set[str] = set()
         for p in e.params:
@@ -217,6 +223,7 @@ class _ExpressionsMixin:
         self._lambda_result_labels[id(e)] = result_label
 
         self._lambda_local_names_stack.pop()
+        self._lambda_ast_stack.pop()
         self._loop_depth = prev_loop_depth
         self._consumed = prev_consumed
         self._pop_scope()

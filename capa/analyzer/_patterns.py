@@ -305,13 +305,182 @@ class _PatternsMixin:
             f"to reassign, or rename if you want a distinct value"
         )
 
+    def _enclosing_scope_local(self, name: str, bind_pos, init_expr=None):
+        """Return the Symbol a binding of ``name`` at ``bind_pos`` would
+        shadow from an ENCLOSING scope in a way the two backends compile
+        differently, or ``None`` when the shadow is safe. ``init_expr`` is
+        the binding's initializer (its ``let`` / ``var`` RHS or a ``for``
+        iterable), consulted for the CONST / FUNCTION case: a read of the
+        shadowed name in its own initializer resolves outward (the binding
+        is not yet in scope there) and so diverges too.
+
+        The lookup starts one scope OUTSIDE the nearest function-root scope
+        (a lambda root or a plain function root) and walks the full parent
+        chain, so a name bound in ANY enclosing scope (an enclosing
+        function's / lambda's parameter or local, or a module-level const /
+        function) is found. Each nested lambda is checked in its own right
+        against ITS enclosing scopes.
+
+        Two divergence classes, distinguished by what the name binds to:
+
+        - An enclosing PARAMETER or LOCAL (``PARAM`` / ``LOCAL`` /
+          ``LOCAL_VAR``) ALWAYS diverges (the Wasm lowerer captures the
+          enclosing local into the closure env while the Python transpiler
+          function-scopes the redeclared name, disagreeing even when the
+          outer value is never read -- the M1 no-free-read case). A blanket
+          reject. This can only arise inside a LAMBDA body: at plain
+          function scope the enclosing lookup crosses straight into module
+          scope, which holds no parameters or locals, so this branch never
+          fires there and cannot over-reject a module-name shadow.
+
+        - An enclosing module-level CONST or FUNCTION is a global on the
+          Wasm side (referenced directly, never captured), so shadowing it
+          is safe UNLESS the name is referenced OUTWARD. Two outward reads
+          are handled:
+
+          * WITHIN the binding's own initializer (``let S = S`` reads the
+            enclosing const, since ``S`` is not yet in scope in its own RHS)
+            -- rejected at BOTH lambda scope and plain function scope, since
+            the initializer read is unambiguous either way.
+          * BEFORE the shadowing binding in the CLOSURE body (a read masked
+            by a nested closure that captured the global) -- rejected at
+            LAMBDA scope only. The plain-function read-before analogue is a
+            genuine divergence too but is deliberately NOT handled here: it
+            collides with the IFC const-shadow-scoping fixtures (which use
+            such divergent programs to exercise lexical scope) and needs its
+            own uniform treatment together with the symmetric
+            read-after-in-an-unexecuted-block case; deferred pending that.
+
+          An ordinary shadow that neither self-reads nor reads the global
+          before it (``let X = 3``) stays legal and byte-identical.
+
+        A name bound WITHIN the same function / lambda (a parameter or a
+        prior local) is handled separately by the same-function block-shadow
+        check (``lookup_within_function``), which stops at this function
+        root; this helper deliberately looks only OUTSIDE it, so the two
+        checks do not overlap.
+        """
+        from . import SymbolKind
+        scope = self.scope
+        while scope is not None and not scope.is_function_root:
+            scope = scope.parent
+        if scope is None:
+            return None
+        outer = scope.parent
+        if outer is None:
+            return None
+        sym = outer.lookup(name)
+        if sym is None:
+            return None
+        if sym.kind in (
+            SymbolKind.PARAM, SymbolKind.LOCAL, SymbolKind.LOCAL_VAR,
+        ):
+            return sym
+        if sym.kind in (SymbolKind.CONSTANT, SymbolKind.FUNCTION):
+            # A read of the module const / function INSIDE the binding's own
+            # initializer is an OUTWARD read: the binding is not yet in
+            # scope during its own RHS, so ``let S = S`` (or ``let S = S +
+            # "!"`` / ``let S = "${S}"``) reads the enclosing global. The
+            # Wasm backend keeps that lexical global while Python
+            # function-scopes the whole body, so the two diverge -- reject
+            # regardless of the RHS column (a positional walk cannot see it,
+            # the read sitting AFTER the binding token). Fires at any scope.
+            if init_expr is not None and self._reads_symbol(
+                init_expr, sym, lambda ident: True,
+            ):
+                return sym
+            # A read of the global BEFORE the shadowing binding in a CLOSURE
+            # body diverges too (Python function-scopes the redeclared name;
+            # Wasm keeps the global the nested closure captured). Restricted
+            # to lambda scope: the plain-function analogue is deferred (see
+            # the docstring / module note).
+            if scope.is_lambda_root and self._lambda_ast_stack:
+                lam_body = self._lambda_ast_stack[-1].body
+                if self._reads_symbol(
+                    lam_body, sym,
+                    lambda ident: self._pos_before(ident.pos, bind_pos),
+                ):
+                    return sym
+            return None
+        return None
+
+    @staticmethod
+    def _pos_before(pos, bind_pos) -> bool:
+        """``True`` iff source position ``pos`` is strictly before
+        ``bind_pos`` (line then column). A missing position is treated as
+        not-before (conservative toward legal)."""
+        if pos is None:
+            return False
+        return (pos.line, pos.col) < (bind_pos.line, bind_pos.col)
+
+    def _reads_symbol(self, node, sym, accept) -> bool:
+        """``True`` iff some ``A.Ident`` reachable from ``node`` RESOLVES to
+        ``sym`` (via the analyzer's already-computed name resolution,
+        ``self.bindings``) and satisfies ``accept``.
+
+        Resolution-based rather than name-based on purpose: a read whose
+        name matches ``sym`` but that the analyzer bound to a DIFFERENT
+        symbol -- a ``match`` arm bind, a ``for`` variable, a nested-block
+        ``let``, or a nested lambda parameter of the same name -- is
+        correctly excluded, because it does not resolve to the module const
+        / function being shadowed and so is not a divergence. Reads before
+        the shadowing binding have already been resolved by the in-order
+        walk, so their bindings are populated when this runs.
+        """
+        import dataclasses
+
+        hit = [False]
+
+        def walk(n) -> None:
+            if hit[0] or n is None or isinstance(n, str):
+                return
+            if isinstance(n, A.Ident):
+                if self.bindings.get(id(n)) is sym and accept(n):
+                    hit[0] = True
+                return
+            if dataclasses.is_dataclass(n):
+                for f in dataclasses.fields(n):
+                    walk(getattr(n, f.name))
+                return
+            if isinstance(n, (list, tuple)):
+                for x in n:
+                    walk(x)
+
+        walk(node)
+        return hit[0]
+
+    def _closure_shadow_message(self, name: str, prev) -> str:
+        """Build the diagnostic for a binding that shadows a name from an
+        enclosing scope in a backend-divergent way (inside a lambda body, or
+        a self-referential / read-before shadow of a module const / function
+        at plain function scope). Names the previous-definition site and
+        states why the shadow is rejected: the two runtime backends compile
+        it differently, so accepting it would let ``--check`` pass a program
+        the backends disagree on. The wording does not assert a specific
+        per-backend failure, because which backend is 'wrong' varies (for an
+        enclosing parameter the Python result is correct and the Wasm one
+        wrong; for a read-before / self-referential shadow Python raises
+        while Wasm discloses the outer value)."""
+        return (
+            f"binding {name!r} may not shadow {name!r} from an enclosing "
+            f"scope (previous binding at line {prev.pos.line}, col "
+            f"{prev.pos.col}); the two runtime backends compile this shadow "
+            f"differently, so rename the inner binding to a distinct name"
+        )
+
     def _bind_pattern(
-        self, p: A.Pattern, ty: Ty, mutable: bool,
+        self, p: A.Pattern, ty: Ty, mutable: bool, init_expr=None,
     ) -> None:
         """Bind the pattern's names to the current scope with
         the type they receive from the scrutinee. The full
         pattern grammar is supported (wildcard, ident, literal,
-        variant, struct with shorthand, tuple, or)."""
+        variant, struct with shorthand, tuple, or).
+
+        ``init_expr`` is the binding's initializer (the ``let`` / ``for``
+        source expression), threaded through unchanged to every bound name
+        so the closure-shadow check can spot a self-referential shadow of a
+        module const / function (``let S = S``); ``None`` when there is no
+        single initializer (a ``match`` arm)."""
         from . import Scope, Symbol, SymbolKind
         if isinstance(p, A.WildcardPat):
             return
@@ -336,16 +505,13 @@ class _PatternsMixin:
                 # runtime value disagrees with the source.
                 #
                 # The walk stops at the first ``is_function_root``
-                # scope (set on FunDecl and LambdaExpr entry), so
-                # a ``let`` inside a lambda body that shadows a
-                # captured outer-function local is NOT flagged:
-                # the lambda compiles to a Python function whose
-                # scope makes the inner binding a fresh local.
-                # Module-level shadowing (CONSTANT, FUNCTION, etc.)
-                # is also fine because Python's function scope
-                # makes the function-local rebind the module name
-                # within the body without affecting the
-                # module-level binding.
+                # scope (set on FunDecl and LambdaExpr entry), so it
+                # detects only shadowing WITHIN the same function or
+                # lambda body. Module-level shadowing (CONSTANT,
+                # FUNCTION, etc.) is fine because Python's function
+                # scope makes the function-local rebind the module name
+                # within the body without affecting the module-level
+                # binding.
                 prev_outer = self.scope.lookup_within_function(p.name)
                 if prev_outer is not None and prev_outer.kind in (
                     SymbolKind.PARAM,
@@ -360,6 +526,28 @@ class _PatternsMixin:
                         f"block-scope shadowing -- rename one of the bindings",
                         p.pos,
                     )
+                else:
+                    # A binding inside a lambda body that shadows a name
+                    # from an ENCLOSING scope crosses the lambda boundary
+                    # that the same-function walk stops at, and the two
+                    # backends compile the shadow differently (the Wasm
+                    # lowerer keeps the inner closure's lexical capture; the
+                    # Python transpiler function-scopes the redeclared
+                    # name). ``_enclosing_scope_local`` decides which
+                    # enclosing shadows actually diverge (always for a
+                    # parameter / local; for a module const / function only
+                    # when the name is read before the binding or inside the
+                    # binding's own initializer), so reject it here to keep
+                    # ``--check`` from passing a program the backends run
+                    # differently.
+                    enclosing = self._enclosing_scope_local(
+                        p.name, p.pos, init_expr,
+                    )
+                    if enclosing is not None:
+                        self._err(
+                            self._closure_shadow_message(p.name, enclosing),
+                            p.pos,
+                        )
             self.scope.define(
                 Symbol(name=p.name, kind=kind, pos=p.pos, ty=ty)
             )
@@ -387,12 +575,12 @@ class _PatternsMixin:
                 )
                 self._err(f"unknown variant {p.name!r}{hint}", p.pos)
                 for sub in p.payloads:
-                    self._bind_pattern(sub, TyUnknown, mutable)
+                    self._bind_pattern(sub, TyUnknown, mutable, init_expr)
                 return
             if sym.kind != SymbolKind.VARIANT:
                 self._err(f"{p.name!r} is not a variant", p.pos)
                 for sub in p.payloads:
-                    self._bind_pattern(sub, TyUnknown, mutable)
+                    self._bind_pattern(sub, TyUnknown, mutable, init_expr)
                 return
             payload_tys = sym.variant_payload_tys
             # Substitute the owner's type params (e.g. ``T`` in
@@ -417,7 +605,7 @@ class _PatternsMixin:
                     bound_ty = substitute(pty, subst) if subst else pty
                     if ty is TyUnknown and isinstance(bound_ty, TyVar):
                         bound_ty = TyUnknown
-                    self._bind_pattern(sub, bound_ty, mutable)
+                    self._bind_pattern(sub, bound_ty, mutable, init_expr)
             elif payload_tys:
                 self._err(
                     f"variant {p.name!r} requires {len(payload_tys)} "
@@ -447,13 +635,28 @@ class _PatternsMixin:
                 else:
                     fty = known[fname]
                 if fpat is None:
-                    # shorthand ``field`` -> bind ``field: same-name``
+                    # shorthand ``field`` -> bind ``field: same-name``.
+                    # This binds directly (not via ``_bind_pattern``), so
+                    # the closure-shadow check is applied here too: a
+                    # shorthand field name that shadows an enclosing scope
+                    # in a lambda body diverges exactly like a plain ``let``
+                    # would (the Wasm backend disclosed the outer value
+                    # while Python bound the field).
                     prev = self.scope.lookup_local(fname)
                     if prev is not None:
                         self._err(
                             self._duplicate_binding_message(fname, prev),
                             p.pos,
                         )
+                    else:
+                        enclosing = self._enclosing_scope_local(
+                            fname, p.pos, init_expr,
+                        )
+                        if enclosing is not None:
+                            self._err(
+                                self._closure_shadow_message(fname, enclosing),
+                                p.pos,
+                            )
                     self.scope.define(
                         Symbol(
                             name=fname,
@@ -463,7 +666,7 @@ class _PatternsMixin:
                         )
                     )
                 else:
-                    self._bind_pattern(fpat, fty, mutable)
+                    self._bind_pattern(fpat, fty, mutable, init_expr)
             return
         if isinstance(p, A.TuplePat):
             if len(p.elements) == 0:
@@ -485,10 +688,10 @@ class _PatternsMixin:
                             ty.elements[i] if i < len(ty.elements)
                             else TyUnknown
                         )
-                        self._bind_pattern(sub, sub_ty, mutable)
+                        self._bind_pattern(sub, sub_ty, mutable, init_expr)
                     return
                 for sub, sub_ty in zip(p.elements, ty.elements):
-                    self._bind_pattern(sub, sub_ty, mutable)
+                    self._bind_pattern(sub, sub_ty, mutable, init_expr)
                 return
             for sub in p.elements:
                 self._bind_pattern(sub, TyUnknown, mutable)
@@ -509,7 +712,7 @@ class _PatternsMixin:
                 saved = self.scope
                 self.scope = trial
                 try:
-                    self._bind_pattern(alt, ty, mutable)
+                    self._bind_pattern(alt, ty, mutable, init_expr)
                 finally:
                     self.scope = saved
                 trial_scopes.append(trial.symbols)
@@ -542,7 +745,7 @@ class _PatternsMixin:
                             f"{ty_str(t2)} in alternative {i}",
                             p.alternatives[i].pos,
                         )
-            self._bind_pattern(p.alternatives[0], ty, mutable)
+            self._bind_pattern(p.alternatives[0], ty, mutable, init_expr)
             return
         self._err(f"unknown pattern type {type(p).__name__}", p.pos)
 

@@ -230,27 +230,37 @@ class TestNameResolution(unittest.TestCase):
         )
         self.assertTrue(r.ok, r.errors)
 
-    def test_lambda_body_shadows_outer_param_ok(self):
-        # A ``let`` inside a lambda body whose name collides with
-        # an outer-function parameter is NOT a real shadow: the
-        # lambda transpiles to a Python function whose scope
-        # makes the inner binding a fresh local. The shadow check
-        # must stop its parent walk at the lambda's scope-root
-        # marker; otherwise it false-positives this legitimate
-        # pattern.
-        r = check(
+    def test_lambda_body_shadows_outer_param_rejected(self):
+        # A ``let`` inside a lambda body whose name collides with an
+        # outer-function parameter is REJECTED: the two backends compile
+        # it differently. The Python transpiler function-scopes the
+        # redeclared name (``UnboundLocalError`` if the outer value is
+        # read before the inner ``let``); the Wasm lowerer keeps the
+        # inner closure's lexical capture and discloses the outer value.
+        #
+        # This case previously asserted ``.ok`` and NEVER ran the
+        # program, so it masked a fully-silent Wasm miscompile where the
+        # captured outer parameter is disclosed. It now asserts the
+        # closure-shadow rejection so ``--check`` and both backends agree.
+        msgs = errors_of(
             "fun outer(x: Int) -> Int\n"
             "    let f = fun () -> Int =>\n"
             "        let x = 99\n"
             "        return x\n"
             "    return f() + x\n"
         )
-        self.assertTrue(r.ok, r.errors)
+        self.assertTrue(
+            any("may not shadow" in m for m in msgs),
+            msgs,
+        )
 
-    def test_lambda_body_shadows_outer_let_ok(self):
-        # Same principle for an outer ``let``: the lambda scope
-        # boundary lets the inner ``let`` be a fresh local.
-        r = check(
+    def test_lambda_body_shadows_outer_let_rejected(self):
+        # Same principle for an outer ``let``: a lambda-body ``let`` that
+        # shadows an enclosing-scope local is rejected. Before the fix
+        # this asserted ``.ok`` and was never executed, hiding the same
+        # backend divergence (Python UnboundLocalError vs Wasm silent
+        # disclosure of the outer ``y``).
+        msgs = errors_of(
             "fun main(stdio: Stdio)\n"
             "    let y = 1\n"
             "    let f = fun () -> Int =>\n"
@@ -258,7 +268,10 @@ class TestNameResolution(unittest.TestCase):
             "        return y\n"
             "    stdio.println(\"${f()} ${y}\")\n"
         )
-        self.assertTrue(r.ok, r.errors)
+        self.assertTrue(
+            any("may not shadow" in m for m in msgs),
+            msgs,
+        )
 
     def test_lambda_body_intra_lambda_shadow_still_rejected(self):
         # Soundness anchor: shadowing within the SAME lambda
