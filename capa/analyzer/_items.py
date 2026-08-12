@@ -340,6 +340,15 @@ class _ItemsMixin:
         self._check_block(fn.body)
         self.current_return_type = prev_ret
 
+        # Whole-function post-pass (now that the body is analysed and every
+        # read is resolved): reject a plain-function shadow of a module
+        # const / function that is also read elsewhere in the body -- a
+        # backend divergence (Python function-scopes the redeclared name for
+        # the whole body; Wasm keeps the lexical module global). Subsumes the
+        # plain-function self-ref / read-before / read-after cases; the
+        # lambda class is handled per-binding by ``_enclosing_scope_local``.
+        self._check_module_shadow_divergence(fn)
+
         # If the function declares a non-Unit return type, every
         # code path must end in ``return``. A function that just
         # has ``"hello"`` as its last statement when declared
@@ -464,6 +473,104 @@ class _ItemsMixin:
         self._container_whole_dirty_syms = prev_container_dirty
         self._pop_scope()
         self._pop_type_params()
+
+    def _check_module_shadow_divergence(self, fn: A.FunDecl) -> None:
+        """Reject a PLAIN function whose body BOTH name-shadows a
+        module-level CONST / FUNCTION and READS that same symbol elsewhere.
+
+        Such a program compiles differently on the two backends: Python has
+        function scope, so a ``let`` / ``var`` / ``for`` / ``match`` bind of
+        the name anywhere in the body makes the name a function-local for
+        the WHOLE body, and the genuine read then binds to that (possibly
+        unassigned or block-local) shadow; the Wasm backend keeps the
+        lexical module global. Whichever position the read and the shadow
+        sit in, the two disagree, so this whole-function post-pass is
+        deliberately position-insensitive and conservative -- it subsumes
+        the self-ref, read-before, and read-after (incl. an always-taken
+        loop) cases with one rule.
+
+        Binds inside a NESTED LAMBDA are excluded from the shadow set: the
+        lambda class is closed by the per-binding check at lambda scope
+        (``_enclosing_scope_local``). A read INSIDE a lambda still counts
+        for the read side, but only if it RESOLVES to the module symbol (a
+        capture that already resolves to an enclosing local does not).
+        Built-in symbols are excluded (a shadow of a builtin is a separate,
+        pre-existing concern).
+        """
+        from . import SymbolKind
+        from ..builtins import BUILTIN_POS
+        binds: dict = {}
+        self._collect_plain_shadow_binds(fn.body, binds)
+        for name, bind_pos in binds.items():
+            sym = self.global_scope.symbols.get(name)
+            if (
+                sym is None
+                or sym.pos == BUILTIN_POS
+                or sym.kind not in (SymbolKind.CONSTANT, SymbolKind.FUNCTION)
+            ):
+                continue
+            read = self._first_symbol_read(fn.body, sym)
+            if read is None:
+                continue
+            kind = (
+                "constant" if sym.kind == SymbolKind.CONSTANT else "function"
+            )
+            self._err(
+                f"binding {name!r} may not shadow the module-level {kind} "
+                f"{name!r} (defined at line {sym.pos.line}, col "
+                f"{sym.pos.col}), which is also read at line "
+                f"{read.pos.line}, col {read.pos.col} in this function; the "
+                f"two runtime backends compile this shadow differently "
+                f"(Python function-scopes the whole body while Wasm keeps "
+                f"the module {kind}), so rename the inner binding to a "
+                f"distinct name",
+                bind_pos,
+            )
+
+    def _collect_plain_shadow_binds(self, node, out: dict) -> None:
+        """Collect every name bound by a ``let`` / ``var`` / ``for`` /
+        ``match``-arm pattern reachable from ``node``, EXCLUDING nested
+        lambda bodies, mapped to the binding's source position (first
+        occurrence wins). Enumerates ALL pattern-bound names -- struct
+        shorthand ``Box { k }``, nested, tuple, and variant patterns -- via
+        ``_pattern_bound_names``, so a struct-shorthand shadow is not
+        missed."""
+        from ._ifc import _pattern_bound_names
+        import dataclasses
+        if node is None or isinstance(node, str):
+            return
+        if isinstance(node, A.LambdaExpr):
+            return
+        if isinstance(node, A.LetStmt):
+            for nm in _pattern_bound_names(node.pattern):
+                out.setdefault(nm, node.pattern.pos)
+            self._collect_plain_shadow_binds(node.value, out)
+            return
+        if isinstance(node, A.VarStmt):
+            out.setdefault(node.name, node.pos)
+            self._collect_plain_shadow_binds(node.value, out)
+            return
+        if isinstance(node, A.ForStmt):
+            for nm in _pattern_bound_names(node.pattern):
+                out.setdefault(nm, node.pattern.pos)
+            self._collect_plain_shadow_binds(node.iter, out)
+            for st in node.body.stmts:
+                self._collect_plain_shadow_binds(st, out)
+            return
+        if isinstance(node, A.MatchArm):
+            for nm in _pattern_bound_names(node.pattern):
+                out.setdefault(nm, node.pattern.pos)
+            if node.guard is not None:
+                self._collect_plain_shadow_binds(node.guard, out)
+            self._collect_plain_shadow_binds(node.body, out)
+            return
+        if dataclasses.is_dataclass(node):
+            for f in dataclasses.fields(node):
+                self._collect_plain_shadow_binds(getattr(node, f.name), out)
+            return
+        if isinstance(node, (list, tuple)):
+            for x in node:
+                self._collect_plain_shadow_binds(x, out)
 
     def _check_impl(self, impl: A.ImplBlock) -> None:
         from . import SymbolKind

@@ -1719,19 +1719,35 @@ class TestSecretConstCrossFunction(unittest.TestCase):
         )
 
 
-class TestSecretConstShadowScoping(unittest.TestCase):
-    """Soundness (lexical scoping in the summary pass): the const-vs-local
-    decision must respect REAL lexical scope, not a flat per-body map. A
-    ``let`` shadowing a secret const inside a closed sub-scope (a loop
-    body, an ``if`` branch, a ``match`` arm) MUST NOT suppress a genuine
-    reference to the same secret const in a sibling / later block. Capa
-    lets a ``let`` shadow a module const (it only forbids shadowing a
-    local / param), so before this a sub-scope ``let K = ...`` masked the
-    const body-wide and the leak was missed (fail-open, incl. under
-    ``@strict_ifc``). These lock the whole order-sensitivity matrix and
-    the no-false-positive genuine-shadow negatives."""
+def _shadow_div_errors(r):
+    """Errors from the whole-function module-shadow divergence post-pass:
+    a plain function that both name-shadows a module const / function and
+    reads it. Distinct wording from the IFC sink warnings."""
+    return [
+        e for e in r.errors
+        if "may not shadow the module-level" in e.message
+    ]
 
-    def test_for_body_shadow_then_genuine_return_flagged(self):
+
+class TestSecretConstShadowScoping(unittest.TestCase):
+    """A plain function that BOTH name-shadows a module secret const and
+    reads that const is a backend divergence (Python function-scopes the
+    redeclared name for the whole body; Wasm keeps the lexical global), so
+    the analyzer now REJECTS it tier-independently -- closing the class that
+    used to fail open (the summary could let a sub-scope ``let K = ...``
+    mask the const body-wide and miss the leak). These lock the rejection
+    across the order-sensitivity matrix (shadow before / after / in a
+    sibling branch / arm / an always-taken loop) and keep the genuine
+    same-scope-shadow negatives (reads that resolve to the local) legal.
+
+    The IFC summary's within-function const-shadow scoping REMAINS
+    load-bearing for a shadow placed INSIDE a lambda -- which the plain-
+    function rule does not fire on -- so the lambda-context equivalents at
+    the end assert the sink-leak flag still fires there (and would not if
+    the shadow wrongly masked the sibling-branch secret-const read: a
+    public closure body yields no flag)."""
+
+    def test_for_body_shadow_then_genuine_return_rejected(self):
         r = _analyze(
             "const K: @secret String = \"sk\"\n"
             "fun leak() -> String\n"
@@ -1741,13 +1757,10 @@ class TestSecretConstShadowScoping(unittest.TestCase):
             "fun main(stdio: Stdio)\n"
             "    stdio.eprintln(leak())\n"
         )
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(
-            len(_sink_leak_warnings(r)), 1,
-            [w.message for w in r.warnings],
-        )
+        self.assertFalse(r.ok, [e.message for e in r.errors])
+        self.assertTrue(_shadow_div_errors(r), [e.message for e in r.errors])
 
-    def test_while_body_shadow_then_genuine_return_flagged(self):
+    def test_while_body_shadow_then_genuine_return_rejected(self):
         r = _analyze(
             "const K: @secret String = \"sk\"\n"
             "fun leak() -> String\n"
@@ -1757,15 +1770,12 @@ class TestSecretConstShadowScoping(unittest.TestCase):
             "fun main(stdio: Stdio)\n"
             "    stdio.eprintln(leak())\n"
         )
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(
-            len(_sink_leak_warnings(r)), 1,
-            [w.message for w in r.warnings],
-        )
+        self.assertFalse(r.ok, [e.message for e in r.errors])
+        self.assertTrue(_shadow_div_errors(r), [e.message for e in r.errors])
 
-    def test_if_branch_shadow_genuine_in_sibling_branch_flagged(self):
+    def test_if_branch_shadow_genuine_in_sibling_branch_rejected(self):
         # Shadow in the ``then`` branch; a GENUINE ``return K`` in the
-        # ``else`` (sibling) branch must still be caught.
+        # ``else`` (sibling) branch reads the const -> rejected.
         r = _analyze(
             "const K: @secret String = \"sk\"\n"
             "fun leak(b: Bool) -> String\n"
@@ -1777,15 +1787,13 @@ class TestSecretConstShadowScoping(unittest.TestCase):
             "fun main(stdio: Stdio)\n"
             "    stdio.eprintln(leak(true))\n"
         )
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(
-            len(_sink_leak_warnings(r)), 1,
-            [w.message for w in r.warnings],
-        )
+        self.assertFalse(r.ok, [e.message for e in r.errors])
+        self.assertTrue(_shadow_div_errors(r), [e.message for e in r.errors])
 
-    def test_genuine_ref_before_later_shadow_flagged(self):
+    def test_genuine_ref_before_later_shadow_rejected(self):
         # Reference-before-shadow: the genuine const use precedes a shadow
-        # in a later loop; the use is still tainted.
+        # in a later loop; a real divergence (Python crashes, Wasm reads
+        # the const), rejected.
         r = _analyze(
             "const K: @secret String = \"sk\"\n"
             "fun leak() -> String\n"
@@ -1796,17 +1804,13 @@ class TestSecretConstShadowScoping(unittest.TestCase):
             "fun main(stdio: Stdio)\n"
             "    stdio.eprintln(leak())\n"
         )
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(
-            len(_sink_leak_warnings(r)), 1,
-            [w.message for w in r.warnings],
-        )
+        self.assertFalse(r.ok, [e.message for e in r.errors])
+        self.assertTrue(_shadow_div_errors(r), [e.message for e in r.errors])
 
-    def test_match_arm_shadow_genuine_in_sibling_arm_flagged(self):
+    def test_match_arm_shadow_genuine_in_sibling_arm_rejected(self):
         # A pattern binding ``k`` shadows the const in that arm only; a
-        # genuine ``return k`` in a sibling arm is still caught. Uses a
-        # lower-case const so the pattern name binds (an upper-case name
-        # in a pattern is parsed as a variant, not a binding).
+        # genuine ``return k`` in a sibling arm reads the const -> rejected.
+        # Lower-case const so the pattern name binds.
         r = _analyze(
             "const k: @secret String = \"sk\"\n"
             "fun leak(o: Option<Int>) -> String\n"
@@ -1816,31 +1820,12 @@ class TestSecretConstShadowScoping(unittest.TestCase):
             "fun main(stdio: Stdio)\n"
             "    stdio.eprintln(leak(None))\n"
         )
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(
-            len(_sink_leak_warnings(r)), 1,
-            [w.message for w in r.warnings],
-        )
+        self.assertFalse(r.ok, [e.message for e in r.errors])
+        self.assertTrue(_shadow_div_errors(r), [e.message for e in r.errors])
 
-    def test_match_arm_shadow_used_in_both_arms_not_flagged(self):
-        # Negative: both arms use the shadowed local ``k`` (never the
-        # const) -- no false positive.
-        r = _analyze(
-            "const k: @secret String = \"sk\"\n"
-            "fun leak(o: Option<String>) -> String\n"
-            "    match o\n"
-            "        Some(k) -> return k\n"
-            "        None -> return \"none\"\n"
-            "fun main(stdio: Stdio)\n"
-            "    stdio.eprintln(leak(None))\n"
-        )
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(
-            len(_sink_leak_warnings(r)), 0,
-            [w.message for w in r.warnings],
-        )
-
-    def test_for_body_shadow_then_genuine_return_strict_is_error(self):
+    def test_for_body_shadow_then_genuine_return_rejected_under_strict(self):
+        # The rejection is tier-independent: it fires under @strict_ifc too
+        # (it is an analyzer hard error, not a tier-gated IFC diagnostic).
         r = _analyze(
             "const K: @secret String = \"sk\"\n"
             "fun leak() -> String\n"
@@ -1851,15 +1836,31 @@ class TestSecretConstShadowScoping(unittest.TestCase):
             "fun main(stdio: Stdio)\n"
             "    stdio.eprintln(leak())\n"
         )
-        self.assertFalse(r.ok)
-        self.assertTrue(
-            any("information-flow" in e.message for e in r.errors),
-            [e.message for e in r.errors],
+        self.assertFalse(r.ok, [e.message for e in r.errors])
+        self.assertTrue(_shadow_div_errors(r), [e.message for e in r.errors])
+
+    def test_match_arm_shadow_used_in_both_arms_not_flagged(self):
+        # Negative: both arms use the shadowed local ``k`` (never the
+        # const) -- no read resolves to the const, so it stays legal.
+        r = _analyze(
+            "const k: @secret String = \"sk\"\n"
+            "fun leak(o: Option<String>) -> String\n"
+            "    match o\n"
+            "        Some(k) -> return k\n"
+            "        None -> return \"none\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.eprintln(leak(None))\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_shadow_div_errors(r), [])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
         )
 
     def test_genuine_local_shadow_not_flagged(self):
         # Negative: a real shadow -- ``let K`` at the same level, and the
-        # return refers to the LOCAL, not the const -- is not a leak.
+        # return refers to the LOCAL, not the const -- is legal.
         r = _analyze(
             "const K: @secret String = \"sk\"\n"
             "fun leak() -> String\n"
@@ -1869,6 +1870,7 @@ class TestSecretConstShadowScoping(unittest.TestCase):
             "    stdio.eprintln(leak())\n"
         )
         self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_shadow_div_errors(r), [])
         self.assertEqual(
             len(_sink_leak_warnings(r)), 0,
             [w.message for w in r.warnings],
@@ -1876,7 +1878,7 @@ class TestSecretConstShadowScoping(unittest.TestCase):
 
     def test_same_block_shadow_used_locally_not_flagged(self):
         # Negative: a same-block shadow that is used (via an intermediary
-        # local) refers to the local throughout -- no false positive.
+        # local) refers to the local throughout -- legal.
         r = _analyze(
             "const K: @secret String = \"sk\"\n"
             "fun leak() -> String\n"
@@ -1885,6 +1887,124 @@ class TestSecretConstShadowScoping(unittest.TestCase):
             "    return y\n"
             "fun main(stdio: Stdio)\n"
             "    stdio.eprintln(leak())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_shadow_div_errors(r), [])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 0,
+            [w.message for w in r.warnings],
+        )
+
+    # ---- lambda-context equivalents: the plain-function rule does NOT
+    # fire on a shadow INSIDE a lambda, so the IFC summary's const-shadow
+    # scoping remains the sole catch. Each closure DECLARES an @secret
+    # return type (so no store-site "closure returns @secret" catch fires)
+    # and reads the secret const in a sibling branch / arm masked by a
+    # ``let`` shadow; the sink-leak at ``eprintln(f())`` fires iff the
+    # summary correctly sees that sibling read as the secret const (a
+    # closure with a purely public body yields no flag). Analyzer-only
+    # (``_analyze``): a lambda body carrying a ``for`` cannot be run on the
+    # Python backend (a pre-existing ForStmt-in-lambda transpiler crash,
+    # out of scope), and these do not need a run to assert the flag.
+
+    def test_lambda_if_shadow_summary_scoping_flagged(self):
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make(b: Bool) -> Fun() -> @secret String\n"
+            "    return fun () -> @secret String =>\n"
+            "        if b\n"
+            "            let K = \"pub\"\n"
+            "            return K\n"
+            "        else\n"
+            "            return K\n"
+            "fun main(stdio: Stdio)\n"
+            "    let f = make(true)\n"
+            "    stdio.eprintln(f())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_shadow_div_errors(r), [])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_if_shadow_summary_scoping_strict_is_error(self):
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make(b: Bool) -> Fun() -> @secret String\n"
+            "    return fun () -> @secret String =>\n"
+            "        if b\n"
+            "            let K = \"pub\"\n"
+            "            return K\n"
+            "        else\n"
+            "            return K\n"
+            "@strict_ifc()\n"
+            "fun main(stdio: Stdio)\n"
+            "    let f = make(true)\n"
+            "    stdio.eprintln(f())\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(
+            any("public sink" in e.message for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_lambda_for_shadow_summary_scoping_flagged(self):
+        # Analyzer-only: a ``for`` inside a lambda cannot run on the Python
+        # backend (pre-existing ForStmt-in-lambda transpiler crash).
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make() -> Fun() -> @secret String\n"
+            "    return fun () -> @secret String =>\n"
+            "        for x in [1]\n"
+            "            let K = \"pub\"\n"
+            "        return K\n"
+            "fun main(stdio: Stdio)\n"
+            "    let f = make()\n"
+            "    stdio.eprintln(f())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_shadow_div_errors(r), [])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_match_shadow_summary_scoping_flagged(self):
+        r = _analyze(
+            "const k: @secret String = \"sk\"\n"
+            "fun make(o: Option<Int>) -> Fun() -> @secret String\n"
+            "    return fun () -> @secret String =>\n"
+            "        match o\n"
+            "            Some(k) -> \"pub\"\n"
+            "            None -> k\n"
+            "fun main(stdio: Stdio)\n"
+            "    let f = make(None)\n"
+            "    stdio.eprintln(f())\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(_shadow_div_errors(r), [])
+        self.assertEqual(
+            len(_sink_leak_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_lambda_public_body_no_flag(self):
+        # Sensitivity control: the same @secret-declared closure with a
+        # purely PUBLIC body yields NO sink-leak flag, proving the flag in
+        # the fixtures above is driven by the summary seeing the sibling
+        # secret-const read (not by the declared return type).
+        r = _analyze(
+            "const K: @secret String = \"sk\"\n"
+            "fun make(b: Bool) -> Fun() -> @secret String\n"
+            "    return fun () -> @secret String =>\n"
+            "        if b\n"
+            "            return \"pub1\"\n"
+            "        else\n"
+            "            return \"pub2\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    let f = make(true)\n"
+            "    stdio.eprintln(f())\n"
         )
         self.assertTrue(r.ok, [e.message for e in r.errors])
         self.assertEqual(
@@ -2066,6 +2186,54 @@ class TestLambdaCaptureLaundering(unittest.TestCase):
         self.assertEqual(
             len(_sink_leak_warnings(r)), 0,
             [w.message for w in r.warnings],
+        )
+
+
+class TestCrossModuleConstShadowDivergence(unittest.TestCase):
+    """The module-shadow divergence rule fires across a module boundary:
+    the loader normalises an imported alias (``import util (K as J)``) to a
+    plain CONSTANT symbol in the linked module, so a function that shadows
+    the alias and also reads it is the same backend divergence and is
+    rejected."""
+
+    def test_import_alias_secret_const_shadow_read_rejected(self):
+        import os
+        import shutil
+        import tempfile
+        from capa import analyze
+        from capa.loader import ModuleLoader
+
+        d = tempfile.mkdtemp(prefix="capa_xmod_shadow_")
+        try:
+            with open(os.path.join(d, "util.capa"), "w", encoding="utf-8") as f:
+                f.write("pub const K: @secret String = \"s3cr3t\"\n")
+            root_src = (
+                "import util (K as J)\n"
+                "fun leak() -> String\n"
+                "    let out = J\n"
+                "    let J = \"z\"\n"
+                "    return out\n"
+                "fun main(stdio: Stdio)\n"
+                "    stdio.println(leak())\n"
+            )
+            root_path = os.path.join(d, "root.capa")
+            with open(root_path, "w", encoding="utf-8") as f:
+                f.write(root_src)
+            linked = ModuleLoader().load_root(root_src, root_path)
+            r = analyze(
+                linked.module, source=root_src, filename=root_path,
+                sources=linked.sources,
+                module_privates=linked.module_privates,
+            )
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertFalse(r.ok, [e.message for e in r.errors])
+        self.assertTrue(
+            any(
+                "may not shadow the module-level" in e.message
+                for e in r.errors
+            ),
+            [e.message for e in r.errors],
         )
 
 

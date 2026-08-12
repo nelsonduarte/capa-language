@@ -306,20 +306,20 @@ class _PatternsMixin:
         )
 
     def _enclosing_scope_local(self, name: str, bind_pos, init_expr=None):
-        """Return the Symbol a binding of ``name`` at ``bind_pos`` would
-        shadow from an ENCLOSING scope in a way the two backends compile
-        differently, or ``None`` when the shadow is safe. ``init_expr`` is
-        the binding's initializer (its ``let`` / ``var`` RHS or a ``for``
-        iterable), consulted for the CONST / FUNCTION case: a read of the
-        shadowed name in its own initializer resolves outward (the binding
-        is not yet in scope there) and so diverges too.
+        """Return the Symbol a binding of ``name`` at ``bind_pos`` inside a
+        LAMBDA body would shadow from an ENCLOSING scope in a way the two
+        backends compile differently, or ``None`` when the shadow is safe.
+        ``init_expr`` is the binding's initializer (its ``let`` / ``var``
+        RHS or a ``for`` iterable), consulted for the CONST / FUNCTION case.
 
-        The lookup starts one scope OUTSIDE the nearest function-root scope
-        (a lambda root or a plain function root) and walks the full parent
-        chain, so a name bound in ANY enclosing scope (an enclosing
-        function's / lambda's parameter or local, or a module-level const /
-        function) is found. Each nested lambda is checked in its own right
-        against ITS enclosing scopes.
+        Only fires inside a lambda body: the nearest function-root scope on
+        the current chain must be a lambda root (``is_lambda_root``). The
+        lookup starts one scope OUTSIDE that lambda root and walks the full
+        parent chain, so a name bound in ANY enclosing scope is found. Each
+        nested lambda is checked in its own right against ITS enclosing
+        scopes. The PLAIN-function analogue for a module const / function
+        shadow is handled once, as a whole-function post-pass, by
+        ``_check_module_shadow_divergence`` in ``_items.py``.
 
         Two divergence classes, distinguished by what the name binds to:
 
@@ -328,43 +328,28 @@ class _PatternsMixin:
           enclosing local into the closure env while the Python transpiler
           function-scopes the redeclared name, disagreeing even when the
           outer value is never read -- the M1 no-free-read case). A blanket
-          reject. This can only arise inside a LAMBDA body: at plain
-          function scope the enclosing lookup crosses straight into module
-          scope, which holds no parameters or locals, so this branch never
-          fires there and cannot over-reject a module-name shadow.
+          reject.
 
         - An enclosing module-level CONST or FUNCTION is a global on the
-          Wasm side (referenced directly, never captured), so shadowing it
-          is safe UNLESS the name is referenced OUTWARD. Two outward reads
-          are handled:
+          Wasm side, so shadowing it inside the lambda is safe UNLESS the
+          name is read OUTWARD: within the binding's own initializer
+          (``let S = S`` reads the enclosing const, since ``S`` is not yet
+          in scope in its own RHS), or BEFORE the shadowing binding in the
+          closure body (a read masked by a nested closure that captured the
+          global). An ordinary shadow that does neither (``let X = 3``)
+          stays legal and byte-identical.
 
-          * WITHIN the binding's own initializer (``let S = S`` reads the
-            enclosing const, since ``S`` is not yet in scope in its own RHS)
-            -- rejected at BOTH lambda scope and plain function scope, since
-            the initializer read is unambiguous either way.
-          * BEFORE the shadowing binding in the CLOSURE body (a read masked
-            by a nested closure that captured the global) -- rejected at
-            LAMBDA scope only. The plain-function read-before analogue is a
-            genuine divergence too but is deliberately NOT handled here: it
-            collides with the IFC const-shadow-scoping fixtures (which use
-            such divergent programs to exercise lexical scope) and needs its
-            own uniform treatment together with the symmetric
-            read-after-in-an-unexecuted-block case; deferred pending that.
-
-          An ordinary shadow that neither self-reads nor reads the global
-          before it (``let X = 3``) stays legal and byte-identical.
-
-        A name bound WITHIN the same function / lambda (a parameter or a
-        prior local) is handled separately by the same-function block-shadow
-        check (``lookup_within_function``), which stops at this function
-        root; this helper deliberately looks only OUTSIDE it, so the two
-        checks do not overlap.
+        A name bound WITHIN the same lambda (a parameter or a prior local)
+        is handled separately by the same-function block-shadow check
+        (``lookup_within_function``), which stops at this lambda root; this
+        helper deliberately looks only OUTSIDE it, so the two checks do not
+        overlap.
         """
         from . import SymbolKind
         scope = self.scope
         while scope is not None and not scope.is_function_root:
             scope = scope.parent
-        if scope is None:
+        if scope is None or not scope.is_lambda_root:
             return None
         outer = scope.parent
         if outer is None:
@@ -379,22 +364,17 @@ class _PatternsMixin:
         if sym.kind in (SymbolKind.CONSTANT, SymbolKind.FUNCTION):
             # A read of the module const / function INSIDE the binding's own
             # initializer is an OUTWARD read: the binding is not yet in
-            # scope during its own RHS, so ``let S = S`` (or ``let S = S +
-            # "!"`` / ``let S = "${S}"``) reads the enclosing global. The
-            # Wasm backend keeps that lexical global while Python
-            # function-scopes the whole body, so the two diverge -- reject
-            # regardless of the RHS column (a positional walk cannot see it,
-            # the read sitting AFTER the binding token). Fires at any scope.
+            # scope during its own RHS, so ``let S = S`` reads the enclosing
+            # global. Wasm keeps that lexical global while Python
+            # function-scopes the whole body, so the two diverge.
             if init_expr is not None and self._reads_symbol(
                 init_expr, sym, lambda ident: True,
             ):
                 return sym
-            # A read of the global BEFORE the shadowing binding in a CLOSURE
-            # body diverges too (Python function-scopes the redeclared name;
-            # Wasm keeps the global the nested closure captured). Restricted
-            # to lambda scope: the plain-function analogue is deferred (see
-            # the docstring / module note).
-            if scope.is_lambda_root and self._lambda_ast_stack:
+            # A read of the global BEFORE the shadowing binding in the
+            # closure body diverges too (a nested closure captured the
+            # global; Python later function-scopes the redeclared name).
+            if self._lambda_ast_stack:
                 lam_body = self._lambda_ast_stack[-1].body
                 if self._reads_symbol(
                     lam_body, sym,
@@ -403,6 +383,20 @@ class _PatternsMixin:
                     return sym
             return None
         return None
+
+    def _first_symbol_read(self, node, sym):
+        """The first ``A.Ident`` reachable from ``node`` that RESOLVES to
+        ``sym`` (via ``self.bindings``), or ``None``. Names the read site
+        in the module-shadow divergence diagnostic. ``_reads_symbol`` stops
+        at the first accepted ident, so the recorded one is the first."""
+        found = [None]
+
+        def accept(ident) -> bool:
+            found[0] = ident
+            return True
+
+        self._reads_symbol(node, sym, accept)
+        return found[0]
 
     @staticmethod
     def _pos_before(pos, bind_pos) -> bool:

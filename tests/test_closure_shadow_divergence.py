@@ -598,5 +598,87 @@ class TestClosureShadowLegalRunsIdentically(unittest.TestCase):
         self.assertEqual(py, "5\n12\n")
 
 
+# The whole-function post-pass rejects a PLAIN function that both
+# name-shadows a module const / function AND reads it. These pin the
+# binding forms and read forms the per-binding lambda paths do NOT cover:
+# a ``var`` shadow, a struct-pattern shorthand shadow, a shadow of a
+# module FUNCTION, and a read as a call argument.
+_PF_VAR = (
+    "const S: @secret String = \"s3cr3t\"\n"
+    "fun leak() -> String\n"
+    "    let out = S\n"
+    "    var S = \"z\"\n"
+    "    return out\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(leak())\n"
+)
+
+# ``let Box { k } = bx`` binds ``k`` via struct-pattern shorthand,
+# shadowing the secret const ``k`` that ``let out = k`` reads first: a
+# real Wasm secret leak on baseline, now rejected. Set (a) must enumerate
+# the shorthand-bound name for this to fire.
+_PF_STRUCT_SHORTHAND = (
+    "type Box { k: String }\n"
+    "const k: @secret String = \"s3cr3t\"\n"
+    "fun leak(bx: Box) -> String\n"
+    "    let out = k\n"
+    "    let Box { k } = bx\n"
+    "    return out\n"
+    "fun main(stdio: Stdio, bx: Box)\n"
+    "    stdio.println(leak(bx))\n"
+)
+
+_PF_FUNCTION_SHADOW = (
+    "fun helper() -> String\n"
+    "    return \"s3cr3t\"\n"
+    "fun leak() -> String\n"
+    "    let out = helper()\n"
+    "    let helper = \"z\"\n"
+    "    return out\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(leak())\n"
+)
+
+_PF_CALL_ARG = (
+    "const S: @secret String = \"s3cr3t\"\n"
+    "fun sink(x: String, stdio: Stdio)\n"
+    "    stdio.println(x)\n"
+    "fun main(stdio: Stdio)\n"
+    "    sink(S, stdio)\n"
+    "    let S = \"z\"\n"
+)
+
+
+class TestPlainFunctionModuleShadow(unittest.TestCase):
+    """Whole-function post-pass: a plain function that shadows and reads a
+    module const / function is rejected (the lambda class is handled
+    separately, per-binding)."""
+
+    def test_var_shadow_rejected(self):
+        self.assertTrue(_reject_msgs(_PF_VAR), "expected module-shadow error")
+
+    def test_struct_pattern_shorthand_shadow_rejected(self):
+        self.assertTrue(
+            _reject_msgs(_PF_STRUCT_SHORTHAND), "expected module-shadow error",
+        )
+
+    def test_module_function_shadow_rejected(self):
+        self.assertTrue(
+            _reject_msgs(_PF_FUNCTION_SHADOW), "expected module-shadow error",
+        )
+
+    def test_read_as_call_arg_rejected(self):
+        self.assertTrue(
+            _reject_msgs(_PF_CALL_ARG), "expected module-shadow error",
+        )
+
+    def test_rejected_in_both_tiers(self):
+        strict = _PF_VAR.replace(
+            "fun main(stdio: Stdio)", "@strict_ifc()\nfun main(stdio: Stdio)",
+        )
+        self.assertTrue(_reject_msgs(_PF_VAR), "default tier")
+        self.assertTrue(_reject_msgs(strict), "strict tier")
+
+
 if __name__ == "__main__":
     unittest.main()
