@@ -2342,6 +2342,18 @@ class WasmEmitter(
         # tag instead of re-deriving from ``Function.locals`` is what stops
         # a dead lambda-body local (whose Fun type the closure emitter
         # keeps) from mis-routing a same-named enclosing module call.
+        #
+        # Coupling: this by-name signature retrieval stays SAFE for the
+        # enclosing-scope-shadow trap family (a lambda-body local shadowing
+        # an enclosing param/local of a different Fun signature, then
+        # called) ONLY because the analyzer rejects those shapes at
+        # ``--check`` before lowering: commit 4b9c9e6 (a lambda-body bind
+        # shadowing an enclosing scope) and commit 887f0c3 (a same-scope
+        # bind shadowing a module const/function it reads). Relaxing either
+        # guard lets such a shape reach here, where the name-keyed
+        # ``Function.locals`` lookup can again pick up the dead shadow's
+        # residual Fun type; revisit this retrieval first. Pinned by
+        # tests/test_ir_wasm_l2_name_shadow.py::TestFunTypedRoutingGuardCoupling.
         callee_ty = self._lookup_local_or_param_ty(instr.callee_name)
         if instr.route == "closure":
             self._emit_closure_call(instr, callee_ty)

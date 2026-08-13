@@ -291,6 +291,13 @@ class TestClosureShadowRejected(unittest.TestCase):
         self.assertTrue(_reject_msgs(_MIN_P1), "expected closure-shadow error")
 
     def test_m1_shadows_outer_param(self):
+        # Load-bearing for the Fun-typed call-routing fix (3673fd4, branch
+        # fix-fun-shadow-call-routing): the Wasm emitter still retrieves a
+        # closure signature by name, so a lambda-body local shadowing an
+        # enclosing param must stay rejected here or that lookup can
+        # mis-route a same-named call. The routing-flavoured (Fun param,
+        # called) variant is pinned by
+        # tests/test_ir_wasm_l2_name_shadow.py::TestFunTypedRoutingGuardCoupling.
         self.assertTrue(
             _reject_msgs(_M1_PARAM), "expected closure-shadow error",
         )
@@ -663,6 +670,12 @@ class TestPlainFunctionModuleShadow(unittest.TestCase):
         )
 
     def test_module_function_shadow_rejected(self):
+        # Load-bearing for the Fun-typed call-routing fix (3673fd4, branch
+        # fix-fun-shadow-call-routing): the emitter's by-name closure
+        # signature lookup stays safe for a module-function shadow only
+        # because this rejection fires before lowering. The routing-flavoured
+        # (module function called, then Fun-local shadow) variant is pinned by
+        # tests/test_ir_wasm_l2_name_shadow.py::TestFunTypedRoutingGuardCoupling.
         self.assertTrue(
             _reject_msgs(_PF_FUNCTION_SHADOW), "expected module-shadow error",
         )

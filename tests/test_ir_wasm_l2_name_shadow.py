@@ -642,5 +642,105 @@ class TestConstOfFunCalleeKnownOpen(unittest.TestCase):
         self.assertIn("$HELPER", str(ctx_n.exception))
 
 
+# ---------------------------------------------------------------------
+# Coupling with the two pre-existing analyzer shadow guards.
+#
+# The routing fix (3673fd4, branch fix-fun-shadow-call-routing) records
+# the direct-vs-closure decision on the ``Call`` node, but the Wasm
+# emitter STILL retrieves the closure signature by NAME via
+# ``_lookup_local_or_param_ty`` (``_emit_user_call`` / ``_is_tail_callable``
+# in capa/ir/_emit_wasm/__init__.py). That by-name retrieval stays safe
+# for the enclosing-scope-shadow TRAP family ONLY because the analyzer
+# rejects those shapes at ``--check`` BEFORE lowering:
+#
+#   * commit 4b9c9e6 - a lambda-body binding that shadows an enclosing
+#     scope (an enclosing param/local is a blanket reject); and
+#   * commit 887f0c3 - a same-function-scope binding that shadows a
+#     module const/function it reads.
+#
+# The routing change closes the module-function-shadow-with-enclosing-read
+# family; the enclosing-scope-shadow trap (a lambda-body local shadowing
+# an enclosing param/local of a DIFFERENT Fun signature, then called)
+# stays safe only because those two guards fire first. If a future change
+# relaxed either guard WITHOUT also routing the emitter's signature
+# retrieval off ``Call.route`` (dropping the name-keyed ``Function.locals``
+# fallback), a trapping / divergent Fun-typed shape would reopen silently.
+# These pins assert the coupling so relaxing a guard fails LOUD here.
+#
+# The broader guard corpora live in tests/test_closure_shadow_divergence.py
+# (TestClosureShadowRejected for 4b9c9e6, TestPlainFunctionModuleShadow for
+# 887f0c3); these two cases are the routing-flavoured (Fun-typed callee /
+# call) shapes that the by-name emitter lookup depends on, kept next to the
+# routing corpus so a dev touching the routing fix sees the dependency.
+# ---------------------------------------------------------------------
+
+# The 4b9c9e6 trap shape: a lambda-body ``let helper`` (a Fun value) shadows
+# the enclosing PARAM ``helper`` of a DIFFERENT Fun signature, and the
+# enclosing scope then CALLS the param. If the guard were relaxed this would
+# reach lowering, where the emitter's by-name ``Function.locals`` lookup
+# would find the dead inner ``helper``'s ``Fun(Int) -> Int`` type and
+# mis-route the 0-arg param call.
+_GUARD_ENCLOSING_PARAM_CALLED = (
+    "fun run(helper: Fun() -> String, stdio: Stdio)\n"
+    "    let g: Fun() -> Int = fun() -> Int =>\n"
+    "        let helper = fun(x: Int) -> Int => x + 1\n"
+    "        return helper(41)\n"
+    "    stdio.println(helper())\n"
+    "    stdio.println(\"${g()}\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    let p = fun() -> String => \"param\"\n"
+    "    run(p, stdio)\n"
+)
+
+# The 887f0c3 shape: a single plain-function scope both CALLS a module
+# function ``helper`` and shadows it with a same-scope ``let helper`` (a Fun
+# value). Python function-scopes the whole body while Wasm keeps the module
+# function, so the analyzer rejects it before lowering.
+_GUARD_MODULE_FN_READ = (
+    "fun helper() -> String\n"
+    "    return \"s3cr3t\"\n"
+    "fun run(stdio: Stdio)\n"
+    "    stdio.println(helper())\n"
+    "    let helper = fun() -> String => \"pub\"\n"
+    "fun main(stdio: Stdio)\n"
+    "    run(stdio)\n"
+)
+
+
+def _reject_msgs(src: str) -> list:
+    tokens = Lexer(src).lex()
+    module = Parser(tokens, source=src).parse_module()
+    result = analyze(module, source=src)
+    return [e.message for e in result.errors if "may not shadow" in e.message]
+
+
+class TestFunTypedRoutingGuardCoupling(unittest.TestCase):
+    """The Fun-typed routing fix (3673fd4) is COUPLED to two pre-existing
+    analyzer shadow guards. The Wasm emitter still retrieves the closure
+    signature by NAME (``_lookup_local_or_param_ty``), which is safe for the
+    enclosing-scope-shadow trap family ONLY because these guards reject
+    those shapes at ``--check`` before lowering. If either rejection is
+    relaxed without first routing that retrieval off ``Call.route``, a
+    trapping / divergent Fun-typed shape reopens silently; these pins make
+    the coupling break loud instead."""
+
+    def test_enclosing_param_shadow_called_rejected(self):
+        # 4b9c9e6: a lambda-body local shadowing an enclosing Fun-typed
+        # param of a different signature that the enclosing scope calls.
+        msgs = _reject_msgs(_GUARD_ENCLOSING_PARAM_CALLED)
+        self.assertTrue(
+            msgs, "expected the enclosing-scope shadow rejection (4b9c9e6)",
+        )
+        self.assertIn("from an enclosing scope", msgs[0])
+
+    def test_module_function_shadow_read_rejected(self):
+        # 887f0c3: a same-scope binding shadowing a module function it reads.
+        msgs = _reject_msgs(_GUARD_MODULE_FN_READ)
+        self.assertTrue(
+            msgs, "expected the module-level shadow rejection (887f0c3)",
+        )
+        self.assertIn("may not shadow the module-level function", msgs[0])
+
+
 if __name__ == "__main__":
     unittest.main()
