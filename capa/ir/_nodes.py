@@ -114,11 +114,23 @@ class Call(Instr):
     call's parameter list (the static manifest's per-call-site
     contribution). Phase 1 leaves it empty; the manifest emitter does
     not yet read CIR, so the field is preserved for future use.
-    """
+
+    ``route`` records the direct-vs-closure routing decision made at
+    LOWERING time (``"direct"`` -> ``call $name``; ``"closure"`` ->
+    dispatch the callee value via ``call_indirect``). The Wasm emitter
+    honours it instead of re-deriving the decision from the flat
+    ``Function.locals`` type map, which intentionally keeps a dead
+    lambda-body local's ``Fun`` type for the closure emitter and so
+    would mis-route a same-named enclosing call (a Python<->Wasm
+    output divergence). ``None`` means the lowerer did not classify the
+    callee (a built-in / intrinsic / variant constructor, which the
+    emitter's earlier branches handle before any routing decision); the
+    emitter then falls back to the ``Function.locals`` lookup."""
     dst: Optional[str]
     callee_name: str
     args: list[Value]
     cap_flow: list[str] = field(default_factory=list)
+    route: Optional[str] = None
 
 
 @dataclass

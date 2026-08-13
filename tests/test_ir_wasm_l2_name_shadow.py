@@ -18,9 +18,17 @@ module global. The fix decouples the resolution role into a per-function
 (like ``_params``), leaving ``_locals`` intact for the emitter.
 
 These pins lock the eight closed variants byte-identical, prove the two
-controls stay legal and byte-identical, and honestly record the two
-gaps the fix does NOT close (a struct-module-const-as-Wasm-global read,
-and a Fun-typed callee that needs emitter-side liveness).
+controls stay legal and byte-identical, and honestly record the one gap
+the L2 fix does NOT close (a struct-module-const-as-Wasm-global read).
+
+The Fun-typed-callee shadow that L2 left open (a lambda-body ``let helper
+= <Fun>`` shadowing a module function the enclosing scope then CALLS)
+is closed by a follow-up: the direct-vs-closure routing decision is now
+recorded on the ``Call`` IR node at lowering time (``Call.route``) and
+both Wasm emitter sites honour it, instead of re-deriving the decision
+from the flat ``Function.locals`` map (which keeps the dead lambda
+local's Fun type for the closure emitter and so mis-routed the enclosing
+module call). ``TestFunTypedCalleeShadowClosed`` locks that corpus.
 """
 
 import io
@@ -284,25 +292,6 @@ _C10_STRUCT_CONST_NO_LAMBDA = (
     "    leak(stdio)\n"
 )
 
-# cfun: a lambda binds ``let helper = <a Fun value>`` shadowing the
-# module FUNCTION ``helper`` that the enclosing calls after. This is a
-# silent WRONG-value divergence (Python calls the module function, Wasm
-# routes through the stale local). The ``_lower_ident`` gate does NOT
-# close it; it needs emitter-side liveness for a Fun-typed callee
-# (capa/ir/_emit_wasm/__init__.py), a distinct piece of work.
-_CFUN_RESIDUAL = (
-    "fun helper() -> String\n"
-    "    return \"s3cr3t\"\n"
-    "fun leak(stdio: Stdio)\n"
-    "    let g: Fun() -> String = fun() -> String =>\n"
-    "        let helper = fun() -> String => \"pub\"\n"
-    "        return helper()\n"
-    "    stdio.println(helper())\n"
-    "fun main(stdio: Stdio)\n"
-    "    leak(stdio)\n"
-)
-
-
 class TestL2ClosedVariantsCheckPass(unittest.TestCase):
     """Every closed L2 variant is a legal program (``--check`` clean):
     rejecting it would be a false positive on correct code."""
@@ -391,21 +380,266 @@ class TestL2KnownOpenGaps(unittest.TestCase):
         # Python still runs it correctly.
         self.assertEqual(_python_out(_C10_STRUCT_CONST_NO_LAMBDA), "s3cr3t\n")
 
-    def test_cfun_fun_typed_callee_residual(self):
-        # KNOWN-OPEN (Fun-typed callee liveness gap): a ``--check``-clean
-        # program whose Python and Wasm outputs STILL diverge. The lambda
-        # binds ``let helper = <Fun>`` shadowing the module function the
-        # enclosing calls after; the ``_lower_ident`` gate does not close
-        # this - it needs emitter-side liveness for a Fun-typed callee
-        # (capa/ir/_emit_wasm/__init__.py). Pin the residual so it is not
-        # forgotten.
-        module, result = _parse_ok(_CFUN_RESIDUAL)
-        self.assertTrue(result.ok, result.errors)
-        py = _python_out(_CFUN_RESIDUAL)
-        wa = _wasm_out(_CFUN_RESIDUAL)
+
+# ---------------------------------------------------------------------
+# The Fun-typed-callee shadow, now CLOSED. A lambda-body binding whose
+# name equals a module function (or another module Fun symbol) no longer
+# makes the enclosing scope's CALL of that name diverge: the routing
+# decision is recorded on the Call node at lowering time and both Wasm
+# emitter sites honour it, so a dead lambda local's residual Fun type in
+# ``Function.locals`` can no longer re-route a same-named module call.
+# ---------------------------------------------------------------------
+
+# Base residual (was TestL2KnownOpenGaps.test_cfun_fun_typed_callee_residual,
+# which pinned Wasm == "pub"): the lambda binds ``let helper = <Fun>``
+# shadowing the module function ``helper`` the enclosing calls after.
+_CFUN_BASE = (
+    "fun helper() -> String\n"
+    "    return \"s3cr3t\"\n"
+    "fun leak(stdio: Stdio)\n"
+    "    let g: Fun() -> String = fun() -> String =>\n"
+    "        let helper = fun() -> String => \"pub\"\n"
+    "        return helper()\n"
+    "    stdio.println(helper())\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(stdio)\n"
+)
+
+# Tail-call variant: the enclosing ``return helper()`` sits in tail
+# position after the lambda, so the direct-call decision must also flow
+# through the ``return_call`` peephole (_is_tail_callable).
+_CFUN_TAILCALL = (
+    "fun helper() -> String\n"
+    "    return \"s3cr3t\"\n"
+    "fun leak() -> String\n"
+    "    let g: Fun() -> String = fun() -> String =>\n"
+    "        let helper = fun() -> String => \"pub\"\n"
+    "        return helper()\n"
+    "    return helper()\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(leak())\n"
+)
+
+# Two distinct module functions each shadowed by a dead lambda local and
+# both called: each must return its OWN value, not collapse to one.
+_CFUN_TWO_FUNCTIONS = (
+    "fun alpha() -> String\n"
+    "    return \"AAA\"\n"
+    "fun beta() -> String\n"
+    "    return \"BBB\"\n"
+    "fun leak(stdio: Stdio)\n"
+    "    let g: Fun() -> String = fun() -> String =>\n"
+    "        let alpha = fun() -> String => \"x\"\n"
+    "        let beta = fun() -> String => \"y\"\n"
+    "        return alpha() + beta()\n"
+    "    stdio.println(alpha())\n"
+    "    stdio.println(beta())\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(stdio)\n"
+)
+
+# Param-trap runtime witness: the callee is a Fun PARAMETER whose name
+# also names a module function of a DIFFERENT signature. Classifying the
+# module name first (a naive module-first rule) would emit ``call
+# $helper`` (1-arg Int->Int) for a 0-arg call -> a Wasm indirect-call
+# type mismatch; the param-before-module order routes to the parameter.
+_CFUN_PARAM_TRAP = (
+    "fun helper(x: Int) -> Int\n"
+    "    return x + 1\n"
+    "fun run(helper: Fun() -> String, stdio: Stdio)\n"
+    "    stdio.println(helper())\n"
+    "fun main(stdio: Stdio)\n"
+    "    let p = fun() -> String => \"param\"\n"
+    "    run(p, stdio)\n"
+)
+
+# Param-trap validation witness: a 2-arg module function shadowed by a
+# dead lambda local, then called ``helper(2, 3)``. The mis-route pushed
+# two i64 args into the closure ABI -> "type mismatch: expected i32,
+# found i64" at Wasm validation (the module would not even compile). The
+# direct route emits ``call $helper`` with (i64, i64) -> 5.
+_CFUN_TWO_ARG = (
+    "fun helper(a: Int, b: Int) -> Int\n"
+    "    return a + b\n"
+    "fun leak(stdio: Stdio)\n"
+    "    let g: Fun() -> String = fun() -> String =>\n"
+    "        let helper = fun() -> String => \"pub\"\n"
+    "        return helper()\n"
+    "    stdio.println(\"${helper(2, 3)}\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(stdio)\n"
+)
+
+# Fresh-Fun-temp witness: ``make()(5)`` calls the result of a call. The
+# callee is an expression of Fun type (a fresh temp, never a module
+# name), so it must stay a CLOSURE call.
+_CFUN_FRESH_TEMP = (
+    "fun make() -> Fun(Int) -> Int\n"
+    "    return fun(x: Int) -> Int => x + 1\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${make()(5)}\")\n"
+)
+
+# Ordering witness: the callee is BOTH a module-function name AND a Fun
+# parameter (same signature). It must route to the PARAMETER's value.
+_CFUN_PARAM_WINS = (
+    "fun helper() -> String\n"
+    "    return \"modfn\"\n"
+    "fun run(helper: Fun() -> String, stdio: Stdio)\n"
+    "    stdio.println(helper())\n"
+    "fun main(stdio: Stdio)\n"
+    "    let p = fun() -> String => \"param\"\n"
+    "    run(p, stdio)\n"
+)
+
+# A live LOCAL Fun value shadowing a module-function name -> the local
+# wins (a plain, non-lambda closure call).
+_CFUN_LOCAL_WINS = (
+    "fun helper() -> String\n"
+    "    return \"modfn\"\n"
+    "fun main(stdio: Stdio)\n"
+    "    let helper = fun() -> String => \"local\"\n"
+    "    stdio.println(helper())\n"
+)
+
+# A module function read AS A VALUE, stored in a local, then called: the
+# stored Fun value is a live local -> CLOSURE call, byte-identical.
+_CFUN_FN_AS_VALUE = (
+    "fun helper() -> String\n"
+    "    return \"s3cr3t\"\n"
+    "fun main(stdio: Stdio)\n"
+    "    let g = helper\n"
+    "    stdio.println(g())\n"
+)
+
+# A genuine DIRECT module call issued from INSIDE a lambda body must
+# still route direct (the module symbol is neither a live local nor a
+# param nor a capture in the lambda's snapshot).
+_CFUN_DIRECT_IN_LAMBDA = (
+    "fun dbl(x: Int) -> Int\n"
+    "    return x * 2\n"
+    "fun main(stdio: Stdio)\n"
+    "    let g: Fun() -> Int = fun() -> Int => dbl(5)\n"
+    "    stdio.println(\"${g()}\")\n"
+)
+
+# A higher-order-function argument that is a shadowed module function:
+# ``xs.map(dbl)`` reads ``dbl`` as a VALUE (the module funcref) even
+# though a dead lambda local ``dbl`` exists; the routing fix must not
+# perturb the value-read path.
+_CFUN_HOF_ARG = (
+    "fun dbl(x: Int) -> Int\n"
+    "    return x * 2\n"
+    "fun leak(stdio: Stdio)\n"
+    "    let g: Fun() -> Int = fun() -> Int =>\n"
+    "        let dbl = fun(y: Int) -> Int => y + 100\n"
+    "        return dbl(1)\n"
+    "    let xs = [1, 2, 3]\n"
+    "    let ys = xs.map(dbl)\n"
+    "    let total = ys.fold(0, fun(acc: Int, v: Int) -> Int => acc + v)\n"
+    "    stdio.println(\"${total}\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(stdio)\n"
+)
+
+
+_CFUN_CLOSED = [
+    ("base", _CFUN_BASE, "s3cr3t\n"),
+    ("tailcall", _CFUN_TAILCALL, "s3cr3t\n"),
+    ("two_functions", _CFUN_TWO_FUNCTIONS, "AAA\nBBB\n"),
+    ("param_trap_runtime", _CFUN_PARAM_TRAP, "param\n"),
+    ("param_trap_validation", _CFUN_TWO_ARG, "5\n"),
+    ("fresh_fun_temp", _CFUN_FRESH_TEMP, "6\n"),
+    ("param_wins_over_module", _CFUN_PARAM_WINS, "param\n"),
+    ("local_wins_over_module", _CFUN_LOCAL_WINS, "local\n"),
+    ("fn_read_as_value", _CFUN_FN_AS_VALUE, "s3cr3t\n"),
+    ("direct_call_in_lambda", _CFUN_DIRECT_IN_LAMBDA, "10\n"),
+    ("hof_arg_shadowed_fn", _CFUN_HOF_ARG, "12\n"),
+]
+
+
+# A module CONST whose value is a Fun, used as a callee. This classifies
+# DIRECT (a module symbol) and emits ``call $const`` -- there is no such
+# function, so the Wasm build fails LOUD with "unknown func", IDENTICALLY
+# to the shadow-free form. Making a const-of-Fun callee callable is a
+# separate known-open gap; the routing fix must NOT let the shadow turn
+# the call into a silently-wrong closure value.
+_CFUN_CONST_FUN_SHADOW = (
+    "const HELPER: Fun() -> String = fun() -> String => \"s3cr3t\"\n"
+    "fun leak(stdio: Stdio)\n"
+    "    let g: Fun() -> String = fun() -> String =>\n"
+    "        let HELPER = fun() -> String => \"pub\"\n"
+    "        return HELPER()\n"
+    "    stdio.println(HELPER())\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(stdio)\n"
+)
+
+_CFUN_CONST_FUN_NO_LAMBDA = (
+    "const HELPER: Fun() -> String = fun() -> String => \"s3cr3t\"\n"
+    "fun leak(stdio: Stdio)\n"
+    "    stdio.println(HELPER())\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(stdio)\n"
+)
+
+
+class TestFunTypedCalleeShadowCheckPass(unittest.TestCase):
+    """Every closed Fun-typed-callee shape is a legal program
+    (``--check`` clean): the divergence was silent, not rejectable."""
+
+    def test_all_closed_check_pass(self):
+        for name, src, _expected in _CFUN_CLOSED:
+            with self.subTest(shape=name):
+                module, result = _parse_ok(src)
+                self.assertTrue(result.ok, result.errors)
+
+
+@unittest.skipUnless(_has_wasmtime(), "wasmtime not installed")
+class TestFunTypedCalleeShadowClosed(unittest.TestCase):
+    """The Fun-typed-callee shadow corpus runs byte-identical on the
+    Python and Wasm backends. The base shape flips the former
+    known-open pin (which asserted Wasm == "pub" and py != wasm)."""
+
+    def test_closed_shapes_byte_identical(self):
+        for name, src, expected in _CFUN_CLOSED:
+            with self.subTest(shape=name):
+                py = _python_out(src)
+                wa = _wasm_out(src)
+                self.assertEqual(py, wa, f"{name}: Python vs Wasm")
+                self.assertEqual(py, expected, f"{name}: expected output")
+
+    def test_base_flips_former_residual_pin(self):
+        # The exact program the old TestL2KnownOpenGaps pin asserted
+        # diverged (Wasm == "pub"): now both backends print the secret.
+        py = _python_out(_CFUN_BASE)
+        wa = _wasm_out(_CFUN_BASE)
         self.assertEqual(py, "s3cr3t\n")
-        self.assertEqual(wa, "pub\n")
-        self.assertNotEqual(py, wa, "residual divergence (known-open)")
+        self.assertEqual(wa, "s3cr3t\n")
+
+
+class TestConstOfFunCalleeKnownOpen(unittest.TestCase):
+    """KNOWN-OPEN (const-of-Fun callee): a module const whose value is a
+    Fun is not callable on the Wasm backend. The routing fix classifies
+    it DIRECT so it fails LOUD with the same ``unknown func`` error the
+    shadow-free form raises, rather than letting the shadow silently
+    produce a closure value."""
+
+    def test_const_fun_callee_fails_loud_identically(self):
+        from capa.ir import compile_wasm as _cw
+        module_s, result_s = _parse_ok(_CFUN_CONST_FUN_SHADOW)
+        module_n, result_n = _parse_ok(_CFUN_CONST_FUN_NO_LAMBDA)
+        with self.assertRaises(Exception) as ctx_s:
+            _cw(module_s, types=result_s.types)
+        with self.assertRaises(Exception) as ctx_n:
+            _cw(module_n, types=result_n.types)
+        # Same loud failure with and without the lambda: the shadow does
+        # not change how the enclosing call resolves (both emit
+        # ``call $HELPER``, which has no such function).
+        self.assertIn("unknown func", str(ctx_s.exception))
+        self.assertIn("$HELPER", str(ctx_s.exception))
+        self.assertIn("unknown func", str(ctx_n.exception))
+        self.assertIn("$HELPER", str(ctx_n.exception))
 
 
 if __name__ == "__main__":

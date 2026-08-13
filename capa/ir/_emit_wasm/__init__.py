@@ -1654,9 +1654,17 @@ class WasmEmitter(
                 and name not in self._user_fn_names \
                 and "IoError" in self._struct_layouts:
             return False
-        callee_ty = self._lookup_local_or_param_ty(name)
-        if callee_ty and callee_ty.startswith("Fun"):
+        # Honour the lowerer's routing tag (same decision as
+        # ``_emit_user_call``): a closure call keeps its normal call +
+        # return lowering, only a direct call is eligible for
+        # ``return_call``. An unclassified Call falls back to the
+        # historical Fun-type guess from ``Function.locals``.
+        if instr.route == "closure":
             return False
+        if instr.route is None:
+            callee_ty = self._lookup_local_or_param_ty(name)
+            if callee_ty and callee_ty.startswith("Fun"):
+                return False
         return True
 
     def _push_call_args(self, args: list) -> None:
@@ -2328,9 +2336,19 @@ class WasmEmitter(
             self._write("i64.trunc_f64_s")
             self._store_or_drop_result(instr.dst, "Int")
             return
-        # Closure call: callee is a local / param of Fun type.
+        # Closure vs direct routing. The DECISION is the tag the lowerer
+        # recorded on the Call node (``_classify_call_route``); the type
+        # lookup is still needed for the closure signature. Honouring the
+        # tag instead of re-deriving from ``Function.locals`` is what stops
+        # a dead lambda-body local (whose Fun type the closure emitter
+        # keeps) from mis-routing a same-named enclosing module call.
         callee_ty = self._lookup_local_or_param_ty(instr.callee_name)
-        if callee_ty and callee_ty.startswith("Fun"):
+        if instr.route == "closure":
+            self._emit_closure_call(instr, callee_ty)
+            return
+        if instr.route is None and callee_ty and callee_ty.startswith("Fun"):
+            # Unclassified Call (not produced by the lowerer, which tags
+            # every Call): fall back to the historical locals-driven guess.
             self._emit_closure_call(instr, callee_ty)
             return
         self._push_call_args(instr.args)

@@ -649,10 +649,60 @@ class _LowerExprMixin:
             or result_ty.startswith("?")
         ):
             result_ty = "IoError"
+        route = self._classify_call_route(e.callee.name, resolved_callee)
         dst = fresh_local(self._counter)
         self._locals[dst] = result_ty
-        self._instrs.append(Call(dst=dst, callee_name=callee_name, args=args))
+        self._instrs.append(
+            Call(dst=dst, callee_name=callee_name, args=args, route=route)
+        )
         return Value(kind="local", name=dst, ty=result_ty)
+
+    def _classify_call_route(self, orig_name: str, resolved: str):
+        """Decide direct-vs-closure routing for a call at LOWERING time,
+        recorded on the ``Call`` node so both Wasm emitter sites honour
+        the decision instead of re-guessing from the flat
+        ``Function.locals`` type map (which intentionally keeps a dead
+        lambda-body local's ``Fun`` type for the closure emitter, and so
+        would mis-route a same-named enclosing call).
+
+        Classification ORDER is load-bearing. A callee that resolves to a
+        live local, a Fun-typed parameter, or a captured Fun value (both
+        of the latter reachable through the lambda's snapshotted
+        ``_params`` / ``_live_locals``) is a CLOSURE call; ONLY a callee
+        that is none of those and is a module-level symbol is a DIRECT
+        ``call $name``. The order matters: a callee that is BOTH a
+        module-function name AND a Fun parameter must route to the
+        parameter, not to the module function.
+
+        Returns ``"closure"`` / ``"direct"``, or ``None`` for a callee
+        that is neither (a built-in / intrinsic / variant constructor);
+        the emitter's earlier branches handle those before any routing
+        decision, and its ``Function.locals`` fallback covers the rest.
+        """
+        # CLOSURE: a live local shadows any same-named module symbol, so
+        # the callee is the local (its type is Fun, the analyzer having
+        # vetted it callable). This also covers the alpha-renamed outer
+        # binding and, inside a lambda body, a captured enclosing local.
+        if resolved in self._live_locals:
+            return "closure"
+        # CLOSURE: a Fun-typed parameter (covers a captured enclosing
+        # parameter too, since the lambda snapshots ``_params``). Checked
+        # BEFORE the module rule so a Fun param that shares a module
+        # function's name routes to the parameter.
+        pty = self._params.get(orig_name)
+        if pty is not None and pty.startswith("Fun"):
+            return "closure"
+        # DIRECT: a module-level symbol (function or const) that is none
+        # of the above.
+        # known-open: a module const whose value is a Fun classifies
+        # DIRECT here and emits ``call $const`` -- there is no such
+        # function, so it fails loud with "unknown func", identically to
+        # the shadow-free form of the same program. Making a const-of-Fun
+        # callee callable is a separate open gap; it is intentionally left
+        # to fail loud rather than silently produce a value.
+        if orig_name in self._module_names:
+            return "direct"
+        return None
 
     def _lower_call_expr_callee(self, e: A.Call) -> Value:
         """Lower a call whose callee is an expression, not a bare
@@ -687,7 +737,15 @@ class _LowerExprMixin:
                 result_ty = _ty_to_str(t)
         dst = fresh_local(self._counter)
         self._locals[dst] = result_ty
-        self._instrs.append(Call(dst=dst, callee_name=callee_name, args=args))
+        # The callee is the result of an expression of ``Fun(...)`` type
+        # (``make()(5)``, ``fs[0](x)``): a closure call by construction,
+        # and never a module name, so tag it CLOSURE unconditionally.
+        self._instrs.append(
+            Call(
+                dst=dst, callee_name=callee_name, args=args,
+                route="closure",
+            )
+        )
         return Value(kind="local", name=dst, ty=result_ty)
 
     def _lower_field_access(self, e: A.FieldAccess) -> Value:
