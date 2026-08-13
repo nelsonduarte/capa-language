@@ -233,9 +233,18 @@ class _LowerExprMixin:
         outer_instrs = self._instrs
         outer_params = self._params
         outer_caps = self._cap_params
+        # Snapshot ``_live_locals`` the same way ``_params`` is
+        # snapshotted: the copy keeps the enclosing scope's live locals
+        # visible inside the lambda body (so a captured enclosing local
+        # still resolves ``kind="local"``), and the restore below drops
+        # the lambda's OWN binds from the enclosing resolution while
+        # leaving their types in the shared ``_locals`` map for the
+        # closure emitter.
+        outer_live = self._live_locals
         self._instrs = []
         self._params = dict(outer_params)
         self._cap_params = dict(outer_caps)
+        self._live_locals = set(outer_live)
         lambda_params: list[Param] = []
         for p in e.params:
             ty_name = _type_name(p.type_expr) if p.type_expr else "Unknown"
@@ -287,6 +296,7 @@ class _LowerExprMixin:
         self._instrs = outer_instrs
         self._params = outer_params
         self._cap_params = outer_caps
+        self._live_locals = outer_live
         ret_ty = _type_name(e.return_type) if e.return_type else "Unknown"
         # The lambda's runtime type, for IR-internal use only; the
         # Python emitter ignores it. We pick the source-level
@@ -419,7 +429,7 @@ class _LowerExprMixin:
         # not at the outer-scope same-named local. ``_resolve_name``
         # returns the original name when no shadow is active.
         resolved = self._resolve_name(e.name)
-        if resolved in self._locals:
+        if resolved in self._live_locals:
             return Value(
                 kind="local", name=resolved, ty=self._locals[resolved],
             )

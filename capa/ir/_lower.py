@@ -71,6 +71,21 @@ class Lowerer(
         self._counter: dict = {"n": 0}
         self._instrs: list[Instr] = []
         self._locals: dict[str, str] = {}
+        # Resolution-only view of the in-scope local NAMES, decoupled
+        # from ``_locals``. ``_locals`` plays two roles: the live "is
+        # this name an in-scope local?" test read by ``_lower_ident``,
+        # AND the accumulated ``Function.locals`` type map the Wasm
+        # closure emitter pulls a lambda's own local types out of. A
+        # lambda body shares ``_locals`` so its binds persist into the
+        # type map (the emitter needs them), but they must NOT leak
+        # into the enclosing scope's name resolution -- otherwise a
+        # lambda-body ``let K`` (K a module const) makes the enclosing
+        # read of ``K`` resolve to a stale local instead of the global,
+        # which the Wasm backend then mis-emits. ``_live_locals`` carries
+        # only the resolution role and is snapshotted/restored across a
+        # lambda body (like ``_params``), so the lambda's own binds drop
+        # out of the enclosing resolution while ``_locals`` keeps them.
+        self._live_locals: set[str] = set()
         # Per-function attenuation map produced by
         # ``_build_attenuation_map`` (intra-function flow of
         # ``restrict_to`` / ``restrict_to_keys`` /
@@ -273,6 +288,7 @@ class Lowerer(
         outer_counter = self._counter
         outer_instrs = self._instrs
         outer_locals = self._locals
+        outer_live = self._live_locals
         outer_params = self._params
         outer_caps = self._cap_params
         outer_alias = self._alias_stack
@@ -286,6 +302,7 @@ class Lowerer(
         self._counter = {"n": 0}
         self._instrs = []
         self._locals = {}
+        self._live_locals = set()
         self._params = {}
         self._cap_params = {}
         self._alias_stack = [{}]
@@ -301,6 +318,7 @@ class Lowerer(
         self._counter = outer_counter
         self._instrs = outer_instrs
         self._locals = outer_locals
+        self._live_locals = outer_live
         self._params = outer_params
         self._cap_params = outer_caps
         self._alias_stack = outer_alias
@@ -422,9 +440,11 @@ class Lowerer(
             fresh = self._fresh_shadow(name)
             cur_frame[name] = fresh
             self._locals[fresh] = ty
+            self._live_locals.add(fresh)
             return fresh
         cur_frame[name] = name
         self._locals[name] = ty
+        self._live_locals.add(name)
         return name
 
     def _fresh_shadow(self, name: str) -> str:
@@ -437,6 +457,7 @@ class Lowerer(
         self._counter = {"n": 0}
         self._instrs = []
         self._locals = {}
+        self._live_locals = set()
         self._params = {}
         self._cap_params = {}
         self._alias_stack = [{}]
