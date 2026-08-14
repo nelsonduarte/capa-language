@@ -117,15 +117,32 @@ class Call(Instr):
 
     ``route`` records the direct-vs-closure routing decision made at
     LOWERING time (``"direct"`` -> ``call $name``; ``"closure"`` ->
-    dispatch the callee value via ``call_indirect``). The Wasm emitter
-    honours it instead of re-deriving the decision from the flat
-    ``Function.locals`` type map, which intentionally keeps a dead
-    lambda-body local's ``Fun`` type for the closure emitter and so
-    would mis-route a same-named enclosing call (a Python<->Wasm
-    output divergence). ``None`` means the lowerer did not classify the
-    callee (a built-in / intrinsic / variant constructor, which the
-    emitter's earlier branches handle before any routing decision); the
-    emitter then falls back to the ``Function.locals`` lookup."""
+    dispatch the callee value via ``call_indirect``). It is consulted
+    ONLY by the Wasm emitter's closure-vs-direct routing (the ordinary
+    path in ``_emit_wasm._emit_user_call`` and the tail-call peephole
+    ``_is_tail_callable``), which honour the tag instead of re-deriving
+    the decision from the flat ``Function.locals`` type map -- that map
+    intentionally keeps a dead lambda-body local's ``Fun`` type for the
+    closure emitter and so would mis-route a same-named enclosing call
+    (a Python<->Wasm output divergence).
+
+    ``route`` does NOT gate the emitter's by-name special-case branches.
+    ``_emit_user_call`` reaches the routing check only AFTER those
+    branches -- variant constructors (``self._variant_to_sum``),
+    ``IoError``, ``Random``, ``parse_json`` / ``to_json``, ``parse_int``
+    / ``parse_float``, ``panic``, ``to_int`` / ``to_float``, ``_capa_chr``,
+    ``_capa_str_span`` -- have each already ``return``ed, keyed only on
+    ``callee_name``; the lowerer likewise intercepts ``new_map`` /
+    ``new_set`` into MakeMap / MakeSet with no Call (so no ``route``) at
+    all. Hence ``None`` is merely the absence of the tag, NOT a claim
+    that the callee is a built-in / intrinsic / variant, and those
+    branches are NOT shadow-safe: a live-local or Fun-param shadow of one
+    of those names (the lowerer tags it ``"closure"``) still runs as the
+    built-in on Wasm while Python honours the shadow -- a silent wrong
+    value, or a Wasm validation failure, from a ``--check``-clean
+    program. That divergence is a KNOWN-OPEN, pre-existing residual this
+    routing tag does not close. For an ordinary callee whose ``route`` is
+    ``None``, the emitter falls back to the ``Function.locals`` lookup."""
     dst: Optional[str]
     callee_name: str
     args: list[Value]

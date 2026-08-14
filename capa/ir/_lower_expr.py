@@ -674,10 +674,29 @@ class _LowerExprMixin:
         module-function name AND a Fun parameter must route to the
         parameter, not to the module function.
 
-        Returns ``"closure"`` / ``"direct"``, or ``None`` for a callee
-        that is neither (a built-in / intrinsic / variant constructor);
-        the emitter's earlier branches handle those before any routing
-        decision, and its ``Function.locals`` fallback covers the rest.
+        Returns ``"closure"`` / ``"direct"``, or ``None`` when the callee
+        is none of those (not a live local, not a Fun-typed param, not a
+        module-level symbol). ``None`` is only the absence of a tag: it
+        does NOT mean the callee is a built-in / intrinsic / variant
+        constructor, and no return value here makes such a callee
+        shadow-safe. The Wasm emitter consults ``route`` ONLY in its
+        closure-vs-direct routing, which runs AFTER the by-name
+        special-case branches of ``_emit_user_call`` (variant
+        constructors, ``IoError``, ``Random``, ``parse_json`` /
+        ``to_json``, ``parse_int`` / ``parse_float``, ``panic``,
+        ``to_int`` / ``to_float``, ``_capa_chr``, ``_capa_str_span``)
+        have each returned, keyed only on the callee name. (``new_map`` /
+        ``new_set`` never reach this classifier: ``_lower_call``
+        intercepts them into MakeMap / MakeSet upstream, no Call, no
+        route.) So a live-local or Fun-param shadow of one of those
+        built-in names is classified ``"closure"`` here, yet Wasm still
+        runs the built-in while Python honours the shadow -- a silent
+        wrong value, or a Wasm validation failure, from a
+        ``--check``-clean program. That divergence, and the parallel
+        ``new_map`` / ``new_set`` shadow, is a KNOWN-OPEN, pre-existing
+        residual this routing tag does not close. For an ordinary
+        unclassified callee, the emitter's ``Function.locals`` fallback
+        covers the rest.
         """
         # CLOSURE: a live local shadows any same-named module symbol, so
         # the callee is the local (its type is Fun, the analyzer having
