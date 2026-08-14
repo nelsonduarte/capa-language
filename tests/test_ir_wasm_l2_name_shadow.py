@@ -32,6 +32,7 @@ module call). ``TestFunTypedCalleeShadowClosed`` locks that corpus.
 """
 
 import io
+import shutil
 import sys
 import unittest
 
@@ -45,6 +46,10 @@ def _has_wasmtime() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _has_wasm_tools() -> bool:
+    return shutil.which("wasm-tools") is not None
 
 
 def _capture(thunk) -> str:
@@ -618,6 +623,15 @@ class TestFunTypedCalleeShadowClosed(unittest.TestCase):
         self.assertEqual(wa, "s3cr3t\n")
 
 
+# The asserted ``unknown func`` text is produced by the ``wasm-tools``
+# BINARY at parse time (the emitted WAT is well-formed, so it reaches the
+# assembler; a const-of-Fun callee references a function the module never
+# defines). This test only assembles and never runs the blob through
+# wasmtime, so it gates on the binary alone: without ``wasm-tools`` on
+# PATH ``compile_wasm`` raises ``FileNotFoundError`` instead of the
+# asserted text. Its wasmtime-py siblings gate on ``_has_wasmtime`` because
+# they additionally execute the module.
+@unittest.skipUnless(_has_wasm_tools(), "wasm-tools CLI not installed")
 class TestConstOfFunCalleeKnownOpen(unittest.TestCase):
     """KNOWN-OPEN (const-of-Fun callee): a module const whose value is a
     Fun is not callable on the Wasm backend. The routing fix classifies
