@@ -1164,5 +1164,80 @@ class TestMatchArmGuardSideEffect(unittest.TestCase):
                     self.assertEqual(_run_wasm(src), out)
 
 
+# ---- Commit 1: field-qualified pass-to-callee gate (a no-op guard) ------
+#
+# The summary gate that marks a caller parameter sink-reaching when its
+# value is passed to a callee's sink-reaching parameter is now FIELD-
+# QUALIFIED: the whole-value base always reaches (the FN-safety floor),
+# while the content channel is observed only at the callee's SUNK paths.
+# It is a no-op on today's corpus (the content channel carries only
+# container-mutation taint at ``()``, prefix-compatible with every sunk
+# path), so a deep param-carried chain that passes a mutated container
+# through several hops to a sink stays FLAGGED, and its public twin CLEAN.
+
+_PUSH = "fun push_it(xs: List<String>, v: String)\n    xs.push(v)\n"
+_SHOW = ("fun show(xs: List<String>, stdio: Stdio)\n"
+         "    match xs.get(0)\n"
+         "        Some(x) -> stdio.println(x)\n"
+         "        None -> stdio.println(\"empty\")\n")
+_RELAY = ("fun relay(xs: List<String>, stdio: Stdio)\n"
+          "    show(xs, stdio)\n")
+
+# leak -> relay -> show -> sink: the container is mutated in ``leak`` with a
+# param-carried secret, then passed whole through two more hops to the sink.
+DEEP_TAINTED = (
+    "const TOKEN: @secret String = \"s3cr3t\"\n"
+    + _PUSH + _SHOW + _RELAY +
+    "fun leak(secret: String, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    push_it(xs, secret)\n"
+    "    relay(xs, stdio)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(TOKEN, stdio)\n"
+)
+
+# The public twin: identical shape, but a public value is pushed, so no
+# secret ever reaches the sink and the chain stays CLEAN.
+DEEP_CLEAN = (
+    _PUSH + _SHOW + _RELAY +
+    "fun leak(plain: String, stdio: Stdio)\n"
+    "    var xs: List<String> = []\n"
+    "    push_it(xs, plain)\n"
+    "    relay(xs, stdio)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(\"public\", stdio)\n"
+)
+
+
+class TestFieldQualifiedPassToCalleeGate(unittest.TestCase):
+    """The field-qualified summary pass-to-callee gate (Commit 1) is a no-op
+    on the corpus: a deep param-carried tainted chain stays flagged, its
+    public twin stays clean, both backends run identically."""
+
+    def test_deep_tainted_chain_stays_flagged(self):
+        r = _analyze(DEEP_TAINTED)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(DEEP_TAINTED))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_public_twin_stays_clean(self):
+        r = _analyze(DEEP_CLEAN)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+
+    def test_both_backends_run(self):
+        skip = _wasm_unavailable()
+        self.assertEqual(_run_py(DEEP_TAINTED), "s3cr3t\n")
+        self.assertEqual(_run_py(DEEP_CLEAN), "public\n")
+        if skip is None:
+            self.assertEqual(_run_wasm(DEEP_TAINTED), "s3cr3t\n")
+            self.assertEqual(_run_wasm(DEEP_CLEAN), "public\n")
+
+
 if __name__ == "__main__":
     unittest.main()

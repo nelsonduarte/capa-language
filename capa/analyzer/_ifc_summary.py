@@ -1835,6 +1835,41 @@ class _SummaryBuilder:
             else:
                 self._cur_sink_paths.setdefault(p, set()).add(())
 
+    def _sink_reaching_arg(
+        self, arg: A.Expr, arg_src: set, callee_paths, env: dict,
+        reaching: set,
+    ) -> set:
+        """The source set that becomes sink-reaching when ``arg`` binds to a
+        callee's sink-reaching parameter, FIELD-QUALIFIED to the callee's
+        SUNK paths ``callee_paths``. The mirror of ``_sink_arg_field_cleared``
+        in :mod:`._ifc` on the summary side.
+
+        The whole-value BASE taint of ``arg`` (excluding the content channel)
+        always reaches -- the FN-safety floor that keeps every whole-value
+        cross-function leak caught. The content channel is observed ONLY at
+        the callee's sunk paths, composed with the caller's access prefix to
+        ``arg`` (``_content_at``), so a field-store content taint on a
+        DISJOINT sibling does not reach a callee that sinks only a clean path.
+        A callee that sinks the WHOLE parameter records the sentinel ``()``
+        (prefix-compatible with every path), so it observes every field's
+        content and no leak is dropped.
+
+        No-op until the content channel carries field-store taint: today the
+        channel holds only container-mutation taint at ``()`` (prefix-
+        compatible with every sunk path) and propagated-effect taint at a
+        path the caller prefix already covers, so the field-qualified union
+        equals the whole-value read. A NON-Ident-rooted argument has no
+        field-keyed content of its own, so its whole taint reaches
+        unchanged."""
+        root = self._chain_root_name(arg)
+        prefix = self._chain_field_path(arg)
+        if root is None or prefix is None:
+            return arg_src
+        out = set(self._base_taint_of(arg, env, reaching))
+        for sp in (callee_paths or {()}):
+            out |= self._content_at(root, prefix + sp)
+        return out
+
     # ---- calls ------------------------------------------------------
 
     def _taint_of_call(self, e: A.Call, env: dict, reaching: set) -> set:
@@ -1911,7 +1946,13 @@ class _SummaryBuilder:
                     and arg_idx < len(arg_srcs)
                     and arg_srcs[arg_idx]
                 ):
-                    reaching |= arg_srcs[arg_idx]
+                    # Field-qualified to the callee's SUNK paths (the
+                    # whole-value base always reaches; the content channel is
+                    # observed only at the callee's sunk paths). No-op today.
+                    reaching |= self._sink_reaching_arg(
+                        e.args[arg_idx], arg_srcs[arg_idx],
+                        callee_sink_paths.get(pidx), env, reaching,
+                    )
                     # Observational (B1): the params flowing into this
                     # argument reach exactly the sinks the callee's param
                     # ``pidx`` reaches -- inherit ITS caps, not the union.
@@ -2104,7 +2145,12 @@ class _SummaryBuilder:
             callee_sink_paths = self.sink_paths.get(key, {})
             # Index 0 is ``self`` -> the receiver.
             if 0 in sink_params and recv_src:
-                reaching |= recv_src
+                # Field-qualified to the callee's ``self`` (param 0) sunk
+                # paths; the whole-value base always reaches. No-op today.
+                reaching |= self._sink_reaching_arg(
+                    e.receiver, recv_src, callee_sink_paths.get(0),
+                    env, reaching,
+                )
                 # Observational (B1): the params flowing into the receiver
                 # reach exactly the sinks the callee's ``self`` (param 0)
                 # reaches -- inherit param 0's caps, not the union.
@@ -2130,7 +2176,12 @@ class _SummaryBuilder:
                     and arg_idx < len(arg_srcs)
                     and arg_srcs[arg_idx]
                 ):
-                    reaching |= arg_srcs[arg_idx]
+                    # Field-qualified to the callee's ``full_pidx`` sunk
+                    # paths; the whole-value base always reaches. No-op today.
+                    reaching |= self._sink_reaching_arg(
+                        e.args[arg_idx], arg_srcs[arg_idx],
+                        callee_sink_paths.get(full_pidx), env, reaching,
+                    )
                     # Observational (B1): inherit only the caps the callee's
                     # param ``full_pidx`` reaches, attributed to the params
                     # flowing into this argument.
