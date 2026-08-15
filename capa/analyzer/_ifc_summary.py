@@ -266,11 +266,16 @@ def compute_ifc_summaries(
       (``()`` when the parameter itself is the container), or ``None``
       for the whole-value carrier (an aliased / renamed / unkeyable
       root, or a path beyond ``_MAX_FIELD_PATH``).
-    * ``return_effects``: ``{callable_key: frozenset(source_param_idx |
-      INTERNAL_SECRET)}`` -- the callee returns a value derived from the
-      named source(s); the call result is @secret when one fires (a real
-      param whose argument is @secret, or the unconditional internal
-      secret, which includes a declared-@secret field read).
+    * ``return_effects``: ``{callable_key: {field_path -> frozenset(
+      source_param_idx | INTERNAL_SECRET)}}`` -- PER RETURNED-VALUE field
+      path, the sources that flow into that path of the returned value; the
+      call result is @secret when one fires (a real param whose argument is
+      @secret, or the unconditional internal secret, which includes a
+      declared-@secret field read). In this cut every source is recorded at
+      the whole-value sentinel ``()`` and the readers union over every path
+      (whole-value granularity); the per-path keying is the schema Part 3
+      migrates to, bounded by ``_MAX_FIELD_PATH`` so the fixpoint stays
+      finite.
     * ``sink_caps``: ``{callable_key: {param_idx: frozenset(sink
       capability name)}}`` -- PER PARAMETER, the built-in sink
       CAPABILITIES (Stdio / Net / Fs / Db) that THAT parameter's value
@@ -497,7 +502,7 @@ class _SummaryBuilder:
                 self.sink_caps[key] = {}
                 self.sink_paths[key] = {}
                 self.field_effects[key] = {}
-                self.return_effects[key] = set()
+                self.return_effects[key] = {}
                 self.secret_source_params[key] = self._secret_source_params(
                     item.params,
                 )
@@ -523,7 +528,7 @@ class _SummaryBuilder:
                     self.sink_caps[key] = {}
                     self.sink_paths[key] = {}
                     self.field_effects[key] = {}
-                    self.return_effects[key] = set()
+                    self.return_effects[key] = {}
                     self.secret_source_params[key] = (
                         self._secret_source_params(method.params)
                     )
@@ -586,7 +591,7 @@ class _SummaryBuilder:
             self.sink_caps[key] = {}
             self.sink_paths[key] = {}
             self.field_effects[key] = {}
-            self.return_effects[key] = set()
+            self.return_effects[key] = {}
             self.secret_source_params[key] = self._secret_source_params(
                 lam.params,
             )
@@ -796,15 +801,20 @@ class _SummaryBuilder:
                     changed = True
                 if self._merge_effects(self.field_effects[key], effects):
                     changed = True
-                if not returns <= self.return_effects[key]:
-                    self.return_effects[key] |= returns
+                # ``returns`` is a per-path map ``{field-path -> sources}``
+                # (everything recorded at ``()`` in this cut), merged on the
+                # SAME monotone fixpoint as the field-write effect map.
+                if self._merge_effects(self.return_effects[key], returns):
                     changed = True
         sinks = {k: frozenset(v) for k, v in self.summaries.items()}
         feffects = {
             k: {t: frozenset(s) for t, s in v.items()}
             for k, v in self.field_effects.items()
         }
-        reffects = {k: frozenset(v) for k, v in self.return_effects.items()}
+        reffects = {
+            k: {p: frozenset(srcs) for p, srcs in v.items()}
+            for k, v in self.return_effects.items()
+        }
         sink_caps = {
             k: {p: frozenset(c) for p, c in v.items()}
             for k, v in self.sink_caps.items()
@@ -873,7 +883,7 @@ class _SummaryBuilder:
             env[pname] = {idx}
         reaching: set = set()
         effects: dict = {}
-        returns: set = set()
+        returns: dict = {}
         # The additive, FIELD-KEYED CONTENT channel: ``name -> {field-path
         # -> set of source-param / INTERNAL_SECRET}`` that a CALLEE wrote
         # INTO the object bound to ``name`` at that access path (a container
@@ -989,7 +999,19 @@ class _SummaryBuilder:
         # expression EXACTLY ONCE (not walk-then-re-walk), so a branching
         # tail expression's per-branch content isolation is not defeated by
         # a second walk over an already-merged baseline.
-        returns |= self._walk_value_block(decl.body, env, reaching)
+        # The trailing bare expression of the body is an implicit return,
+        # recorded PER PATH exactly like an explicit ``return`` (a returned
+        # LOCAL carries its content channel field-keyed; every other shape
+        # falls back to the whole-value carrier). Walked EXACTLY ONCE, so a
+        # branching tail expression's per-branch content isolation is not
+        # defeated by a second walk over an already-merged baseline.
+        body_stmts = decl.body.stmts
+        if body_stmts and isinstance(body_stmts[-1], A.ExprStmt):
+            for st in body_stmts[:-1]:
+                self._walk_stmt(st, env, reaching)
+            self._record_return(body_stmts[-1].expr, env, reaching)
+        else:
+            self._walk_block(decl.body, env, reaching)
         return reaching, effects, returns, sink_caps_local, sink_paths_local
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
@@ -1136,6 +1158,85 @@ class _SummaryBuilder:
             return recv_src
         return self._taint_of(e, env, reaching)
 
+    def _content_path_key(self, path):
+        """Clamp a field path for the CONTENT channel: an unkeyable ``None``
+        or a path beyond ``_MAX_FIELD_PATH`` becomes the whole-value carrier
+        ``None`` (the content channel's whole-value key), so the content-map
+        key space stays finite and a read of the whole root still observes
+        it (mirror ``_mutation_effect_key``)."""
+        if path is not None and len(path) <= _MAX_FIELD_PATH:
+            return path
+        return None
+
+    def _return_path_key(self, path):
+        """Clamp a field path for the RETURN-effect map: an unkeyable ``None``
+        or a path beyond ``_MAX_FIELD_PATH`` collapses to the whole-value
+        sentinel ``()`` (which every caller read observes), so the return-map
+        key space stays finite and the summary fixpoint terminates (mirror
+        ``_mutation_effect_key``)."""
+        if path is not None and len(path) <= _MAX_FIELD_PATH:
+            return path
+        return ()
+
+    def _seed_content_value(
+        self, root, base_path, value, src, env, reaching,
+    ) -> None:
+        """Content-write a field store into ``root`` at ``base_path`` from
+        ``value``. A struct-literal RHS is LEAF-SEEDED at each leaf's FULL
+        path (mirror ``_struct_lit_field_map`` in :mod:`._ifc`), so a later
+        read of a CLEAN leaf of the stored sub-struct stays clean; any other
+        RHS writes its whole taint ``src`` at ``base_path``. An unkeyable
+        ``None`` root (a call- / index-rooted store target) has no channel and
+        is skipped; an over-``_MAX_FIELD_PATH`` / ``None`` path collapses to
+        the whole-value carrier. Additive and field-keyed exactly like the
+        container-mutation and propagated-effect content, so a read-back of
+        the stored path -- and a whole / return read of the root -- observes
+        it while a disjoint public sibling stays clean."""
+        if root is None:
+            return
+        if isinstance(value, A.StructLit):
+            for name, v in value.fields:
+                leaf = base_path + (name,) if base_path is not None else None
+                self._seed_content_value(root, leaf, v, None, env, reaching)
+            return
+        if src is None:
+            src = self._taint_of(value, env, reaching)
+        if src:
+            self._content_write(root, self._content_path_key(base_path), src)
+
+    def _record_return(self, value: A.Expr, env: dict, reaching: set) -> None:
+        """Record ``value`` as a return-effect, per path. A bare-Ident LOCAL
+        carries its CONTENT channel per path (a field store / container write
+        the body made into it) plus its whole-value BASE at ``()``, so the
+        caller observes the returned struct's field-keyed taint. Every other
+        return shape -- a field-access sub-return (``return o.sub``), a call,
+        a literal, an unwrap, a param -- records the whole-value taint at
+        ``()``: recording a SOURCE-relative path there would misplace the
+        taint relative to the caller's view of the result and drop it (the
+        G_subreturn false negative). A bare Ident that is an un-shadowed
+        secret const has no env / content entry, so it too takes the
+        whole-value branch."""
+        if isinstance(value, A.Ident):
+            root = value.name
+            is_const = (
+                root in self.secret_consts
+                and root not in self._shadowed_consts
+            )
+            if not is_const:
+                bucket = self._cur_content.get(root)
+                if bucket:
+                    for path, srcs in bucket.items():
+                        self._cur_returns.setdefault(
+                            self._return_path_key(path), set(),
+                        ).update(srcs)
+                base = env.get(root, set())
+                if base:
+                    self._cur_returns.setdefault((), set()).update(base)
+                return
+        self._cur_returns.setdefault((), set()).update(
+            self._taint_of(value, env, reaching),
+        )
+
     def _walk_stmt(self, stmt: A.Stmt, env: dict, reaching: set) -> None:
         if isinstance(stmt, A.LetStmt):
             src = self._taint_of(stmt.value, env, reaching)
@@ -1180,6 +1281,18 @@ class _SummaryBuilder:
                 # and closes the augmented-store cross-function leak.
                 self._record_mutation_effect(
                     stmt.target, src, env, field_keyable=True,
+                )
+                # Same-body CONTENT: raise the root's field-keyed content at
+                # the STORED path (a struct-literal RHS is leaf-seeded per
+                # leaf), so a later read-back of the path, a whole read, or a
+                # return of a LOCAL observes it while a disjoint public sibling
+                # stays clean. The pass-to-callee gate is field-qualified
+                # (Commit 1), so passing the whole struct to a callee that
+                # sinks only a clean sibling is not over-flagged.
+                self._seed_content_value(
+                    self._chain_root_name(stmt.target),
+                    self._chain_field_path(stmt.target),
+                    stmt.value, src, env, reaching,
                 )
         elif isinstance(stmt, A.IfStmt):
             # ``env`` (and each condition) is evaluated in the ORIGINAL
@@ -1231,10 +1344,12 @@ class _SummaryBuilder:
             self._content_merge([self._content_isolated(_for_body)])
         elif isinstance(stmt, A.ReturnStmt):
             if stmt.value is not None:
-                # The returned value's source set is a return-secret
-                # effect: it carries the callee's secret-derived result
-                # to the caller's call-result label cross-function.
-                self._cur_returns |= self._taint_of(stmt.value, env, reaching)
+                # The returned value is a return-secret effect, recorded PER
+                # PATH: a returned LOCAL carries its content channel field-
+                # keyed, so the caller observes the returned struct's per-field
+                # taint; every other shape falls back to the whole-value
+                # carrier (see ``_record_return``).
+                self._record_return(stmt.value, env, reaching)
         elif isinstance(stmt, A.ExprStmt):
             self._taint_of(stmt.expr, env, reaching)
         # break / continue carry no value.
@@ -1625,7 +1740,10 @@ class _SummaryBuilder:
         self._shadowed_consts = set(saved_shadowed)
         self._register_shadowing_binds(p.name for p in e.params)
         saved_returns = self._cur_returns
-        lambda_returns: set = set()
+        # ``_cur_returns`` is a per-path map ``{field-path -> sources}``; a
+        # ``return`` inside the lambda body records into it. The lambda
+        # expression's own VALUE taint is the flattened union over every path.
+        lambda_returns: dict = {}
         self._cur_returns = lambda_returns
         # Isolate the content channel like ``body_env``: a cross-function
         # mutation of a CAPTURED local inside the lambda body must not
@@ -1635,16 +1753,18 @@ class _SummaryBuilder:
         self._cur_content = self._content_copy(saved_content)
         try:
             if isinstance(e.body, A.Block):
-                lambda_returns |= self._walk_value_block(
-                    e.body, body_env, reaching,
-                )
+                trailing = self._walk_value_block(e.body, body_env, reaching)
             else:
-                lambda_returns |= self._taint_of(e.body, body_env, reaching)
+                trailing = self._taint_of(e.body, body_env, reaching)
+            lambda_returns.setdefault((), set()).update(trailing)
         finally:
             self._cur_returns = saved_returns
             self._shadowed_consts = saved_shadowed
             self._cur_content = saved_content
-        return lambda_returns
+        out: set = set()
+        for srcs in lambda_returns.values():
+            out |= srcs
+        return out
 
     def _walk_value_block(
         self, block: A.Block, env: dict, reaching: set,
@@ -1727,7 +1847,7 @@ class _SummaryBuilder:
             key, frozenset(),
         )
         self._cur_effects = {}
-        self._cur_returns = set()
+        self._cur_returns = {}
         self._cur_param_index = {name: name for name in free}
         self._shadowed_consts = set()
         self._walk_value_block(body, env, reaching)
@@ -1835,6 +1955,41 @@ class _SummaryBuilder:
             else:
                 self._cur_sink_paths.setdefault(p, set()).add(())
 
+    def _sink_reaching_arg(
+        self, arg: A.Expr, arg_src: set, callee_paths, env: dict,
+        reaching: set,
+    ) -> set:
+        """The source set that becomes sink-reaching when ``arg`` binds to a
+        callee's sink-reaching parameter, FIELD-QUALIFIED to the callee's
+        SUNK paths ``callee_paths``. The mirror of ``_sink_arg_field_cleared``
+        in :mod:`._ifc` on the summary side.
+
+        The whole-value BASE taint of ``arg`` (excluding the content channel)
+        always reaches -- the FN-safety floor that keeps every whole-value
+        cross-function leak caught. The content channel is observed ONLY at
+        the callee's sunk paths, composed with the caller's access prefix to
+        ``arg`` (``_content_at``), so a field-store content taint on a
+        DISJOINT sibling does not reach a callee that sinks only a clean path.
+        A callee that sinks the WHOLE parameter records the sentinel ``()``
+        (prefix-compatible with every path), so it observes every field's
+        content and no leak is dropped.
+
+        No-op until the content channel carries field-store taint: today the
+        channel holds only container-mutation taint at ``()`` (prefix-
+        compatible with every sunk path) and propagated-effect taint at a
+        path the caller prefix already covers, so the field-qualified union
+        equals the whole-value read. A NON-Ident-rooted argument has no
+        field-keyed content of its own, so its whole taint reaches
+        unchanged."""
+        root = self._chain_root_name(arg)
+        prefix = self._chain_field_path(arg)
+        if root is None or prefix is None:
+            return arg_src
+        out = set(self._base_taint_of(arg, env, reaching))
+        for sp in (callee_paths or {()}):
+            out |= self._content_at(root, prefix + sp)
+        return out
+
     # ---- calls ------------------------------------------------------
 
     def _taint_of_call(self, e: A.Call, env: dict, reaching: set) -> set:
@@ -1911,7 +2066,13 @@ class _SummaryBuilder:
                     and arg_idx < len(arg_srcs)
                     and arg_srcs[arg_idx]
                 ):
-                    reaching |= arg_srcs[arg_idx]
+                    # Field-qualified to the callee's SUNK paths (the
+                    # whole-value base always reaches; the content channel is
+                    # observed only at the callee's sunk paths). No-op today.
+                    reaching |= self._sink_reaching_arg(
+                        e.args[arg_idx], arg_srcs[arg_idx],
+                        callee_sink_paths.get(pidx), env, reaching,
+                    )
                     # Observational (B1): the params flowing into this
                     # argument reach exactly the sinks the callee's param
                     # ``pidx`` reaches -- inherit ITS caps, not the union.
@@ -1951,13 +2112,17 @@ class _SummaryBuilder:
             # the method-path narrowing. The invoked Fun-typed-parameter
             # taint still joins in (it is not a summarised callee).
             out = set(invoke_src)
-            for s in self.return_effects.get(key, set()):
-                if s == INTERNAL_SECRET:
-                    out.add(INTERNAL_SECRET)
-                    continue
-                arg_idx = perm.get(s)
-                if arg_idx is not None and arg_idx < len(arg_srcs):
-                    out |= arg_srcs[arg_idx]
+            # The return-effect is a per-path map ``{field-path -> sources}``;
+            # the whole-value call result unions the sources over EVERY path
+            # (path-aware, whole-value granularity).
+            for _rpath, srcs in self.return_effects.get(key, {}).items():
+                for s in srcs:
+                    if s == INTERNAL_SECRET:
+                        out.add(INTERNAL_SECRET)
+                        continue
+                    arg_idx = perm.get(s)
+                    if arg_idx is not None and arg_idx < len(arg_srcs):
+                        out |= arg_srcs[arg_idx]
             return out
         # Non-summarised callee (a Fun-typed parameter invocation, or a
         # name that is not a known free function): conservatively join the
@@ -2058,24 +2223,29 @@ class _SummaryBuilder:
                     injected |= arg_srcs[pos]
             if not injected:
                 continue
-            if isinstance(e.receiver, A.Ident):
-                # Reflect the pushed value on a later READ of the receiver
-                # via the branch-scoped CONTENT channel, NOT ``env``. ``env``
-                # is flat/monotone across branches and doubles as the alias /
-                # mutation-TARGET set, so raising it here made a direct push
-                # in one branch leak into a mutually-exclusive sibling
-                # branch's read (a false positive), and it polluted the alias
-                # set with the pushed VALUE's taint (a spurious self-effect:
-                # the pushed value's param index became a mutation target of
-                # the receiver). The content channel is isolated per branch
-                # and deferred-unioned out (``_content_isolated`` /
-                # ``_content_merge``), so a sibling read stays clean while a
-                # read AFTER the construct still reflects the push -- the
-                # exact separation the cross-function content channel already
-                # uses. ``env``'s alias role is left untouched. The receiver
-                # IS the container here (a bare Ident), so the content is
-                # recorded at path ``()`` -- observed by a WHOLE read of it.
-                self._content_write(e.receiver.name, (), injected)
+            # Reflect the pushed value on a later READ of the receiver via
+            # the branch-scoped CONTENT channel, NOT ``env`` (which is flat /
+            # monotone across branches and doubles as the alias / mutation-
+            # TARGET set: raising it leaked a push in one branch into a
+            # mutually-exclusive sibling's read, and polluted the alias set
+            # with the pushed value's taint). The content channel is isolated
+            # per branch and deferred-unioned out. A bare-Ident receiver IS
+            # the container (path ``()``); a field-chain receiver rooted at a
+            # binding (``box.items.push`` on a LOCAL) records at the
+            # container's field path, so a whole read-back of the local -- or
+            # that field -- observes it while a disjoint sibling stays clean
+            # (admissible now that the pass-to-callee gate is field-qualified,
+            # Commit 1). A call- / index-rooted receiver has no keyable root
+            # and stays the disclosed residual.
+            recv_root = self._chain_root_name(e.receiver)
+            if recv_root is not None:
+                self._content_write(
+                    recv_root,
+                    self._content_path_key(
+                        self._chain_field_path(e.receiver),
+                    ),
+                    injected,
+                )
             # The receiver may be a plain parameter (``xs.push(v)`` -> path
             # ``()``) or a field chain rooted at one (``self.items.push(v)``
             # -> path ``("items",)``); the effect is FIELD-KEYED
@@ -2104,7 +2274,12 @@ class _SummaryBuilder:
             callee_sink_paths = self.sink_paths.get(key, {})
             # Index 0 is ``self`` -> the receiver.
             if 0 in sink_params and recv_src:
-                reaching |= recv_src
+                # Field-qualified to the callee's ``self`` (param 0) sunk
+                # paths; the whole-value base always reaches. No-op today.
+                reaching |= self._sink_reaching_arg(
+                    e.receiver, recv_src, callee_sink_paths.get(0),
+                    env, reaching,
+                )
                 # Observational (B1): the params flowing into the receiver
                 # reach exactly the sinks the callee's ``self`` (param 0)
                 # reaches -- inherit param 0's caps, not the union.
@@ -2130,7 +2305,12 @@ class _SummaryBuilder:
                     and arg_idx < len(arg_srcs)
                     and arg_srcs[arg_idx]
                 ):
-                    reaching |= arg_srcs[arg_idx]
+                    # Field-qualified to the callee's ``full_pidx`` sunk
+                    # paths; the whole-value base always reaches. No-op today.
+                    reaching |= self._sink_reaching_arg(
+                        e.args[arg_idx], arg_srcs[arg_idx],
+                        callee_sink_paths.get(full_pidx), env, reaching,
+                    )
                     # Observational (B1): inherit only the caps the callee's
                     # param ``full_pidx`` reaches, attributed to the params
                     # flowing into this argument.
@@ -2214,13 +2394,15 @@ class _SummaryBuilder:
                 continue
             names, _decl, _is_method = self.callables[key]
             full_perm, _full_args = self._method_full_perm(e, names)
-            for s in sources:
-                if s == INTERNAL_SECRET:
-                    out.add(INTERNAL_SECRET)
-                    continue
-                full_arg_idx = full_perm.get(s)
-                if full_arg_idx is not None and full_arg_idx < len(full_srcs):
-                    out |= full_srcs[full_arg_idx]
+            # ``sources`` is a per-path map; union over EVERY path (whole-value).
+            for _rpath, srcs in sources.items():
+                for s in srcs:
+                    if s == INTERNAL_SECRET:
+                        out.add(INTERNAL_SECRET)
+                        continue
+                    full_arg_idx = full_perm.get(s)
+                    if full_arg_idx is not None and                             full_arg_idx < len(full_srcs):
+                        out |= full_srcs[full_arg_idx]
         return out
 
     def _result_candidate_keys(self, e: A.MethodCall, by_name: list) -> tuple:
