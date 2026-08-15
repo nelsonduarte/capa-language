@@ -671,15 +671,19 @@ class _IfcMixin:
         param_names = getattr(sym, "param_names", []) if sym is not None else []
         perm = _bind(e.args, e.arg_names, param_names)
         label = L.PUBLIC
-        for s in sources:
-            if s == INTERNAL_SECRET:
-                label = L.SECRET
-                continue
-            arg_idx = perm.get(s)
-            if arg_idx is not None and arg_idx < len(e.args):
-                label = L.join(
-                    label, self._return_arg_contribution(e.args[arg_idx]),
-                )
+        # ``sources`` is a per-path return map ``{field-path -> sources}``;
+        # the whole-value call-result label joins over EVERY path.
+        for _rpath, srcs in sources.items():
+            for s in srcs:
+                if s == INTERNAL_SECRET:
+                    label = L.SECRET
+                    continue
+                arg_idx = perm.get(s)
+                if arg_idx is not None and arg_idx < len(e.args):
+                    label = L.join(
+                        label,
+                        self._return_arg_contribution(e.args[arg_idx]),
+                    )
         return label
 
     def _return_arg_contribution(self, arg: A.Expr) -> str:
@@ -2984,10 +2988,15 @@ class _IfcMixin:
             sources = self._ifc_return_effects.get(key)
             if not sources:
                 continue
-            for s in sources:
-                # INTERNAL_SECRET is already handled (-> SECRET) above.
-                if 0 <= s < len(full_labels):
-                    label = L.join(label, full_labels[s])
+            # ``sources`` is a per-path return map ``{field-path -> sources}``;
+            # iterate the SOURCE sets (a path key is a tuple, so the old
+            # ``0 <= s`` scalar test would raise ``TypeError`` on it). Join
+            # over every path (whole-value). INTERNAL_SECRET (-1) is handled
+            # (-> SECRET) above, so ``0 <= s`` skips it here.
+            for _rpath, srcs in sources.items():
+                for s in srcs:
+                    if 0 <= s < len(full_labels):
+                        label = L.join(label, full_labels[s])
         return label
 
     def _return_sources_fire(self, sources, perm, args) -> bool:
@@ -3004,12 +3013,15 @@ class _IfcMixin:
             if idx is None or idx >= len(args):
                 return None
             return args[idx]
-        for s in sources:
-            if s == INTERNAL_SECRET:
-                return True
-            a = arg_for(s)
-            if a is not None and L.normalize(self._label_of(a)) == L.SECRET:
-                return True
+        # ``sources`` is a per-path return map ``{field-path -> sources}``;
+        # any source on ANY path firing taints the whole-value result.
+        for _rpath, srcs in sources.items():
+            for s in srcs:
+                if s == INTERNAL_SECRET:
+                    return True
+                a = arg_for(s)
+                if a is not None and                         L.normalize(self._label_of(a)) == L.SECRET:
+                    return True
         return False
 
     def _check_ifc_call_summary(

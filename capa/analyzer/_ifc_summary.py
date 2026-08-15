@@ -266,11 +266,16 @@ def compute_ifc_summaries(
       (``()`` when the parameter itself is the container), or ``None``
       for the whole-value carrier (an aliased / renamed / unkeyable
       root, or a path beyond ``_MAX_FIELD_PATH``).
-    * ``return_effects``: ``{callable_key: frozenset(source_param_idx |
-      INTERNAL_SECRET)}`` -- the callee returns a value derived from the
-      named source(s); the call result is @secret when one fires (a real
-      param whose argument is @secret, or the unconditional internal
-      secret, which includes a declared-@secret field read).
+    * ``return_effects``: ``{callable_key: {field_path -> frozenset(
+      source_param_idx | INTERNAL_SECRET)}}`` -- PER RETURNED-VALUE field
+      path, the sources that flow into that path of the returned value; the
+      call result is @secret when one fires (a real param whose argument is
+      @secret, or the unconditional internal secret, which includes a
+      declared-@secret field read). In this cut every source is recorded at
+      the whole-value sentinel ``()`` and the readers union over every path
+      (whole-value granularity); the per-path keying is the schema Part 3
+      migrates to, bounded by ``_MAX_FIELD_PATH`` so the fixpoint stays
+      finite.
     * ``sink_caps``: ``{callable_key: {param_idx: frozenset(sink
       capability name)}}`` -- PER PARAMETER, the built-in sink
       CAPABILITIES (Stdio / Net / Fs / Db) that THAT parameter's value
@@ -497,7 +502,7 @@ class _SummaryBuilder:
                 self.sink_caps[key] = {}
                 self.sink_paths[key] = {}
                 self.field_effects[key] = {}
-                self.return_effects[key] = set()
+                self.return_effects[key] = {}
                 self.secret_source_params[key] = self._secret_source_params(
                     item.params,
                 )
@@ -523,7 +528,7 @@ class _SummaryBuilder:
                     self.sink_caps[key] = {}
                     self.sink_paths[key] = {}
                     self.field_effects[key] = {}
-                    self.return_effects[key] = set()
+                    self.return_effects[key] = {}
                     self.secret_source_params[key] = (
                         self._secret_source_params(method.params)
                     )
@@ -586,7 +591,7 @@ class _SummaryBuilder:
             self.sink_caps[key] = {}
             self.sink_paths[key] = {}
             self.field_effects[key] = {}
-            self.return_effects[key] = set()
+            self.return_effects[key] = {}
             self.secret_source_params[key] = self._secret_source_params(
                 lam.params,
             )
@@ -796,15 +801,20 @@ class _SummaryBuilder:
                     changed = True
                 if self._merge_effects(self.field_effects[key], effects):
                     changed = True
-                if not returns <= self.return_effects[key]:
-                    self.return_effects[key] |= returns
+                # ``returns`` is a per-path map ``{field-path -> sources}``
+                # (everything recorded at ``()`` in this cut), merged on the
+                # SAME monotone fixpoint as the field-write effect map.
+                if self._merge_effects(self.return_effects[key], returns):
                     changed = True
         sinks = {k: frozenset(v) for k, v in self.summaries.items()}
         feffects = {
             k: {t: frozenset(s) for t, s in v.items()}
             for k, v in self.field_effects.items()
         }
-        reffects = {k: frozenset(v) for k, v in self.return_effects.items()}
+        reffects = {
+            k: {p: frozenset(srcs) for p, srcs in v.items()}
+            for k, v in self.return_effects.items()
+        }
         sink_caps = {
             k: {p: frozenset(c) for p, c in v.items()}
             for k, v in self.sink_caps.items()
@@ -873,7 +883,7 @@ class _SummaryBuilder:
             env[pname] = {idx}
         reaching: set = set()
         effects: dict = {}
-        returns: set = set()
+        returns: dict = {}
         # The additive, FIELD-KEYED CONTENT channel: ``name -> {field-path
         # -> set of source-param / INTERNAL_SECRET}`` that a CALLEE wrote
         # INTO the object bound to ``name`` at that access path (a container
@@ -989,7 +999,9 @@ class _SummaryBuilder:
         # expression EXACTLY ONCE (not walk-then-re-walk), so a branching
         # tail expression's per-branch content isolation is not defeated by
         # a second walk over an already-merged baseline.
-        returns |= self._walk_value_block(decl.body, env, reaching)
+        returns.setdefault((), set()).update(
+            self._walk_value_block(decl.body, env, reaching),
+        )
         return reaching, effects, returns, sink_caps_local, sink_paths_local
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
@@ -1234,7 +1246,9 @@ class _SummaryBuilder:
                 # The returned value's source set is a return-secret
                 # effect: it carries the callee's secret-derived result
                 # to the caller's call-result label cross-function.
-                self._cur_returns |= self._taint_of(stmt.value, env, reaching)
+                self._cur_returns.setdefault((), set()).update(
+                    self._taint_of(stmt.value, env, reaching),
+                )
         elif isinstance(stmt, A.ExprStmt):
             self._taint_of(stmt.expr, env, reaching)
         # break / continue carry no value.
@@ -1625,7 +1639,10 @@ class _SummaryBuilder:
         self._shadowed_consts = set(saved_shadowed)
         self._register_shadowing_binds(p.name for p in e.params)
         saved_returns = self._cur_returns
-        lambda_returns: set = set()
+        # ``_cur_returns`` is a per-path map ``{field-path -> sources}``; a
+        # ``return`` inside the lambda body records into it. The lambda
+        # expression's own VALUE taint is the flattened union over every path.
+        lambda_returns: dict = {}
         self._cur_returns = lambda_returns
         # Isolate the content channel like ``body_env``: a cross-function
         # mutation of a CAPTURED local inside the lambda body must not
@@ -1635,16 +1652,18 @@ class _SummaryBuilder:
         self._cur_content = self._content_copy(saved_content)
         try:
             if isinstance(e.body, A.Block):
-                lambda_returns |= self._walk_value_block(
-                    e.body, body_env, reaching,
-                )
+                trailing = self._walk_value_block(e.body, body_env, reaching)
             else:
-                lambda_returns |= self._taint_of(e.body, body_env, reaching)
+                trailing = self._taint_of(e.body, body_env, reaching)
+            lambda_returns.setdefault((), set()).update(trailing)
         finally:
             self._cur_returns = saved_returns
             self._shadowed_consts = saved_shadowed
             self._cur_content = saved_content
-        return lambda_returns
+        out: set = set()
+        for srcs in lambda_returns.values():
+            out |= srcs
+        return out
 
     def _walk_value_block(
         self, block: A.Block, env: dict, reaching: set,
@@ -1727,7 +1746,7 @@ class _SummaryBuilder:
             key, frozenset(),
         )
         self._cur_effects = {}
-        self._cur_returns = set()
+        self._cur_returns = {}
         self._cur_param_index = {name: name for name in free}
         self._shadowed_consts = set()
         self._walk_value_block(body, env, reaching)
@@ -1992,13 +2011,17 @@ class _SummaryBuilder:
             # the method-path narrowing. The invoked Fun-typed-parameter
             # taint still joins in (it is not a summarised callee).
             out = set(invoke_src)
-            for s in self.return_effects.get(key, set()):
-                if s == INTERNAL_SECRET:
-                    out.add(INTERNAL_SECRET)
-                    continue
-                arg_idx = perm.get(s)
-                if arg_idx is not None and arg_idx < len(arg_srcs):
-                    out |= arg_srcs[arg_idx]
+            # The return-effect is a per-path map ``{field-path -> sources}``;
+            # the whole-value call result unions the sources over EVERY path
+            # (path-aware, whole-value granularity).
+            for _rpath, srcs in self.return_effects.get(key, {}).items():
+                for s in srcs:
+                    if s == INTERNAL_SECRET:
+                        out.add(INTERNAL_SECRET)
+                        continue
+                    arg_idx = perm.get(s)
+                    if arg_idx is not None and arg_idx < len(arg_srcs):
+                        out |= arg_srcs[arg_idx]
             return out
         # Non-summarised callee (a Fun-typed parameter invocation, or a
         # name that is not a known free function): conservatively join the
@@ -2265,13 +2288,15 @@ class _SummaryBuilder:
                 continue
             names, _decl, _is_method = self.callables[key]
             full_perm, _full_args = self._method_full_perm(e, names)
-            for s in sources:
-                if s == INTERNAL_SECRET:
-                    out.add(INTERNAL_SECRET)
-                    continue
-                full_arg_idx = full_perm.get(s)
-                if full_arg_idx is not None and full_arg_idx < len(full_srcs):
-                    out |= full_srcs[full_arg_idx]
+            # ``sources`` is a per-path map; union over EVERY path (whole-value).
+            for _rpath, srcs in sources.items():
+                for s in srcs:
+                    if s == INTERNAL_SECRET:
+                        out.add(INTERNAL_SECRET)
+                        continue
+                    full_arg_idx = full_perm.get(s)
+                    if full_arg_idx is not None and                             full_arg_idx < len(full_srcs):
+                        out |= full_srcs[full_arg_idx]
         return out
 
     def _result_candidate_keys(self, e: A.MethodCall, by_name: list) -> tuple:
