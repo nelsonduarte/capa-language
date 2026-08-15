@@ -999,9 +999,19 @@ class _SummaryBuilder:
         # expression EXACTLY ONCE (not walk-then-re-walk), so a branching
         # tail expression's per-branch content isolation is not defeated by
         # a second walk over an already-merged baseline.
-        returns.setdefault((), set()).update(
-            self._walk_value_block(decl.body, env, reaching),
-        )
+        # The trailing bare expression of the body is an implicit return,
+        # recorded PER PATH exactly like an explicit ``return`` (a returned
+        # LOCAL carries its content channel field-keyed; every other shape
+        # falls back to the whole-value carrier). Walked EXACTLY ONCE, so a
+        # branching tail expression's per-branch content isolation is not
+        # defeated by a second walk over an already-merged baseline.
+        body_stmts = decl.body.stmts
+        if body_stmts and isinstance(body_stmts[-1], A.ExprStmt):
+            for st in body_stmts[:-1]:
+                self._walk_stmt(st, env, reaching)
+            self._record_return(body_stmts[-1].expr, env, reaching)
+        else:
+            self._walk_block(decl.body, env, reaching)
         return reaching, effects, returns, sink_caps_local, sink_paths_local
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
@@ -1148,6 +1158,85 @@ class _SummaryBuilder:
             return recv_src
         return self._taint_of(e, env, reaching)
 
+    def _content_path_key(self, path):
+        """Clamp a field path for the CONTENT channel: an unkeyable ``None``
+        or a path beyond ``_MAX_FIELD_PATH`` becomes the whole-value carrier
+        ``None`` (the content channel's whole-value key), so the content-map
+        key space stays finite and a read of the whole root still observes
+        it (mirror ``_mutation_effect_key``)."""
+        if path is not None and len(path) <= _MAX_FIELD_PATH:
+            return path
+        return None
+
+    def _return_path_key(self, path):
+        """Clamp a field path for the RETURN-effect map: an unkeyable ``None``
+        or a path beyond ``_MAX_FIELD_PATH`` collapses to the whole-value
+        sentinel ``()`` (which every caller read observes), so the return-map
+        key space stays finite and the summary fixpoint terminates (mirror
+        ``_mutation_effect_key``)."""
+        if path is not None and len(path) <= _MAX_FIELD_PATH:
+            return path
+        return ()
+
+    def _seed_content_value(
+        self, root, base_path, value, src, env, reaching,
+    ) -> None:
+        """Content-write a field store into ``root`` at ``base_path`` from
+        ``value``. A struct-literal RHS is LEAF-SEEDED at each leaf's FULL
+        path (mirror ``_struct_lit_field_map`` in :mod:`._ifc`), so a later
+        read of a CLEAN leaf of the stored sub-struct stays clean; any other
+        RHS writes its whole taint ``src`` at ``base_path``. An unkeyable
+        ``None`` root (a call- / index-rooted store target) has no channel and
+        is skipped; an over-``_MAX_FIELD_PATH`` / ``None`` path collapses to
+        the whole-value carrier. Additive and field-keyed exactly like the
+        container-mutation and propagated-effect content, so a read-back of
+        the stored path -- and a whole / return read of the root -- observes
+        it while a disjoint public sibling stays clean."""
+        if root is None:
+            return
+        if isinstance(value, A.StructLit):
+            for name, v in value.fields:
+                leaf = base_path + (name,) if base_path is not None else None
+                self._seed_content_value(root, leaf, v, None, env, reaching)
+            return
+        if src is None:
+            src = self._taint_of(value, env, reaching)
+        if src:
+            self._content_write(root, self._content_path_key(base_path), src)
+
+    def _record_return(self, value: A.Expr, env: dict, reaching: set) -> None:
+        """Record ``value`` as a return-effect, per path. A bare-Ident LOCAL
+        carries its CONTENT channel per path (a field store / container write
+        the body made into it) plus its whole-value BASE at ``()``, so the
+        caller observes the returned struct's field-keyed taint. Every other
+        return shape -- a field-access sub-return (``return o.sub``), a call,
+        a literal, an unwrap, a param -- records the whole-value taint at
+        ``()``: recording a SOURCE-relative path there would misplace the
+        taint relative to the caller's view of the result and drop it (the
+        G_subreturn false negative). A bare Ident that is an un-shadowed
+        secret const has no env / content entry, so it too takes the
+        whole-value branch."""
+        if isinstance(value, A.Ident):
+            root = value.name
+            is_const = (
+                root in self.secret_consts
+                and root not in self._shadowed_consts
+            )
+            if not is_const:
+                bucket = self._cur_content.get(root)
+                if bucket:
+                    for path, srcs in bucket.items():
+                        self._cur_returns.setdefault(
+                            self._return_path_key(path), set(),
+                        ).update(srcs)
+                base = env.get(root, set())
+                if base:
+                    self._cur_returns.setdefault((), set()).update(base)
+                return
+        self._cur_returns.setdefault((), set()).update(
+            self._taint_of(value, env, reaching),
+        )
+
     def _walk_stmt(self, stmt: A.Stmt, env: dict, reaching: set) -> None:
         if isinstance(stmt, A.LetStmt):
             src = self._taint_of(stmt.value, env, reaching)
@@ -1192,6 +1281,18 @@ class _SummaryBuilder:
                 # and closes the augmented-store cross-function leak.
                 self._record_mutation_effect(
                     stmt.target, src, env, field_keyable=True,
+                )
+                # Same-body CONTENT: raise the root's field-keyed content at
+                # the STORED path (a struct-literal RHS is leaf-seeded per
+                # leaf), so a later read-back of the path, a whole read, or a
+                # return of a LOCAL observes it while a disjoint public sibling
+                # stays clean. The pass-to-callee gate is field-qualified
+                # (Commit 1), so passing the whole struct to a callee that
+                # sinks only a clean sibling is not over-flagged.
+                self._seed_content_value(
+                    self._chain_root_name(stmt.target),
+                    self._chain_field_path(stmt.target),
+                    stmt.value, src, env, reaching,
                 )
         elif isinstance(stmt, A.IfStmt):
             # ``env`` (and each condition) is evaluated in the ORIGINAL
@@ -1243,12 +1344,12 @@ class _SummaryBuilder:
             self._content_merge([self._content_isolated(_for_body)])
         elif isinstance(stmt, A.ReturnStmt):
             if stmt.value is not None:
-                # The returned value's source set is a return-secret
-                # effect: it carries the callee's secret-derived result
-                # to the caller's call-result label cross-function.
-                self._cur_returns.setdefault((), set()).update(
-                    self._taint_of(stmt.value, env, reaching),
-                )
+                # The returned value is a return-secret effect, recorded PER
+                # PATH: a returned LOCAL carries its content channel field-
+                # keyed, so the caller observes the returned struct's per-field
+                # taint; every other shape falls back to the whole-value
+                # carrier (see ``_record_return``).
+                self._record_return(stmt.value, env, reaching)
         elif isinstance(stmt, A.ExprStmt):
             self._taint_of(stmt.expr, env, reaching)
         # break / continue carry no value.
@@ -2122,24 +2223,29 @@ class _SummaryBuilder:
                     injected |= arg_srcs[pos]
             if not injected:
                 continue
-            if isinstance(e.receiver, A.Ident):
-                # Reflect the pushed value on a later READ of the receiver
-                # via the branch-scoped CONTENT channel, NOT ``env``. ``env``
-                # is flat/monotone across branches and doubles as the alias /
-                # mutation-TARGET set, so raising it here made a direct push
-                # in one branch leak into a mutually-exclusive sibling
-                # branch's read (a false positive), and it polluted the alias
-                # set with the pushed VALUE's taint (a spurious self-effect:
-                # the pushed value's param index became a mutation target of
-                # the receiver). The content channel is isolated per branch
-                # and deferred-unioned out (``_content_isolated`` /
-                # ``_content_merge``), so a sibling read stays clean while a
-                # read AFTER the construct still reflects the push -- the
-                # exact separation the cross-function content channel already
-                # uses. ``env``'s alias role is left untouched. The receiver
-                # IS the container here (a bare Ident), so the content is
-                # recorded at path ``()`` -- observed by a WHOLE read of it.
-                self._content_write(e.receiver.name, (), injected)
+            # Reflect the pushed value on a later READ of the receiver via
+            # the branch-scoped CONTENT channel, NOT ``env`` (which is flat /
+            # monotone across branches and doubles as the alias / mutation-
+            # TARGET set: raising it leaked a push in one branch into a
+            # mutually-exclusive sibling's read, and polluted the alias set
+            # with the pushed value's taint). The content channel is isolated
+            # per branch and deferred-unioned out. A bare-Ident receiver IS
+            # the container (path ``()``); a field-chain receiver rooted at a
+            # binding (``box.items.push`` on a LOCAL) records at the
+            # container's field path, so a whole read-back of the local -- or
+            # that field -- observes it while a disjoint sibling stays clean
+            # (admissible now that the pass-to-callee gate is field-qualified,
+            # Commit 1). A call- / index-rooted receiver has no keyable root
+            # and stays the disclosed residual.
+            recv_root = self._chain_root_name(e.receiver)
+            if recv_root is not None:
+                self._content_write(
+                    recv_root,
+                    self._content_path_key(
+                        self._chain_field_path(e.receiver),
+                    ),
+                    injected,
+                )
             # The receiver may be a plain parameter (``xs.push(v)`` -> path
             # ``()``) or a field chain rooted at one (``self.items.push(v)``
             # -> path ``("items",)``); the effect is FIELD-KEYED
