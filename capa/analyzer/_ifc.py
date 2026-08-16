@@ -1823,9 +1823,14 @@ class _IfcMixin:
           a lambda literal, or a ``var`` bound to a lambda literal at its
           declaration and NEVER REASSIGNED (``let f = fun () => secret;
           invoke(f)``) -- that same RESULT label is recovered from the
-          binding (``_binding_result_label``), closing the two-hop leak
-          while STILL seeing through an in-body declassify: a let-bound
-          declassifying closure stays public and is not a false positive.
+          binding (``_binding_result_label``), closing the two-hop leak for
+          these single-denotation bindings while STILL seeing through an
+          in-body declassify: a let-bound declassifying closure stays public
+          and is not a false positive. A REASSIGNED / mixed ``var`` has no
+          single denotation, so it is not resolved here: it is closed in the
+          STRICT tier but only best-effort in the warn tier, which SKIPS an
+          ever-public ``var`` to stay free of false positives (see
+          ``_fun_arg_ret_label``).
 
         For any OTHER Fun argument -- one whose binding RHS is a call
         result (``let f = make(env); invoke(f)``), a by-name alias, a fresh
