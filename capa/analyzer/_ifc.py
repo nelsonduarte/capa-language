@@ -1427,11 +1427,16 @@ class _IfcMixin:
         complements the live capture re-read (delivered-after-definition taint)
         with the static-at-definition secrecy. The ceiling is exact: it is as
         strong as the DIRECT-call verdict through a one-certain lambda, never
-        weaker, never stronger. The disclosed residuals are unchanged -- an
-        escaping alias (``let g = f; g()``), a HOF-invoked closure
-        (``apply(f)``), a returned / struct-stored / reassigned-``var``
-        closure, a result computed only by a NESTED-local lambda, and the
-        different-root points-to family all stay unflagged."""
+        weaker, never stronger. A NESTED local lambda in RESULT POSITION is
+        caught for free: the outer lambda's cached result label recurses
+        through the inner call (``let g = fun () => o.reveal(); return g()``,
+        the bound-then-returned ``let x = g(); return x``, or the inner closure
+        RETURNED and then invoked all flag). The disclosed residuals are
+        unchanged -- an escaping alias (``let g = f; g()``), a HOF-invoked
+        closure (``apply(f)``, including an inner lambda passed to a HOF inside
+        the outer body), a returned / struct-stored / reassigned-``var``
+        closure, and the different-root points-to family all stay
+        unflagged."""
         if isinstance(callee, A.Ident):
             sym = self.bindings.get(id(callee))
             base = (
@@ -1487,9 +1492,12 @@ class _IfcMixin:
         branch-scoped container channel nor the capture-INTERNAL-sink face
         (which reads ``_capture_live_label``), nor the return-effects summary.
         The residuals stay disclosed: an escaping alias, a HOF-invoked closure,
-        a returned / struct-stored / reassigned-``var`` closure, a
-        nested-local-lambda-only result and the different-root points-to family
-        remain unflagged.
+        a returned / struct-stored / reassigned-``var`` closure, and the
+        different-root points-to family remain unflagged. A nested local lambda
+        in RESULT POSITION is NOT a residual: the outer lambda's cached result
+        label recurses through the inner call, so ``return g()`` (and the
+        bound-then-returned form) flag. Only a nested case that ALSO escapes or
+        goes through a HOF stays open, by the escaping / HOF residual above.
 
         FAIL-CLOSED. The recorded label is looked up by the lambda's identity.
         Every lambda LITERAL routed here has had its body checked before this
