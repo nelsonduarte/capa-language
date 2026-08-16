@@ -418,5 +418,52 @@ class TestCaptureInternalFaceUnchanged(unittest.TestCase):
                                 [e.message for e in rs.errors])
 
 
+# ---- NO-PANIC: an un-inferrable-parameter locally-resolved lambda (a
+# reachable, benign cache miss on the result label) must yield the clean
+# "cannot infer" type-error diagnostic, NOT a Python traceback. The
+# fail-closed raise is gated to fire only for a genuinely-unexpected miss. --
+
+UNINFER_LET = ("fun main(stdio: Stdio)\n"
+               '    let f = fun (x) => "pub"\n'
+               "    stdio.println(f(0))\n")
+
+UNINFER_IIFE = ("fun main(stdio: Stdio)\n"
+                '    stdio.println((fun (x) => "pub")(0))\n')
+
+# The un-inferrable lambda body even reads a captured secret: still a clean
+# type error (the program never compiles, so nothing leaks and nothing
+# panics).
+UNINFER_SECRET_BODY = (_DEEP + "fun main(stdio: Stdio)\n" + _OBJ +
+                       "    let f = fun (x) => o.f2.f3.v\n"
+                       "    stdio.println(f(0))\n")
+
+_UNINFER = {
+    "let": UNINFER_LET, "iife": UNINFER_IIFE,
+    "secret_body": UNINFER_SECRET_BODY,
+}
+
+
+class TestUninferrableLambdaNoPanic(unittest.TestCase):
+    """A locally-resolved lambda with an omitted parameter type and no
+    inference context is a reachable, benign result-label cache miss. It must
+    surface the clean type-error diagnostic without a traceback, and the
+    program stays rejected."""
+
+    def test_clean_type_error_not_a_panic(self):
+        for name, src in _UNINFER.items():
+            with self.subTest(shape=name):
+                # analyze must NOT raise (no fail-closed panic on this path).
+                r = _analyze(src)
+                self.assertFalse(r.ok)
+                infer = [e for e in r.errors
+                         if "cannot infer the type of this lambda" in e.message]
+                self.assertEqual(len(infer), 1,
+                                 [e.message for e in r.errors])
+                # The program is rejected, so no information-flow diagnostic is
+                # expected: nothing runs, nothing leaks.
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+
+
 if __name__ == "__main__":
     unittest.main()

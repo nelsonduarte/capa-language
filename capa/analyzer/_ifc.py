@@ -1499,23 +1499,36 @@ class _IfcMixin:
         bound-then-returned form) flag. Only a nested case that ALSO escapes or
         goes through a HOF stays open, by the escaping / HOF residual above.
 
-        FAIL-CLOSED. The recorded label is looked up by the lambda's identity.
-        Every lambda LITERAL routed here has had its body checked before this
-        invocation site is reached -- ``_expressions`` records the result label
-        at the SAME point it records the capture label the IIFE site already
-        trusts, and the Ident site only fires for a fresh ``let`` / ``var``
-        lambda literal, whose body is checked at its introduction. A miss is
-        therefore unreachable today. Rather than fall OPEN to PUBLIC (a future
-        refactor routing a lambda into ``_binding_lambdas`` without checking
-        its body would then silently launder a @secret result), a miss raises:
+        MISS HANDLING. The recorded label is looked up by the lambda's
+        identity. A miss is reachable in exactly ONE benign way: a lambda with
+        an OMITTED parameter type and NO inference context is checked LAZILY
+        (``_check_lambda`` returns early, before recording its result label,
+        and leaves it in ``_pending_inferred_lambdas``), yet the ``let`` / IIFE
+        still records the node in ``_binding_lambdas``. Such a lambda is ALREADY
+        a reported type error (``_flush_pending_inferred_lambdas`` emits the
+        ``cannot infer the type of this lambda`` diagnostic), so the program is
+        rejected (exit 1) and NEVER runs. For that case the missing label is
+        PUBLIC-for-now: it cannot hide a leak (the program does not compile),
+        and returning it keeps the clean type-error diagnostic instead of
+        turning it into a panic.
+
+        Any OTHER miss -- a fully type-checked, NON-pending locally-resolved
+        lambda with no recorded result label -- is genuinely unexpected and
+        fails CLOSED: rather than fall open to PUBLIC (a future refactor routing
+        a checked lambda into ``_binding_lambdas`` without recording its result
+        label would then silently launder a @secret result), it raises,
         compilation stops, nothing leaks. The explicit raise is deliberate over
         an ``assert`` so ``python -O`` cannot strip the soundness gate."""
         label = self._lambda_result_labels.get(id(lam))
         if label is None:
+            if id(lam) in self._pending_inferred_lambdas:
+                # Benign, reachable miss: an un-inferrable-parameter lambda
+                # already rejected by a type error; never runs, cannot leak.
+                return L.PUBLIC
             raise AssertionError(
-                "IFC invariant violated: locally-resolved lambda has no "
-                "recorded result label (its body was not checked before its "
-                "invocation site). Refusing to fall open to PUBLIC."
+                "IFC invariant violated: a fully checked locally-resolved "
+                "lambda has no recorded result label. Refusing to fall open "
+                "to PUBLIC."
             )
         return label
 
