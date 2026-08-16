@@ -1801,13 +1801,18 @@ class _SummaryBuilder:
         bound-name spelling (type-precise, no by-name false positive). For a
         ``StructPat`` each destructured field records its declared field type
         under the name it binds: a bare field (``f2``) binds ``f2`` to the
-        field's type; a rename (``f2: m``) binds the alias ``m``; a nested
-        ``StructPat`` (``f2: Mid { f3 }``) recurses with its OWN declared type
-        name. So a deep read off the binder (``return f2.f3.v``) resolves its
-        root type. Shared by the destructuring ``let`` (1c) and the
-        destructuring for-pattern (1b). Non-struct patterns bind nothing that
-        can root a deep field read here, so they seed nothing (an
-        ``IdentPat`` for-binder is handled by the element-type seed instead)."""
+        field's type; a rename (``f2: m``) binds the alias ``m``. So a deep
+        read off the binder (``return f2.f3.v``) resolves its root type. Shared
+        by the destructuring ``let`` (1c) and the destructuring for-pattern
+        (1b). Non-struct patterns bind nothing that can root a deep field read
+        here, so they seed nothing (an ``IdentPat`` for-binder is handled by
+        the element-type seed instead).
+
+        A field pattern is only ever a bare field or an ``IdentPat`` here: the
+        analyzer REJECTS a NESTED struct-pattern in a ``let`` / ``for`` binding
+        (``let Outer { f2: Mid { f3 } } = t``) before the summary runs (see
+        the ``let`` / ``for`` binding guard in :mod:`._patterns`), so neither
+        call site presents one and there is no nesting to recurse into."""
         if not isinstance(pat, A.StructPat):
             return
         field_types = self.struct_field_type_names.get(pat.type_name, {})
@@ -1820,8 +1825,6 @@ class _SummaryBuilder:
                 fty = field_types.get(fname)
                 if fty is not None:
                     self._cur_value_types[fpat.name] = fty
-            elif isinstance(fpat, A.StructPat):
-                self._record_pattern_value_types(fpat)
 
     def _iter_element_struct_type(self, iter_expr: A.Expr):
         """The element STRUCT TYPE name a for-loop iterable yields, or ``None``
