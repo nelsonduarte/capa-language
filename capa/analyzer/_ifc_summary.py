@@ -432,6 +432,13 @@ class _SummaryBuilder:
         # an internal secret source at summary time -- the cross-function
         # analogue of the intra-procedural declared-field-label rule.
         self.struct_field_labels: dict[str, dict[str, str]] = {}
+        # ``struct type -> {field name -> declared type NAME}`` for every
+        # struct / typestate field with a NAMED type, built from the SAME
+        # ``fld.type_expr.name`` the label walk reads. Lets a deep field-read
+        # chain (``t.f2.f3.v``) be walked type-precisely hop by hop to the
+        # leaf's owning struct, so a declared-@secret nested field read is
+        # recognised as an internal secret source (``_field_read_is_secret``).
+        self.struct_field_type_names: dict[str, dict[str, str]] = {}
         # Names of module-level consts DECLARED ``@secret`` (roadmap S2).
         # A reference to one is an internal secret source in the summary
         # walk, the cross-function analogue of the intra-procedural
@@ -460,7 +467,11 @@ class _SummaryBuilder:
         """Populate ``struct_field_labels`` from every struct (and
         typestate) declaration's field labels, so the body walk can
         recognise a declared-@secret field read off a parameter of that
-        struct type (``_field_read_is_secret``)."""
+        struct type (``_field_read_is_secret``).
+
+        Also populates ``struct_field_type_names`` from the SAME
+        ``fld.type_expr.name``, so a deep field-read chain can be walked
+        hop by hop to the leaf field's owning struct type."""
         from .. import _labels as L
         for item in self.module.items:
             fields = getattr(item, "fields", None)
@@ -473,6 +484,11 @@ class _SummaryBuilder:
                 if label in L.VALID_LABELS:
                     self.struct_field_labels.setdefault(name, {})[fld.name] = \
                         label
+                tyname = getattr(te, "name", None) if te is not None else None
+                if tyname is not None:
+                    self.struct_field_type_names.setdefault(
+                        name, {},
+                    )[fld.name] = tyname
 
     def _collect_secret_consts(self) -> None:
         """Populate ``secret_consts`` from every module-level ``const``
@@ -963,6 +979,15 @@ class _SummaryBuilder:
         )
         self._cur_param_struct_types = self.param_struct_types.get(key, {})
         self._cur_param_type_names = self.param_type_names.get(key, {})
+        # ``value name -> static struct TYPE name`` for THIS callable: seeded
+        # with the parameter types (unrestricted, so a param whose own fields
+        # are unlabelled still resolves) and grown by ``let`` / ``var``
+        # bindings whose RHS statically denotes a struct. Consulted by
+        # ``_field_read_is_secret`` to resolve a deep field-read chain's ROOT
+        # type. FP-safe because Capa REJECTS same-function local shadowing, so
+        # a local name is single-valued per callable and this flat map cannot
+        # conflate two struct types under one name.
+        self._cur_value_types = dict(self._cur_param_type_names)
         # The parameter indices of THIS callable whose type is provably a
         # built-in immutable, so ``_writable_targets`` can drop them from a
         # mutation-effect TARGET set (see ``immutable_params``).
@@ -1241,12 +1266,22 @@ class _SummaryBuilder:
         if isinstance(stmt, A.LetStmt):
             src = self._taint_of(stmt.value, env, reaching)
             self._bind_pattern_taint(stmt.pattern, src, env)
+            # Record a single-ident binding's static struct type so a deep
+            # field read rooted at it (``let u = t; return u.f2.f3.v``)
+            # resolves its root type. Only a bare ``IdentPat`` denotes one
+            # value; a destructuring pattern binds field names handled by
+            # the pattern-secret rule instead.
+            if isinstance(stmt.pattern, A.IdentPat):
+                self._record_value_type(
+                    stmt.pattern.name, stmt.type_expr, stmt.value,
+                )
             # A ``let`` binding a name equal to a secret const shadows it
             # for the REST OF THIS BLOCK (and its sub-blocks); it is
             # unwound when the enclosing block's scope is restored.
             self._register_shadowing_binds(_pattern_bound_names(stmt.pattern))
         elif isinstance(stmt, A.VarStmt):
             env[stmt.name] = self._taint_of(stmt.value, env, reaching)
+            self._record_value_type(stmt.name, stmt.type_expr, stmt.value)
             self._register_shadowing_binds((stmt.name,))
         elif isinstance(stmt, A.AssignStmt):
             src = self._taint_of(stmt.value, env, reaching)
@@ -1501,15 +1536,43 @@ class _SummaryBuilder:
         ``match`` arm) is covered too -- see
         ``_bind_pattern_field_secrets``, the pattern-bind analogue of
         this read rule -- so a field cannot launder its label through a
-        pattern bind any more than through a direct ``e.iban`` read."""
+        pattern bind any more than through a direct ``e.iban`` read.
+
+        DEPTH: the chain is walked type-precisely from its root through
+        ``struct_field_type_names`` at every hop, so a NESTED declared-@secret
+        field read (``t.f2.f3.v``) is recognised, not only a depth-1
+        ``e.iban``. Depth-1 is the same walk with an empty prefix. The ROOT
+        type is resolved from ``_cur_value_types`` (seeded with the param
+        types and grown by ``let`` / ``var`` bindings), so a chain rooted at
+        a local that statically denotes a struct (a copy of a param, a param
+        field, or a struct literal) is covered too. Each hop follows the
+        ACTUAL declared field type, never a field-name match, so a same-named
+        field of an unrelated struct is not tainted (no by-name FP).
+
+        RESIDUAL (known-open, disclosed): only an IDENT-param/local-rooted
+        chain is walked. A chain rooted at a CALL / INDEX result
+        (``id(t).f2.f3.v``) has no ident root, so it stays a whole-value
+        ``()`` fallback and this deep-return FN survives -- the same class as
+        the documented ``G_subreturn`` / ``H_alias`` residuals."""
         from .. import _labels as L
-        recv = e.receiver
-        if isinstance(recv, A.Ident):
-            tyname = self._cur_param_struct_types.get(recv.name)
-            if tyname is not None:
-                labels = self.struct_field_labels.get(tyname, {})
-                return labels.get(e.field_name) == L.SECRET
-        return False
+        # Known-open residual: only an IDENT param/local-rooted chain is
+        # walked. A call- / index-rooted chain (``id(t).f2.f3.v``) has no
+        # ident root here, so it stays a whole-value ``()`` FN -- the same
+        # class as the documented G_subreturn / H_alias residuals.
+        root = self._chain_root_name(e)
+        path = self._chain_field_path(e)
+        if root is None or not path:
+            return False
+        tyname = self._cur_value_types.get(root)
+        if tyname is None:
+            return False
+        # Walk the declared field types down to the leaf's owning struct.
+        for hop in path[:-1]:
+            tyname = self.struct_field_type_names.get(tyname, {}).get(hop)
+            if tyname is None:
+                return False
+        labels = self.struct_field_labels.get(tyname, {})
+        return labels.get(path[-1]) == L.SECRET
 
     @staticmethod
     def _chain_root_name(e: A.Expr):
@@ -1536,6 +1599,44 @@ class _SummaryBuilder:
             return None
         names.reverse()
         return tuple(names)
+
+    def _static_struct_type(self, rhs: A.Expr):
+        """The static struct TYPE name a binding's RHS denotes, or ``None``
+        when it is not statically a struct value. Recognises the shapes a
+        deep field-read chain can be rooted at: a plain COPY of an
+        already-typed value (``let u = t`` -> ``t``'s type), a param / local
+        FIELD chain (``let u = t.f2`` -> the type of ``t.f2``, walked through
+        ``struct_field_type_names``), and a STRUCT LITERAL (its
+        ``type_name``). Anything else (a call, an index, ...) is ``None`` and
+        the binding is simply not typed, so ``_field_read_is_secret`` falls
+        back to whole-value at ``()``."""
+        if isinstance(rhs, A.Ident):
+            return self._cur_value_types.get(rhs.name)
+        if isinstance(rhs, A.FieldAccess):
+            root = self._chain_root_name(rhs)
+            path = self._chain_field_path(rhs)
+            if root is None or not path:
+                return None
+            tyname = self._cur_value_types.get(root)
+            for hop in path:
+                if tyname is None:
+                    return None
+                tyname = self.struct_field_type_names.get(tyname, {}).get(hop)
+            return tyname
+        if isinstance(rhs, A.StructLit):
+            return rhs.type_name
+        return None
+
+    def _record_value_type(self, name, type_expr, rhs) -> None:
+        """Record ``name``'s static struct TYPE in ``_cur_value_types`` from
+        its declared annotation, else from the RHS's static shape. Recording
+        ``None`` (an untyped RHS) leaves the name absent, so a deep read off
+        it takes the whole-value fallback."""
+        tyname = getattr(type_expr, "name", None) if type_expr else None
+        if tyname is None:
+            tyname = self._static_struct_type(rhs)
+        if tyname is not None:
+            self._cur_value_types[name] = tyname
 
     # ---- taint of an expression ------------------------------------
 
@@ -1843,6 +1944,10 @@ class _SummaryBuilder:
         )
         self._cur_param_struct_types = self.param_struct_types.get(key, {})
         self._cur_param_type_names = self.param_type_names.get(key, {})
+        # Reset the deep-chain root-type map for this fresh capture walk so it
+        # never reads a previous callable's bindings (captures are not typed
+        # here, matching the parameter-only scope of this pass).
+        self._cur_value_types = dict(self._cur_param_type_names)
         self._cur_immutable_params = self.immutable_params.get(
             key, frozenset(),
         )
