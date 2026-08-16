@@ -1542,23 +1542,43 @@ class _SummaryBuilder:
         ``struct_field_type_names`` at every hop, so a NESTED declared-@secret
         field read (``t.f2.f3.v``) is recognised, not only a depth-1
         ``e.iban``. Depth-1 is the same walk with an empty prefix. The ROOT
-        type is resolved from ``_cur_value_types`` (seeded with the param
-        types and grown by ``let`` / ``var`` bindings), so a chain rooted at
-        a local that statically denotes a struct (a copy of a param, a param
-        field, or a struct literal) is covered too. Each hop follows the
+        type is resolved from ``_cur_value_types``, seeded with the param
+        types and grown ONLY by a ``let`` / ``var`` binding whose PATTERN is
+        a bare ``IdentPat`` and whose RHS statically denotes a struct: a copy
+        of an already-typed value (``let u = t``), a param- / local-rooted
+        field chain (``let u = t.f2``), or a struct literal (see
+        ``_record_value_type`` / ``_static_struct_type``). Such a
+        local-rooted chain is therefore covered too. Each hop follows the
         ACTUAL declared field type, never a field-name match, so a same-named
         field of an unrelated struct is not tainted (no by-name FP).
 
-        RESIDUAL (known-open, disclosed): only an IDENT-param/local-rooted
-        chain is walked. A chain rooted at a CALL / INDEX result
-        (``id(t).f2.f3.v``) has no ident root, so it stays a whole-value
-        ``()`` fallback and this deep-return FN survives -- the same class as
-        the documented ``G_subreturn`` / ``H_alias`` residuals."""
+        RESIDUAL (known-open, disclosed): a deep chain whose root is NOT one
+        of those seeded IdentPat bindings has no resolvable root type, so it
+        stays a whole-value ``()`` fallback and this deep-return FN survives
+        -- the same class as the documented ``G_subreturn`` / ``H_alias``
+        residuals. The seeding gap covers three shapes, each MEASURED to leak
+        clean on both backends:
+          (a) a CALL / INDEX result root (``return id(t).f2.f3.v``): the
+              chain has no ident root at all (``_chain_root_name`` is
+              ``None``);
+          (b) a FOR-LOOP binder (``for u in secs`` with body
+              ``return u.f2.f3.v``): ``ForStmt`` binds ``u`` via
+              ``_bind_pattern_taint`` but never calls ``_record_value_type``,
+              so ``u`` is unseeded;
+          (c) a struct-DESTRUCTURING field-name binder
+              (``let Outer { f2 } = t; return f2.f3.v``) when the @secret
+              leaf is nested BELOW the destructured field: only a bare
+              ``IdentPat`` binding is recorded, so ``f2`` is unseeded. (The
+              pattern-secret rule covers this only when the destructured
+              field is ITSELF @secret, not when the secret sits deeper.)"""
         from .. import _labels as L
-        # Known-open residual: only an IDENT param/local-rooted chain is
-        # walked. A call- / index-rooted chain (``id(t).f2.f3.v``) has no
-        # ident root here, so it stays a whole-value ``()`` FN -- the same
-        # class as the documented G_subreturn / H_alias residuals.
+        # Known-open residual: only a chain rooted at a seeded IdentPat
+        # binding (param copy / param field / struct literal) or a param
+        # resolves a root type here. A call- / index-rooted chain
+        # (``id(t).f2.f3.v``), a for-loop binder, or a struct-destructuring
+        # field-name binder (secret nested below the field) is unseeded, so
+        # it stays a whole-value ``()`` FN -- the same class as the
+        # documented G_subreturn / H_alias residuals.
         root = self._chain_root_name(e)
         path = self._chain_field_path(e)
         if root is None or not path:
