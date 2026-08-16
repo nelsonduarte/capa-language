@@ -562,19 +562,25 @@ occurs on the base extract `a095eef` (immediately before this work line),
 so it is NOT introduced here. Two facts of note. First, this crash is a
 code-generation defect, a Wasm/Python DIVERGENCE (Python prints, Wasm
 fails to compile), distinct from the IFC guarantee and out of scope for
-this analyzer work line; it belongs on the codegen backlog. Second,
-`--check` is CLEAN on `14ff2ab` (exit 0, no information-flow diagnostic):
-this shape is a CAPTURE-INTERNAL sink through a locally-resolved zero-arg
-lambda reading a captured deep field, which is a lambda-capture residual
-of the kind disclosed in the 1.31.0 record (nested/deep capture reads),
-NOT part of the cross-function RETURN channel this work line closes. So on
-this exact program the secret would leak on Python and the analyzer does
-not flag it; only the Wasm codegen defect (accidentally) stops execution.
-Both are pre-existing and both are out of scope for this record; they are
-recorded here only so that Wasm silence is not mistaken for cleanliness on
-this shape. (MEASURED: the reproduction and the pre-existing confirmation
-above; JUDGEMENT: the capture-internal-sink classification of the clean
-`--check`.)
+this analyzer work line; it belongs on the codegen backlog. It is the
+SEPARATE untyped-arrow-lambda i64/i32 defect, and it is out of scope
+whatever the analyzer verdict does.
+
+Second, a CORRECTION to the classification of the clean `--check` on
+`14ff2ab`. This program sinks the closure's RESULT in the CALLER
+(`stdio.println(f())`), so it is a RESULT-FACE miss (the 1.30.0 Face 2
+result channel), NOT a 1.31.0 capture-internal residual. The tell is that
+the capture-internal ANALOGUE -- the sink moved INSIDE the body,
+`let f = fun () => stdio.println(o.f2.f3.v); f()` -- already flags on this
+same extract; only the result-face variant here escaped. That miss is
+closed by Candidate A (the result-face mirror of this record's named-return
+channel): at a locally-resolved invocation the closure's def-time RESULT
+label is joined into the call-result label, so `let f = fun () => o.f2.f3.v;
+println(f())` now flags at both tiers. The paired Wasm i64/i32 crash above
+is unaffected -- it is a codegen defect and stays on the backlog. (MEASURED:
+the reproduction and the pre-existing confirmation above, and the
+capture-internal analogue flagging; the earlier capture-internal-sink
+label for this clean `--check` was a misclassification, corrected here.)
 
 ---
 
