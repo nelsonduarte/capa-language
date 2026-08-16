@@ -1414,7 +1414,24 @@ class _IfcMixin:
         binding's cached ``sym.label`` was stamped at the lambda's DEFINITION
         (before the mutation), so it alone would miss the leak. Only a locally
         resolved lambda is re-read; an escaping / HOF-invoked closure stays the
-        disclosed residual."""
+        disclosed residual.
+
+        Candidate A (result face): for the SAME locally-resolved lambda (the
+        Ident-to-one-certain-lambda and the IIFE ``LambdaExpr``-callee sites)
+        the closure's DEF-TIME RESULT label is ALSO joined in
+        (``_lambda_static_result_label``), so a one-line wrapper whose RESULT
+        is a statically @secret value -- a declared-@secret field read
+        (``fun () => o.f2.f3.v``), a method / free-function call that returns
+        one (``o.reveal()`` / ``peek(o)``) -- cannot launder it past the sink.
+        This is the RESULT-FACE mirror of the named-return field channel; it
+        complements the live capture re-read (delivered-after-definition taint)
+        with the static-at-definition secrecy. The ceiling is exact: it is as
+        strong as the DIRECT-call verdict through a one-certain lambda, never
+        weaker, never stronger. The disclosed residuals are unchanged -- an
+        escaping alias (``let g = f; g()``), a HOF-invoked closure
+        (``apply(f)``), a returned / struct-stored / reassigned-``var``
+        closure, a result computed only by a NESTED-local lambda, and the
+        different-root points-to family all stay unflagged."""
         if isinstance(callee, A.Ident):
             sym = self.bindings.get(id(callee))
             base = (
@@ -1425,11 +1442,74 @@ class _IfcMixin:
             if sym is not None:
                 lam = self._binding_lambdas.get(id(sym))
                 if isinstance(lam, A.LambdaExpr):
-                    return L.join(base, self._fresh_capture_label(lam))
+                    return L.join(
+                        base,
+                        L.join(
+                            self._fresh_capture_label(lam),
+                            self._lambda_static_result_label(lam),
+                        ),
+                    )
             return base
         if isinstance(callee, A.LambdaExpr):
-            return self._lambda_capture_labels.get(id(callee), L.PUBLIC)
+            return L.join(
+                self._lambda_capture_labels.get(id(callee), L.PUBLIC),
+                self._lambda_static_result_label(callee),
+            )
         return self._label_of(callee)
+
+    def _lambda_static_result_label(self, lam: A.LambdaExpr) -> str:
+        """The DEF-TIME result label of a locally-resolved lambda -- the
+        return-effect-aware, method-return-precise, declassify-aware label of
+        the value an invocation of ``lam`` produces, as the analyzer already
+        computed it when the body was checked
+        (``_lambda_result_labels`` / ``_lambda_body_result_label``). Joined
+        into the call-result label at a locally-resolved invocation
+        (Candidate A, result face).
+
+        Closes the result-face laundering where the body's result is a read or
+        a CALL that produces a STATICALLY @secret value: a declared-@secret
+        field read (``o.f2.f3.v``), a method whose return is declared-@secret /
+        self-in-return (``o.reveal()``), or a free function whose return effect
+        carries a secret (``peek(o)``). It is the same label that flags the
+        DIRECT ``o.reveal()`` / ``peek(o)`` / ``o.f2.f3.v`` at the sink, now
+        reflected through the one-certain lambda so a one-line wrapper cannot
+        launder it. The ceiling is exact: as strong as the direct-call verdict
+        through a one-certain lambda, never weaker, never stronger.
+
+        Complements ``_fresh_capture_label`` (which carries taint DELIVERED
+        AFTER definition by a mutation, field-precisely): this term carries the
+        STATIC secrecy fixed at definition. It is declassify-aware (an in-body
+        ``declassify`` of the returned value makes ``_lambda_body_result_label``
+        PUBLIC), so the call-site escape hatch is preserved; and it does NOT
+        re-introduce the field-precise mutation over-reports, because the
+        def-time label reflects only the structure present at definition (an
+        empty captured container reads PUBLIC). It touches neither the
+        branch-scoped container channel nor the capture-INTERNAL-sink face
+        (which reads ``_capture_live_label``), nor the return-effects summary.
+        The residuals stay disclosed: an escaping alias, a HOF-invoked closure,
+        a returned / struct-stored / reassigned-``var`` closure, a
+        nested-local-lambda-only result and the different-root points-to family
+        remain unflagged.
+
+        FAIL-CLOSED. The recorded label is looked up by the lambda's identity.
+        Every lambda LITERAL routed here has had its body checked before this
+        invocation site is reached -- ``_expressions`` records the result label
+        at the SAME point it records the capture label the IIFE site already
+        trusts, and the Ident site only fires for a fresh ``let`` / ``var``
+        lambda literal, whose body is checked at its introduction. A miss is
+        therefore unreachable today. Rather than fall OPEN to PUBLIC (a future
+        refactor routing a lambda into ``_binding_lambdas`` without checking
+        its body would then silently launder a @secret result), a miss raises:
+        compilation stops, nothing leaks. The explicit raise is deliberate over
+        an ``assert`` so ``python -O`` cannot strip the soundness gate."""
+        label = self._lambda_result_labels.get(id(lam))
+        if label is None:
+            raise AssertionError(
+                "IFC invariant violated: locally-resolved lambda has no "
+                "recorded result label (its body was not checked before its "
+                "invocation site). Refusing to fall open to PUBLIC."
+            )
+        return label
 
     def _fresh_capture_label(self, lam: A.LambdaExpr) -> str:
         """Re-read the CURRENT LIVE label of each free binding ``lam``
