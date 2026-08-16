@@ -212,6 +212,15 @@ class _LambdaCallable:
 # any real 0-based parameter index.
 INTERNAL_SECRET = -1
 
+# Absent-marker for the body-scoped for-loop binder seed: distinguishes a
+# name that was ABSENT from ``_cur_value_types`` / ``_cur_elem_types`` before
+# the loop from one that was present, so the save/restore reinstates the
+# prior state exactly (reinsert if present, delete if absent). A plain
+# ``None`` cannot serve because the maps never store ``None`` (an absent key
+# and a ``None`` value would be indistinguishable), and the restore must be
+# exact for the body-scoping to hold.
+_ABSENT = object()
+
 # Access-path length bound for a field-qualified mutation effect (Stage
 # 1). A mutation effect is keyed by ``(target_param_idx, field_path)``,
 # where ``field_path`` is the tuple of field names from the target
@@ -409,6 +418,14 @@ class _SummaryBuilder:
         # primitive (so the conservative whole-value join governs and a
         # same-named user method cannot under-taint the result).
         self.param_type_names: dict = {}
+        # callable_key -> {param name: element struct type NAME} for every
+        # parameter whose declared type is a generic container (``List<Outer>``
+        # -> ``"Outer"``, the first generic argument's name). The minimal
+        # element-type source the for-loop binder seed resolves against: an
+        # ``Ident`` iterable (``for u in secs``) resolves ``u``'s element
+        # struct type from this map (``_iter_element_struct_type``). Parallel
+        # to ``param_type_names`` and populated at the same collection sites.
+        self.param_elem_type_names: dict = {}
         # callable_key -> frozenset of parameter indices whose declared
         # type PROVABLY has no writable interior (a built-in capability, a
         # built-in primitive / String, or the built-in Unit). A parameter
@@ -439,6 +456,14 @@ class _SummaryBuilder:
         # leaf's owning struct, so a declared-@secret nested field read is
         # recognised as an internal secret source (``_field_read_is_secret``).
         self.struct_field_type_names: dict[str, dict[str, str]] = {}
+        # ``struct type -> {field name -> element struct type NAME}`` for every
+        # struct / typestate field whose declared type is a generic container
+        # (``items: List<Outer>`` -> ``"Outer"``, the first generic argument's
+        # name), built alongside ``struct_field_type_names``. Lets a for-loop
+        # over a CONTAINER FIELD (``for u in bag.items``) resolve the binder's
+        # element struct type: ``_iter_element_struct_type`` resolves the
+        # receiver's struct type via ``_cur_value_types``, then reads this map.
+        self.struct_field_elem_type_names: dict[str, dict[str, str]] = {}
         # Names of module-level consts DECLARED ``@secret`` (roadmap S2).
         # A reference to one is an internal secret source in the summary
         # walk, the cross-function analogue of the intra-procedural
@@ -489,6 +514,16 @@ class _SummaryBuilder:
                     self.struct_field_type_names.setdefault(
                         name, {},
                     )[fld.name] = tyname
+                # A generic container field (``items: List<Outer>``) records
+                # its ELEMENT struct type (the first generic argument's name),
+                # so a for-loop over the field resolves the binder's type.
+                targs = getattr(te, "args", None) if te is not None else None
+                if targs:
+                    elem = getattr(targs[0], "name", None)
+                    if elem is not None:
+                        self.struct_field_elem_type_names.setdefault(
+                            name, {},
+                        )[fld.name] = elem
 
     def _collect_secret_consts(self) -> None:
         """Populate ``secret_consts`` from every module-level ``const``
@@ -528,6 +563,9 @@ class _SummaryBuilder:
                 self.param_type_names[key] = self._param_type_names(
                     item.params,
                 )
+                self.param_elem_type_names[key] = self._param_elem_type_names(
+                    item.params,
+                )
                 self.immutable_params[key] = self._immutable_param_idxs(
                     item.params,
                 )
@@ -553,6 +591,9 @@ class _SummaryBuilder:
                     )
                     self.param_type_names[key] = self._param_type_names(
                         method.params, owner=item.type_name,
+                    )
+                    self.param_elem_type_names[key] = (
+                        self._param_elem_type_names(method.params)
                     )
                     self.immutable_params[key] = self._immutable_param_idxs(
                         method.params,
@@ -615,6 +656,9 @@ class _SummaryBuilder:
                 lam.params,
             )
             self.param_type_names[key] = self._param_type_names(lam.params)
+            self.param_elem_type_names[key] = self._param_elem_type_names(
+                lam.params,
+            )
             self.immutable_params[key] = self._immutable_param_idxs(
                 lam.params,
             )
@@ -666,6 +710,26 @@ class _SummaryBuilder:
                 tyname = getattr(te, "name", None) if te is not None else None
             if tyname is not None:
                 out[p.name] = tyname
+        return out
+
+    def _param_elem_type_names(self, params) -> dict:
+        """``{param name: element struct type name}`` for every parameter
+        whose declared type is a generic container (``List<Outer>`` ->
+        ``"Outer"``, the first generic argument's name). The minimal
+        element-type source the for-loop binder seed resolves against
+        (``_iter_element_struct_type`` for an ``Ident`` iterable); a NESTED
+        container element (``List<List<Outer>>`` -> ``"List"``) records only
+        the outer name, so a for over such a param leaves the binder
+        unresolved -- the disclosed nested-generic residual. ``self`` (no
+        ``type_expr``) is never a generic container, so it never appears."""
+        out: dict = {}
+        for p in params:
+            te = getattr(p, "type_expr", None)
+            args = getattr(te, "args", None) if te is not None else None
+            if args:
+                elem = getattr(args[0], "name", None)
+                if elem is not None:
+                    out[p.name] = elem
         return out
 
     def _immutable_param_idxs(self, params) -> frozenset:
@@ -988,6 +1052,16 @@ class _SummaryBuilder:
         # a local name is single-valued per callable and this flat map cannot
         # conflate two struct types under one name.
         self._cur_value_types = dict(self._cur_param_type_names)
+        # ``value name -> element struct TYPE name`` for THIS callable: seeded
+        # with the parameter element types (``secs: List<Outer>`` -> ``secs ->
+        # "Outer"``) so a for-loop over an ``Ident`` iterable resolves the
+        # binder's element struct type (``_iter_element_struct_type``). Grown
+        # by NOTHING outside the parameter seed: a ``let``-bound container does
+        # NOT propagate its element type here (the local-bound-list residual),
+        # so ``let xs = secs; for u in xs`` stays open, matching the design.
+        self._cur_elem_types = dict(
+            self.param_elem_type_names.get(key, {}),
+        )
         # The parameter indices of THIS callable whose type is provably a
         # built-in immutable, so ``_writable_targets`` can drop them from a
         # mutation-effect TARGET set (see ``immutable_params``).
@@ -1275,6 +1349,14 @@ class _SummaryBuilder:
                 self._record_value_type(
                     stmt.pattern.name, stmt.type_expr, stmt.value,
                 )
+            else:
+                # A DESTRUCTURING ``let`` (``let Outer { f2 } = t``) seeds each
+                # destructured field binder's static struct type from the
+                # pattern's DECLARED struct type, so a deep read off the binder
+                # (``return f2.f3.v``) resolves its root type. Not save/restored:
+                # a ``let`` binding is scoped to the rest of the block and Capa
+                # rejects same-block re-binding, so the flat map is correct.
+                self._record_pattern_value_types(stmt.pattern)
             # A ``let`` binding a name equal to a secret const shadows it
             # for the REST OF THIS BLOCK (and its sub-blocks); it is
             # unwound when the enclosing block's scope is restored.
@@ -1370,10 +1452,57 @@ class _SummaryBuilder:
                 # like a secret const shadows it there only.
                 saved = self._shadowed_consts
                 self._shadowed_consts = set(saved)
-                self._register_shadowing_binds(
-                    _pattern_bound_names(stmt.pattern),
-                )
+                bound = list(_pattern_bound_names(stmt.pattern))
+                self._register_shadowing_binds(bound)
+                # BODY-SCOPED struct-type seed for the loop binder(s). The seed
+                # resolves the ELEMENT struct type of the iterable and records
+                # it for the binder, so a deep read off it (``return
+                # u.f2.f3.v``) resolves its root type -- but ONLY within this
+                # body. Save each binder's prior entry in BOTH type maps (with
+                # ``_ABSENT`` when absent), CLEAR them so no stale type from a
+                # sibling / sequential loop that reused the name leaks in, seed
+                # for the body, walk, then RESTORE. Restoring is what keeps the
+                # seed genuinely body-scoped: a later loop reusing the binder
+                # over a different (or unresolvable) element type cannot resolve
+                # against this loop's type, and a same-named binding AFTER the
+                # loop is unaffected.
+                saved_value = {
+                    n: self._cur_value_types.get(n, _ABSENT) for n in bound
+                }
+                saved_elem = {
+                    n: self._cur_elem_types.get(n, _ABSENT) for n in bound
+                }
+                if isinstance(stmt.pattern, A.IdentPat):
+                    elem_ty = self._iter_element_struct_type(stmt.iter)
+                    self._cur_value_types.pop(stmt.pattern.name, None)
+                    self._cur_elem_types.pop(stmt.pattern.name, None)
+                    # Leave the entry CLEARED when the element type is
+                    # unresolvable (a call- / index-rooted iterable, a
+                    # nested-generic element, a local-bound list), so a
+                    # residual deep-return stays a whole-value fallback rather
+                    # than resolving against a stale type.
+                    if elem_ty is not None:
+                        self._cur_value_types[stmt.pattern.name] = elem_ty
+                else:
+                    for n in bound:
+                        self._cur_value_types.pop(n, None)
+                        self._cur_elem_types.pop(n, None)
+                    # A DESTRUCTURING for-pattern (``for Outer { f2 } in secs``)
+                    # binds field names by the pattern's DECLARED struct type,
+                    # exactly like a destructuring ``let``.
+                    self._record_pattern_value_types(stmt.pattern)
                 self._walk_block(stmt.body, env, reaching)
+                for n in bound:
+                    v = saved_value[n]
+                    if v is _ABSENT:
+                        self._cur_value_types.pop(n, None)
+                    else:
+                        self._cur_value_types[n] = v
+                    e = saved_elem[n]
+                    if e is _ABSENT:
+                        self._cur_elem_types.pop(n, None)
+                    else:
+                        self._cur_elem_types[n] = e
                 self._shadowed_consts = saved
 
             self._content_merge([self._content_isolated(_for_body)])
@@ -1543,42 +1672,50 @@ class _SummaryBuilder:
         field read (``t.f2.f3.v``) is recognised, not only a depth-1
         ``e.iban``. Depth-1 is the same walk with an empty prefix. The ROOT
         type is resolved from ``_cur_value_types``, seeded with the param
-        types and grown ONLY by a ``let`` / ``var`` binding whose PATTERN is
-        a bare ``IdentPat`` and whose RHS statically denotes a struct: a copy
-        of an already-typed value (``let u = t``), a param- / local-rooted
-        field chain (``let u = t.f2``), or a struct literal (see
-        ``_record_value_type`` / ``_static_struct_type``). Such a
-        local-rooted chain is therefore covered too. Each hop follows the
-        ACTUAL declared field type, never a field-name match, so a same-named
-        field of an unrelated struct is not tainted (no by-name FP).
+        types and grown by:
+          * a ``let`` / ``var`` binding whose PATTERN is a bare ``IdentPat``
+            and whose RHS statically denotes a struct: a copy of an
+            already-typed value (``let u = t``), a param- / local-rooted field
+            chain (``let u = t.f2``), or a struct literal (see
+            ``_record_value_type`` / ``_static_struct_type``);
+          * a struct-DESTRUCTURING binder -- a ``let Outer { f2 } = t`` or a
+            destructuring for-pattern (``for Outer { f2 } in secs``) -- seeded
+            from the pattern's DECLARED struct type
+            (``_record_pattern_value_types``), so ``return f2.f3.v`` resolves
+            even when the @secret leaf is nested BELOW the destructured field
+            (item 1c);
+          * a FOR-LOOP IdentPat binder (``for u in secs``), seeded BODY-SCOPED
+            from the iterable's element struct type
+            (``_iter_element_struct_type``), so ``return u.f2.f3.v`` resolves
+            (item 1b). The seed is saved/restored around the body so a sibling
+            or sequential loop reusing the binder over a different element type
+            cannot resolve against a stale type.
+        Each hop follows the ACTUAL declared field type, never a field-name
+        match, so a same-named field of an unrelated struct is not tainted (no
+        by-name FP).
 
-        RESIDUAL (known-open, disclosed): a deep chain whose root is NOT one
-        of those seeded IdentPat bindings has no resolvable root type, so it
-        stays a whole-value ``()`` fallback and this deep-return FN survives
-        -- the same class as the documented ``G_subreturn`` / ``H_alias``
-        residuals. The seeding gap covers three shapes, each MEASURED to leak
-        clean on both backends:
+        RESIDUAL (known-open, disclosed): a deep chain whose root type cannot
+        be resolved stays a whole-value ``()`` fallback and this deep-return FN
+        survives -- the same class as the documented ``G_subreturn`` /
+        ``H_alias`` residuals. What STAYS open, each MEASURED to leak clean on
+        both backends:
           (a) a CALL / INDEX result root (``return id(t).f2.f3.v``): the
               chain has no ident root at all (``_chain_root_name`` is
               ``None``);
-          (b) a FOR-LOOP binder (``for u in secs`` with body
-              ``return u.f2.f3.v``): ``ForStmt`` binds ``u`` via
-              ``_bind_pattern_taint`` but never calls ``_record_value_type``,
-              so ``u`` is unseeded;
-          (c) a struct-DESTRUCTURING field-name binder
-              (``let Outer { f2 } = t; return f2.f3.v``) when the @secret
-              leaf is nested BELOW the destructured field: only a bare
-              ``IdentPat`` binding is recorded, so ``f2`` is unseeded. (The
-              pattern-secret rule covers this only when the destructured
-              field is ITSELF @secret, not when the secret sits deeper.)"""
+          (b) a FOR-LOOP over a CALL- / INDEX-rooted iterable (``for u in
+              mk()``) or a LOCAL-bound list (``let xs = secs; for u in xs``):
+              the element type is unresolvable (``_iter_element_struct_type``
+              is ``None``), because a ``let``-bound container does not
+              propagate its element type into ``_cur_elem_types``;
+          (c) a NESTED-GENERIC inner-loop element (``List<List<Outer>>``): only
+              the outer container name is recorded as the element type, so a
+              for over such a value leaves the binder unresolved."""
         from .. import _labels as L
-        # Known-open residual: only a chain rooted at a seeded IdentPat
-        # binding (param copy / param field / struct literal) or a param
-        # resolves a root type here. A call- / index-rooted chain
-        # (``id(t).f2.f3.v``), a for-loop binder, or a struct-destructuring
-        # field-name binder (secret nested below the field) is unseeded, so
-        # it stays a whole-value ``()`` FN -- the same class as the
-        # documented G_subreturn / H_alias residuals.
+        # Known-open residual: a chain whose root type is unresolvable stays a
+        # whole-value ``()`` FN -- a call- / index-rooted chain
+        # (``id(t).f2.f3.v``), a for over a call- / index-rooted or
+        # local-bound iterable, or a nested-generic inner element -- the same
+        # class as the documented G_subreturn / H_alias residuals.
         root = self._chain_root_name(e)
         path = self._chain_field_path(e)
         if root is None or not path:
@@ -1657,6 +1794,76 @@ class _SummaryBuilder:
             tyname = self._static_struct_type(rhs)
         if tyname is not None:
             self._cur_value_types[name] = tyname
+
+    def _record_pattern_value_types(self, pat) -> None:
+        """Seed ``_cur_value_types`` for every name a STRUCT destructuring
+        pattern binds, from the pattern's DECLARED struct type -- never the
+        bound-name spelling (type-precise, no by-name false positive). For a
+        ``StructPat`` each destructured field records its declared field type
+        under the name it binds: a bare field (``f2``) binds ``f2`` to the
+        field's type; a rename (``f2: m``) binds the alias ``m``; a nested
+        ``StructPat`` (``f2: Mid { f3 }``) recurses with its OWN declared type
+        name. So a deep read off the binder (``return f2.f3.v``) resolves its
+        root type. Shared by the destructuring ``let`` (1c) and the
+        destructuring for-pattern (1b). Non-struct patterns bind nothing that
+        can root a deep field read here, so they seed nothing (an
+        ``IdentPat`` for-binder is handled by the element-type seed instead)."""
+        if not isinstance(pat, A.StructPat):
+            return
+        field_types = self.struct_field_type_names.get(pat.type_name, {})
+        for fname, fpat in pat.fields:
+            if fpat is None:
+                fty = field_types.get(fname)
+                if fty is not None:
+                    self._cur_value_types[fname] = fty
+            elif isinstance(fpat, A.IdentPat):
+                fty = field_types.get(fname)
+                if fty is not None:
+                    self._cur_value_types[fpat.name] = fty
+            elif isinstance(fpat, A.StructPat):
+                self._record_pattern_value_types(fpat)
+
+    def _iter_element_struct_type(self, iter_expr: A.Expr):
+        """The element STRUCT TYPE name a for-loop iterable yields, or ``None``
+        when it cannot be resolved statically. Recognises the minimal set of
+        iterable shapes a body-scoped binder seed needs:
+
+        * a ``ListLit`` (``for u in [o]``) resolves via the FIRST element's
+          ``_static_struct_type`` (an empty list yields ``None``);
+        * an ``Ident`` (``for u in secs``) resolves via ``_cur_elem_types``
+          (a container PARAMETER's element type);
+        * a ``FieldAccess`` to a container field (``for u in bag.items``)
+          resolves the receiver's struct type via ``_cur_value_types``, walks
+          any intermediate hops through ``struct_field_type_names``, then reads
+          ``struct_field_elem_type_names`` for the container field.
+
+        Everything else -- a call- / index-rooted iterable (``for u in mk()``),
+        a nested-generic element, a local-bound list whose element type was not
+        propagated -- resolves to ``None`` (the disclosed residuals), so the
+        binder is left unseeded and a deep read off it stays a whole-value
+        fallback rather than resolving against a wrong type."""
+        if isinstance(iter_expr, A.ListLit):
+            if iter_expr.elements:
+                return self._static_struct_type(iter_expr.elements[0])
+            return None
+        if isinstance(iter_expr, A.Ident):
+            return self._cur_elem_types.get(iter_expr.name)
+        if isinstance(iter_expr, A.FieldAccess):
+            root = self._chain_root_name(iter_expr)
+            path = self._chain_field_path(iter_expr)
+            if root is None or not path:
+                return None
+            tyname = self._cur_value_types.get(root)
+            for hop in path[:-1]:
+                if tyname is None:
+                    return None
+                tyname = self.struct_field_type_names.get(tyname, {}).get(hop)
+            if tyname is None:
+                return None
+            return self.struct_field_elem_type_names.get(
+                tyname, {},
+            ).get(path[-1])
+        return None
 
     # ---- taint of an expression ------------------------------------
 
