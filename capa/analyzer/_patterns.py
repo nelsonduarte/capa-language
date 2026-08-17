@@ -640,10 +640,25 @@ class _PatternsMixin:
             # arm above.
             #
             # DISCLOSED OPEN RESIDUALS (not closed here; each accepted today):
-            #   - A GENERIC TYPE-PARAMETER scrutinee (``fun f<T>(t: T)`` then
-            #     ``let Other { a } = t``): ``ty`` is a ``TyVar``, no struct
-            #     resolves, so a public twin still launders (leaks on Python).
-            #     Needs monomorphization to see the concrete type.
+            #   - A GENERIC TYPE-PARAMETER scrutinee. When a struct field's
+            #     declared type is a type parameter, this binder assigns the
+            #     bound name the pattern struct's RAW ``struct_fields`` type
+            #     without substituting the scrutinee's generic ARGUMENTS, so a
+            #     generic-typed field binds as a bare ``TyVar``. That ``TyVar``
+            #     then reaches a public-twin destructure whose guard does not
+            #     fire (no concrete struct resolves), and the secret launders.
+            #     This is NOT confined to a generic FUNCTION parameter
+            #     (``fun f<T>(t: T)`` then ``let Other { a } = t``): it is
+            #     reachable from ordinary, fully concrete, non-generic code
+            #     through ANY generic-typed struct field, e.g.
+            #     ``let Box { v } = b; let Other { a } = v`` for
+            #     ``b: Box<ASecret>``, or the same via ``Pair<ASecret, _>``.
+            #     ``--check`` stays clean even under ``@strict_ifc``; at runtime
+            #     the split is Python-LEAKS / Wasm-ERRORS (the Wasm lowerer
+            #     rejects the un-substituted ``TyVar`` with "type 'T' has no
+            #     Wasm encoding"). Closing it needs the destructure binder to
+            #     substitute the scrutinee's generic args into the field types
+            #     (monomorphization), so the field binds at its concrete type.
             #   - A TRAIT-typed scrutinee (``s: Shape`` then
             #     ``let Circle { r } = s``): ``ty.name`` resolves to a TRAIT,
             #     not a struct, so the legitimate downcast stays accepted and

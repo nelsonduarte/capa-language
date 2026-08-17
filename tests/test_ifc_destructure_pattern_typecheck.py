@@ -25,10 +25,19 @@ away and slip the guard.
 DISCLOSED OPEN RESIDUALS (each accepted TODAY, pinned so a future tightening
 is a deliberate, visible change):
 
-* a GENERIC TYPE-PARAMETER scrutinee (``fun f<T>(t: T)`` then
-  ``let Other { a } = t``): ``ty`` is a ``TyVar``, no concrete struct
-  resolves, so a public twin still launders and leaks on Python (needs
-  monomorphization);
+* a GENERIC-TYPED struct field. The destructure binder assigns each bound
+  name the pattern struct's RAW ``struct_fields`` type without substituting
+  the scrutinee's generic ARGUMENTS, so a field whose declared type is a type
+  parameter binds as a bare ``TyVar``, and a public-twin destructure of that
+  ``TyVar`` launders (no concrete struct resolves, so the guard does not
+  fire). NOT confined to a generic FUNCTION parameter (``fun f<T>(t: T)``
+  then ``let Other { a } = t``): reachable from ordinary, fully concrete,
+  non-generic code through any generic-typed struct field, e.g.
+  ``let Box { v } = b; let Other { a } = v`` for ``b: Box<ASecret>`` (or via
+  ``Pair<ASecret, _>``). ``--check`` stays clean even under ``@strict_ifc``;
+  at runtime the split is Python-LEAKS / Wasm-ERRORS (the Wasm lowerer
+  rejects the un-substituted ``TyVar``). Needs the binder to substitute the
+  scrutinee's generic args into the field types (monomorphization);
 * a TRAIT-typed scrutinee (``s: Shape`` then ``let OtherCircle { r } = s``):
   ``ty.name`` resolves to a trait, not a struct, so the downcast stays
   accepted and a public-twin downcast is not caught (Python leak / Wasm
@@ -508,9 +517,14 @@ class TestTyUnknownScrutineeNoSpuriousError(unittest.TestCase):
 class TestImportedCorrectTypeDestructureAccepted(unittest.TestCase):
     """A correct-type destructure of an IMPORTED struct is accepted: the
     global type registry carries the imported type, so the head-name match
-    holds and the guard does not fire."""
+    holds and the guard does not fire.
+
+    Driven through the in-process loader + analyzer + transpiler (the tree
+    under test), not a ``python -m capa`` subprocess: a subprocess resolves
+    whatever ``capa`` is installed on PATH, which need not be this branch."""
 
     def test_imported_destructure_ok(self):
+        from capa.loader import ModuleLoader
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
             (tdp / "lib.capa").write_text(
@@ -520,15 +534,32 @@ class TestImportedCorrectTypeDestructureAccepted(unittest.TestCase):
                 encoding="utf-8",
             )
             root = tdp / "root.capa"
-            root.write_text(
+            root_src = (
                 "import lib\n"
                 "fun main(stdio: Stdio)\n"
                 "    let Point { x, y } = origin()\n"
-                "    stdio.println(\"${x} ${y}\")\n",
-                encoding="utf-8",
+                "    stdio.println(\"${x} ${y}\")\n"
             )
-            rc, out, err = _cli(["--run", str(root)], cwd=str(tdp))
-            self.assertEqual(rc, 0, err)
+            root.write_text(root_src, encoding="utf-8")
+            linked = ModuleLoader().load_root(root_src, str(root))
+            result = analyze(
+                linked.module, source=root_src, filename=str(root),
+                sources=linked.sources,
+                module_privates=linked.module_privates,
+            )
+            self.assertTrue(result.ok, [e.message for e in result.errors])
+            self.assertEqual(len(_mismatch_errors(result)), 0,
+                             [e.message for e in result.errors])
+            # End-to-end on the branch's transpiler: the accepted import
+            # destructure runs and prints the imported struct's fields.
+            code = transpile(
+                linked.module, types=result.types,
+                bindings=result.bindings,
+            )
+            ns: dict = {"__name__": "__main__"}
+            out = _capture(
+                lambda: exec(compile(code, "<imp>", "exec"), ns)
+            )
             self.assertEqual(out, "0 0\n")
 
 
@@ -542,6 +573,20 @@ RES_TYVAR_LAUNDER = (_SEC +
     "    stdio.println(a)\n"
     "fun main(stdio: Stdio)\n"
     "    leak(ASecret { a: \"s3cr3t\" }, stdio)\n")
+
+# The SAME residual reached from ORDINARY, fully concrete, non-generic code:
+# ``b: Box<ASecret>`` destructured to ``v`` binds ``v`` as a raw ``TyVar T``
+# (the binder does not substitute the scrutinee's generic arg into the field
+# type), so the public-twin destructure of ``v`` launders. Accepted even
+# under ``@strict_ifc``; Python LEAKS while Wasm ERRORS on the raw ``TyVar``.
+RES_GENERIC_FIELD_LAUNDER = (_SEC +
+    "type Box<T> { v: T }\n"
+    "fun leak(b: Box<ASecret>, stdio: Stdio)\n"
+    "    let Box { v } = b\n"
+    "    let Other { a } = v\n"
+    "    stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(Box { v: ASecret { a: \"s3cr3t\" } }, stdio)\n")
 
 # A trait-typed scrutinee destructured via a public twin: ``ty.name`` is a
 # trait, so the guard does not fire; accepted and LEAKS on Python.
@@ -584,6 +629,22 @@ class TestDisclosedResidualsPinned(unittest.TestCase):
         self.assertEqual(len(_flow_warnings(r)), 0,
                          [w.message for w in r.warnings])
         self.assertEqual(_run_py(RES_TYVAR_LAUNDER), "s3cr3t\n")
+
+    def test_generic_field_launder_from_concrete_code(self):
+        # Reachable from ordinary concrete code: clean at BOTH tiers, then a
+        # Python-LEAKS / Wasm-ERRORS split at runtime.
+        r = _analyze(RES_GENERIC_FIELD_LAUNDER)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(RES_GENERIC_FIELD_LAUNDER, "leak"))
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        self.assertEqual(_run_py(RES_GENERIC_FIELD_LAUNDER), "s3cr3t\n")
+        # Wasm rejects the un-substituted TyVar (the disclosed split).
+        if _wasm_unavailable() is None:
+            with self.assertRaises(Exception):
+                _run_wasm(RES_GENERIC_FIELD_LAUNDER)
 
     def test_trait_launder_accepted_and_leaks(self):
         r = _analyze(RES_TRAIT_LAUNDER)

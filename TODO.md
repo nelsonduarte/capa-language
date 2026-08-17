@@ -181,10 +181,21 @@ code.
   when the scrutinee's static type is a CONCRETE struct in the module type
   table (resolved through the global type registry, so a local binder named
   like the struct type cannot shadow it away). Three residuals stay open, each
-  accepted today. (1) A GENERIC TYPE-PARAMETER scrutinee (`fun f<T>(t: T)` then
-  `let Other { a } = t`): the scrutinee is a `TyVar`, no concrete struct
-  resolves, so a public twin still launders (leaks on Python); closing it needs
-  monomorphization. (2) A TRAIT-typed scrutinee (`s: Shape` then
+  accepted today. (1) A GENERIC-TYPED struct field. The destructure binder
+  assigns each bound name the pattern struct's RAW `struct_fields` type without
+  substituting the scrutinee's generic ARGUMENTS, so a field whose declared
+  type is a type parameter binds as a bare `TyVar`. That `TyVar` then reaches a
+  public-twin destructure whose guard does not fire (no concrete struct
+  resolves), and the secret launders. This is NOT confined to a generic
+  FUNCTION parameter (`fun f<T>(t: T)` then `let Other { a } = t`): it is
+  reachable from ordinary, fully concrete, non-generic code through any
+  generic-typed struct field, e.g. `let Box { v } = b; let Other { a } = v` for
+  `b: Box<ASecret>`, or the same via `Pair<ASecret, _>`. `--check` stays clean
+  even under `@strict_ifc`; at runtime the split is Python-LEAKS / Wasm-ERRORS
+  (the Wasm lowerer rejects the un-substituted `TyVar` with "type 'T' has no
+  Wasm encoding"). Closing it needs the destructure binder to substitute the
+  scrutinee's generic args into the field types (monomorphization). (2) A
+  TRAIT-typed scrutinee (`s: Shape` then
   `let OtherCircle { r } = s`): the scrutinee type is a trait, not a struct, so
   the downcast stays accepted and a public-twin downcast is not caught (Python
   leak / Wasm crash); closing it needs a runtime tag check. (3) A SUM /
