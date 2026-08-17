@@ -639,26 +639,23 @@ class _PatternsMixin:
             # generic arguments and typestate, mirroring the ``VariantPat``
             # arm above.
             #
+            # A generic struct field is now handled: the field-binding loop
+            # below substitutes the scrutinee's generic ARGUMENTS into the
+            # field types, so a field declared at a type parameter (``v: T``
+            # in ``Box<T>``) binds at its instantiated CONCRETE type
+            # (``v: ASecret`` for a ``Box<ASecret>`` scrutinee). A downstream
+            # public-twin destructure then resolves a concrete struct and the
+            # guard above fires, closing the launder that ran through any
+            # generic-typed struct field from ordinary concrete code.
+            #
             # DISCLOSED OPEN RESIDUALS (not closed here; each accepted today):
-            #   - A GENERIC TYPE-PARAMETER scrutinee. When a struct field's
-            #     declared type is a type parameter, this binder assigns the
-            #     bound name the pattern struct's RAW ``struct_fields`` type
-            #     without substituting the scrutinee's generic ARGUMENTS, so a
-            #     generic-typed field binds as a bare ``TyVar``. That ``TyVar``
-            #     then reaches a public-twin destructure whose guard does not
-            #     fire (no concrete struct resolves), and the secret launders.
-            #     This is NOT confined to a generic FUNCTION parameter
-            #     (``fun f<T>(t: T)`` then ``let Other { a } = t``): it is
-            #     reachable from ordinary, fully concrete, non-generic code
-            #     through ANY generic-typed struct field, e.g.
-            #     ``let Box { v } = b; let Other { a } = v`` for
-            #     ``b: Box<ASecret>``, or the same via ``Pair<ASecret, _>``.
-            #     ``--check`` stays clean even under ``@strict_ifc``; at runtime
-            #     the split is Python-LEAKS / Wasm-ERRORS (the Wasm lowerer
-            #     rejects the un-substituted ``TyVar`` with "type 'T' has no
-            #     Wasm encoding"). Closing it needs the destructure binder to
-            #     substitute the scrutinee's generic args into the field types
-            #     (monomorphization), so the field binds at its concrete type.
+            #   - A RIGID generic TYPE-PARAMETER scrutinee. When the scrutinee
+            #     itself is a bare type parameter (``fun f<T>(t: T)`` then
+            #     ``let Other { a } = t``), or an intermediate whose field
+            #     type substitutes to itself (``fun f<T>(b: Box<T>)``, where
+            #     ``v: T`` stays a ``TyVar``), no concrete struct resolves, so
+            #     the guard does not fire. The substitution below only helps
+            #     when the scrutinee carries concrete generic arguments.
             #   - A TRAIT-typed scrutinee (``s: Shape`` then
             #     ``let Circle { r } = s``): ``ty.name`` resolves to a TRAIT,
             #     not a struct, so the legitimate downcast stays accepted and
@@ -683,6 +680,25 @@ class _PatternsMixin:
                     # fields so this single diagnostic is the only one, with
                     # no cascade of undefined-name errors on the binders.
             known = sym.struct_fields
+            # Substitute the scrutinee's generic ARGUMENTS into the field
+            # types before binding. A field declared at a type parameter
+            # (``v: T`` in ``Box<T>``) must bind at the instantiated type
+            # (``v: ASecret`` for a ``Box<ASecret>`` scrutinee), not the raw
+            # ``TyVar``: an un-substituted ``TyVar`` slips the concrete-struct
+            # guard on a downstream public-twin destructure and launders the
+            # secret. The ``ty.name == p.type_name`` predicate keeps this off
+            # the mismatch / emit-and-continue path above (where the pattern
+            # names a DIFFERENT struct); mirrors the ``VariantPat`` arm and
+            # generic-struct field access, so the destructure now agrees with
+            # a field read.
+            field_subst: dict[str, Ty] = {}
+            if (
+                isinstance(ty, TyName)
+                and ty.name == p.type_name
+                and sym.type_params
+                and len(ty.args) == len(sym.type_params)
+            ):
+                field_subst = dict(zip(sym.type_params, ty.args))
             seen: set[str] = set()
             for fname, fpat in p.fields:
                 if fname in seen:
@@ -696,6 +712,8 @@ class _PatternsMixin:
                     fty: Ty = TyUnknown
                 else:
                     fty = known[fname]
+                    if field_subst:
+                        fty = substitute(fty, field_subst)
                 if fpat is None:
                     # shorthand ``field`` -> bind ``field: same-name``.
                     # This binds directly (not via ``_bind_pattern``), so
