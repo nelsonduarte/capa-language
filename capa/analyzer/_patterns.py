@@ -614,6 +614,59 @@ class _PatternsMixin:
                     f"{p.type_name!r} is not a struct type", p.pos,
                 )
                 return
+            # Type-check the destructuring pattern against the scrutinee.
+            #
+            # A struct-destructuring pattern (``let Other { a } = t``,
+            # ``for Other { a } in xs``, or a ``match`` arm) binds each
+            # named field with the type it has in the PATTERN's struct
+            # (``sym.struct_fields`` below), never the scrutinee's. When
+            # the pattern names a DIFFERENT struct than the value has,
+            # that rebinds the scrutinee's field under the twin's label:
+            # a public-twin pattern over a ``@secret`` value launders the
+            # secret into a public binding, silently, under ``@strict_ifc``
+            # and on both backends, and a pattern naming a field the value
+            # lacks passes ``--check`` and then faults at runtime. One
+            # reject upstream, here in the binder, closes both: a rejected
+            # program never reaches the IFC summary or codegen.
+            #
+            # Laundering is closed EXACTLY when the scrutinee's static type
+            # is a CONCRETE struct in the module type table. Struct-ness is
+            # resolved through ``self.global_scope`` (the type registry, the
+            # same table ``_check_field_access`` consults), NOT ``self.scope``
+            # (the value+type scope): a local ``let`` / ``var`` / ``param`` /
+            # ``for`` binder named like the struct type must not be able to
+            # shadow the type away. Head-name comparison only, ignoring
+            # generic arguments and typestate, mirroring the ``VariantPat``
+            # arm above.
+            #
+            # DISCLOSED OPEN RESIDUALS (not closed here; each accepted today):
+            #   - A GENERIC TYPE-PARAMETER scrutinee (``fun f<T>(t: T)`` then
+            #     ``let Other { a } = t``): ``ty`` is a ``TyVar``, no struct
+            #     resolves, so a public twin still launders (leaks on Python).
+            #     Needs monomorphization to see the concrete type.
+            #   - A TRAIT-typed scrutinee (``s: Shape`` then
+            #     ``let Circle { r } = s``): ``ty.name`` resolves to a TRAIT,
+            #     not a struct, so the legitimate downcast stays accepted and
+            #     a public-twin downcast is not caught (Python leak / Wasm
+            #     crash). Needs a runtime tag check.
+            #   - A SUM / primitive scrutinee (``let Other { a } = <sum>``):
+            #     ``ty`` is not a struct in the table, so the mismatch is not
+            #     caught here; it faults LOUD on both backends at runtime (a
+            #     pre-existing D1-cousin, no silent leak).
+            if isinstance(ty, TyName) and ty.name != p.type_name:
+                scrut_sym = self.global_scope.lookup(ty.name)
+                if (
+                    scrut_sym is not None
+                    and scrut_sym.kind == SymbolKind.TYPE_STRUCT
+                ):
+                    self._err(
+                        f"destructuring pattern names {p.type_name!r}, "
+                        f"but the value has type {ty_str(ty)}",
+                        p.pos,
+                    )
+                    # Emit-and-continue: fall through to bind the pattern's
+                    # fields so this single diagnostic is the only one, with
+                    # no cascade of undefined-name errors on the binders.
             known = sym.struct_fields
             seen: set[str] = set()
             for fname, fpat in p.fields:

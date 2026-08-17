@@ -173,5 +173,23 @@ code.
   cleared), so a whole-value rebind does not lower the accumulated content
   label and can over-report in the safe (secret) direction; it never
   under-reports a leak.
+- **IFC destructure-pattern laundering residuals.** A struct-destructuring
+  pattern is now type-checked against its scrutinee, so a public-twin pattern
+  can no longer launder a `@secret` into a public binding, a `match` twin no
+  longer diverges Python-vs-Wasm, and a pattern naming an absent field no
+  longer passes `--check` then faults at runtime. Laundering is closed EXACTLY
+  when the scrutinee's static type is a CONCRETE struct in the module type
+  table (resolved through the global type registry, so a local binder named
+  like the struct type cannot shadow it away). Three residuals stay open, each
+  accepted today. (1) A GENERIC TYPE-PARAMETER scrutinee (`fun f<T>(t: T)` then
+  `let Other { a } = t`): the scrutinee is a `TyVar`, no concrete struct
+  resolves, so a public twin still launders (leaks on Python); closing it needs
+  monomorphization. (2) A TRAIT-typed scrutinee (`s: Shape` then
+  `let OtherCircle { r } = s`): the scrutinee type is a trait, not a struct, so
+  the downcast stays accepted and a public-twin downcast is not caught (Python
+  leak / Wasm crash); closing it needs a runtime tag check. (3) A SUM /
+  primitive scrutinee (`let Other { a } = <sum value>`): the scrutinee is not a
+  struct in the table, so the mismatch is not caught here and faults LOUD on
+  both backends at runtime (a pre-existing D1-cousin, no silent leak).
 - **Security M3.** `install.sh` same-channel SHA pinning, deferred by
   design.
