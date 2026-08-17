@@ -27,7 +27,7 @@ from __future__ import annotations
 from .. import capa_ast as A
 from ..typesys import (
     Ty, TyName, TyTuple, TyUnit, TyUnknown, TyVar,
-    compatible, substitute, ty_str,
+    compatible, is_flexible, substitute, ty_str,
 )
 
 
@@ -562,6 +562,35 @@ class _PatternsMixin:
                 )
             return
         if isinstance(p, A.VariantPat):
+            # Reject a concrete variant pattern over a RIGID generic
+            # type-parameter scrutinee (``fun f<T>(t: T)`` then
+            # ``match t { Some(x) -> ... }``). Inside the generic body the
+            # value of ``T`` is opaque (parametricity), so matching it as a
+            # concrete variant is an unsound downcast the compiler cannot
+            # justify. A FLEXIBLE ``?`` inference placeholder (an as-yet
+            # unresolved element type, e.g. the empty-list for-destructure)
+            # is excluded: it will be pinned to a concrete type and stays
+            # legal. Emit ONE diagnostic and bind the payload names to a
+            # placeholder so no undefined-name cascade follows.
+            #
+            # Unlike the struct arm below, this is NOT a silent both-backends
+            # leak: the Python backend structurally no-ops (the opaque value
+            # never matches the public twin) and the Wasm backend faults
+            # loud. Rejecting it is fail-closed hardening and removes that
+            # backend divergence.
+            resolved = self._resolve_ty(ty)
+            if isinstance(resolved, TyVar) and not is_flexible(resolved):
+                self._err(
+                    f"variant pattern {p.name!r} cannot destructure a value "
+                    f"of generic type {ty_str(resolved)}: a value of a "
+                    f"generic type parameter cannot be matched as a concrete "
+                    f"variant because the compiler cannot prove it has that "
+                    f"type",
+                    p.pos,
+                )
+                for sub in p.payloads:
+                    self._bind_pattern(sub, TyUnknown, mutable, init_expr)
+                return
             sym = self.scope.lookup(p.name)
             if sym is None:
                 hint = self._hint_did_you_mean(
@@ -648,24 +677,51 @@ class _PatternsMixin:
             # guard above fires, closing the launder that ran through any
             # generic-typed struct field from ordinary concrete code.
             #
-            # DISCLOSED OPEN RESIDUALS (not closed here; each accepted today):
-            #   - A RIGID generic TYPE-PARAMETER scrutinee. When the scrutinee
-            #     itself is a bare type parameter (``fun f<T>(t: T)`` then
-            #     ``let Other { a } = t``), or an intermediate whose field
-            #     type substitutes to itself (``fun f<T>(b: Box<T>)``, where
-            #     ``v: T`` stays a ``TyVar``), no concrete struct resolves, so
-            #     the guard does not fire. The substitution below only helps
-            #     when the scrutinee carries concrete generic arguments.
+            # Reject a struct-destructuring pattern over a RIGID generic
+            # type-parameter scrutinee. When the scrutinee's static type is a
+            # bare type parameter (``fun f<T>(t: T)`` then
+            # ``let Other { a } = t``), or an intermediate whose field type
+            # substitutes to itself (``fun f<T>(b: Box<T>)``, where ``v: T``
+            # stays a ``TyVar``), the value of ``T`` is opaque inside the
+            # generic body (parametricity), so destructuring it as a concrete
+            # struct is an unsound downcast the compiler cannot justify.
+            # Rejecting it also closes an @secret launder: a rigid-``T`` value
+            # destructured through a public twin (``Other``) is a SILENT
+            # @secret leak on BOTH backends (both bind the field under the
+            # twin's public label and disclose the secret), so this is the
+            # severe channel this reject removes.
+            #
+            # A FLEXIBLE ``?`` inference placeholder is EXCLUDED: an as-yet
+            # unresolved element type (the empty-list for-destructure,
+            # ``let xs = []; for Point { x } in xs``) will be pinned to a
+            # concrete type and stays legal. Emit-and-continue (mirroring the
+            # concrete-struct mismatch guard below): fall through to bind the
+            # pattern's fields so this single diagnostic is the only one, with
+            # no cascade of undefined-name errors on the binders.
+            #
+            # DISCLOSED OPEN RESIDUAL (not closed here):
             #   - A TRAIT-typed scrutinee (``s: Shape`` then
             #     ``let Circle { r } = s``): ``ty.name`` resolves to a TRAIT,
-            #     not a struct, so the legitimate downcast stays accepted and
-            #     a public-twin downcast is not caught (Python leak / Wasm
-            #     crash). Needs a runtime tag check.
+            #     not a struct and not a type variable, so the legitimate
+            #     downcast stays accepted and a public-twin downcast is not
+            #     caught (Python leak). Needs a runtime tag check.
             #   - A SUM / primitive scrutinee (``let Other { a } = <sum>``):
             #     ``ty`` is not a struct in the table, so the mismatch is not
             #     caught here; it faults LOUD on both backends at runtime (a
             #     pre-existing D1-cousin, no silent leak).
-            if isinstance(ty, TyName) and ty.name != p.type_name:
+            resolved = self._resolve_ty(ty)
+            if isinstance(resolved, TyVar) and not is_flexible(resolved):
+                self._err(
+                    f"destructuring pattern names {p.type_name!r}, but the "
+                    f"value has generic type {ty_str(resolved)}: a value of "
+                    f"a generic type parameter cannot be destructured as a "
+                    f"concrete struct because the compiler cannot prove it "
+                    f"has that type",
+                    p.pos,
+                )
+                # Emit-and-continue: fall through to bind the pattern's fields
+                # so this single diagnostic is the only one.
+            elif isinstance(ty, TyName) and ty.name != p.type_name:
                 scrut_sym = self.global_scope.lookup(ty.name)
                 if (
                     scrut_sym is not None

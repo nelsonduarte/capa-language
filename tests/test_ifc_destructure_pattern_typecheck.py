@@ -32,19 +32,35 @@ through any generic-typed struct field from ordinary concrete code
 (``let Box { v } = b; let Other { a } = v`` for ``b: Box<ASecret>``, or via
 ``Pair<ASecret, _>``).
 
+A RIGID generic TYPE-PARAMETER scrutinee is now CLOSED. When the scrutinee's
+static type is a bare type parameter (``fun f<T>(t: T)`` then
+``let Other { a } = t``), or an intermediate whose field type substitutes to
+itself (``fun f<T>(b: Box<T>)``, where ``v: T`` stays a ``TyVar``), the value
+of ``T`` is opaque inside the generic body (parametricity), so destructuring
+it as a concrete struct is an unsound downcast the binder now rejects. The
+severity of the two arms differs and the tests pin each accurately:
+
+* the STRUCT-destructure channel (a rigid-``T`` value, or a ``Box<T>`` field
+  bound at ``T``, destructured through a public twin) was a SILENT @secret
+  leak on BOTH backends (both bind the field under the twin's public label
+  and disclose the secret); this is the severe channel closed;
+* the VARIANT-MATCH arm (a rigid-``T`` value matched against a concrete
+  variant pattern) was NOT a silent both-backends leak: the Python backend
+  structurally no-ops (the opaque value never matches the twin) and the Wasm
+  backend faults loud. Rejecting it is fail-closed hardening and removes that
+  backend divergence.
+
+A FLEXIBLE ``?`` inference placeholder is EXCLUDED from the reject: an as-yet
+unresolved element type (the empty-list for-destructure, ``let xs = [];
+for Point { x } in xs``) is pinned to a concrete type later and stays legal.
+
 DISCLOSED OPEN RESIDUALS (each accepted TODAY, pinned so a future tightening
 is a deliberate, visible change):
 
-* a RIGID generic TYPE-PARAMETER scrutinee: the scrutinee is itself a bare
-  type parameter (``fun f<T>(t: T)`` then ``let Other { a } = t``), or an
-  intermediate whose field type substitutes to itself (``fun f<T>(b: Box<T>)``,
-  where ``v: T`` stays a ``TyVar``). No concrete struct resolves, so the guard
-  does not fire; the substitution above only helps when the scrutinee carries
-  concrete generic arguments;
 * a TRAIT-typed scrutinee (``s: Shape`` then ``let OtherCircle { r } = s``):
-  ``ty.name`` resolves to a trait, not a struct, so the downcast stays
-  accepted and a public-twin downcast is not caught (Python leak / Wasm
-  crash; needs a runtime tag check);
+  ``ty.name`` resolves to a trait, not a struct and not a type variable, so
+  the downcast stays accepted and a public-twin downcast is not caught
+  (Python leak; needs a runtime tag check);
 * a SUM / primitive scrutinee (``let Other { a } = <sum value>``): the
   scrutinee is not a struct in the table, so the mismatch is not caught
   here; it faults LOUD on both backends at runtime (a pre-existing
@@ -438,15 +454,6 @@ ACCEPT_TRAIT_DOWNCAST = (
     "fun main(stdio: Stdio)\n"
     "    stdio.println(\"${f(Circle { r: 3 })}\")\n")
 
-# A generic TYPE-VARIABLE scrutinee: no concrete struct resolves, accepted.
-ACCEPT_TYVAR = (
-    "type Rec { f2: Int }\n"
-    "fun f<T>(t: T) -> Int\n"
-    "    let Rec { f2 } = t\n"
-    "    return f2\n"
-    "fun main(stdio: Stdio)\n"
-    "    stdio.println(\"${f(Rec { f2: 3 })}\")\n")
-
 # Shorthand + rename in one pattern: ``{ f2: m, g }``.
 ACCEPT_SHORTHAND_RENAME = (
     "type Rec2 { f2: Int, g: Int }\n"
@@ -478,7 +485,6 @@ ACCEPT_VARIANT_MATCH = (
 _ACCEPT_CHECK = {
     "generic_head": ACCEPT_GENERIC,
     "trait_downcast": ACCEPT_TRAIT_DOWNCAST,
-    "tyvar_scrutinee": ACCEPT_TYVAR,
     "shorthand_rename": ACCEPT_SHORTHAND_RENAME,
     "correct_match": ACCEPT_MATCH,
     "variant_match": ACCEPT_VARIANT_MATCH,
@@ -486,8 +492,8 @@ _ACCEPT_CHECK = {
 
 
 class TestCorrectTypeAccepted(unittest.TestCase):
-    """Correct-type / generic-head / trait-downcast / tyvar / shorthand /
-    match shapes are accepted with no destructuring-mismatch error."""
+    """Correct-type / generic-head / trait-downcast / shorthand / match
+    shapes are accepted with no destructuring-mismatch error."""
 
     def test_accepted(self):
         for name, src in _ACCEPT_CHECK.items():
@@ -875,21 +881,35 @@ class TestPrecisionGainRepairedFalsePositives(unittest.TestCase):
                 self.assertEqual(_run_py(src), out)
 
 
-# ---- DISCLOSED-RESIDUAL pins (accepted TODAY, KNOWN-OPEN) ----------------
+# ---- CLOSED: the RIGID type-parameter scrutinee now REJECTS --------------
+#
+# A struct / variant destructuring pattern whose scrutinee's static type is a
+# RIGID type variable (a bare declared ``T`` from ``fun f<T>``) is now a hard
+# type error at BOTH tiers, refused by both runtimes. Inside the generic body
+# the value of ``T`` is opaque (parametricity), so destructuring it as a
+# concrete struct / variant is an unsound downcast; rejecting it also closes
+# the @secret launder. The two arms differ in severity (see below).
 
-# A generic TYPE-PARAMETER scrutinee destructured via a public twin: no
-# concrete struct resolves, so it is accepted and LEAKS on Python.
-RES_TYVAR_LAUNDER = (_SEC +
+
+def _variant_rigid_errors(r):
+    return [e for e in r.errors
+            if "cannot be matched as a concrete variant" in e.message]
+
+
+# STRUCT ARM, SEVERE: a rigid-``T`` value destructured through a public twin
+# is a SILENT @secret leak on BOTH backends. Now rejected.
+RIGID_TYVAR_LAUNDER = (_SEC +
     "fun leak<T>(t: T, stdio: Stdio)\n"
     "    let Other { a } = t\n"
     "    stdio.println(a)\n"
     "fun main(stdio: Stdio)\n"
     "    leak(ASecret { a: \"s3cr3t\" }, stdio)\n")
 
-# A RIGID intermediate: ``Box<T>`` inside a generic function. The field type
-# ``T`` substitutes to itself and stays a ``TyVar``, so no concrete struct
-# resolves and the twin destructure stays (disclosed) accepted, unchanged.
-RES_RIGID_INTERMEDIATE = (_SEC +
+# STRUCT ARM, SEVERE: a ``Box<T>`` intermediate inside a generic function.
+# The field type ``T`` substitutes to itself and stays a ``TyVar``, so the
+# second (twin) destructure has a rigid-``T`` scrutinee. A SILENT @secret leak
+# on BOTH backends before this fix; now rejected at the twin destructure.
+RIGID_BOX_INTERMEDIATE = (_SEC +
     "type Box<T> { v: T }\n"
     "fun leak<T>(b: Box<T>, stdio: Stdio)\n"
     "    let Box { v } = b\n"
@@ -898,8 +918,221 @@ RES_RIGID_INTERMEDIATE = (_SEC +
     "fun main(stdio: Stdio)\n"
     "    leak(Box { v: ASecret { a: \"s3cr3t\" } }, stdio)\n")
 
+# STRUCT ARM, non-secret but parametrically UNSOUND: the degenerate rigid-``T``
+# destructure (formerly a ``tyvar_scrutinee`` accept). The compiler cannot
+# prove the opaque ``T`` value is a ``Rec``; this is now rejected as a
+# deliberate, visible tightening.
+RIGID_DEGENERATE = (
+    "type Rec { f2: Int }\n"
+    "fun f<T>(t: T) -> Int\n"
+    "    let Rec { f2 } = t\n"
+    "    return f2\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${f(Rec { f2: 3 })}\")\n")
+
+_RIGID_STRUCT_REJECT = {
+    "tyvar_launder": (RIGID_TYVAR_LAUNDER, "leak"),
+    "box_intermediate": (RIGID_BOX_INTERMEDIATE, "leak"),
+    "degenerate": (RIGID_DEGENERATE, "f"),
+}
+
+# VARIANT ARM, fail-closed hardening (NOT a silent both-backends leak): a
+# rigid-``T`` value matched against a concrete variant pattern. Before this
+# fix the Python backend structurally no-ops and the Wasm backend faults loud;
+# rejecting it removes that divergence. One diagnostic per offending arm.
+RIGID_VARIANT_MATCH = (
+    "fun f<T>(t: T) -> Int\n"
+    "    match t\n"
+    "        Some(x) -> return 1\n"
+    "        None -> return 0\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${f(Some(1))}\")\n")
+
+
+class TestRigidTypeParamDestructureRejected(unittest.TestCase):
+    """The rigid type-parameter destructure is CLOSED: every struct shape is
+    a hard type error with ONE mismatch diagnostic at BOTH tiers, no IFC
+    noise, refused by both runtimes."""
+
+    def test_struct_mismatch_at_both_tiers(self):
+        for name, (src, fn) in _RIGID_STRUCT_REJECT.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertFalse(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_mismatch_errors(r)), 1,
+                                 [e.message for e in r.errors])
+                self.assertEqual(len(r.errors), 1,
+                                 [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, fn))
+                self.assertEqual(len(_mismatch_errors(rs)), 1,
+                                 [e.message for e in rs.errors])
+
+    def test_struct_all_runtimes_refuse(self):
+        with tempfile.TemporaryDirectory() as td:
+            for name, (src, _fn) in _RIGID_STRUCT_REJECT.items():
+                with self.subTest(shape=name):
+                    p = Path(td) / f"rigid_{name}.capa"
+                    p.write_text(src, encoding="utf-8")
+                    for argv in (
+                        ["--check", str(p)],
+                        ["--run", str(p)],
+                        ["--run", "--wasm", str(p)],
+                    ):
+                        rc, _out, _err = _cli(argv)
+                        self.assertEqual(rc, 1, (name, argv, _err))
+
+    def test_variant_match_rejected(self):
+        # Fail-closed hardening, not a silent both-backends leak. One
+        # diagnostic per concrete variant arm over the rigid scrutinee.
+        r = _analyze(RIGID_VARIANT_MATCH)
+        self.assertFalse(r.ok)
+        self.assertEqual(len(_variant_rigid_errors(r)), 2,
+                         [e.message for e in r.errors])
+
+    def test_variant_match_runtimes_refuse(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "rigid_variant.capa"
+            p.write_text(RIGID_VARIANT_MATCH, encoding="utf-8")
+            for argv in (
+                ["--check", str(p)],
+                ["--run", str(p)],
+                ["--run", "--wasm", str(p)],
+            ):
+                rc, _out, _err = _cli(argv)
+                self.assertEqual(rc, 1, (argv, _err))
+
+
+# ---- ACCEPT: the zero-collateral battery of legitimate generic ------------
+# ---- destructures -- the proof the rigid-scrutinee rule has no ------------
+# ---- legitimate collateral. Each is accepted and (where it lowers) runs. --
+
+# A concrete-container ``Box<T>`` destructured by a ``Box`` pattern: the
+# scrutinee is ``Box<T>`` (a concrete container head), NOT a bare ``T``.
+OK_BOX_OF_T = (_BOX +
+    "fun f<T>(b: Box<T>) -> T\n"
+    "    let Box { v } = b\n"
+    "    return v\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${f(Box { v: 5 })}\")\n")
+
+# A generic method destructuring ``self: Box<T>``.
+OK_SELF_BOX = (_BOX +
+    "impl Box<T>\n"
+    "    fun get(self) -> T\n"
+    "        let Box { v } = self\n"
+    "        return v\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${Box { v: 3 }.get()}\")\n")
+
+# A nested ``Box<Box<T>>``: both destructures have a concrete container head.
+OK_NESTED_BOX_T = (_BOX +
+    "fun f<T>(b: Box<Box<T>>) -> T\n"
+    "    let Box { v } = b\n"
+    "    let Box { v: inner } = v\n"
+    "    return inner\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${f(Box { v: Box { v: 9 } })}\")\n")
+
+# A ``match`` over a concrete generic container.
+OK_MATCH_CONTAINER = (_BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let b = Box { v: 7 }\n"
+    "    match b\n"
+    "        Box { v } -> stdio.println(\"${v}\")\n")
+
+# A ``for`` over a concrete generic container.
+OK_FOR_CONTAINER = (_BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let xs = [Box { v: 1 }, Box { v: 2 }]\n"
+    "    for Box { v } in xs\n"
+    "        stdio.println(\"${v}\")\n")
+
+# An inferred destructure (the scrutinee type is inferred concrete).
+OK_INFERRED = (_BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let b = Box { v: 4 }\n"
+    "    let Box { v } = b\n"
+    "    stdio.println(\"${v}\")\n")
+
+# A tuple ``(T, T)`` destructure: a tuple pattern, not a struct / variant, so
+# the rigid-scrutinee rule does not touch it.
+OK_TUPLE_TT = (
+    "fun f<T>(p: (T, T)) -> T\n"
+    "    let (a, b) = p\n"
+    "    return a\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${f((1, 2))}\")\n")
+
+# A partial ``Pair<A, B>`` destructure: the scrutinee is a concrete container
+# head with two type arguments, not a bare parameter.
+OK_PAIR_PARTIAL = (_PAIR +
+    "fun f<A, B>(p: Pair<A, B>) -> A\n"
+    "    let Pair { first, second } = p\n"
+    "    return first\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${f(Pair { first: 1, second: 2 })}\")\n")
+
+# The FLEXIBLE-``?`` exclusion, load-bearing: an empty-list for-destructure.
+# The element type is an unresolved flexible variable, NOT a rigid ``T``, so
+# it must STILL compile and run (the loop body never executes).
+OK_FLEXIBLE_EMPTY = (
+    "type Point { x: Int }\n"
+    "fun main(stdio: Stdio)\n"
+    "    let xs = []\n"
+    "    for Point { x } in xs\n"
+    "        stdio.println(\"${x}\")\n"
+    "    stdio.println(\"done\")\n")
+
+# name -> (source, expected Python output). Every shape here binds a field at
+# a type parameter or destructures an unresolved-element container, neither of
+# which the Wasm backend can lower (a pre-existing, analyzer-INDEPENDENT
+# limitation: "type 'T' has no Wasm encoding" for the generic heads, and no
+# struct layout for the empty-list flexible element). They are checked for
+# --check-cleanliness and Python execution; the SEVERE repros above are what
+# exercise both runtimes.
+_OK_BATTERY = {
+    "box_of_T": (OK_BOX_OF_T, "5\n"),
+    "self_box": (OK_SELF_BOX, "3\n"),
+    "nested_box_T": (OK_NESTED_BOX_T, "9\n"),
+    "match_container": (OK_MATCH_CONTAINER, "7\n"),
+    "for_container": (OK_FOR_CONTAINER, "1\n2\n"),
+    "inferred": (OK_INFERRED, "4\n"),
+    "tuple_TT": (OK_TUPLE_TT, "1\n"),
+    "pair_partial": (OK_PAIR_PARTIAL, "1\n"),
+    "flexible_empty": (OK_FLEXIBLE_EMPTY, "done\n"),
+}
+
+
+class TestZeroCollateralBattery(unittest.TestCase):
+    """The rigid-scrutinee rule has NO legitimate collateral: a battery of
+    legitimate generic destructures (concrete container heads, tuples, a
+    partial pair, an inferred scrutinee, and the flexible-``?`` empty-list
+    for-destructure) all stay accepted with no mismatch error and run to the
+    expected Python output."""
+
+    def test_all_accepted(self):
+        for name, (src, _out) in _OK_BATTERY.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_mismatch_errors(r)), 0,
+                                 [e.message for e in r.errors])
+                self.assertEqual(len(_variant_rigid_errors(r)), 0,
+                                 [e.message for e in r.errors])
+
+    def test_all_run_python(self):
+        for name, (src, out) in _OK_BATTERY.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), out)
+
+
+# ---- DISCLOSED-RESIDUAL pins (accepted TODAY, KNOWN-OPEN) ----------------
+
 # A trait-typed scrutinee destructured via a public twin: ``ty.name`` is a
-# trait, so the guard does not fire; accepted and LEAKS on Python.
+# trait (not a struct and not a type variable), so the guard does not fire;
+# accepted and LEAKS on Python. Out of the rigid-scrutinee rule's scope.
 RES_TRAIT_LAUNDER = (
     "trait Shape\n"
     "    fun area(self) -> Int\n"
@@ -929,25 +1162,10 @@ RES_SUM_D1_COUSIN = (
 
 
 class TestDisclosedResidualsPinned(unittest.TestCase):
-    """The disclosed open residuals behave AS DOCUMENTED: the rigid
-    type-parameter and trait scrutinees are accepted; the sum-scrutinee
-    D1-cousin is accepted at --check and faults loud on both backends."""
-
-    def test_tyvar_launder_accepted_and_leaks(self):
-        r = _analyze(RES_TYVAR_LAUNDER)
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(len(_flow_warnings(r)), 0,
-                         [w.message for w in r.warnings])
-        self.assertEqual(_run_py(RES_TYVAR_LAUNDER), "s3cr3t\n")
-
-    def test_rigid_intermediate_still_accepted(self):
-        # ``Box<T>`` inside a generic function: the field type ``T``
-        # substitutes to itself and stays a ``TyVar``, so no concrete struct
-        # resolves and the twin destructure is still (disclosed) accepted.
-        r = _analyze(RES_RIGID_INTERMEDIATE)
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(len(_mismatch_errors(r)), 0,
-                         [e.message for e in r.errors])
+    """The disclosed open residuals behave AS DOCUMENTED: the trait scrutinee
+    is accepted (concrete named trait type, out of this rule's scope); the
+    sum-scrutinee D1-cousin is accepted at --check and faults loud on both
+    backends."""
 
     def test_trait_launder_accepted_and_leaks(self):
         r = _analyze(RES_TRAIT_LAUNDER)
