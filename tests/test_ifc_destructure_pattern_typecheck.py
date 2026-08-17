@@ -22,22 +22,25 @@ type table; struct-ness is resolved through the GLOBAL type registry
 ``param`` / ``for`` binder named like the struct type cannot shadow the type
 away and slip the guard.
 
+A GENERIC-TYPED struct field is now CLOSED: the destructure binder
+substitutes the scrutinee's generic ARGUMENTS into the field types, so a
+field whose declared type is a type parameter (``v: T`` in ``Box<T>``) binds
+at its instantiated CONCRETE type (``v: ASecret`` for a ``Box<ASecret>``
+scrutinee). A downstream public-twin destructure of that field then resolves
+a concrete struct and the mismatch guard fires, closing the launder that ran
+through any generic-typed struct field from ordinary concrete code
+(``let Box { v } = b; let Other { a } = v`` for ``b: Box<ASecret>``, or via
+``Pair<ASecret, _>``).
+
 DISCLOSED OPEN RESIDUALS (each accepted TODAY, pinned so a future tightening
 is a deliberate, visible change):
 
-* a GENERIC-TYPED struct field. The destructure binder assigns each bound
-  name the pattern struct's RAW ``struct_fields`` type without substituting
-  the scrutinee's generic ARGUMENTS, so a field whose declared type is a type
-  parameter binds as a bare ``TyVar``, and a public-twin destructure of that
-  ``TyVar`` launders (no concrete struct resolves, so the guard does not
-  fire). NOT confined to a generic FUNCTION parameter (``fun f<T>(t: T)``
-  then ``let Other { a } = t``): reachable from ordinary, fully concrete,
-  non-generic code through any generic-typed struct field, e.g.
-  ``let Box { v } = b; let Other { a } = v`` for ``b: Box<ASecret>`` (or via
-  ``Pair<ASecret, _>``). ``--check`` stays clean even under ``@strict_ifc``;
-  at runtime the split is Python-LEAKS / Wasm-ERRORS (the Wasm lowerer
-  rejects the un-substituted ``TyVar``). Needs the binder to substitute the
-  scrutinee's generic args into the field types (monomorphization);
+* a RIGID generic TYPE-PARAMETER scrutinee: the scrutinee is itself a bare
+  type parameter (``fun f<T>(t: T)`` then ``let Other { a } = t``), or an
+  intermediate whose field type substitutes to itself (``fun f<T>(b: Box<T>)``,
+  where ``v: T`` stays a ``TyVar``). No concrete struct resolves, so the guard
+  does not fire; the substitution above only helps when the scrutinee carries
+  concrete generic arguments;
 * a TRAIT-typed scrutinee (``s: Shape`` then ``let OtherCircle { r } = s``):
   ``ty.name`` resolves to a trait, not a struct, so the downcast stays
   accepted and a public-twin downcast is not caught (Python leak / Wasm
@@ -563,6 +566,315 @@ class TestImportedCorrectTypeDestructureAccepted(unittest.TestCase):
             self.assertEqual(out, "0 0\n")
 
 
+# ---- CLOSED: the generic-typed-field launder now REJECTS -----------------
+#
+# The binder substitutes the scrutinee's generic ARGUMENTS into the field
+# types, so a field declared at a type parameter binds at its instantiated
+# CONCRETE type and a downstream public-twin destructure trips the mismatch
+# guard. Each shape below reached the silent launder before the fix and is
+# now a hard type error at BOTH tiers, refused by both runtimes.
+
+_BOX = "type Box<T> { v: T }\n"
+_PAIR = "type Pair<A, B> { first: A, second: B }\n"
+_WRAP = "type Wrap<T> { v: T }\n"
+
+# Ordinary concrete code: a ``Box<ASecret>`` field bound, then twin-destructured.
+CLOSED_GENERIC_FIELD = (_SEC + _BOX +
+    "fun leak(b: Box<ASecret>, stdio: Stdio)\n"
+    "    let Box { v } = b\n"
+    "    let Other { a } = v\n"
+    "    stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(Box { v: ASecret { a: \"s3cr3t\" } }, stdio)\n")
+
+# The first field of a ``Pair<ASecret, Int>``.
+CLOSED_PAIR_FIRST = (_SEC + _PAIR +
+    "fun leak(p: Pair<ASecret, Int>, stdio: Stdio)\n"
+    "    let Pair { first, second } = p\n"
+    "    let Other { a } = first\n"
+    "    stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(Pair { first: ASecret { a: \"s3cr3t\" }, second: 1 }, stdio)\n")
+
+# A for-loop over ``List<Box<ASecret>>``.
+CLOSED_FOR_BOX = (_SEC + _BOX +
+    "fun leak(xs: List<Box<ASecret>>, stdio: Stdio)\n"
+    "    for Box { v } in xs\n"
+    "        let Other { a } = v\n"
+    "        stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak([Box { v: ASecret { a: \"s3cr3t\" } }], stdio)\n")
+
+# A for-loop over ``List<Wrap<ASecret>>``.
+CLOSED_FOR_WRAP = (_SEC + _WRAP +
+    "fun leak(xs: List<Wrap<ASecret>>, stdio: Stdio)\n"
+    "    for Wrap { v } in xs\n"
+    "        let Other { a } = v\n"
+    "        stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak([Wrap { v: ASecret { a: \"s3cr3t\" } }], stdio)\n")
+
+# A ``match`` arm StructPat twin over the bound field.
+CLOSED_MATCH_TWIN = (_SEC + _BOX +
+    "fun leak(b: Box<ASecret>, stdio: Stdio)\n"
+    "    let Box { v } = b\n"
+    "    match v\n"
+    "        Other { a } -> stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(Box { v: ASecret { a: \"s3cr3t\" } }, stdio)\n")
+
+# A nested ``Box<Box<ASecret>>``.
+CLOSED_NESTED = (_SEC + _BOX +
+    "fun leak(b: Box<Box<ASecret>>, stdio: Stdio)\n"
+    "    let Box { v } = b\n"
+    "    let Box { v: inner } = v\n"
+    "    let Other { a } = inner\n"
+    "    stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(Box { v: Box { v: ASecret { a: \"s3cr3t\" } } }, stdio)\n")
+
+# A generic struct RETURNED from a function, then twin-destructured.
+CLOSED_RETURNED = (_SEC + _BOX +
+    "fun mk() -> Box<ASecret>\n"
+    "    return Box { v: ASecret { a: \"s3cr3t\" } }\n"
+    "fun leak(stdio: Stdio)\n"
+    "    let Box { v } = mk()\n"
+    "    let Other { a } = v\n"
+    "    stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(stdio)\n")
+
+_CLOSED_REJECT = {
+    "generic_field": (CLOSED_GENERIC_FIELD, "leak"),
+    "pair_first": (CLOSED_PAIR_FIRST, "leak"),
+    "for_box": (CLOSED_FOR_BOX, "leak"),
+    "for_wrap": (CLOSED_FOR_WRAP, "leak"),
+    "match_twin": (CLOSED_MATCH_TWIN, "leak"),
+    "nested_box": (CLOSED_NESTED, "leak"),
+    "returned": (CLOSED_RETURNED, "leak"),
+}
+
+
+class TestGenericFieldLaunderNowRejected(unittest.TestCase):
+    """The generic-typed-field launder is CLOSED: every shape is a hard type
+    error with the mismatch diagnostic at the default tier AND under
+    ``@strict_ifc``, and is refused by both runtimes."""
+
+    def test_mismatch_at_both_tiers(self):
+        for name, (src, fn) in _CLOSED_REJECT.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertFalse(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_mismatch_errors(r)), 1,
+                                 [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, fn))
+                self.assertEqual(len(_mismatch_errors(rs)), 1,
+                                 [e.message for e in rs.errors])
+
+    def test_all_runtimes_refuse(self):
+        with tempfile.TemporaryDirectory() as td:
+            for name, (src, _fn) in _CLOSED_REJECT.items():
+                with self.subTest(shape=name):
+                    p = Path(td) / f"{name}.capa"
+                    p.write_text(src, encoding="utf-8")
+                    for argv in (
+                        ["--check", str(p)],
+                        ["--run", str(p)],
+                        ["--run", "--wasm", str(p)],
+                    ):
+                        rc, _out, _err = _cli(argv)
+                        self.assertEqual(rc, 1, (name, argv, _err))
+
+
+# ---- IFC FLAGS the direct secret field -----------------------------------
+#
+# The substitution binds the field at its concrete @secret type, so a DIRECT
+# read of that field is now a genuine IFC flow: a warning at the default tier
+# (the program still runs and prints the secret), a hard error under
+# ``@strict_ifc``.
+
+FLAG_BOX = (_SEC + _BOX +
+    "fun leak(b: Box<ASecret>, stdio: Stdio)\n"
+    "    let Box { v } = b\n"
+    "    stdio.println(v.a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(Box { v: ASecret { a: \"s3cr3t\" } }, stdio)\n")
+
+FLAG_PAIR = (_SEC + _PAIR +
+    "fun leak(p: Pair<ASecret, Int>, stdio: Stdio)\n"
+    "    let Pair { first, second } = p\n"
+    "    stdio.println(first.a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(Pair { first: ASecret { a: \"s3cr3t\" }, second: 1 }, stdio)\n")
+
+_FLAG = {"box": FLAG_BOX, "pair": FLAG_PAIR}
+
+
+class TestDirectSecretFieldFlagged(unittest.TestCase):
+    """A direct read of the now-concretely-typed @secret field flags: warning
+    at the default tier (still runs, prints the secret on Python), hard error
+    under ``@strict_ifc``."""
+
+    def test_flags_both_tiers(self):
+        for name, src in _FLAG.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertGreaterEqual(len(_flow_warnings(r)), 1,
+                                        [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, "leak"))
+                self.assertFalse(rs.ok)
+                self.assertGreaterEqual(len(_flow_errors(rs)), 1,
+                                        [e.message for e in rs.errors])
+
+    def test_runs_and_leaks_on_python(self):
+        for name, src in _FLAG.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), "s3cr3t\n")
+
+
+# ---- ACCEPT + run: every legitimate generic destructure passes and runs ---
+
+# ``Box<Int>`` -> binds ``v: Int``.
+OK_BOX_INT = (_BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let b = Box { v: 3 }\n"
+    "    let Box { v } = b\n"
+    "    stdio.println(\"${v}\")\n")
+
+# A nested ``Box<Box<Int>>``.
+OK_NESTED_INT = (_BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let b = Box { v: Box { v: 5 } }\n"
+    "    let Box { v } = b\n"
+    "    let Box { v: inner } = v\n"
+    "    stdio.println(\"${inner}\")\n")
+
+# A public field of a secret-bearing struct, read under ``@strict_ifc``.
+_SEC2 = "type Sec { s: @secret String, note: String }\n"
+OK_PUBLIC_FIELD = (_SEC2 + _BOX +
+    "@strict_ifc()\n"
+    "fun read(b: Box<Sec>, stdio: Stdio)\n"
+    "    let Box { v } = b\n"
+    "    stdio.println(v.note)\n"
+    "fun main(stdio: Stdio)\n"
+    "    read(Box { v: Sec { s: \"x\", note: \"ok\" } }, stdio)\n")
+
+# A same-struct destructure of a public field.
+OK_SAME_STRUCT = (_SEC2 +
+    "fun main(stdio: Stdio)\n"
+    "    let s = Sec { s: \"x\", note: \"ok\" }\n"
+    "    let Sec { note } = s\n"
+    "    stdio.println(note)\n")
+
+# A for-loop ``for Box { v } in xs``.
+OK_FOR = (_BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let xs = [Box { v: 1 }, Box { v: 2 }]\n"
+    "    for Box { v } in xs\n"
+    "        stdio.println(\"${v}\")\n")
+
+# A match arm ``Box { v }``.
+OK_MATCH = (_BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let b = Box { v: 7 }\n"
+    "    match b\n"
+    "        Box { v } -> stdio.println(\"${v}\")\n")
+
+# A rename binder ``let Box { v: inner } = b``.
+OK_RENAME = (_BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let b = Box { v: 9 }\n"
+    "    let Box { v: inner } = b\n"
+    "    stdio.println(\"${inner}\")\n")
+
+# A generic-head struct destructure cannot lower to Wasm: the Wasm backend
+# rejects the field's type parameter with "type 'T' has no Wasm encoding" (a
+# pre-existing, analyzer-INDEPENDENT limitation, present on base). These run
+# on Python only. The one plain-struct shape (``same_struct``) runs on both.
+_OK_RUN = {
+    "box_int": (OK_BOX_INT, "3\n"),
+    "nested_int": (OK_NESTED_INT, "5\n"),
+    "public_field_strict": (OK_PUBLIC_FIELD, "ok\n"),
+    "same_struct": (OK_SAME_STRUCT, "ok\n"),
+    "for_loop": (OK_FOR, "1\n2\n"),
+    "match_arm": (OK_MATCH, "7\n"),
+    "rename": (OK_RENAME, "9\n"),
+}
+# Only the non-generic destructure lowers to Wasm.
+_OK_RUN_WASM = {"same_struct"}
+
+
+class TestLegitimateGenericDestructureRuns(unittest.TestCase):
+    """Every legitimate generic-head destructure is accepted with no mismatch
+    error and runs to the expected output on Python; the plain-struct shape
+    runs on Wasm too."""
+
+    def test_accepted(self):
+        for name, (src, _out) in _OK_RUN.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_mismatch_errors(r)), 0,
+                                 [e.message for e in r.errors])
+
+    def test_runs_python(self):
+        for name, (src, out) in _OK_RUN.items():
+            with self.subTest(shape=name):
+                self.assertEqual(_run_py(src), out)
+
+    def test_plain_struct_runs_wasm(self):
+        if _wasm_unavailable() is not None:
+            self.skipTest(_wasm_unavailable())
+        for name in _OK_RUN_WASM:
+            src, out = _OK_RUN[name]
+            with self.subTest(shape=name):
+                self.assertEqual(_run_wasm(src), out)
+
+
+# ---- PRECISION GAIN: the fix REPAIRS two pre-existing false positives -----
+#
+# Before the fix, a field bound from a generic struct kept the raw ``TyVar``,
+# so a field access or method call on it was WRONGLY rejected with "cannot
+# access field / call method on a value of generic type parameter 'T'". The
+# substitution binds the field at its concrete type, so both now type-check
+# and run.
+
+GAIN_FIELD = (
+    "type Inner { n: Int }\n" + _BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let b = Box { v: Inner { n: 42 } }\n"
+    "    let Box { v } = b\n"
+    "    stdio.println(\"${v.n}\")\n")
+
+GAIN_METHOD = (
+    "type Inner { n: Int }\n"
+    "impl Inner\n"
+    "    fun get(self) -> Int\n"
+    "        return self.n\n" + _BOX +
+    "fun main(stdio: Stdio)\n"
+    "    let b = Box { v: Inner { n: 8 } }\n"
+    "    let Box { v } = b\n"
+    "    stdio.println(\"${v.get()}\")\n")
+
+_GAIN = {"field_access": (GAIN_FIELD, "42\n"), "method_call": (GAIN_METHOD, "8\n")}
+
+
+class TestPrecisionGainRepairedFalsePositives(unittest.TestCase):
+    """The two pre-existing false positives (field access / method call on a
+    field bound from a generic struct) are now accepted and run on Python.
+    (Wasm cannot lower a generic-struct destructure at all; see above.)"""
+
+    def test_accepted_and_runs_python(self):
+        for name, (src, out) in _GAIN.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(_run_py(src), out)
+
+
 # ---- DISCLOSED-RESIDUAL pins (accepted TODAY, KNOWN-OPEN) ----------------
 
 # A generic TYPE-PARAMETER scrutinee destructured via a public twin: no
@@ -574,14 +886,12 @@ RES_TYVAR_LAUNDER = (_SEC +
     "fun main(stdio: Stdio)\n"
     "    leak(ASecret { a: \"s3cr3t\" }, stdio)\n")
 
-# The SAME residual reached from ORDINARY, fully concrete, non-generic code:
-# ``b: Box<ASecret>`` destructured to ``v`` binds ``v`` as a raw ``TyVar T``
-# (the binder does not substitute the scrutinee's generic arg into the field
-# type), so the public-twin destructure of ``v`` launders. Accepted even
-# under ``@strict_ifc``; Python LEAKS while Wasm ERRORS on the raw ``TyVar``.
-RES_GENERIC_FIELD_LAUNDER = (_SEC +
+# A RIGID intermediate: ``Box<T>`` inside a generic function. The field type
+# ``T`` substitutes to itself and stays a ``TyVar``, so no concrete struct
+# resolves and the twin destructure stays (disclosed) accepted, unchanged.
+RES_RIGID_INTERMEDIATE = (_SEC +
     "type Box<T> { v: T }\n"
-    "fun leak(b: Box<ASecret>, stdio: Stdio)\n"
+    "fun leak<T>(b: Box<T>, stdio: Stdio)\n"
     "    let Box { v } = b\n"
     "    let Other { a } = v\n"
     "    stdio.println(a)\n"
@@ -619,8 +929,8 @@ RES_SUM_D1_COUSIN = (
 
 
 class TestDisclosedResidualsPinned(unittest.TestCase):
-    """The disclosed open residuals behave AS DOCUMENTED: the generic and
-    trait scrutinees are accepted and leak on Python; the sum-scrutinee
+    """The disclosed open residuals behave AS DOCUMENTED: the rigid
+    type-parameter and trait scrutinees are accepted; the sum-scrutinee
     D1-cousin is accepted at --check and faults loud on both backends."""
 
     def test_tyvar_launder_accepted_and_leaks(self):
@@ -630,21 +940,14 @@ class TestDisclosedResidualsPinned(unittest.TestCase):
                          [w.message for w in r.warnings])
         self.assertEqual(_run_py(RES_TYVAR_LAUNDER), "s3cr3t\n")
 
-    def test_generic_field_launder_from_concrete_code(self):
-        # Reachable from ordinary concrete code: clean at BOTH tiers, then a
-        # Python-LEAKS / Wasm-ERRORS split at runtime.
-        r = _analyze(RES_GENERIC_FIELD_LAUNDER)
+    def test_rigid_intermediate_still_accepted(self):
+        # ``Box<T>`` inside a generic function: the field type ``T``
+        # substitutes to itself and stays a ``TyVar``, so no concrete struct
+        # resolves and the twin destructure is still (disclosed) accepted.
+        r = _analyze(RES_RIGID_INTERMEDIATE)
         self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(len(_flow_warnings(r)), 0,
-                         [w.message for w in r.warnings])
-        rs = _analyze(_strict(RES_GENERIC_FIELD_LAUNDER, "leak"))
-        self.assertEqual(len(_flow_errors(rs)), 0,
-                         [e.message for e in rs.errors])
-        self.assertEqual(_run_py(RES_GENERIC_FIELD_LAUNDER), "s3cr3t\n")
-        # Wasm rejects the un-substituted TyVar (the disclosed split).
-        if _wasm_unavailable() is None:
-            with self.assertRaises(Exception):
-                _run_wasm(RES_GENERIC_FIELD_LAUNDER)
+        self.assertEqual(len(_mismatch_errors(r)), 0,
+                         [e.message for e in r.errors])
 
     def test_trait_launder_accepted_and_leaks(self):
         r = _analyze(RES_TRAIT_LAUNDER)
