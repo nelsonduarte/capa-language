@@ -72,6 +72,35 @@ def _pattern_has_str_literal(pat) -> bool:
     return False
 
 
+def _pattern_str_literals(pat):
+    """Yield every String literal carried anywhere in ``pat``'s
+    sub-pattern tree, mirroring ``_pattern_has_str_literal``'s
+    recursion but returning the values rather than a bool. The Wasm
+    emitter compares each such slot against an interned copy via
+    ``$str_eq`` at match-emit time, which runs AFTER the data segment
+    is frozen; so every one must be interned during discovery. A
+    literal that appears nowhere else in the module (the scrutinee is
+    heap-built and the bytes surface only in the pattern) would
+    otherwise be first seen past the frozen ``heap_start``, get an
+    offset with no backing ``(data ...)`` block, and read dangling
+    memory -- a silent wrong branch or a spurious match (C-F2)."""
+    if isinstance(pat, PatLiteral):
+        if pat.kind == "str":
+            yield pat.value
+    elif isinstance(pat, PatVariant):
+        for s in pat.payloads:
+            yield from _pattern_str_literals(s)
+    elif isinstance(pat, PatTuple):
+        for s in pat.elements:
+            yield from _pattern_str_literals(s)
+    elif isinstance(pat, PatStruct):
+        for _f, s in pat.fields:
+            yield from _pattern_str_literals(s)
+    elif isinstance(pat, PatOr):
+        for s in pat.alternatives:
+            yield from _pattern_str_literals(s)
+
+
 class _DiscoveryMixin:
     def _uses_heap_alloc(self, module: Module) -> bool:
         """Detect whether any function body contains an instruction
@@ -627,6 +656,25 @@ class _DiscoveryMixin:
                 for part in instr.parts:
                     if isinstance(part, str) and part:
                         self._intern_string(part)
+            # Match-arm pattern literals: a String literal inside an
+            # arm pattern is compared against its interned copy via
+            # $str_eq at match-emit time, which happens AFTER the data
+            # segment is frozen. ``walk_instrs`` descends into an arm's
+            # guard prelude and body but never ``arm.pattern``, and
+            # ``_values_of`` enumerates no pattern slot (a
+            # ``PatLiteral.value`` is a bare str, not a Value), so the
+            # loops above miss these. Intern each here -- at any nesting
+            # depth (variant payload / tuple element / struct field /
+            # or-alternative) -- so the literal always has a backing
+            # ``(data ...)`` block. Without this a pattern-only literal
+            # (the scrutinee is heap-built and the bytes appear nowhere
+            # else) gets an offset past ``heap_start`` and reads
+            # dangling memory: a silent wrong branch or a spurious match
+            # (C-F2).
+            if isinstance(instr, Match):
+                for arm in instr.arms:
+                    for text in _pattern_str_literals(arm.pattern):
+                        self._intern_string(text)
 
     @staticmethod
     def _values_of(instr: Instr) -> list[Value]:

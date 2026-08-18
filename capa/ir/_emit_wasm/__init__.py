@@ -314,6 +314,14 @@ class WasmEmitter(
         # function so all literals are known.
         self._strings: dict[str, tuple[int, int]] = {}
         self._string_data_offset = 0
+        # One-way high-water guard: flipped True once the data segment
+        # is written and ``heap_start`` frozen. After that a NEW string
+        # can no longer get a backing ``(data ...)`` block, so
+        # ``_intern_string`` refuses one loudly rather than handing back
+        # a dangling offset (C-F2 defence in depth). Initialised here so
+        # callers that reach ``_intern_string`` without running the full
+        # ``emit()`` setup (e.g. a bare ``_discover`` pass) still see it.
+        self._strings_frozen = False
         # Set of capability classes the emitter has seen in
         # method-call receivers; drives the ``(import ...)``
         # declarations at the top of the module.
@@ -505,6 +513,12 @@ class WasmEmitter(
         self._used_caps = set()
         self._strings = {}
         self._string_data_offset = 0
+        # One-way high-water guard: flipped True once the data segment
+        # is written and ``heap_start`` frozen (below). After that a
+        # NEW string can no longer get a backing ``(data ...)`` block,
+        # so ``_intern_string`` refuses one loudly rather than handing
+        # back a dangling offset (C-F2 defence in depth).
+        self._strings_frozen = False
         self._lifted_lambdas = []
         self._lambda_by_dst = {}
         self._closure_sig_keys = {}
@@ -676,39 +690,48 @@ class WasmEmitter(
                             and instr.args[0].kind == "lit_str"
                             and isinstance(instr.args[0].literal, str)):
                         self._intern_string(instr.args[0].literal)
-                if any(
-                    cap == "Fs" and m == "mkdir"
-                    for (cap, m) in self._used_caps
-                ):
-                    self._intern_string("mkdir failed")
-                if any(
-                    cap == "Fs" and m == "read"
-                    for (cap, m) in self._used_caps
-                ):
-                    # The fixed Err message $Fs_read writes on an open /
-                    # read-via-stream / last-operation-failed failure.
-                    self._intern_string("failed to read file")
-                if any(
-                    cap == "Fs" and m == "write"
-                    for (cap, m) in self._used_caps
-                ):
-                    # The fixed Err message $Fs_write writes on an open /
-                    # write-via-stream / last-operation-failed failure.
-                    # Pre-interned for the same reason as the read message:
-                    # interning it only at $Fs_write emission time would
-                    # leave it without a backing data segment.
-                    self._intern_string("failed to write file")
-                if any(
-                    cap == "Fs" and m == "list_dir"
-                    for (cap, m) in self._used_caps
-                ):
-                    # The fixed Err message $Fs_list_dir writes on an
-                    # open / read-directory / read-directory-entry
-                    # failure. Pre-interned for the same reason as the
-                    # read / write messages: interning it only at
-                    # $Fs_list_dir emission time would leave it without a
-                    # backing data segment.
-                    self._intern_string("failed to list directory")
+
+            # F2-W4 (2026-08): the four FIXED Fs Err messages the
+            # wrappers write must be pre-interned whenever the matching
+            # Fs op is used, INDEPENDENT of whether the preopen ceiling
+            # is static (``closed``) or dynamic (``--preopen`` /
+            # ``wasi_dynamic_fs=True``, ``closed == False``). They
+            # previously sat inside the ``closed`` sub-block above, so a
+            # dynamic-ceiling program skipped them entirely, yet
+            # ``_emit_wasi_wrappers`` still emits $Fs_mkdir / $Fs_read /
+            # $Fs_write / $Fs_list_dir, which then interned each message
+            # at wrapper-emit time -- past the frozen data segment, so
+            # the bytes were undefined memory. Hoisted out here and keyed
+            # only on ``_used_caps`` membership (populated by
+            # ``_discover(module)`` above). The per-call-site relative
+            # BASENAME interning stays inside ``closed``: a dynamic
+            # ceiling has no static basenames.
+            if any(
+                cap == "Fs" and m == "mkdir"
+                for (cap, m) in self._used_caps
+            ):
+                self._intern_string("mkdir failed")
+            if any(
+                cap == "Fs" and m == "read"
+                for (cap, m) in self._used_caps
+            ):
+                # The fixed Err message $Fs_read writes on an open /
+                # read-via-stream / last-operation-failed failure.
+                self._intern_string("failed to read file")
+            if any(
+                cap == "Fs" and m == "write"
+                for (cap, m) in self._used_caps
+            ):
+                # The fixed Err message $Fs_write writes on an open /
+                # write-via-stream / last-operation-failed failure.
+                self._intern_string("failed to write file")
+            if any(
+                cap == "Fs" and m == "list_dir"
+                for (cap, m) in self._used_caps
+            ):
+                # The fixed Err message $Fs_list_dir writes on an
+                # open / read-directory / read-directory-entry failure.
+                self._intern_string("failed to list directory")
 
         # Experimental WASI mode: Stdio output (Phase 1, 2026-06-29).
         # ``println`` / ``eprintln`` append a trailing ``"\n"`` byte by
@@ -1225,6 +1248,16 @@ class WasmEmitter(
             # ``(data ...)`` block at the reserved offset.
             if self._uses_float_format(module):
                 self._emit_cached_powers_data()
+        # The static data segment is now fully written and
+        # ``_string_data_offset`` is final; every ``(data ...)`` block a
+        # string can have is already emitted. Freeze the high-water mark
+        # so any string first seen from here on (function bodies, WASI
+        # wrappers, lambdas) can no longer silently claim an offset past
+        # this point with no backing data. The dedup path in
+        # ``_intern_string`` still returns the cached offset for a
+        # string already present, which is what steps 1/2's pre-interning
+        # relies on -- only a genuinely NEW string trips the guard.
+        self._strings_frozen = True
         # Heap: starts just after the static data segment, aligned
         # to 8 bytes. The ``$alloc`` function below bumps the global
         # forward by the requested size, rounded up to 8.
@@ -1457,6 +1490,20 @@ class WasmEmitter(
     def _intern_string(self, text: str) -> tuple[int, int]:
         if text in self._strings:
             return self._strings[text]
+        # High-water guard (C-F2): once the data segment is frozen a
+        # brand-new string can no longer be given a backing ``(data
+        # ...)`` block, so handing back a fresh offset would point at
+        # dangling memory. Refuse loudly instead. Every string the
+        # emitter references must be interned during the discovery /
+        # pre-emit passes; a fire here means a reachable literal was
+        # missed and must be pre-interned like the others.
+        if self._strings_frozen:
+            raise WasmEmissionError(
+                f"internal: string {text!r} first interned after the "
+                f"data segment was frozen; it would have no backing "
+                f"(data ...) block and read dangling memory. Pre-intern "
+                f"it during the discovery pass."
+            )
         encoded = text.encode("utf-8")
         offset = self._string_data_offset
         length = len(encoded)
