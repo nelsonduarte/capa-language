@@ -190,18 +190,47 @@ code.
   field (`let Box { v } = b; let Other { a } = v` for `b: Box<ASecret>`, or via
   `Pair<ASecret, _>`), and it repairs two pre-existing false positives (a field
   access or method call on such a bound field, previously rejected as generic).
-  Residuals stay open, each accepted today. (1) A RIGID generic
-  TYPE-PARAMETER scrutinee: a bare type parameter (`fun f<T>(t: T)` then
-  `let Other { a } = t`), or an intermediate whose field type substitutes to
-  itself (`fun f<T>(b: Box<T>)`, where `v: T` stays a `TyVar`); no concrete
-  struct resolves, so the guard does not fire (the substitution only helps when
-  the scrutinee carries concrete generic arguments). (2) A
-  TRAIT-typed scrutinee (`s: Shape` then
-  `let OtherCircle { r } = s`): the scrutinee type is a trait, not a struct, so
-  the downcast stays accepted and a public-twin downcast is not caught (Python
-  leak / Wasm crash); closing it needs a runtime tag check. (3) A SUM /
-  primitive scrutinee (`let Other { a } = <sum value>`): the scrutinee is not a
-  struct in the table, so the mismatch is not caught here and faults LOUD on
-  both backends at runtime (a pre-existing D1-cousin, no silent leak).
+  The DIRECT RIGID generic TYPE-PARAMETER scrutinee is now closed. A struct /
+  variant destructuring pattern whose scrutinee's static type is a rigid type
+  variable (a bare declared `T` from `fun f<T>`, or an intermediate whose field
+  type substitutes to itself, `fun f<T>(b: Box<T>)` where `v: T` stays a
+  `TyVar`) is rejected: inside the generic body the value of `T` is opaque
+  (parametricity), so destructuring it as a concrete struct / variant is an
+  unsound downcast. A flexible `?` inference placeholder (the empty-list
+  for-destructure) is excluded and stays legal. The two arms differ in
+  severity: the STRUCT-destructure channel (a rigid-`T` value, or a `Box<T>`
+  field bound at `T`, destructured through a public twin) was a SILENT `@secret`
+  leak on BOTH backends and is the severe channel closed; the VARIANT-MATCH arm
+  was NOT a silent both-backends leak (the Python backend structurally no-ops,
+  the Wasm backend faults loud), so rejecting it is fail-closed hardening and
+  divergence-removal. This reject also closes the differently-named
+  generic-container intermediate (`type Wrap<E>` inside `fun leak<T>`, payload
+  stays rigid `TyVar('T')`), a strict improvement over base. Residuals stay
+  open, each accepted today. (1) NEWLY DISCLOSED: a rigid value laundered
+  through a SAME-NAMED generic constructor payload still leaks. When a sum
+  type's own type parameter shares the caller's rigid parameter NAME (`type
+  Wrap<T>` used inside `fun leak<T>`), constructing `Wrapped(t)` unifies the
+  payload variable `T` against the rigid `T`, and `unify`'s reflexive same-name
+  short-circuit (`typesys.py:416-423`) returns True WITHOUT binding; variant
+  construction then reads `mapping.get(p, TyUnknown)` (`_dispatch.py:350`) and
+  collapses the type argument to `TyUnknown`, so a match payload binds as
+  `TyUnknown` (not a rigid `TyVar`, not a flexible `?`). The rigid provenance is
+  ERASED before it reaches the binder guard, so a downstream public-twin
+  destructure does not fire and the `@secret` still leaks, silently, on both
+  backends. This is NOT a flexible-`?` evasion; the `is_flexible` exclusion is
+  not implicated (a DIFFERENT constructor-parameter name keeps the payload rigid
+  and the guard correctly rejects it). Closing it needs its own design cycle
+  (candidate: seed a rigid self-binding at variant construction, mirroring the
+  method-dispatcher precedent at `typesys.py:425-441`); and note the broader
+  `TyUnknown`-erasure class has other producers (closure-return inference, the
+  `?`-operator on `Result<T, E>`, map / filter element inference), so this is
+  not a one-shape fix. (2) A TRAIT-typed scrutinee (`s: Shape` then `let
+  OtherCircle { r } = s`): the scrutinee type is a concrete named trait, not a
+  struct and not a type variable, so it is out of this rule's scope; the
+  downcast stays accepted and a public-twin downcast is not caught (Python
+  leak); closing it needs a runtime tag check. (3) A SUM / primitive scrutinee
+  (`let Other { a } = <sum value>`): the scrutinee is not a struct in the table,
+  so the mismatch is not caught here and faults LOUD on both backends at runtime
+  (a pre-existing D1-cousin, no silent leak).
 - **Security M3.** `install.sh` same-channel SHA pinning, deferred by
   design.
