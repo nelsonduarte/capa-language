@@ -264,8 +264,8 @@ separately.
   [`docs/design/wasm-cap-handles.md`](design/wasm-cap-handles.md).
 
 - **`install.sh` channel integrity (M3).** Same-channel SHA pinning for
-  the one-line installer is **deferred by design** and tracked as M3
-  ([`TODO.md`](../TODO.md)). Until it lands, the installer trusts its
+  the one-line installer is **deferred by design** and tracked
+  internally as M3. Until it lands, the installer trusts its
   download channel.
 
 - **Operator-trusted source roots.** `CAPA_PATH` directories and the

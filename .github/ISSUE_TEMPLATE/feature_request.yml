@@ -10,7 +10,6 @@ body:
         roadmap. Before filing, please skim:
 
         - [capa-language.com/roadmap.html](https://capa-language.com/roadmap.html)
-        - [TODO.md](https://github.com/nelsonduarte/capa-language/blob/main/TODO.md)
         - [docs/positioning.md](https://github.com/nelsonduarte/capa-language/blob/main/docs/positioning.md)
 
         Some things are explicitly out of scope for v1 (macros, full

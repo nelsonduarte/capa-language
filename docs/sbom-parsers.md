@@ -265,8 +265,7 @@ here for the reader who wants the whole picture:
   bytes).
 
 Closing any one of these is mechanical, not research; each is
-listed in [`TODO.md`](../TODO.md) when there is a concrete user
-ask.
+tracked internally when there is a concrete user ask.
 
 ## How to run
 
