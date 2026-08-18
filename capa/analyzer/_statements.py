@@ -65,9 +65,69 @@ class _StatementsMixin:
 
         Covers the conditional shapes that can host an early divergence:
         an ``if`` (any branch ending in return / break / continue, or a
-        bare ``panic(...)`` statement), and a ``while`` / ``for`` whose
-        body diverges. The returned label is the join of the guarding
-        condition labels; only a @secret guard raises the block pc."""
+        bare ``panic(...)`` statement), a ``while`` / ``for`` whose body
+        diverges, and a ``match`` (statement OR value position) with an
+        arm that diverges via a SYNTACTICALLY-RECOGNIZED form. The
+        returned label is the join of the guarding condition labels; only
+        a @secret guard raises the block pc.
+
+        The ``match`` case extends advisory 2026-06-17 finding B3, which
+        installed this mechanism for if / while / for but overlooked
+        ``match``: a secret-conditioned divergence inside a match arm did
+        not raise the enclosing block's pc, so a following public sink
+        leaked the same predicate bit the if / while / for path already
+        guards against. This is the same single mechanism, not a parallel
+        one.
+
+        Divergence is detected SYNTACTICALLY only: the recognized forms
+        are a ``panic(...)`` call, a ``return`` / ``break`` / ``continue``
+        statement, and a nested ``match`` / if-expression that itself so
+        diverges (see ``_expr_may_diverge`` / ``_block_has_divergence``).
+        Anything the analyzer cannot see as one of those forms is a
+        DISCLOSED-OPEN residual it does NOT catch:
+
+        1. A ``MatchExpr`` nested DEEPER than a directly-carried value
+           (``f(match ...)``, ``match ... + 1``) is not inspected,
+           consistent with the top-level-only inspection the if / elif
+           path already uses. See ``_controlling_match``.
+        2. An arm that diverges via the ``?`` / ``Try`` operator
+           (``expr?``). ``Try`` is a first-class early return, but the
+           ``A.Try`` node is not one of the recognized forms above, so a
+           directly-carried secret-scrutinee match whose arm early-returns
+           via ``?`` check-passes and leaks. Pre-existing and symmetric
+           with the if / while / for path (which does not recognize
+           ``Try`` either); deferred, not a regression of this fix.
+        3. An arm that calls a VOID helper which always ``panic``s (or
+           otherwise never returns). This is interprocedural divergence;
+           the strict analysis does not track a callee's divergence, so
+           the call reads as an ordinary non-diverging statement.
+
+        "Any arm may diverge" throughout means "via a
+        syntactically-recognized form"; residuals 2 and 3 are outside
+        that scope and are left open here by choice."""
+        m = self._controlling_match(stmt)
+        if m is not None:
+            # ``ctrl`` is an UPPER BOUND on the true control label, not
+            # the exact one: it raises whenever ANY guard is secret and
+            # ANY arm may diverge via a syntactically-recognized form,
+            # even when the diverging arm is public-selected and the
+            # secret guard sits on a non-diverging arm. (Divergence that
+            # is not syntactically recognized -- a ``?`` / ``Try`` arm, a
+            # void helper that always panics -- is a disclosed-open
+            # residual; see the docstring.) This over-approximation is
+            # inherited verbatim from the shipped if / elif path (which
+            # joins all branch-condition labels and asks whether ANY
+            # branch diverges) and is the sound direction: it can only
+            # raise the pc, never lower it.
+            ctrl = L.join_all(
+                [self._label_of(m.scrutinee)]
+                + [self._label_of(a.guard) for a in m.arms if a.guard is not None]
+            )
+            if L.normalize(ctrl) != L.SECRET:
+                return None
+            if self._match_has_diverging_arm(m):
+                return ctrl
+            return None
         if isinstance(stmt, A.IfStmt):
             guards = [stmt.cond] + [c for c, _ in stmt.elif_arms]
             guard_label = L.join_all(self._label_of(c) for c in guards)
@@ -103,6 +163,14 @@ class _StatementsMixin:
                 return True
             if isinstance(st, A.ExprStmt) and self._is_panic_call(st.expr):
                 return True
+            # A ``match`` with a diverging arm (statement OR value
+            # position) diverges on some path just as an ``if`` branch
+            # does; catching it here closes a diverging match nested
+            # inside an if / while / for body (extends advisory
+            # 2026-06-17 B3 to match).
+            mm = self._controlling_match(st)
+            if mm is not None and self._match_has_diverging_arm(mm):
+                return True
             if isinstance(st, A.IfStmt):
                 arms = (
                     [st.then_block]
@@ -128,6 +196,63 @@ class _StatementsMixin:
             return False
         sym = self.bindings.get(id(e.callee))
         return sym is not None and sym.pos == BUILTIN_POS
+
+    def _controlling_match(self, stmt):
+        """The ``MatchExpr`` DIRECTLY carried by ``stmt``, or ``None``.
+
+        A match reaches a statement in exactly these top-level positions:
+        a bare statement (``ExprStmt.expr``), the RHS of a binding
+        (``LetStmt`` / ``VarStmt`` / ``AssignStmt`` ``.value``), or a
+        returned value (``ReturnStmt.value``). Only the DIRECTLY-carried
+        match is returned, matching the top-level-only inspection the
+        if / elif divergence path already performs -- a ``MatchExpr``
+        nested deeper (``f(match ...)``, ``match ... + 1``) is a
+        disclosed, un-closed residual (see
+        ``_secret_conditioned_divergence``)."""
+        if isinstance(stmt, A.ExprStmt):
+            return stmt.expr if isinstance(stmt.expr, A.MatchExpr) else None
+        if isinstance(stmt, (A.LetStmt, A.VarStmt, A.AssignStmt)):
+            return stmt.value if isinstance(stmt.value, A.MatchExpr) else None
+        if isinstance(stmt, A.ReturnStmt):
+            return (
+                stmt.value
+                if stmt.value is not None and isinstance(stmt.value, A.MatchExpr)
+                else None
+            )
+        return None
+
+    def _expr_may_diverge(self, e) -> bool:
+        """True if evaluating ``e`` may diverge (panic / return / break /
+        continue) on SOME path. Mutually recursive with
+        ``_match_has_diverging_arm`` and terminating (the AST is finite).
+
+        May-diverge (some path), NOT all-paths: an all-paths formulation
+        was proven unsound -- it misses a partial-divergence nested arm
+        (a match arm whose body diverges on one sub-arm but not another
+        still makes reaching past the enclosing match reveal which
+        sub-arm ran)."""
+        if self._is_panic_call(e):
+            return True
+        if isinstance(e, A.MatchExpr):
+            return self._match_has_diverging_arm(e)
+        if isinstance(e, A.IfExpr):
+            return (
+                self._expr_may_diverge(e.then_expr)
+                or self._expr_may_diverge(e.else_expr)
+            )
+        return False
+
+    def _arm_body_may_diverge(self, body) -> bool:
+        """True if a match-arm body may diverge. A ``Block`` body reuses
+        the statement-level ``_block_has_divergence``; an ``Expr`` body
+        (single-line arm) uses ``_expr_may_diverge``."""
+        if isinstance(body, A.Block):
+            return self._block_has_divergence(body)
+        return self._expr_may_diverge(body)
+
+    def _match_has_diverging_arm(self, m) -> bool:
+        """True if any arm of ``m`` may diverge on some path."""
+        return any(self._arm_body_may_diverge(a.body) for a in m.arms)
 
     def _check_stmt(self, stmt: A.Stmt) -> None:
         if isinstance(stmt, A.LetStmt):
