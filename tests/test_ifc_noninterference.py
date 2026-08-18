@@ -298,12 +298,23 @@ def _leaky_implicit_program(draw):
       - the same channel where the assignment happens under a secret
         loop body;
       - the struct-field analogue: a public field assigned under a
-        secret ``if``, then sunk.
+        secret ``if``, then sunk;
+      - a secret-conditioned divergence carried by a ``match`` (finding
+        C-F1: the ``match`` analogue of advisory 2026-06-17 B3, which
+        the original B3 fix overlooked). A ``match`` in STATEMENT
+        position or in VALUE position (let / var / assign RHS) with a
+        ``return`` / ``break`` / ``continue`` arm, guarded by a secret
+        scrutinee or a secret arm-guard, followed by a public sink whose
+        execution reveals whether the diverging arm fired.
     """
     shape = draw(st.sampled_from(
         ["while_secret_guard", "for_secret_collection",
          "assign_under_secret_if", "assign_under_secret_loop",
-         "field_assign_under_secret_if"]
+         "field_assign_under_secret_if",
+         "match_secret_return", "match_secret_break",
+         "match_secret_continue", "match_secret_guard_return",
+         "val_match_secret_return", "val_match_secret_break",
+         "assign_match_secret_return"]
     ))
     pub = draw(_PUB_STR)
     header = []
@@ -351,6 +362,73 @@ def _leaky_implicit_program(draw):
         lines.append("    if s.length() > 3")
         lines.append('        b.f = "long"')
         lines.append("    stdio.println(b.f)")
+
+    elif shape == "match_secret_return":
+        # A statement-position ``match`` on a secret scrutinee with a
+        # ``return`` arm: reaching the sink after it reveals the
+        # non-diverging arm ran, hence a fact about the secret.
+        lines.append("    match s.length()")
+        lines.append("        0 -> return")
+        lines.append('        _ -> "y"')
+        lines.append(f'    stdio.println("{pub}")')
+
+    elif shape == "match_secret_break":
+        # A ``break`` arm inside a match under a PUBLIC while: the break
+        # is secret-conditioned (secret scrutinee), so whether the sink
+        # LATER in the loop body runs depends on the secret.
+        lines.append("    var i = 0")
+        lines.append("    while i < 2")
+        lines.append("        match s.length()")
+        lines.append("            0 -> break")
+        lines.append('            _ -> "y"')
+        lines.append(f'        stdio.println("{pub}")')
+        lines.append("        i = i + 1")
+
+    elif shape == "match_secret_continue":
+        lines.append("    var i = 0")
+        lines.append("    while i < 2")
+        lines.append("        match s.length()")
+        lines.append("            0 -> continue")
+        lines.append('            _ -> "y"')
+        lines.append(f'        stdio.println("{pub}")')
+        lines.append("        i = i + 1")
+
+    elif shape == "match_secret_guard_return":
+        # PUBLIC scrutinee, SECRET arm-guard: the guard label alone
+        # raises the control label, so the guarded ``return`` is
+        # secret-conditioned even though the scrutinee is public.
+        lines.append("    let n = 1")
+        lines.append("    match n")
+        lines.append("        _ if s.length() > 0 -> return")
+        lines.append('        _ -> "y"')
+        lines.append(f'    stdio.println("{pub}")')
+
+    elif shape == "val_match_secret_return":
+        # VALUE position (let RHS): the divergence is carried by the
+        # match bound to ``v``; sink a PUBLIC literal after it.
+        lines.append("    let v = match s.length()")
+        lines.append("        0 -> return")
+        lines.append('        _ -> "y"')
+        lines.append(f'    stdio.println("{pub}")')
+
+    elif shape == "val_match_secret_break":
+        lines.append("    var i = 0")
+        lines.append("    while i < 2")
+        lines.append("        let v = match s.length()")
+        lines.append("            0 -> break")
+        lines.append('            _ -> "y"')
+        lines.append(f'        stdio.println("{pub}")')
+        lines.append("        i = i + 1")
+
+    elif shape == "assign_match_secret_return":
+        # ASSIGN position (assign RHS): the match value is assigned to
+        # ``v`` but the sink is a PUBLIC literal, so the leak is the
+        # implicit divergence, not the assigned value.
+        lines.append('    var v = "init"')
+        lines.append("    v = match s.length()")
+        lines.append("        0 -> return")
+        lines.append('        _ -> "y"')
+        lines.append(f'    stdio.println("{pub}")')
 
     return "\n".join(header + lines) + "\n"
 
@@ -566,6 +644,188 @@ class TestIfcNoninterference(unittest.TestCase):
                 "an information-flow reason - the generator emitted a "
                 "program with an unrelated error:\n"
                 f"{textwrap.indent(source, '    ')}\n"
+                f"errors: {[e.message for e in result.errors]}"
+            ),
+        )
+
+
+# ===========================================================
+# Deterministic match-divergence cases (finding C-F1)
+# ===========================================================
+#
+# Advisory 2026-06-17 finding B3 raised the enclosing block's pc after a
+# secret-conditioned divergence (return / break / continue / panic) for
+# if / while / for, but overlooked ``match``. Finding C-F1 extends that
+# same mechanism to ``match``. The randomised generator above exercises
+# the return / break / continue arms; the deterministic cases below pin
+# the ``panic`` and nested-arm shapes (whose non-diverging sibling needs
+# a Unit-typed block body so an arm-type mismatch does not mask the IFC
+# check), the two accept controls (which must stay accepted and run to a
+# fixed public output), and the one disclosed-open residual.
+
+# A ``match`` whose secret-conditioned diverging arm is a ``panic``,
+# whose sibling is a Unit-typed block so the arms unify to Unit; each is
+# followed by a public sink that must be rejected under @strict_ifc.
+_MATCH_PANIC_REJECTIONS = {
+    # A secret arm-guard on a ``panic`` arm (public scrutinee).
+    "match_secret_guard_panic": '''@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let n = 1
+    match n
+        _ if s.length() > 0 -> panic("x")
+        _ ->
+            let _z = 0
+    stdio.println("leak")
+''',
+    # The diverging arm's body is itself a nested ALL-arms-panic match.
+    "micro_nested_all_panic_match": '''@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let n = 1
+    match n
+        _ if s.length() > 0 ->
+            match n
+                0 -> panic("a")
+                _ -> panic("b")
+        _ ->
+            let _z = 0
+    stdio.println("leak")
+''',
+    # The diverging arm's body is a nested both-branches-panic if-expr.
+    "micro_nested_both_panic_ifexpr": '''@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let n = 1
+    match n
+        _ if s.length() > 0 -> if true then panic("a") else panic("b")
+        _ ->
+            let _z = 0
+    stdio.println("leak")
+''',
+    # A diverging ``match`` nested inside a secret ``if`` body: the if's
+    # own divergence check must see the match's return arm.
+    "nested_match_in_secret_if": '''@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let n = 1
+    if s.length() > 3
+        match n
+            0 -> return
+            _ -> "y"
+    stdio.println("leak")
+''',
+}
+
+# Accept controls: each must stay ACCEPTED and run to a FIXED public
+# output regardless of the secret (noninterferent).
+_MATCH_ACCEPT_CONTROLS = {
+    # Secret scrutinee, but every arm is non-diverging, so the block pc
+    # is not raised and the following public sink is clean.
+    "accept_secret_scrutinee_all_nondiverging": '''@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let v = match s.length()
+        0 -> "zero"
+        _ -> "many"
+    stdio.println("fixed")
+''',
+    # A diverging arm, but the controlling label is PUBLIC (public
+    # scrutinee, no secret guard), so the sink after is clean.
+    "accept_public_scrutinee_diverging_arm": '''@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let n = 1
+    match n
+        0 -> return
+        _ -> "y"
+    stdio.println("fixed")
+''',
+}
+
+# Disclosed-open residual: a ``MatchExpr`` nested DEEPER than the
+# directly-carried value (here as a call argument) is not inspected,
+# consistent with the top-level-only inspection the if / elif path
+# already uses. This shape leaks (the secret arm-guard decides whether
+# the program panics before the sink) yet is currently ACCEPTED. Pinned
+# so a future change that closes the residual updates this deliberately.
+_MATCH_DEEPER_NESTED_RESIDUAL = '''fun take(u: Unit) -> Int
+    return 0
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let n = 1
+    let _v = take(match n { _ if s.length() > 0 -> panic("x"), _ -> () })
+    stdio.println("leak")
+'''
+
+
+class TestMatchDivergenceCF1(unittest.TestCase):
+    """Deterministic guards for finding C-F1 (secret-conditioned
+    divergence carried by a ``match``)."""
+
+    def _analyze(self, source: str):
+        module = Parser(Lexer(source).lex(), source=source).parse_module()
+        return module, analyze(module, source=source)
+
+    def test_match_panic_divergence_rejected(self):
+        """Each secret-conditioned ``panic`` / nested-diverging ``match``
+        shape is rejected for an information-flow reason."""
+        for name, source in _MATCH_PANIC_REJECTIONS.items():
+            with self.subTest(shape=name):
+                _module, result = self._analyze(source)
+                self.assertFalse(
+                    result.ok,
+                    msg=(
+                        f"C-F1 REGRESSION: shape {name!r} was ACCEPTED under "
+                        f"@strict_ifc (expected an information-flow "
+                        f"rejection).\n{textwrap.indent(source, '    ')}"
+                    ),
+                )
+                self.assertTrue(
+                    _is_ifc_rejection(result),
+                    msg=(
+                        f"shape {name!r} was rejected, but NOT (only) for an "
+                        f"information-flow reason:\n"
+                        f"{textwrap.indent(source, '    ')}\n"
+                        f"errors: {[e.message for e in result.errors]}"
+                    ),
+                )
+
+    def test_match_accept_controls_run_to_fixed_output(self):
+        """Each accept control stays accepted and produces byte-identical
+        public output for differing secret inputs (noninterferent)."""
+        for name, source in _MATCH_ACCEPT_CONTROLS.items():
+            with self.subTest(shape=name):
+                module, result = self._analyze(source)
+                self.assertTrue(
+                    result.ok,
+                    msg=(
+                        f"accept control {name!r} was REJECTED (expected it "
+                        f"to stay accepted):\n"
+                        f"{textwrap.indent(source, '    ')}\n"
+                        f"errors: {[e.message for e in result.errors]}"
+                    ),
+                )
+                code = transpile(module, types=result.types)
+                out_a = _run_capa(code, {"SECRET0": "AAA-aaaaaaaa"})
+                out_b = _run_capa(code, {"SECRET0": "Z"})
+                self.assertEqual(out_a, out_b)
+                self.assertEqual(out_a, "fixed\n")
+
+    def test_deeper_nested_match_residual_is_accepted(self):
+        """PIN (disclosed residual): a diverging ``match`` nested deeper
+        than the directly-carried value is not inspected and stays
+        accepted. If this ever flips to a rejection, close the residual
+        note in ``capa/analyzer/_statements.py`` and update this pin."""
+        _module, result = self._analyze(_MATCH_DEEPER_NESTED_RESIDUAL)
+        self.assertTrue(
+            result.ok,
+            msg=(
+                "the disclosed deeper-nested-match residual is no longer "
+                "accepted; update the residual note and this pin:\n"
+                f"{textwrap.indent(_MATCH_DEEPER_NESTED_RESIDUAL, '    ')}\n"
                 f"errors: {[e.message for e in result.errors]}"
             ),
         )
