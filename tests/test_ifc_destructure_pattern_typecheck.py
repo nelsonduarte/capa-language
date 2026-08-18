@@ -32,13 +32,16 @@ through any generic-typed struct field from ordinary concrete code
 (``let Box { v } = b; let Other { a } = v`` for ``b: Box<ASecret>``, or via
 ``Pair<ASecret, _>``).
 
-A RIGID generic TYPE-PARAMETER scrutinee is now CLOSED. When the scrutinee's
-static type is a bare type parameter (``fun f<T>(t: T)`` then
+The DIRECT RIGID generic TYPE-PARAMETER scrutinee is now closed. When the
+scrutinee's static type is a bare type parameter (``fun f<T>(t: T)`` then
 ``let Other { a } = t``), or an intermediate whose field type substitutes to
 itself (``fun f<T>(b: Box<T>)``, where ``v: T`` stays a ``TyVar``), the value
 of ``T`` is opaque inside the generic body (parametricity), so destructuring
 it as a concrete struct is an unsound downcast the binder now rejects. The
-severity of the two arms differs and the tests pin each accurately:
+same reject also closes the differently-named generic-container intermediate
+(``type Wrap<E>`` inside ``fun leak<T>``, whose payload stays a rigid
+``TyVar('T')``), a strict improvement over base. The severity of the two arms
+differs and the tests pin each accurately:
 
 * the STRUCT-destructure channel (a rigid-``T`` value, or a ``Box<T>`` field
   bound at ``T``, destructured through a public twin) was a SILENT @secret
@@ -57,6 +60,16 @@ for Point { x } in xs``) is pinned to a concrete type later and stays legal.
 DISCLOSED OPEN RESIDUALS (each accepted TODAY, pinned so a future tightening
 is a deliberate, visible change):
 
+* a rigid value laundered through a SAME-NAMED generic constructor payload
+  (``type Wrap<T>`` used inside ``fun leak<T>``): the shared type-parameter
+  NAME makes ``unify``'s reflexive same-name short-circuit return without
+  binding, so variant construction collapses the payload's type argument to
+  ``TyUnknown`` (erasing the rigid provenance BEFORE the binder guard). The
+  match payload then binds as ``TyUnknown`` (not a rigid ``TyVar``, not a
+  flexible ``?``), a downstream public-twin destructure does not fire, and the
+  @secret still leaks, silently, on both backends. This is NOT a flexible-``?``
+  evasion; the ``is_flexible`` exclusion is not implicated (a DIFFERENT
+  constructor-parameter name keeps the payload rigid and the guard rejects it);
 * a TRAIT-typed scrutinee (``s: Shape`` then ``let OtherCircle { r } = s``):
   ``ty.name`` resolves to a trait, not a struct and not a type variable, so
   the downcast stays accepted and a public-twin downcast is not caught
@@ -1147,6 +1160,46 @@ RES_TRAIT_LAUNDER = (
     "fun main(stdio: Stdio)\n"
     "    leak(Circle { r: 7 }, stdio)\n")
 
+# A rigid value laundered through a SAME-NAMED generic constructor payload.
+# ``type Wrap<T>`` shares the caller's rigid parameter NAME (``fun leak<T>``),
+# so constructing ``Wrapped(t)`` unifies the payload variable ``T`` against the
+# rigid ``T``; ``unify``'s reflexive same-name short-circuit returns True
+# WITHOUT binding, and variant construction reads ``mapping.get('T', TyUnknown)``
+# and collapses the type argument to ``TyUnknown``. The match payload ``inner``
+# then binds as ``TyUnknown`` (not a rigid ``TyVar``, not a flexible ``?``), so
+# the downstream public-twin destructure resolves nothing and the rigid reject
+# does not fire: accepted at --check and LEAKS the secret, silently, on both
+# backends. A KNOWN-OPEN residual (see the module docstring); pinned so a future
+# change to the accept/leak behavior is deliberate and visible. NOT a
+# flexible-``?`` evasion: the differently-named twin below stays rejected.
+RES_SAME_NAME_CTOR_LAUNDER = (_SEC +
+    "type Wrap<T> =\n"
+    "    Wrapped(T)\n"
+    "fun leak<T>(t: T, stdio: Stdio)\n"
+    "    let w = Wrapped(t)\n"
+    "    match w\n"
+    "        Wrapped(inner) ->\n"
+    "            let Other { a } = inner\n"
+    "            stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(ASecret { a: \"s3cr3t\" }, stdio)\n")
+
+# The SAME shape with a DIFFERENT constructor-parameter name (``Wrap<E>``): the
+# payload stays a rigid ``TyVar('T')``, so the binder guard correctly REJECTS
+# the twin destructure. Pins that the leak above is a name-collision artifact,
+# not a flexible-``?`` evasion, and that the differently-named case is closed.
+RES_DIFF_NAME_CTOR_REJECTED = (_SEC +
+    "type Wrap<E> =\n"
+    "    Wrapped(E)\n"
+    "fun leak<T>(t: T, stdio: Stdio)\n"
+    "    let w = Wrapped(t)\n"
+    "    match w\n"
+    "        Wrapped(inner) ->\n"
+    "            let Other { a } = inner\n"
+    "            stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(ASecret { a: \"s3cr3t\" }, stdio)\n")
+
 # A struct pattern over a SUM value: accepted at --check (not a struct
 # scrutinee), then faults LOUD on both backends at runtime (a D1-cousin, no
 # silent leak).
@@ -1173,6 +1226,29 @@ class TestDisclosedResidualsPinned(unittest.TestCase):
         self.assertEqual(len(_mismatch_errors(r)), 0,
                          [e.message for e in r.errors])
         self.assertEqual(_run_py(RES_TRAIT_LAUNDER), "7\n")
+
+    def test_same_name_ctor_launder_accepted_and_leaks(self):
+        # NEWLY DISCLOSED open residual: the type-parameter name collision
+        # erases the rigid provenance (payload binds ``TyUnknown``), so the
+        # binder guard never sees a rigid ``TyVar`` and the @secret leaks
+        # silently. Accepted at --check with no mismatch error and no IFC
+        # noise, then leaks on Python. Pinned so a future close is deliberate.
+        r = _analyze(RES_SAME_NAME_CTOR_LAUNDER)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(len(_mismatch_errors(r)), 0,
+                         [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 0,
+                         [w.message for w in r.warnings])
+        self.assertEqual(_run_py(RES_SAME_NAME_CTOR_LAUNDER), "s3cr3t\n")
+
+    def test_diff_name_ctor_still_rejected(self):
+        # The mechanism boundary: a DIFFERENT constructor-parameter name keeps
+        # the payload rigid, so the binder guard fires. This confirms the leak
+        # above is a name-collision artifact, not a flexible-``?`` evasion.
+        r = _analyze(RES_DIFF_NAME_CTOR_REJECTED)
+        self.assertFalse(r.ok)
+        self.assertEqual(len(_mismatch_errors(r)), 1,
+                         [e.message for e in r.errors])
 
     def test_sum_scrutinee_accepted_then_faults_loud(self):
         r = _analyze(RES_SUM_D1_COUSIN)
