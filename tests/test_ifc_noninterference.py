@@ -661,7 +661,8 @@ class TestIfcNoninterference(unittest.TestCase):
 # the ``panic`` and nested-arm shapes (whose non-diverging sibling needs
 # a Unit-typed block body so an arm-type mismatch does not mask the IFC
 # check), the two accept controls (which must stay accepted and run to a
-# fixed public output), and the one disclosed-open residual.
+# fixed public output), and the disclosed-open residuals (a deeper-nested
+# match, and an arm that diverges via the ``?`` / ``Try`` operator).
 
 # A ``match`` whose secret-conditioned diverging arm is a ``panic``,
 # whose sibling is a Unit-typed block so the arms unify to Unit; each is
@@ -760,6 +761,29 @@ fun main(stdio: Stdio, env: Env)
     stdio.println("leak")
 '''
 
+# Disclosed-open residual: a directly-carried secret-scrutinee ``match``
+# whose arm diverges via the ``?`` / ``Try`` operator. ``Try`` is a
+# first-class early return, but the divergence detector recognizes only
+# syntactic forms (panic / return / break / continue / nested match /
+# if-expr), NOT the ``A.Try`` node, so this leaks: whether the ``?`` arm
+# early-returns (hence whether the sink after runs) depends on the secret
+# scrutinee, yet it is currently ACCEPTED. Pre-existing and symmetric
+# with the if / while / for path, which does not recognize ``Try``
+# either; deferred, not a regression of the C-F1 fix. Pinned so the
+# extension that handles ``Try`` flips this deliberately.
+_MATCH_TRY_DIVERGENCE_RESIDUAL = '''fun always_err() -> Result<Int, String>
+    return Err("boom")
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env) -> Result<Int, String>
+    let s = env.get("SECRET0").unwrap_or("d")
+    let v = match s.length()
+        0 -> always_err()?
+        _ -> 1
+    stdio.println("leak")
+    return Ok(0)
+'''
+
 
 class TestMatchDivergenceCF1(unittest.TestCase):
     """Deterministic guards for finding C-F1 (secret-conditioned
@@ -826,6 +850,25 @@ class TestMatchDivergenceCF1(unittest.TestCase):
                 "the disclosed deeper-nested-match residual is no longer "
                 "accepted; update the residual note and this pin:\n"
                 f"{textwrap.indent(_MATCH_DEEPER_NESTED_RESIDUAL, '    ')}\n"
+                f"errors: {[e.message for e in result.errors]}"
+            ),
+        )
+
+    def test_try_divergence_match_residual_is_accepted(self):
+        """PIN (disclosed residual): a directly-carried secret-scrutinee
+        ``match`` whose arm diverges via the ``?`` / ``Try`` operator is
+        not recognized as a divergence and stays accepted (it leaks). If
+        this ever flips to a rejection, the ``Try`` extension has landed:
+        update the residual note in ``capa/analyzer/_statements.py`` and
+        this pin."""
+        _module, result = self._analyze(_MATCH_TRY_DIVERGENCE_RESIDUAL)
+        self.assertTrue(
+            result.ok,
+            msg=(
+                "the disclosed Try-divergence match residual is no longer "
+                "accepted; the Try extension may have landed, so update "
+                "the residual note and this pin:\n"
+                f"{textwrap.indent(_MATCH_TRY_DIVERGENCE_RESIDUAL, '    ')}\n"
                 f"errors: {[e.message for e in result.errors]}"
             ),
         )

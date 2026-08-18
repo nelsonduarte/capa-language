@@ -66,9 +66,10 @@ class _StatementsMixin:
         Covers the conditional shapes that can host an early divergence:
         an ``if`` (any branch ending in return / break / continue, or a
         bare ``panic(...)`` statement), a ``while`` / ``for`` whose body
-        diverges, and a ``match`` (statement OR value position) with a
-        diverging arm. The returned label is the join of the guarding
-        condition labels; only a @secret guard raises the block pc.
+        diverges, and a ``match`` (statement OR value position) with an
+        arm that diverges via a SYNTACTICALLY-RECOGNIZED form. The
+        returned label is the join of the guarding condition labels; only
+        a @secret guard raises the block pc.
 
         The ``match`` case extends advisory 2026-06-17 finding B3, which
         installed this mechanism for if / while / for but overlooked
@@ -78,22 +79,46 @@ class _StatementsMixin:
         guards against. This is the same single mechanism, not a parallel
         one.
 
-        Residual (disclosed, not closed): a ``MatchExpr`` nested DEEPER
-        than a directly-carried value (``f(match ...)``, ``match ... +
-        1``) is not inspected, consistent with the top-level-only
-        inspection the if / elif path already uses. See
-        ``_controlling_match``."""
+        Divergence is detected SYNTACTICALLY only: the recognized forms
+        are a ``panic(...)`` call, a ``return`` / ``break`` / ``continue``
+        statement, and a nested ``match`` / if-expression that itself so
+        diverges (see ``_expr_may_diverge`` / ``_block_has_divergence``).
+        Anything the analyzer cannot see as one of those forms is a
+        DISCLOSED-OPEN residual it does NOT catch:
+
+        1. A ``MatchExpr`` nested DEEPER than a directly-carried value
+           (``f(match ...)``, ``match ... + 1``) is not inspected,
+           consistent with the top-level-only inspection the if / elif
+           path already uses. See ``_controlling_match``.
+        2. An arm that diverges via the ``?`` / ``Try`` operator
+           (``expr?``). ``Try`` is a first-class early return, but the
+           ``A.Try`` node is not one of the recognized forms above, so a
+           directly-carried secret-scrutinee match whose arm early-returns
+           via ``?`` check-passes and leaks. Pre-existing and symmetric
+           with the if / while / for path (which does not recognize
+           ``Try`` either); deferred, not a regression of this fix.
+        3. An arm that calls a VOID helper which always ``panic``s (or
+           otherwise never returns). This is interprocedural divergence;
+           the strict analysis does not track a callee's divergence, so
+           the call reads as an ordinary non-diverging statement.
+
+        "Any arm may diverge" throughout means "via a
+        syntactically-recognized form"; residuals 2 and 3 are outside
+        that scope and are left open here by choice."""
         m = self._controlling_match(stmt)
         if m is not None:
             # ``ctrl`` is an UPPER BOUND on the true control label, not
             # the exact one: it raises whenever ANY guard is secret and
-            # ANY arm may diverge, even when the diverging arm is
-            # public-selected and the secret guard sits on a
-            # non-diverging arm. This over-approximation is inherited
-            # verbatim from the shipped if / elif path (which joins all
-            # branch-condition labels and asks whether ANY branch
-            # diverges) and is the sound direction: it can only raise the
-            # pc, never lower it.
+            # ANY arm may diverge via a syntactically-recognized form,
+            # even when the diverging arm is public-selected and the
+            # secret guard sits on a non-diverging arm. (Divergence that
+            # is not syntactically recognized -- a ``?`` / ``Try`` arm, a
+            # void helper that always panics -- is a disclosed-open
+            # residual; see the docstring.) This over-approximation is
+            # inherited verbatim from the shipped if / elif path (which
+            # joins all branch-condition labels and asks whether ANY
+            # branch diverges) and is the sound direction: it can only
+            # raise the pc, never lower it.
             ctrl = L.join_all(
                 [self._label_of(m.scrutinee)]
                 + [self._label_of(a.guard) for a in m.arms if a.guard is not None]
