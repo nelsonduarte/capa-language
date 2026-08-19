@@ -587,6 +587,13 @@ class Analyzer(
         # (a value still-live on every path stays live; one consumed on
         # some-but-not-all paths is an error, surfaced at merge).
         self._live_linear: dict[str, "Pos"] = {}
+        # Companion to ``_live_linear``: the resolved type of each live
+        # obligation, recorded at bind time so scope exit can enumerate the
+        # value's linear/typestate sub-fields (per-field partial-move
+        # accounting). Keyed by the same place; a stale entry is harmless
+        # because it is consulted only for a place still in ``_live_linear``.
+        # Reset per function in ``_check_fun`` alongside ``_live_linear``.
+        self._live_linear_ty: dict[str, "Ty"] = {}
         # Borrowed linear / typestate parameters of the current function
         # (audit B-F1). A non-``consume`` parameter of a linear / typestate
         # type is BORROWED: the caller retains the must-consume obligation,

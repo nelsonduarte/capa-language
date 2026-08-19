@@ -318,6 +318,8 @@ class _ItemsMixin:
         # inside the body (``let h = open()``).
         prev_live_linear = self._live_linear
         self._live_linear = {}
+        prev_live_linear_ty = self._live_linear_ty
+        self._live_linear_ty = {}
         # B-F1: seed the borrowed-linear set. A non-``consume`` parameter
         # of a linear / typestate type is borrowed -- the caller keeps the
         # obligation, so the callee may read and forward it but must not
@@ -454,6 +456,7 @@ class _ItemsMixin:
         # restore the enclosing function's live set.
         self._linear_check_dropped(set(self._live_linear))
         self._live_linear = prev_live_linear
+        self._live_linear_ty = prev_live_linear_ty
         self._borrowed_linear = prev_borrowed_linear
 
         self._consumed = prev_consumed

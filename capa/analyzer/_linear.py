@@ -35,11 +35,83 @@ from ..typesys import Ty, TyName
 
 
 class _LinearMixin:
+    # A linear/typestate value cannot contain itself by value and a
+    # container nesting collapses (an index has no static path), so the
+    # depth of a move path is naturally bounded. This is a defensive
+    # backstop only: a chain deeper than K linear fields collapses to the
+    # whole-value place so the analysis stays finite on a pathological type.
+    _LINEAR_PATH_MAX_DEPTH = 8
+
     # ---- type predicate ------------------------------------------
 
     def _ty_is_linear(self, ty: Optional[Ty]) -> bool:
-        """True if ``ty`` names a ``linear type`` struct."""
+        """True if ``ty`` names a ``linear type`` struct or a typestate."""
         return isinstance(ty, TyName) and ty.name in self._linear_types
+
+    # ---- place / move-path helpers -------------------------------
+
+    def _struct_fields_of(self, ty: Optional[Ty]) -> Optional[dict]:
+        """The declared field map of a struct / typestate ``TyName``
+        (``field name -> Ty``), or ``None`` for any other type. A
+        typestate is a state-indexed struct, so its fields live in the
+        same ``struct_fields`` map as a plain struct's."""
+        if not isinstance(ty, TyName):
+            return None
+        sym = self.global_scope.lookup(ty.name)
+        if sym is None:
+            return None
+        from . import SymbolKind
+        if sym.kind != SymbolKind.TYPE_STRUCT:
+            return None
+        return sym.struct_fields
+
+    def _linear_field_paths(
+        self, place: str, ty: Optional[Ty], _depth: int = 0,
+    ) -> list[str]:
+        """The finite set of ``place.f...`` sub-paths whose leaf type is
+        linear/typestate, enumerated from ``ty``'s struct fields (bounded
+        by ``_LINEAR_PATH_MAX_DEPTH``). A linear field is a leaf (consuming
+        it whole satisfies it, so we do not descend into it); a non-linear
+        struct field is descended to find any deeper linear leaf. Walks
+        struct fields only -- never a container element or a ``Fun``
+        signature -- so authority reached only through a container / closure
+        is not enumerated here (it is barred from containers separately)."""
+        if _depth >= self._LINEAR_PATH_MAX_DEPTH:
+            return []
+        fields = self._struct_fields_of(ty)
+        if fields is None:
+            return []
+        out: list[str] = []
+        for fname, fty in fields.items():
+            sub = f"{place}.{fname}"
+            if self._ty_is_linear(fty):
+                out.append(sub)
+            else:
+                out.extend(self._linear_field_paths(sub, fty, _depth + 1))
+        return out
+
+    def _prefix_consumed(self, place: str) -> bool:
+        """True iff ``place`` or a ``.``-split prefix of it is in
+        ``_consumed``. Component-wise, never a raw ``startswith``: the
+        prefixes of ``s.conn.fd`` are exactly ``s``, ``s.conn``,
+        ``s.conn.fd``, so a consumed ``s`` covers ``s.conn`` but a consumed
+        ``session`` never covers ``s``."""
+        parts = place.split(".")
+        for i in range(1, len(parts) + 1):
+            if ".".join(parts[:i]) in self._consumed:
+                return True
+        return False
+
+    def _subpath_consumed(self, base: str) -> Optional[str]:
+        """The first consumed path that has ``base`` as a strict ``.``-split
+        prefix (``base.<field>...``), or ``None``. The trailing dot forces a
+        component boundary, so ``base='s'`` matches ``s.conn`` but never
+        ``session``."""
+        prefix = base + "."
+        for p in self._consumed:
+            if p.startswith(prefix):
+                return p
+        return None
 
     # ---- obligation bookkeeping ----------------------------------
 
@@ -63,6 +135,7 @@ class _LinearMixin:
             return
         if self._ty_is_linear(ty):
             self._live_linear[name] = pos
+            self._live_linear_ty[name] = ty
             self._consumed.discard(name)
             self._linear_names.discard(name)
 
@@ -97,8 +170,26 @@ class _LinearMixin:
                     pos,
                 )
             return
+        # HOLE-1 (iii): consuming the WHOLE ``name`` after one of its
+        # linear fields was already moved out is a partial-move double-free
+        # (the field's value would be freed twice). Scan ``_consumed``
+        # component-wise for any ``name.<field>...`` before discharging.
+        sub = self._subpath_consumed(name)
+        if sub is not None:
+            if pos is not None:
+                self._err(
+                    f"cannot consume {name!r}: its field {sub!r} was already "
+                    f"consumed, so consuming the whole value would double-free "
+                    f"that field -- consume the remaining fields individually "
+                    f"instead",
+                    pos,
+                )
+            self._live_linear.pop(name, None)
+            self._live_linear_ty.pop(name, None)
+            return
         had = name in self._live_linear
         self._live_linear.pop(name, None)
+        self._live_linear_ty.pop(name, None)
         if had:
             self._consumed.add(name)
             self._linear_names.add(name)
@@ -175,6 +266,7 @@ class _LinearMixin:
                 pos,
             )
             del self._live_linear[name]
+            self._live_linear_ty.pop(name, None)
         self._linear_bind(name, ty, pos)
 
     # ---- anonymous drop (``let _ = ...`` / bare expr stmt) -------
@@ -201,6 +293,7 @@ class _LinearMixin:
         from .. import capa_ast as _A
         if isinstance(expr, _A.Ident):
             self._live_linear.pop(expr.name, None)
+            self._live_linear_ty.pop(expr.name, None)
         self._err(
             "linear value is dropped without being consumed; a "
             "`linear type` / typestate value must be passed to a "
@@ -242,16 +335,46 @@ class _LinearMixin:
         """Error for every ``name`` in ``names`` that still holds a
         live linear obligation (i.e. was never consumed before its
         binding went out of scope). Removes them from the live set so
-        the same value is not reported twice up the scope chain."""
+        the same value is not reported twice up the scope chain.
+
+        HOLE-1 (iv) per-field accounting. A live obligation may have had
+        SOME of its linear fields moved out (``close(s.conn)`` /
+        ``let c = s.conn``) while the rest were never consumed. For each
+        live ``name`` we enumerate its linear/typestate sub-fields and
+        split on what is still outstanding:
+
+        - no linear sub-fields, or none of them consumed: the WHOLE value
+          was never (partially) moved, so it leaks -- the whole-value
+          message.
+        - some but not all consumed (a partial move): each UNCONSUMED
+          sub-field leaks and is reported BY PATH (``s.b``), so the
+          diagnostic names the field the user forgot, not the opaque
+          whole.
+        - all consumed (fully moved out): satisfied, no report."""
         for name in names:
             pos = self._live_linear.get(name)
             if pos is None:
                 continue
-            self._err(
-                f"linear value {name!r} is dropped without being "
-                f"consumed; a `linear type` value must be passed to a "
-                f"consuming function (e.g. a `consume self` method like "
-                f"`close`) or returned before it goes out of scope",
-                pos,
-            )
+            subs = self._linear_field_paths(name, self._live_linear_ty.get(name))
+            consumed = [s for s in subs if self._prefix_consumed(s)]
+            if not consumed:
+                self._err(
+                    f"linear value {name!r} is dropped without being "
+                    f"consumed; a `linear type` value must be passed to a "
+                    f"consuming function (e.g. a `consume self` method like "
+                    f"`close`) or returned before it goes out of scope",
+                    pos,
+                )
+            elif len(consumed) < len(subs):
+                for s in subs:
+                    if self._prefix_consumed(s):
+                        continue
+                    self._err(
+                        f"linear field {s!r} is dropped without being "
+                        f"consumed; consume it (e.g. a `consume self` method "
+                        f"like `close`) or move it out before the value goes "
+                        f"out of scope",
+                        pos,
+                    )
             del self._live_linear[name]
+            self._live_linear_ty.pop(name, None)
