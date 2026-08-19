@@ -328,10 +328,14 @@ class _StatementsMixin:
                     s.value, expected_elem=declared_ann.args[0]
                 )
                 # Replicate the bookkeeping _check_expr would have done
-                # (record the node's type, label it) since we bypassed
-                # it to pass the expected element type.
+                # (record the node's type, label it, and run the container-of-
+                # linear use-gate) since we bypassed it to pass the expected
+                # element type. The cap analogue is caught by the
+                # _check_no_capability on the binding below; the linear one has
+                # no such binding gate, so it is replicated here.
                 self.types[id(s.value)] = actual
                 self._label_expr(s.value)
+                self._linear_container_use_gate(s.value, actual)
         if actual is None:
             actual = self._check_expr(s.value)
         if s.type_expr is not None:

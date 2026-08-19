@@ -619,6 +619,20 @@ class _ExpressionsMixin:
                 f"parameter), never packed inside a list, set, map, or tuple",
                 e.pos,
             )
+        # Linear/typestate mirror of the cap use-gate: a value whose resolved
+        # type packs a linear/typestate value inside a list / set / map / tuple
+        # can never be produced, stored, passed, or read out soundly (a later
+        # read hands out aliases to a value that must be consumed exactly once,
+        # a double-free / leak). Flagging every sub-expression that resolves to
+        # one closes the whole family of shapes at a single site: a container /
+        # tuple literal built with a linear element, a producing higher-order
+        # ``map`` / ``flat_map`` whose closure returns a linear value, a
+        # container-typed binding / param / return on use, and any nesting. The
+        # check is by NAME (see ``_container_carries_linear``): a linear value
+        # captured inside a closure is barred separately by the capture-consume
+        # check, not here. A container whose element type only settles LATER is
+        # caught by the end-of-function deferred recheck instead.
+        self._linear_container_use_gate(e, ty)
         # A value read OUT of an empty-origin container surfaces the bare
         # element variable (``xs[0]``, a matched ``Some(v)`` from
         # ``m.get(k)``, a ``for`` element of a set). Referencing the
@@ -1396,6 +1410,14 @@ class _ExpressionsMixin:
                 expected, substituted, e.type_name, fexpr.pos,
                 slot=f"field {fname!r}",
             )
+            # The container-of-linear invariant mirrors that: a struct field
+            # whose generic slot is instantiated to a container-of-linear
+            # (``Box<List<T>>`` at ``T = Conn``) smuggles a single-owner value
+            # into storage behind a ``T``, so reject it at the same site.
+            self._reject_linear_leak_via_substitution(
+                expected, substituted, e.type_name, fexpr.pos,
+                slot=f"field {fname!r}",
+            )
         missing = set(sym.struct_fields.keys()) - seen
         if missing:
             self._err(
@@ -1448,10 +1470,6 @@ class _ExpressionsMixin:
             for el in e.elements:
                 ety = self._check_expr(el)
                 actual_elems.append(ety)
-                # Linearity decision 4b (list-literal facet): a linear /
-                # typestate element -- including a fresh one -- may not be
-                # packed into a collection.
-                self._reject_linear_list_element(ety, el.pos)
                 if not self._assignable(expected_elem, ety, el):
                     self._err(
                         f"list literal: element has type {ty_str(ety)}, "
@@ -1466,14 +1484,8 @@ class _ExpressionsMixin:
             elem = self._raise_fun_labels(expected_elem, actual_elems)
             return TyName("List", (elem,))
         first_ty = self._check_expr(e.elements[0])
-        # Linearity decision 4b (list-literal facet): a linear / typestate
-        # element -- including a fresh one -- may not be packed into a
-        # collection. Elements share a type here, so checking each by
-        # position gives the precise site.
-        self._reject_linear_list_element(first_ty, e.elements[0].pos)
         for el in e.elements[1:]:
             ety = self._check_expr(el)
-            self._reject_linear_list_element(ety, el.pos)
             if not compatible(first_ty, ety):
                 self._err(
                     f"list literal: element has type {ty_str(ety)}, "

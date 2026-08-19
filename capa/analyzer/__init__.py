@@ -689,6 +689,11 @@ class Analyzer(
         # cap-container-typed sub-expression (a repeated ``_check_expr``
         # on the same node must not double-report).
         self._cap_container_reported: set[int] = set()
+        # Expression nodes already reported as a container of linear/typestate
+        # values by the resolved-type use-gate in ``_check_expr`` (the linear
+        # mirror of ``_cap_container_reported``). Dedups a re-checked node so
+        # the gate reports once per container-of-linear-typed sub-expression.
+        self._linear_container_reported: set[int] = set()
         # Names of user-defined struct types whose values must
         # not be field-mutated, because the type appears
         # (directly or transitively) in a ``Set<...>`` or
@@ -776,6 +781,19 @@ class Analyzer(
             it.name: list(it.states) for it in module.items
             if isinstance(it, A.TypestateDecl)
         }
+        # Phase 1c: collect the names of ``linear type`` structs (roadmap
+        # S1) plus the typestates (also linear: must be consumed /
+        # transitioned). Used by statement/expression checking to track
+        # must-consume values, and by the container-of-linear entry-gates
+        # that ``_collect_globals`` runs on signatures / fields, so it must
+        # be populated BEFORE ``_collect_globals``. Both inputs come straight
+        # off ``module`` (and the already-built ``_typestates``), so nothing
+        # here depends on global registration.
+        self._linear_types = {
+            it.name for it in module.items
+            if isinstance(it, A.TypeStruct) and it.is_linear
+        }
+        self._linear_types |= set(self._typestates)
         # Phase 1: register all top-level declarations (forward refs).
         self._collect_globals(module)
         # Phase 1b: compute the set of frozen struct types
@@ -785,18 +803,6 @@ class Analyzer(
         # can walk them, and before statement checking so
         # ``_check_assign`` sees a fully populated set.
         self._frozen_types = self._compute_frozen_types(module)
-        # Phase 1c: collect the names of ``linear type`` structs
-        # (roadmap S1). Used by statement/expression checking to track
-        # must-consume values.
-        self._linear_types = {
-            it.name for it in module.items
-            if isinstance(it, A.TypeStruct) and it.is_linear
-        }
-        # Roadmap S3: a typestate value is also linear (must be consumed
-        # / transitioned). ``_typestates`` itself is populated before
-        # ``_collect_globals`` (signature resolution needs it); here we
-        # just fold the names into the linear set.
-        self._linear_types |= set(self._typestates)
         # Phase 1d: cross-function IFC summaries (roadmap S2.6). Compute,
         # per user function / method, the set of value parameters whose
         # value reaches a public sink inside the body (directly or

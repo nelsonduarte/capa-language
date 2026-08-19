@@ -353,6 +353,10 @@ class _DispatchMixin:
                             exp_ty, substituted_payload, sym.name,
                             e.args[i].pos, slot=f"argument {i + 1}",
                         )
+                        self._reject_linear_leak_via_substitution(
+                            exp_ty, substituted_payload, sym.name,
+                            e.args[i].pos, slot=f"argument {i + 1}",
+                        )
                     if sym.variant_owner is not None:
                         owner = sym.variant_owner
                         field_pairs = [
@@ -644,10 +648,18 @@ class _DispatchMixin:
                 param_ty, substituted, name, args_in_order[i].pos,
                 slot=f"argument {i + 1}",
             )
+            self._reject_linear_leak_via_substitution(
+                param_ty, substituted, name, args_in_order[i].pos,
+                slot=f"argument {i + 1}",
+            )
 
         self._commit_fresh_substitutions(mapping)
         ret_substituted = instantiate(fun_ty.ret, type_params, mapping)
         self._reject_cap_leak_via_substitution(
+            fun_ty.ret, ret_substituted, name, e.pos,
+            slot="return type",
+        )
+        self._reject_linear_leak_via_substitution(
             fun_ty.ret, ret_substituted, name, e.pos,
             slot="return type",
         )
@@ -1102,12 +1114,20 @@ class _DispatchMixin:
                 param_ty, substituted, f"{recv_ty.name}.{e.method!r}",
                 reordered_args[i].pos, slot=f"argument {i + 1}",
             )
+            self._reject_linear_leak_via_substitution(
+                param_ty, substituted, f"{recv_ty.name}.{e.method!r}",
+                reordered_args[i].pos, slot=f"argument {i + 1}",
+            )
 
         self._commit_fresh_substitutions(mapping)
 
         all_type_params = type_sym.type_params + method_type_params
         ret_ty = instantiate(method_fun_ty.ret, all_type_params, mapping)
         self._reject_cap_leak_via_substitution(
+            method_fun_ty.ret, ret_ty, f"{recv_ty.name}.{e.method!r}",
+            e.pos, slot="return type",
+        )
+        self._reject_linear_leak_via_substitution(
             method_fun_ty.ret, ret_ty, f"{recv_ty.name}.{e.method!r}",
             e.pos, slot="return type",
         )

@@ -242,6 +242,14 @@ class _ItemsMixin:
                 self._check_no_cap_container(
                     pty, p.pos, f"the type of parameter {p.name!r}",
                 )
+                # A parameter typed as a container of linear/typestate values
+                # (``List<Conn>`` / ``(Conn, Int)`` / ``Map<K, Conn>``) is
+                # barred up front; a bare linear/typestate parameter stays
+                # legal (that is how single-owner values flow), so this uses
+                # the container-scoped predicate.
+                self._check_no_linear_container(
+                    pty, p.pos, f"the type of parameter {p.name!r}",
+                )
                 if contains_capability(pty) is not None:
                     cap_param_syms.append(psym)
             if self.scope.lookup_local(p.name) is not None:
@@ -436,6 +444,27 @@ class _ItemsMixin:
                     f"capabilities, and a capability may only flow as a "
                     f"bare, top-level value (a direct function parameter), "
                     f"never packed inside a list, set, map, or tuple",
+                    read_pos,
+                )
+                continue
+            # Deferred container-of-linear recheck (mirror of the cap case
+            # above). The inferred-empty-then-populated local, or a linear
+            # value pushed inside a generic helper that only surfaces as the
+            # caller's ``List<Conn>``, resolves to a linear/typestate element
+            # only now that the whole body has been analysed. Reject the
+            # read-out here, since the use-gate could not see it at production
+            # time (the element variable was still open).
+            if (
+                self._ty_is_linear(resolved_elem)
+                or self._type_carries_linear(resolved_elem)
+            ):
+                self._err(
+                    "a linear/typestate value cannot be read out of a "
+                    "container: this local resolves to a container of "
+                    "single-owner values, and a linear/typestate value may "
+                    "only flow as a bare, top-level value (a direct parameter "
+                    "/ return / binding), never packed inside a list, set, "
+                    "map, or tuple",
                     read_pos,
                 )
                 continue

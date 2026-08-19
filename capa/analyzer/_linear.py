@@ -31,7 +31,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..tokens import Pos
-from ..typesys import Ty, TyName
+from ..typesys import Ty, TyName, TyTuple
 
 
 class _LinearMixin:
@@ -83,6 +83,130 @@ class _LinearMixin:
             if self._type_carries_linear(fty, _depth + 1):
                 return True
         return False
+
+    # ---- container-of-linear invariant (mirror of the cap discipline) ----
+
+    def _reaches_linear(self, ty: Optional[Ty], _depth: int = 0) -> bool:
+        """Recursive leaf test: True iff a linear/typestate type is reachable
+        anywhere in ``ty`` -- as ``ty`` itself, through a struct field
+        (``_type_carries_linear``), or below a container / tuple layer at any
+        nesting depth. Structural twin of ``_contains_any_capability``, so the
+        container-of-linear invariant mirrors the capability one exactly.
+
+        Like ``_cap_in_container`` it does NOT descend a ``TyFun``: a linear
+        value captured inside a closure is a signature, not container storage,
+        and consuming a captured value is already barred by the capture-consume
+        check in ``_mark_consumed_args``."""
+        if ty is None:
+            return False
+        if self._ty_is_linear(ty) or self._type_carries_linear(ty):
+            return True
+        if _depth >= self._LINEAR_PATH_MAX_DEPTH:
+            return False
+        if isinstance(ty, TyName):
+            return any(self._reaches_linear(a, _depth + 1) for a in ty.args)
+        if isinstance(ty, TyTuple):
+            return any(
+                self._reaches_linear(e, _depth + 1) for e in ty.elements
+            )
+        return False
+
+    def _container_carries_linear(self, ty: Optional[Ty]) -> bool:
+        """True iff a linear/typestate type is reachable STRICTLY BELOW a
+        container head in ``ty``: a List / Set element, a Map key OR value, a
+        tuple element, or any generic argument, at any nesting depth. Twin of
+        ``_cap_in_container``.
+
+        A BARE linear/typestate value (or a bare linear-carrying struct) at the
+        TOP level is deliberately NOT flagged: that is the whole point of the
+        linear discipline, a single-owner value flows BY NAME (a direct
+        parameter / return / binding / field). Only the below-a-container form
+        is barred. The type is resolved against ``_ty_subs`` first, so a
+        container whose element was pinned only by inference is judged on its
+        real element type."""
+        ty = self._resolve_ty(ty)
+        if isinstance(ty, TyName):
+            return any(self._reaches_linear(a) for a in ty.args)
+        if isinstance(ty, TyTuple):
+            return any(self._reaches_linear(e) for e in ty.elements)
+        return False
+
+    def _linear_container_use_gate(self, e: "A.Expr", ty: Optional[Ty]) -> None:
+        """Per-expression use-gate (twin of the cap ``_cap_in_container`` gate
+        in ``_check_expr``): reject a sub-expression whose resolved type packs
+        a linear/typestate value inside a list / set / map / tuple, so a
+        container / tuple literal, a producing higher-order ``map`` /
+        ``flat_map``, a container-typed binding / param / return on use, and
+        any nesting are all closed at a single site. Deduped per node. Also
+        invoked from the annotated-list-literal binding path, which bypasses
+        ``_check_expr`` to thread the expected element type."""
+        if not self._container_carries_linear(ty):
+            return
+        if id(e) in self._linear_container_reported:
+            return
+        self._linear_container_reported.add(id(e))
+        self._err(
+            "a linear/typestate value cannot be used here: this value is a "
+            "container of single-owner values, and a linear/typestate value "
+            "may only flow as a bare, top-level value (a direct parameter / "
+            "return / binding), never packed inside a list, set, map, or "
+            "tuple",
+            e.pos,
+        )
+
+    def _check_no_linear_container(
+        self, ty: Optional[Ty], pos: Pos, context: str,
+    ) -> None:
+        """Entry-gate wrapper (twin of ``_check_no_cap_container``): reject a
+        type that packs a linear/typestate value inside a container in
+        ``context`` -- a parameter / return / field / const / variant payload
+        typed ``List<Conn>`` / ``(Conn, Int)`` / ``Map<K, Conn>`` -- for a
+        precise diagnostic at the declaration even when the body never uses it.
+        Uses the CONTAINER-scoped predicate (a bare linear value stays legal),
+        never an ``any linear`` one, because a bare linear parameter / return /
+        field is how single-owner values flow."""
+        if not self._container_carries_linear(ty):
+            return
+        self._err(
+            f"a linear/typestate value cannot appear in {context}; a "
+            f"single-owner value may only flow as a bare, top-level value "
+            f"(a direct parameter / return / binding), never packed inside a "
+            f"list, set, map, or tuple",
+            pos,
+        )
+
+    def _reject_linear_leak_via_substitution(
+        self,
+        pre_ty: Optional[Ty],
+        post_ty: Optional[Ty],
+        callee_label: str,
+        pos: Pos,
+        *,
+        slot: str,
+    ) -> None:
+        """Twin of ``_reject_cap_leak_via_substitution``: fire when generic
+        substitution puts a linear/typestate value BELOW A CONTAINER where the
+        unsubstituted form had none. ``stash<T>(xs: List<T>, v: T)`` called at
+        ``T = Conn`` turns ``List<T>`` (no container-of-linear) into
+        ``List<Conn>`` (a container-of-linear), so the call is rejected at the
+        substitution site even when the caller never uses the container.
+
+        Container-scoped, NOT ``any linear``: a BARE linear value flowing
+        through a generic (``id<T>(v: T) -> T`` at ``T = Conn``) stays legal,
+        because linear values flow by name including through generics. Only the
+        container-of-linear form is barred."""
+        if not self._container_carries_linear(post_ty):
+            return
+        if self._container_carries_linear(pre_ty):
+            return
+        self._err(
+            f"call to {callee_label}: {slot} substitutes a linear/typestate "
+            f"value into a generic container type; a single-owner value may "
+            f"only flow as a bare, top-level value (a direct parameter / "
+            f"return / binding), never packed inside a list, set, map, or "
+            f"tuple",
+            pos,
+        )
 
     def _linear_field_paths(
         self, place: str, ty: Optional[Ty], _depth: int = 0,
@@ -445,32 +569,6 @@ class _LinearMixin:
                 f"{expr.name!r} into an aggregate; the caller retains "
                 f"ownership -- declare the parameter `consume` to take "
                 f"ownership",
-                pos,
-            )
-
-    def _reject_linear_list_element(
-        self, el_ty: Optional[Ty], pos: Pos,
-    ) -> None:
-        """Linearity decision 4b, LIST-LITERAL facet: reject a linear /
-        typestate element (or a struct that OWNS one) in a list literal.
-
-        The mutator reject (``_check_no_linear_into_container``) covers
-        ``xs.push(v)``, but a FRESH linear packed straight into a literal
-        (``let xs: List<Conn> = [mkc()]``) never passes through a mutator,
-        so the literal element is gated here with the SAME type predicate.
-        This is deliberately LIST-only: a linear field in a STRUCT literal
-        is the legitimate factory (``return Session { conn: open() }``) and
-        a tuple threads single-owner values by position, so neither is
-        touched -- only a collection element is barred."""
-        if el_ty is None:
-            return
-        at = self._resolve_ty(el_ty)
-        if self._ty_is_linear(at) or self._type_carries_linear(at):
-            self._err(
-                "a linear/typestate value cannot be stored in a container "
-                "(List / Map / Set); a single-owner value must be threaded "
-                "by name and consumed in scope (e.g. passed to a `consume` "
-                "function), never packed into a collection",
                 pos,
             )
 

@@ -224,6 +224,14 @@ class _DeclarationsMixin:
                         self._check_no_cap_container(
                             fty, fld.pos, f"struct field {fld.name!r}",
                         )
+                    # A struct field typed as a container of linear/typestate
+                    # values (``items: List<Conn>``) is barred on ANY struct;
+                    # a bare linear/typestate field is the legitimate carrier
+                    # (``Session { conn: Conn }``), so this uses the
+                    # container-scoped predicate.
+                    self._check_no_linear_container(
+                        fty, fld.pos, f"struct field {fld.name!r}",
+                    )
                     sym.struct_fields[fld.name] = fty
                     self._record_field_label(sym, fld)
                 self._pop_type_params()
@@ -238,6 +246,9 @@ class _DeclarationsMixin:
                 for fld in item.fields:
                     fty = self._resolve_type(fld.type_expr)
                     self._check_no_capability(
+                        fty, fld.pos, f"typestate field {fld.name!r}",
+                    )
+                    self._check_no_linear_container(
                         fty, fld.pos, f"typestate field {fld.name!r}",
                     )
                     sym.struct_fields[fld.name] = fty
@@ -258,6 +269,10 @@ class _DeclarationsMixin:
                             pty, v.pos,
                             f"payload of variant {v.name!r}",
                         )
+                        self._check_no_linear_container(
+                            pty, v.pos,
+                            f"payload of variant {v.name!r}",
+                        )
                         payload_tys.append(pty)
                     vsym.variant_payload_tys = payload_tys
                 self._pop_type_params()
@@ -266,6 +281,9 @@ class _DeclarationsMixin:
                 if sym is not None:
                     sym.ty = self._resolve_type(item.type_expr)
                     self._check_no_capability(
+                        sym.ty, item.pos, f"constant {item.name!r}",
+                    )
+                    self._check_no_linear_container(
                         sym.ty, item.pos, f"constant {item.name!r}",
                     )
             elif isinstance(item, A.FunDecl):
@@ -296,6 +314,15 @@ class _DeclarationsMixin:
                         # built-in would, and the builtin-only check above
                         # does not see a user capability.
                         self._check_no_cap_container(
+                            sym.ty.ret, item.pos,
+                            f"the return type of function {item.name!r}",
+                        )
+                        # A return type that packs a linear/typestate value in
+                        # a container (``-> List<Conn>`` / ``-> (Conn, Int)``)
+                        # is barred; a bare linear/typestate return is the
+                        # legitimate factory / transfer, so this uses the
+                        # container-scoped predicate.
+                        self._check_no_linear_container(
                             sym.ty.ret, item.pos,
                             f"the return type of function {item.name!r}",
                         )

@@ -8623,8 +8623,10 @@ class TestLinearContainerLaundering(unittest.TestCase):
         )
 
     def test_launder_into_returned_tuple_rejected(self):
-        # Returning a tuple that holds the linear value does NOT discharge
-        # it (only a bare-identifier return does), so the leak is caught.
+        # A tuple carrying a linear value is now barred by the container-of-
+        # linear invariant: the `-> (Handle, Int)` return type is rejected at
+        # the declaration entry-gate and the `(h, 1)` expression at the use-
+        # gate, both with the container message.
         errs = self._errs(
             self._LIN
             + "fun stash() -> (Handle, Int)\n"
@@ -8634,7 +8636,7 @@ class TestLinearContainerLaundering(unittest.TestCase):
             "    let t = stash()\n"
         )
         self.assertTrue(
-            any("dropped without being consumed" in e for e in errs), errs,
+            any("linear/typestate value cannot" in e for e in errs), errs,
         )
 
 
@@ -10048,7 +10050,13 @@ class TestLinearIntoContainerReject(unittest.TestCase):
     Both facets (``linear type`` and ``typestate``) are exercised. This is
     analyzer-only and reject-only; nothing is stored, so no drain / codegen
     changes. The struct-literal factory (``return Session { conn: open()
-    }``) and tuple threading stay legitimate and are NOT touched."""
+    }``) stays legitimate and is NOT touched.
+
+    The list-literal facet is now sealed by the container-of-linear use-gate
+    (``_container_carries_linear`` in ``_check_expr``) rather than a special-
+    case list rule, so its diagnostic is the shared container message; the
+    mutator seam keeps its own precise insertion-site message. Both share the
+    ``a linear/typestate value cannot ...`` prefix asserted below."""
 
     _LIN = (
         "linear type Conn { id: Int }\n"
@@ -10074,7 +10082,7 @@ class TestLinearIntoContainerReject(unittest.TestCase):
         "fun mkrec() -> Record\n"
         "    return Record { claim: become(mk(), Settled), tag: 0 }\n"
     )
-    _MSG = "cannot be stored in a container"
+    _MSG = "linear/typestate value cannot"
 
     def _rejects(self, body: str) -> None:
         errs = errors_of(body)
@@ -10190,6 +10198,218 @@ class TestLinearIntoContainerReject(unittest.TestCase):
             self._LIN + "type Session { conn: Conn }\n"
             "fun open_session() -> Session\n"
             "    return Session { conn: open() }\n"
+        )
+
+
+class TestContainerOfLinearSeal(unittest.TestCase):
+    """Container-of-linear seal (7th commit): a List / Map / Set / tuple type
+    may not carry a linear/typestate value (nor a linear-carrying struct) at
+    any nesting depth, mirroring the capability discipline's four mechanisms
+    with one predicate (``_container_carries_linear``). A BARE linear value at
+    top level stays legal (single-owner values flow by name, including through
+    generics); only the below-a-container form is barred.
+
+    Every route is rejected on both facets (``linear type`` + ``typestate``):
+    the tuple literal (the corrected carve-out), nested containers, a producing
+    higher-order ``map`` / ``flat_map``, a generic helper instantiated linear,
+    and a direct signature (param / return / field / const / variant payload).
+    The over-reject line is load-bearing: the generic non-linear-``T`` control,
+    a bare linear through a generic, and every plain-data container must still
+    compile."""
+
+    _LIN = (
+        "linear type Conn { id: Int }\n"
+        "fun mkc() -> Conn\n"
+        "    return Conn { id: 1 }\n"
+        "fun close(consume c: Conn) -> Unit\n"
+        "    return ()\n"
+    )
+    _CARRIER = _LIN + (
+        "type Session { conn: Conn, tag: Int }\n"
+        "fun mks() -> Session\n"
+        "    return Session { conn: mkc(), tag: 0 }\n"
+    )
+    _TS = (
+        "typestate Claim\n    Draft\n    Settled\n"
+        "fun mk() -> Claim[Draft]\n"
+        "    return Claim[Draft] {}\n"
+        "fun archive(consume c: Claim[Settled]) -> Unit\n"
+        "    return ()\n"
+    )
+    _MSG = "linear/typestate value cannot"
+
+    def _rejects(self, body: str) -> None:
+        errs = errors_of(body)
+        self.assertTrue(any(self._MSG in e for e in errs), errs)
+
+    def _compiles(self, body: str) -> None:
+        errs = [e for e in errors_of(body) if "never used" not in e]
+        self.assertEqual(errs, [], errs)
+
+    # ---- tuple literal (the corrected carve-out) ----
+
+    def test_tuple_literal_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n    let c = mkc()\n"
+            "    let t = (c, 1)\n"
+        )
+
+    def test_tuple_literal_typestate_rejected(self):
+        self._rejects(
+            self._TS + "fun main(_s: Stdio)\n"
+            "    let t = (become(mk(), Settled), 1)\n"
+        )
+
+    def test_tuple_literal_fresh_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n    let t = (mkc(), 1)\n"
+        )
+
+    # ---- nested containers ----
+
+    def test_nested_list_of_list_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    let xs: List<List<Conn>> = [[mkc()]]\n"
+        )
+
+    def test_list_of_tuple_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    let xs: List<(Conn, Int)> = [(mkc(), 1)]\n"
+        )
+
+    # ---- producing higher-order map / flat_map ----
+
+    def test_map_producer_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    let xs = [1, 2, 3].map(fun(x) => mkc())\n"
+        )
+
+    def test_flat_map_producer_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    let xs = [1, 2, 3].flat_map(fun(x) => [mkc()])\n"
+        )
+
+    # ---- generic helper instantiated linear ----
+
+    _STASH = (
+        "fun stash<T>(xs: List<T>, v: T) -> List<T>\n"
+        "    xs.push(v)\n"
+        "    return xs\n"
+    )
+
+    def test_generic_helper_instantiated_linear_rejected(self):
+        self._rejects(
+            self._LIN + self._STASH + "fun main(_s: Stdio)\n"
+            "    var xs: List<Conn> = []\n"
+            "    let ys = stash(xs, mkc())\n"
+        )
+
+    def test_generic_helper_instantiated_typestate_rejected(self):
+        self._rejects(
+            self._TS + self._STASH + "fun main(_s: Stdio)\n"
+            "    var xs: List<Claim[Settled]> = []\n"
+            "    let ys = stash(xs, become(mk(), Settled))\n"
+        )
+
+    # ---- direct signatures (entry-gates) ----
+
+    def test_param_list_of_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun f(xs: List<Conn>) -> Unit\n    return ()\n"
+        )
+
+    def test_param_map_value_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun f(m: Map<String, Conn>) -> Unit\n    return ()\n"
+        )
+
+    def test_param_map_key_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun f(m: Map<Conn, String>) -> Unit\n    return ()\n"
+        )
+
+    def test_return_list_of_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun f() -> List<Conn>\n    return []\n"
+        )
+
+    def test_return_tuple_of_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun f(consume c: Conn) -> (Conn, Int)\n"
+            "    return (c, 1)\n"
+        )
+
+    def test_struct_field_container_of_linear_rejected(self):
+        self._rejects(
+            self._LIN + "type Box { items: List<Conn> }\n"
+        )
+
+    def test_struct_field_container_of_carrier_rejected(self):
+        self._rejects(
+            self._CARRIER + "type Fleet { sessions: List<Session> }\n"
+        )
+
+    def test_typestate_field_container_of_linear_rejected(self):
+        self._rejects(
+            self._LIN + "typestate Pool { conns: List<Conn> }\n"
+            "    Empty\n    Full\n"
+        )
+
+    def test_variant_payload_container_of_linear_rejected(self):
+        self._rejects(
+            self._LIN + "type Wrap =\n    Present(List<Conn>)\n    Nothing\n"
+        )
+
+    def test_typestate_param_list_rejected(self):
+        self._rejects(
+            self._TS + "fun f(xs: List<Claim[Settled]>) -> Unit\n"
+            "    return ()\n"
+        )
+
+    # ---- over-reject line: must COMPILE ----
+
+    def test_generic_helper_non_linear_t_compiles(self):
+        self._compiles(
+            self._STASH + "fun main(_s: Stdio)\n"
+            "    var nums: List<Int> = []\n"
+            "    let ys = stash(nums, 3)\n"
+        )
+
+    def test_bare_linear_through_generic_compiles(self):
+        # A bare linear value threaded through a generic (id<T>(v: T) -> T at
+        # T = Conn) is legal: single-owner values flow by name, including
+        # through generics; only a container-of-linear substitution rejects.
+        self._compiles(
+            self._LIN + "fun id2<T>(consume v: T) -> T\n    return v\n"
+            "fun main(_s: Stdio)\n    let c = id2(mkc())\n    close(c)\n"
+        )
+
+    def test_plain_data_containers_everywhere_compile(self):
+        self._compiles(
+            "type Money { cents: Int }\n"
+            "fun sink(xs: List<Money>, m: Map<String, Money>) -> List<Money>\n"
+            "    return xs\n"
+            "fun main(_s: Stdio)\n"
+            "    var xs: List<Money> = []\n"
+            "    xs.push(Money { cents: 1 })\n"
+            "    let doubled = [1, 2, 3].map(fun(x) => x + 1)\n"
+            "    var m = new_map()\n"
+            "    m.set(\"k\", Money { cents: 2 })\n"
+            "    let ys = sink(xs, m)\n"
+        )
+
+    def test_bare_linear_signatures_compile(self):
+        # The bare-linear flows: a consume param, a factory return, a linear
+        # field of a carrier struct, and the struct-literal factory.
+        self._compiles(
+            self._CARRIER + "fun take(consume c: Conn) -> Conn\n"
+            "    return c\n"
+            "fun main(_s: Stdio)\n    let s = mks()\n"
+            "    close(s.conn)\n"
         )
 
 
