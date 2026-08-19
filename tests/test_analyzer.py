@@ -9814,5 +9814,221 @@ class TestEmptyContainerElementPinning(unittest.TestCase):
         self.assertTrue(r.ok, [e.message for e in r.errors])
 
 
+class TestLinearMovePaths(unittest.TestCase):
+    """Struct field move-paths for the linear/typestate discipline.
+
+    Consuming, moving, or projecting a linear/typestate STRUCT FIELD is
+    now tracked per path, closing the latent runtime double-free where
+    ``close(s.conn)`` on a value carrying a live linear field was a silent
+    no-op. The three shapes:
+
+    - HOLE-1: per-field partial-move accounting -- moving one linear field
+      leaves the others outstanding; the whole value cannot be consumed
+      once a field was moved (partial-move double-free).
+    - HOLE-2: aliasing a value whose type transitively owns a linear field
+      (even a non-linear carrier) MOVES the base.
+    - WARNING-3: overwriting a live linear field drops it (a leak).
+    - WARNING-4/5: a borrowed value's field cannot be consumed or laundered
+      out through a projection.
+
+    Both facets (``linear type`` and ``typestate``) are exercised.
+    Analyzer-only, reject-only; the accepted shapes are run byte-identically
+    on all three backends by ``test_ir_wasm_parity``."""
+
+    # A linear struct P carrying two linear fields a, b and a scalar tag.
+    _LIN = (
+        "linear type Conn { id: Int }\n"
+        "fun open() -> Conn\n"
+        "    return Conn { id: 1 }\n"
+        "fun close(consume c: Conn) -> Unit\n"
+        "    return ()\n"
+        "linear type P { a: Conn, b: Conn, tag: Int }\n"
+        "fun mkp() -> P\n"
+        "    return P { a: open(), b: open(), tag: 0 }\n"
+        "fun sinkp(consume p: P) -> Unit\n"
+        "    return ()\n"
+    )
+    # A NON-linear struct S carrying a linear field conn plus a scalar tag.
+    _NL = (
+        "linear type Conn { id: Int }\n"
+        "fun open() -> Conn\n"
+        "    return Conn { id: 1 }\n"
+        "fun close(consume c: Conn) -> Unit\n"
+        "    return ()\n"
+        "type S { conn: Conn, tag: Int }\n"
+        "fun mks() -> S\n"
+        "    return S { conn: open(), tag: 0 }\n"
+        "fun sink(consume s: S) -> Unit\n"
+        "    return ()\n"
+    )
+    # Typestate facet: a Claim carrying a linear/typestate field inside a
+    # non-linear Record carrier.
+    _TS = (
+        "typestate Claim\n    Draft\n    Settled\n"
+        "fun mk() -> Claim[Draft]\n"
+        "    return Claim[Draft] {}\n"
+        "fun archive(consume c: Claim[Settled]) -> Unit\n"
+        "    return ()\n"
+        "type Record { claim: Claim[Settled], tag: Int }\n"
+        "fun mkrec() -> Record\n"
+        "    return Record { claim: become(mk(), Settled), tag: 0 }\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    # ---- HOLE-1 partial-move accounting ----
+
+    def test_consume_both_linear_fields_ok(self):
+        r = check(
+            self._LIN + "fun main(_s: Stdio)\n    let p = mkp()\n"
+            "    close(p.a)\n    close(p.b)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_consume_one_field_leaks_naming_other(self):
+        errs = self._errs(
+            self._LIN + "fun main(_s: Stdio)\n    let p = mkp()\n"
+            "    close(p.a)\n"
+        )
+        self.assertTrue(
+            any("'p.b'" in e and "dropped without being consumed" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_project_field_then_use_rest_ok(self):
+        r = check(
+            self._LIN + "fun main(_s: Stdio)\n    let p = mkp()\n"
+            "    let c = p.a\n    close(c)\n    close(p.b)\n"
+            "    let n = p.tag\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_double_consume_through_path_rejected(self):
+        errs = self._errs(
+            self._LIN + "fun main(_s: Stdio)\n    let p = mkp()\n"
+            "    close(p.a)\n    close(p.a)\n    close(p.b)\n"
+        )
+        self.assertTrue(
+            any("'p.a'" in e and "consumed earlier" in e for e in errs),
+            errs,
+        )
+
+    def test_consume_field_then_whole_rejected(self):
+        errs = self._errs(
+            self._LIN + "fun main(_s: Stdio)\n    let p = mkp()\n"
+            "    close(p.a)\n    sinkp(p)\n"
+        )
+        self.assertTrue(
+            any("its field 'p.a' was already consumed" in e for e in errs),
+            errs,
+        )
+
+    # ---- HOLE-2 alias-move ----
+
+    def test_alias_move_double_free_rejected(self):
+        errs = self._errs(
+            self._NL + "fun main(_s: Stdio)\n    let s = mks()\n"
+            "    let t = s\n    close(s.conn)\n    close(t.conn)\n"
+        )
+        self.assertTrue(
+            any("'s'" in e and "consumed earlier" in e for e in errs), errs,
+        )
+
+    def test_field_move_out_of_non_linear_carrier_ok(self):
+        r = check(
+            self._NL + "fun main(_s: Stdio)\n    let s = mks()\n"
+            "    let c = s.conn\n    close(c)\n    let n = s.tag\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_typestate_carrier_field_move_out_ok(self):
+        r = check(
+            self._TS + "fun main(_s: Stdio)\n    let rec = mkrec()\n"
+            "    let settled = rec.claim\n    archive(settled)\n"
+            "    let n = rec.tag\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_typestate_carrier_alias_move_double_free_rejected(self):
+        errs = self._errs(
+            self._TS + "fun main(_s: Stdio)\n    let rec = mkrec()\n"
+            "    let dup = rec\n    archive(rec.claim)\n    archive(dup.claim)\n"
+        )
+        self.assertTrue(
+            any("'rec'" in e and "consumed earlier" in e for e in errs), errs,
+        )
+
+    # ---- WARNING-3 field-store drop ----
+
+    def test_field_store_over_live_field_rejected(self):
+        errs = self._errs(
+            self._NL + "fun main(_s: Stdio)\n    var s = mks()\n"
+            "    s.conn = open()\n    let c = s.conn\n    close(c)\n"
+        )
+        self.assertTrue(
+            any("'s.conn' is overwritten without being consumed" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_field_store_after_consume_rearms_ok(self):
+        r = check(
+            self._NL + "fun main(_s: Stdio)\n    var s = mks()\n"
+            "    close(s.conn)\n    s.conn = open()\n    close(s.conn)\n"
+            "    let n = s.tag\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    # ---- WARNING-4/5 borrow facet over paths ----
+
+    def test_read_scalar_field_of_borrowed_carrier_ok(self):
+        r = check(
+            self._NL + "fun peek(s: S) -> Int\n    return s.conn.id\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_sibling_locals_not_over_rejected_when_param_borrowed(self):
+        r = check(
+            self._NL + "fun use(s: S) -> Int\n"
+            "    let session = mks()\n    close(session.conn)\n"
+            "    let s2 = mks()\n    close(s2.conn)\n    return s.tag\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_consume_field_of_borrowed_carrier_rejected(self):
+        errs = self._errs(
+            self._NL + "fun bad(s: S) -> Unit\n    close(s.conn)\n"
+        )
+        self.assertTrue(
+            any("borrowed value the caller still owns" in e
+                or "belongs to a borrowed value" in e for e in errs),
+            errs,
+        )
+
+    def test_project_field_of_borrowed_then_consume_rejected(self):
+        errs = self._errs(
+            self._NL + "fun bad(s: S) -> Unit\n    let c = s.conn\n    close(c)\n"
+        )
+        self.assertTrue(
+            any("borrowed" in e for e in errs), errs,
+        )
+
+    # ---- retained: no linear value into a container ----
+
+    def test_linear_value_into_container_still_rejected(self):
+        # A whole linear value may still not enter a container; the field
+        # move-paths do not relax that (containers stay deferred). Embedding
+        # it never discharges the obligation, so it leaks at scope exit.
+        errs = self._errs(
+            self._NL + "fun main(_s: Stdio)\n    let c = open()\n"
+            "    let xs = [c]\n"
+        )
+        self.assertTrue(
+            any("dropped without being consumed" in e for e in errs), errs,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

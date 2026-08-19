@@ -6738,5 +6738,62 @@ class TestCirIntegerArithmeticParity(unittest.TestCase):
         self._assert_three_way(src)
 
 
+class TestLinearMovePathParity(unittest.TestCase):
+    """Struct field move-paths run byte-identically on all three backends.
+
+    The move-path discipline is analyzer-only (reject-only), so a program
+    it ACCEPTS must produce the same output on the legacy Python path, the
+    CIR (``--ir``) path, and the Wasm backend -- the analyzer change must
+    not perturb codegen. Exercises a field move-out of a non-linear carrier
+    (both the ``linear type`` and the ``typestate`` facet), a projection,
+    and a whole-value scalar read after the move."""
+
+    def _assert_three_way(self, src: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        cir_out = _capture_stdout(lambda: _run_cir(src))
+        self.assertEqual(
+            py_out, cir_out,
+            msg=f"legacy vs CIR divergence.\n{py_out!r}\n{cir_out!r}\n{src}",
+        )
+        if _has_wasm_tools() and _has_wasmtime_py():
+            wasm_out = _capture_stdout(lambda: _run_wasm(src))
+            self.assertEqual(
+                py_out, wasm_out,
+                msg=f"legacy vs Wasm divergence.\n{py_out!r}\n{wasm_out!r}\n{src}",
+            )
+
+    def test_field_move_out_linear_and_typestate(self):
+        src = (
+            "linear type Conn { id: Int }\n"
+            "fun open(n: Int) -> Conn\n"
+            "    return Conn { id: n }\n"
+            "fun close(consume c: Conn) -> Int\n"
+            "    return c.id\n"
+            "type S { conn: Conn, tag: Int }\n"
+            "fun mks(n: Int) -> S\n"
+            "    return S { conn: open(n), tag: n * 10 }\n"
+            "typestate Claim { amount: Int }\n"
+            "    Draft\n"
+            "    Settled\n"
+            "fun mk(n: Int) -> Claim[Draft]\n"
+            "    return Claim[Draft] { amount: n }\n"
+            "fun archive(consume c: Claim[Settled]) -> Int\n"
+            "    return c.amount\n"
+            "type Record { claim: Claim[Settled], tag: Int }\n"
+            "fun mkrec(n: Int) -> Record\n"
+            "    return Record { claim: become(mk(n), Settled), tag: n + 1 }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = mks(3)\n"
+            "    let c = s.conn\n"
+            "    let id = close(c)\n"
+            '    stdio.println("id=${id} tag=${s.tag}")\n'
+            "    let rec = mkrec(7)\n"
+            "    let settled = rec.claim\n"
+            "    let amt = archive(settled)\n"
+            '    stdio.println("amt=${amt} rectag=${rec.tag}")\n'
+        )
+        self._assert_three_way(src)
+
+
 if __name__ == "__main__":
     unittest.main()

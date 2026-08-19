@@ -527,6 +527,18 @@ class _StatementsMixin:
         if isinstance(s.target, A.Ident) and s.target.name in self._consumed:
             self._consumed.discard(s.target.name)
             self._linear_names.discard(s.target.name)
+        # Same for a FIELD target: ``close(s.conn); s.conn = open()`` is the
+        # legitimate re-arm of a linear field after a prior consume/move, so
+        # lift the poison on that exact path before evaluating the write
+        # target. Remembered so the WARNING-3 drop check below treats this
+        # as a re-arm (not a drop of a live value).
+        _field_target_rearm = False
+        if isinstance(s.target, A.FieldAccess):
+            _tpath = self._path_of(s.target)
+            if _tpath is not None and _tpath in self._consumed:
+                _field_target_rearm = True
+                self._consumed.discard(_tpath)
+                self._linear_names.discard(_tpath)
         target_ty = self._check_expr(s.target)
         value_ty = self._check_expr(s.value)
         # Higher-order IFC: reassigning a secret-returning closure into a
@@ -695,7 +707,9 @@ class _StatementsMixin:
         if isinstance(s.target, A.FieldAccess):
             place = self._linear_place(s.target)
             if place is not None:
-                if place in self._consumed:
+                if _field_target_rearm or place in self._consumed:
+                    # Re-arm after a legitimate prior consume/move: the fresh
+                    # value is tracked afresh, no drop.
                     self._consumed.discard(place)
                     self._linear_names.discard(place)
                 elif not self._prefix_consumed(place):
