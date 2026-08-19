@@ -337,7 +337,13 @@ class _ItemsMixin:
                 self.self_type if p.name == "self"
                 else (self._resolve_type(p.type_expr) if p.type_expr else None)
             )
-            if self._ty_is_linear(p_ty):
+            # A non-``consume`` parameter is borrowed when it is itself a
+            # linear/typestate value OR a struct that transitively OWNS a
+            # linear/typestate field (a `Session` / `Settlement` carrier):
+            # the caller keeps the obligation on that field, so the callee
+            # may read it but must not consume, move, or alias-then-consume
+            # it (else it double-frees the caller's field).
+            if self._ty_is_linear(p_ty) or self._type_carries_linear(p_ty):
                 self._borrowed_linear.add(p.name)
         # Fresh TyVar substitution universe for the function.
         prev_subs = self._ty_subs

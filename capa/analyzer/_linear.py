@@ -145,6 +145,18 @@ class _LinearMixin:
                 return True
         return False
 
+    def _prefix_borrowed(self, place: str) -> bool:
+        """True iff ``place`` or a ``.``-split prefix of it is in
+        ``_borrowed_linear``. Component-wise, never a raw ``startswith``:
+        the prefixes of ``s.conn.fd`` are exactly ``s``, ``s.conn``,
+        ``s.conn.fd``, so a borrowed ``s`` marks ``s.conn`` borrowed but a
+        borrowed ``s`` never marks ``session`` or ``s2`` borrowed."""
+        parts = place.split(".")
+        for i in range(1, len(parts) + 1):
+            if ".".join(parts[:i]) in self._borrowed_linear:
+                return True
+        return False
+
     def _subpath_consumed(self, base: str) -> Optional[str]:
         """The first consumed path that has ``base`` as a strict ``.``-split
         prefix (``base.<field>...``), or ``None``. The trailing dot forces a
@@ -249,7 +261,20 @@ class _LinearMixin:
         A double move of the same field (``place`` or a prefix already in
         ``_consumed``) is left to that use-site check, which fires when the
         field expression is re-evaluated at the second consume; this method
-        simply does not re-poison, so the diagnostic is reported once."""
+        simply does not re-poison, so the diagnostic is reported once.
+
+        WARNING-4: consuming / moving a place whose base (or any ``.``-split
+        prefix) is a BORROWED linear/typestate value transfers ownership the
+        caller still holds -- a double-free. The component-wise prefix test
+        gates consume / move only, never a read."""
+        if self._prefix_borrowed(place):
+            self._err(
+                f"cannot consume or move linear/typestate field {place!r}; "
+                f"it belongs to a borrowed value the caller still owns -- "
+                f"declare the parameter `consume` to take ownership",
+                pos,
+            )
+            return
         if self._prefix_consumed(place):
             return
         self._consumed.add(place)
@@ -294,8 +319,16 @@ class _LinearMixin:
             # can no longer consume it, and let ``_linear_bind`` arm ``c``
             # as the fresh owner.
             place = self._linear_place(value)
-            if place is not None:
-                self._linear_move_field(place, value.pos)
+            if place is None:
+                return
+            # WARNING-5: projecting a field of a BORROWED value binds the
+            # new name BORROWED too (the caller still owns it), so
+            # ``_linear_bind`` skips arming an owned obligation and a later
+            # consume of the name routes into the borrowed guard.
+            if self._prefix_borrowed(place):
+                self._borrowed_linear.add(target)
+                return
+            self._linear_move_field(place, value.pos)
             return
         if not isinstance(value, _A.Ident):
             return
