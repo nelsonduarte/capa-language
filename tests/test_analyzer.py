@@ -8638,6 +8638,200 @@ class TestLinearContainerLaundering(unittest.TestCase):
         )
 
 
+class TestBorrowedLinearNoEscape(unittest.TestCase):
+    """Audit B-F1: a non-``consume`` (borrowed) linear / typestate
+    parameter is owned by the CALLER, so the callee may read it and
+    forward it to other borrow positions, but must not consume it,
+    return it, alias-then-consume it, ``become`` it, call a ``consume
+    self`` method on it, or pack it into an aggregate. Each of those
+    transfers or duplicates ownership the caller still holds, so it would
+    double-consume / double-free. Before this fix a borrowed param was
+    untracked and every one of these slipped past with no diagnostic.
+
+    The over-reject guard is as load-bearing as the rejects: a borrowed
+    param must still be readable and forwardable, a ``consume`` param
+    stays a terminal owner, and a factory / passthrough still compiles."""
+
+    _LIN = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+        "fun peek(h: Handle) -> Int\n"
+        "    return h.id\n"
+    )
+    _LINS = (
+        "linear type Handle { id: Int }\n"
+        "impl Handle\n"
+        "    fun close(consume self) -> Unit\n"
+        "        return ()\n"
+        "    fun id_of(self) -> Int\n"
+        "        return self.id\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+    )
+    _TS = (
+        "typestate Claim\n    Draft\n    Approved\n"
+        "fun mk() -> Claim[Draft]\n"
+        "    return Claim[Draft] {}\n"
+        "fun settle(consume c: Claim[Approved]) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    _BORROWED_MSG = "borrowed linear/typestate value"
+
+    # ---- must REJECT ----
+
+    def test_return_borrowed_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun bad(h: Handle) -> Handle\n"
+            "    return h\n"
+        )
+        self.assertTrue(
+            any(self._BORROWED_MSG in e for e in errs), errs,
+        )
+
+    def test_consume_borrowed_in_callee_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun bad(h: Handle)\n"
+            "    close(h)\n"
+        )
+        self.assertTrue(
+            any(self._BORROWED_MSG in e for e in errs), errs,
+        )
+
+    def test_alias_then_consume_borrowed_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun bad(h: Handle)\n"
+            "    let b = h\n"
+            "    close(b)\n"
+        )
+        self.assertTrue(
+            any(self._BORROWED_MSG in e for e in errs), errs,
+        )
+
+    def test_become_borrowed_typestate_rejected(self):
+        errs = self._errs(
+            self._TS
+            + "fun bad(c: Claim[Draft]) -> Claim[Approved]\n"
+            "    return become(c, Approved)\n"
+        )
+        self.assertTrue(
+            any(self._BORROWED_MSG in e for e in errs), errs,
+        )
+
+    def test_consume_self_on_borrowed_receiver_rejected(self):
+        errs = self._errs(
+            self._LINS
+            + "fun bad(h: Handle)\n"
+            "    h.close()\n"
+        )
+        self.assertTrue(
+            any(self._BORROWED_MSG in e for e in errs), errs,
+        )
+
+    def test_pack_borrowed_into_struct_rejected(self):
+        errs = self._errs(
+            "type Box { h: Handle }\n"
+            + self._LIN
+            + "fun bad(h: Handle)\n"
+            "    let b = Box { h: h }\n"
+        )
+        self.assertTrue(
+            any("into an aggregate" in e for e in errs), errs,
+        )
+
+    def test_pack_borrowed_into_list_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun bad(h: Handle)\n"
+            "    let xs = [h]\n"
+        )
+        self.assertTrue(
+            any("into an aggregate" in e for e in errs), errs,
+        )
+
+    def test_pack_borrowed_into_tuple_rejected(self):
+        errs = self._errs(
+            self._LIN
+            + "fun bad(h: Handle) -> (Handle, Int)\n"
+            "    return (h, 1)\n"
+        )
+        self.assertTrue(
+            any("into an aggregate" in e for e in errs), errs,
+        )
+
+    # ---- must COMPILE (over-reject guard) ----
+
+    def test_borrow_and_read_compiles(self):
+        r = check(
+            self._LIN
+            + "fun get_id(h: Handle) -> Int\n"
+            "    return h.id\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_borrow_and_forward_compiles(self):
+        r = check(
+            self._LIN
+            + "fun use2(h: Handle) -> Int\n"
+            "    return peek(h)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_alias_then_forward_no_consume_compiles(self):
+        r = check(
+            self._LIN
+            + "fun use3(h: Handle) -> Int\n"
+            "    let b = h\n"
+            "    return peek(b)\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_non_consume_self_reads_field_compiles(self):
+        r = check(
+            self._LINS
+            + "fun run(h: Handle) -> Int\n"
+            "    return h.id_of()\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_factory_produced_value_returns_compiles(self):
+        r = check(
+            self._LIN
+            + "fun make() -> Handle\n"
+            "    let h = open()\n"
+            "    return h\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_consume_param_passthrough_compiles(self):
+        r = check(
+            self._LIN
+            + "fun passthrough(consume h: Handle) -> Handle\n"
+            "    return h\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_consume_self_become_wrapper_compiles(self):
+        r = check(
+            "typestate Claim\n    Draft\n    Approved\n"
+            "impl Claim[Draft]\n"
+            "    fun approve(consume self) -> Claim[Approved]\n"
+            "        return become(self, Approved)\n"
+            "fun mk() -> Claim[Draft]\n"
+            "    return Claim[Draft] {}\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 class TestIntLiteralRange(unittest.TestCase):
     """Slice 26 residual / P3: a bare 2**63 is out of i64 range; only
     ``-2**63`` (i64::MIN) is representable. The lexer admits the

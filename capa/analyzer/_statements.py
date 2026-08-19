@@ -418,7 +418,7 @@ class _StatementsMixin:
             # obligation onto the new name (poisoning the source) so the
             # value stays single-owner; without this the source and alias
             # would each be independently consumable -> double-consume.
-            self._linear_transfer_if_alias(s.value)
+            self._linear_transfer_if_alias(s.value, s.pattern.name)
             self._linear_bind(s.pattern.name, actual, s.pos)
         elif isinstance(s.pattern, A.WildcardPat):
             # ``let _ = open()`` drops a linear value into a slot that
@@ -512,7 +512,7 @@ class _StatementsMixin:
         # makes the slot re-assignable, it does not waive the obligation.
         # An aliasing ``var h2 = h`` MOVES the obligation off ``h`` (as in
         # ``let``) so the value remains single-owner.
-        self._linear_transfer_if_alias(s.value)
+        self._linear_transfer_if_alias(s.value, s.name)
         self._linear_bind(s.name, actual, s.pos)
 
     def _check_assign(self, s: A.AssignStmt) -> None:
@@ -1021,6 +1021,11 @@ class _StatementsMixin:
             )
         # Roadmap S1: ``return h`` transfers the linear obligation to
         # the caller -- discharge it here so it isn't reported as a
-        # leak at function exit.
-        if isinstance(s.value, A.Ident) and s.value.name in self._live_linear:
-            self._linear_discharge(s.value.name)
+        # leak at function exit. B-F1: returning a BORROWED linear param
+        # (the caller still owns it) routes into the discharge guard,
+        # which rejects the transfer.
+        if isinstance(s.value, A.Ident) and (
+            s.value.name in self._live_linear
+            or s.value.name in self._borrowed_linear
+        ):
+            self._linear_discharge(s.value.name, s.pos)

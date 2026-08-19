@@ -1113,6 +1113,6 @@ class _DispatchMixin:
         if getattr(method_sym, "consumes_self", False) and isinstance(
             e.receiver, A.Ident
         ):
-            self._linear_discharge(e.receiver.name)
+            self._linear_discharge(e.receiver.name, e.receiver.pos)
 
         return ret_ty

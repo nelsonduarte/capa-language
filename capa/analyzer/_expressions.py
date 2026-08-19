@@ -871,6 +871,10 @@ class _ExpressionsMixin:
         if isinstance(e, A.ListLit):
             return self._check_list_lit(e)
         if isinstance(e, A.TupleLit):
+            # B-F1: a borrowed linear / typestate value must not escape
+            # into a tuple element.
+            for x in e.elements:
+                self._linear_check_borrowed_escape(x, x.pos)
             elems = tuple(self._check_expr(x) for x in e.elements)
             return TyTuple(elems)
         if isinstance(e, A.MatchExpr):
@@ -1311,7 +1315,7 @@ class _ExpressionsMixin:
         # to the freshly-typed result (which the surrounding binding
         # re-registers as live).
         if isinstance(e.value, A.Ident):
-            self._linear_discharge(e.value.name)
+            self._linear_discharge(e.value.name, e.value.pos)
         return TyName(val_ty.name, state=e.state)
 
     def _check_struct_lit(self, e: A.StructLit) -> Ty:
@@ -1338,6 +1342,9 @@ class _ExpressionsMixin:
                     f"duplicate field {fname!r} in struct literal", e.pos,
                 )
             seen.add(fname)
+            # B-F1: a borrowed linear / typestate value must not escape
+            # into a struct field.
+            self._linear_check_borrowed_escape(fexpr, fexpr.pos)
             if fname not in sym.struct_fields:
                 hint = self._hint_did_you_mean(
                     fname, list(sym.struct_fields.keys()),
@@ -1403,6 +1410,10 @@ class _ExpressionsMixin:
     def _check_list_lit(
         self, e: A.ListLit, expected_elem: Optional[Ty] = None,
     ) -> Ty:
+        # B-F1: a borrowed linear / typestate value must not escape into a
+        # list element.
+        for el in e.elements:
+            self._linear_check_borrowed_escape(el, el.pos)
         if not e.elements:
             # Fresh TyVar: the element type will be refined by
             # later uses (push, indexing, etc.). An annotated empty

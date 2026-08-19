@@ -53,13 +53,20 @@ class _LinearMixin:
         introduces a brand-new value under that name, so a prior consume
         of the old value must not flag uses of the new one. Typestate
         chains re-bind the same name (``let s = become(s, ...)``) and
-        rely on this."""
+        rely on this.
+
+        B-F1: if ``_linear_transfer_if_alias`` just marked ``name`` borrowed
+        (the RHS aliased a borrowed value), do NOT open a fresh owned
+        obligation -- the single obligation stays with the caller and the
+        new name is borrowed too."""
+        if name in self._borrowed_linear:
+            return
         if self._ty_is_linear(ty):
             self._live_linear[name] = pos
             self._consumed.discard(name)
             self._linear_names.discard(name)
 
-    def _linear_discharge(self, name: str) -> None:
+    def _linear_discharge(self, name: str, pos: Optional[Pos] = None) -> None:
         """Clear the obligation for ``name`` (it was consumed /
         transferred) and POISON the name against later use.
 
@@ -71,14 +78,32 @@ class _LinearMixin:
         on) and in ``_linear_names`` (so the use-site picks the
         ``linear value`` wording instead of ``capability``). Poisoning a
         name that carried no live obligation is harmless -- a later
-        ``_linear_bind`` of the same name lifts the poison."""
+        ``_linear_bind`` of the same name lifts the poison.
+
+        B-F1: a name in ``_borrowed_linear`` is a non-consume linear /
+        typestate parameter the caller still owns; it cannot be consumed
+        or transferred here. Every discharge path (consume-arg, return,
+        ``consume self``, ``become``) funnels through this guard, so
+        rejecting the borrowed name here covers them all. ``pos`` locates
+        the offending site for the diagnostic; the guard returns without
+        discharging (a borrowed name never carries a live obligation of
+        its own)."""
+        if name in self._borrowed_linear:
+            if pos is not None:
+                self._err(
+                    f"cannot consume or transfer borrowed linear/typestate "
+                    f"value {name!r}; the caller retains ownership -- "
+                    f"declare the parameter `consume` to take ownership",
+                    pos,
+                )
+            return
         had = name in self._live_linear
         self._live_linear.pop(name, None)
         if had:
             self._consumed.add(name)
             self._linear_names.add(name)
 
-    def _linear_transfer_if_alias(self, value: "A.Expr") -> None:
+    def _linear_transfer_if_alias(self, value: "A.Expr", target: str) -> None:
         """When a ``let``/``var`` RHS is a bare identifier naming a still-
         live linear obligation (``let h2 = h``), MOVE the obligation off
         the source name rather than letting ``_linear_bind`` open a second
@@ -94,13 +119,27 @@ class _LinearMixin:
         ``_linear_bind`` immediately after, so the single obligation now
         lives under the new name (``let h2 = h; close(h2)`` stays valid).
 
-        No-op unless the RHS is a bare ``Ident`` that currently holds a
-        live obligation -- a non-identifier RHS (a call, ``become``, ...)
+        B-F1: re-binding ``target`` to a new value first clears any
+        borrowed marker it held (the invariant that a name is in at most
+        one of ``_live_linear`` / ``_borrowed_linear``). Aliasing a
+        BORROWED source (``let b = h`` where ``h`` is a non-consume linear
+        param) then propagates the borrowed marker onto ``target`` and does
+        NOT move an obligation -- there is none to move, the caller still
+        owns it -- so the alias is borrowed too and ``_linear_bind`` skips
+        opening a fresh owned obligation under it.
+
+        No-op (beyond clearing the target marker) unless the RHS is a bare
+        ``Ident`` naming a borrowed value or one that currently holds a live
+        obligation -- a non-identifier RHS (a call, ``become``, ...)
         produces a fresh value, and an already-consumed source is gone from
         ``_live_linear`` and handled by the ordinary use-after-consume
         check on the RHS itself."""
         from .. import capa_ast as _A
+        self._borrowed_linear.discard(target)
         if not isinstance(value, _A.Ident):
+            return
+        if value.name in self._borrowed_linear:
+            self._borrowed_linear.add(target)
             return
         if value.name not in self._live_linear:
             return
@@ -121,6 +160,10 @@ class _LinearMixin:
         consumed (``close(h); h = open()``) -- the old value is gone
         from ``_live_linear``, so nothing is reported, and the fresh
         value re-arms the obligation."""
+        # B-F1: re-assigning a non-borrowed value to the name clears any
+        # borrowed marker it held, so ``_linear_bind`` below can arm a
+        # fresh owned obligation from the new value.
+        self._borrowed_linear.discard(name)
         old_pos = self._live_linear.get(name)
         if old_pos is not None:
             self._err(
@@ -166,6 +209,32 @@ class _LinearMixin:
             "cannot be discarded into `_` or a bare expression statement",
             pos,
         )
+
+    # ---- borrowed-value aggregate escape (B-F1) ------------------
+
+    def _linear_check_borrowed_escape(self, expr: "A.Expr", pos: Pos) -> None:
+        """B-F1: reject a bare BORROWED linear / typestate identifier
+        packed into an aggregate literal (a struct field, or a list /
+        tuple element).
+
+        Packing a borrowed value into an aggregate lets it escape the
+        callee -- returned, stored, or later consumed by whoever holds
+        the aggregate -- while the caller still owns it, so it would
+        double-consume / double-free. This is the one escape path that is
+        NOT funnelled through ``_linear_discharge`` (an aggregate literal
+        is neither a consume position nor a bare-identifier return), so it
+        gets an explicit check here, mirroring the owned-value leak-at-exit
+        protection the analyzer already applies to an OWNED value packed
+        the same way."""
+        from .. import capa_ast as _A
+        if isinstance(expr, _A.Ident) and expr.name in self._borrowed_linear:
+            self._err(
+                f"cannot pack borrowed linear/typestate value "
+                f"{expr.name!r} into an aggregate; the caller retains "
+                f"ownership -- declare the parameter `consume` to take "
+                f"ownership",
+                pos,
+            )
 
     # ---- enforcement at scope / function exit --------------------
 

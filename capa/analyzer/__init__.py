@@ -587,6 +587,18 @@ class Analyzer(
         # (a value still-live on every path stays live; one consumed on
         # some-but-not-all paths is an error, surfaced at merge).
         self._live_linear: dict[str, "Pos"] = {}
+        # Borrowed linear / typestate parameters of the current function
+        # (audit B-F1). A non-``consume`` parameter of a linear / typestate
+        # type is BORROWED: the caller retains the must-consume obligation,
+        # so the callee may READ it and forward it to other borrow
+        # positions, but must NOT consume, return, alias, or pack it into an
+        # aggregate -- each of those transfers or duplicates ownership the
+        # caller still holds, so it would double-consume / double-free. A
+        # name is in AT MOST ONE of ``_live_linear`` (owned here) and this
+        # set (borrowed); re-binding a non-borrowed value to the name clears
+        # the borrowed marker. Seeded from the params and reset per function
+        # in ``_check_fun`` alongside ``_live_linear``.
+        self._borrowed_linear: set[str] = set()
         # Names that were consumed *as linear / typestate values* in the
         # current flow (a subset of the keys recorded in ``_consumed``).
         # ``_consumed`` is shared with the capability discipline and

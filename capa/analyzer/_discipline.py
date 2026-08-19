@@ -57,7 +57,10 @@ class _DisciplineMixin:
             # live linear value. (Linear values are user structs, not
             # capabilities, so they don't match ``_is_capability_ident``
             # below; handle them first and continue.)
-            if isinstance(arg, A.Ident) and arg.name in self._live_linear:
+            if isinstance(arg, A.Ident) and (
+                arg.name in self._live_linear
+                or arg.name in self._borrowed_linear
+            ):
                 # Consuming a linear value CAPTURED from an enclosing scope
                 # is an error for the same reason a captured capability is:
                 # the closure may be invoked multiple times, but the value
@@ -75,7 +78,7 @@ class _DisciplineMixin:
                         arg.pos,
                     )
                     continue
-                self._linear_discharge(arg.name)
+                self._linear_discharge(arg.name, arg.pos)
                 continue
             path = self._consumable_cap_path(arg)
             if path is None:

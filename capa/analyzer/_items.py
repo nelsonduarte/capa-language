@@ -318,6 +318,25 @@ class _ItemsMixin:
         # inside the body (``let h = open()``).
         prev_live_linear = self._live_linear
         self._live_linear = {}
+        # B-F1: seed the borrowed-linear set. A non-``consume`` parameter
+        # of a linear / typestate type is borrowed -- the caller keeps the
+        # obligation, so the callee may read and forward it but must not
+        # consume, return, alias, or pack it into an aggregate. A
+        # ``consume`` param is the terminal owner (not borrowed); a
+        # non-linear param carries no obligation. ``self`` (whose declared
+        # type is the impl's ``self_type``) is included, so a non-consume
+        # ``self`` receiver is borrowed too.
+        prev_borrowed_linear = self._borrowed_linear
+        self._borrowed_linear = set()
+        for p in fn.params:
+            if p.consuming:
+                continue
+            p_ty = (
+                self.self_type if p.name == "self"
+                else (self._resolve_type(p.type_expr) if p.type_expr else None)
+            )
+            if self._ty_is_linear(p_ty):
+                self._borrowed_linear.add(p.name)
         # Fresh TyVar substitution universe for the function.
         prev_subs = self._ty_subs
         self._ty_subs = {}
@@ -435,6 +454,7 @@ class _ItemsMixin:
         # restore the enclosing function's live set.
         self._linear_check_dropped(set(self._live_linear))
         self._live_linear = prev_live_linear
+        self._borrowed_linear = prev_borrowed_linear
 
         self._consumed = prev_consumed
         self._linear_names = prev_linear_names
