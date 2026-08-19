@@ -448,6 +448,32 @@ class _LinearMixin:
                 pos,
             )
 
+    def _reject_linear_list_element(
+        self, el_ty: Optional[Ty], pos: Pos,
+    ) -> None:
+        """Linearity decision 4b, LIST-LITERAL facet: reject a linear /
+        typestate element (or a struct that OWNS one) in a list literal.
+
+        The mutator reject (``_check_no_linear_into_container``) covers
+        ``xs.push(v)``, but a FRESH linear packed straight into a literal
+        (``let xs: List<Conn> = [mkc()]``) never passes through a mutator,
+        so the literal element is gated here with the SAME type predicate.
+        This is deliberately LIST-only: a linear field in a STRUCT literal
+        is the legitimate factory (``return Session { conn: open() }``) and
+        a tuple threads single-owner values by position, so neither is
+        touched -- only a collection element is barred."""
+        if el_ty is None:
+            return
+        at = self._resolve_ty(el_ty)
+        if self._ty_is_linear(at) or self._type_carries_linear(at):
+            self._err(
+                "a linear/typestate value cannot be stored in a container "
+                "(List / Map / Set); a single-owner value must be threaded "
+                "by name and consumed in scope (e.g. passed to a `consume` "
+                "function), never packed into a collection",
+                pos,
+            )
+
     # ---- enforcement at scope / function exit --------------------
 
     def _linear_check_dropped(self, names: set[str]) -> None:

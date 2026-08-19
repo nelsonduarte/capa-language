@@ -700,6 +700,13 @@ class _DispatchMixin:
         # insertion site.
         self._check_no_cap_into_container(e, recv_ty)
 
+        # Linearity decision 4b: inserting a linear / typestate value (or a
+        # struct that owns one) into a container via a mutator packs a
+        # single-owner value into a collection, where a later read would
+        # alias it into a double-free / leak. Early, precise diagnostic at
+        # the insertion site.
+        self._check_no_linear_into_container(e, recv_ty)
+
         # Roadmap S2 (higher-order IFC): inserting a secret-returning
         # closure into a public-declared container launders the secret
         # through the container's declared element / value type.

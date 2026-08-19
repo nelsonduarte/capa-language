@@ -10030,5 +10030,168 @@ class TestLinearMovePaths(unittest.TestCase):
         )
 
 
+class TestLinearIntoContainerReject(unittest.TestCase):
+    """Linearity decision 4b: a linear / typestate value (or a struct that
+    OWNS one) cannot enter a container.
+
+    A single-owner value packed into a List / Map / Set escapes name
+    threading: a later read hands out an unbounded number of aliases to a
+    value that must be consumed exactly once, a double-free / leak. Two
+    seams enforce it:
+
+    - the MUTATOR seam (``List.push`` / ``Set.add`` / ``Map.set``), which
+      covers an owned, borrowed, fresh, or carrier value in any element /
+      value / key position;
+    - the LIST-LITERAL seam, which covers a fresh linear packed straight
+      into ``[...]`` (it never passes through a mutator).
+
+    Both facets (``linear type`` and ``typestate``) are exercised. This is
+    analyzer-only and reject-only; nothing is stored, so no drain / codegen
+    changes. The struct-literal factory (``return Session { conn: open()
+    }``) and tuple threading stay legitimate and are NOT touched."""
+
+    _LIN = (
+        "linear type Conn { id: Int }\n"
+        "fun open() -> Conn\n"
+        "    return Conn { id: 1 }\n"
+        "fun close(consume c: Conn) -> Unit\n"
+        "    return ()\n"
+    )
+    # Non-linear struct that OWNS a linear field (a carrier).
+    _CARRIER = _LIN + (
+        "type S { conn: Conn, tag: Int }\n"
+        "fun mks() -> S\n"
+        "    return S { conn: open(), tag: 0 }\n"
+    )
+    # Typestate facet plus a non-linear carrier of a typestate field.
+    _TS = (
+        "typestate Claim\n    Draft\n    Settled\n"
+        "fun mk() -> Claim[Draft]\n"
+        "    return Claim[Draft] {}\n"
+        "fun archive(consume c: Claim[Settled]) -> Unit\n"
+        "    return ()\n"
+        "type Record { claim: Claim[Settled], tag: Int }\n"
+        "fun mkrec() -> Record\n"
+        "    return Record { claim: become(mk(), Settled), tag: 0 }\n"
+    )
+    _MSG = "cannot be stored in a container"
+
+    def _rejects(self, body: str) -> None:
+        errs = errors_of(body)
+        self.assertTrue(
+            any(self._MSG in e for e in errs), errs,
+        )
+
+    def _compiles(self, body: str) -> None:
+        errs = [e for e in errors_of(body) if "never used" not in e]
+        self.assertEqual(errs, [], errs)
+
+    # ---- mutator seam, linear facet, every provenance ----
+
+    def test_push_owned_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n    let c = open()\n"
+            "    var xs: List<Conn> = []\n    xs.push(c)\n"
+        )
+
+    def test_push_borrowed_param_rejected(self):
+        self._rejects(
+            self._LIN + "fun stash(c: Conn, _s: Stdio)\n"
+            "    var xs: List<Conn> = []\n    xs.push(c)\n"
+        )
+
+    def test_push_fresh_linear_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    var xs: List<Conn> = []\n    xs.push(open())\n"
+        )
+
+    def test_push_linear_carrier_struct_rejected(self):
+        self._rejects(
+            self._CARRIER + "fun main(_s: Stdio)\n    let sess = mks()\n"
+            "    var xs: List<S> = []\n    xs.push(sess)\n"
+        )
+
+    def test_add_linear_into_set_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n    let c = open()\n"
+            "    var st = new_set()\n    st.add(c)\n"
+        )
+
+    def test_set_linear_value_into_map_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n    let c = open()\n"
+            "    var m = new_map()\n    m.set(\"k\", c)\n"
+        )
+
+    def test_set_linear_key_into_map_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n    let c = open()\n"
+            "    var m = new_map()\n    m.set(c, \"v\")\n"
+        )
+
+    # ---- list-literal seam (Part B, fresh path) ----
+
+    def test_list_literal_fresh_linear_unannotated_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n    let xs = [open()]\n"
+        )
+
+    def test_list_literal_fresh_linear_annotated_rejected(self):
+        self._rejects(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    let xs: List<Conn> = [open()]\n"
+        )
+
+    # ---- typestate facet ----
+
+    def test_push_typestate_value_rejected(self):
+        self._rejects(
+            self._TS + "fun main(_s: Stdio)\n"
+            "    var xs: List<Claim[Settled]> = []\n"
+            "    xs.push(become(mk(), Settled))\n"
+        )
+
+    def test_push_typestate_carrier_struct_rejected(self):
+        self._rejects(
+            self._TS + "fun main(_s: Stdio)\n    let rec = mkrec()\n"
+            "    var xs: List<Record> = []\n    xs.push(rec)\n"
+        )
+
+    def test_list_literal_typestate_rejected(self):
+        self._rejects(
+            self._TS + "fun main(_s: Stdio)\n"
+            "    let xs: List<Claim[Settled]> = [become(mk(), Settled)]\n"
+        )
+
+    # ---- must-compile: plain data + the legitimate factory ----
+
+    def test_plain_data_container_ops_compile(self):
+        self._compiles(
+            "type LedgerEvent { amt: Int }\n"
+            "fun main(_s: Stdio)\n"
+            "    var xs: List<LedgerEvent> = []\n"
+            "    xs.push(LedgerEvent { amt: 1 })\n"
+            "    let n = xs.length()\n"
+            "    let e = xs.get(0)\n"
+            "    var m = new_map()\n"
+            "    m.set(\"k\", \"s\")\n"
+            "    let has = m.contains_key(\"k\")\n"
+            "    var st = new_set()\n"
+            "    st.add(3)\n"
+            "    let flags = [LedgerEvent { amt: 2 }]\n"
+        )
+
+    def test_struct_literal_linear_factory_compiles(self):
+        # The struct-literal factory is the legitimate way to build a
+        # linear-carrying value; it must stay compiling (list literals only
+        # are strengthened, never struct literals).
+        self._compiles(
+            self._LIN + "type Session { conn: Conn }\n"
+            "fun open_session() -> Session\n"
+            "    return Session { conn: open() }\n"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

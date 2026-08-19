@@ -6795,5 +6795,44 @@ class TestLinearMovePathParity(unittest.TestCase):
         self._assert_three_way(src)
 
 
+class TestLinearIntoContainerParity(unittest.TestCase):
+    """The no-linear-into-a-container reject is analyzer-only, so a program
+    it ACCEPTS (plain-data containers) must compile and run byte-identically
+    on all three backends. Guards against the reject perturbing codegen for
+    the ordinary container path."""
+
+    def _assert_three_way(self, src: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        cir_out = _capture_stdout(lambda: _run_cir(src))
+        self.assertEqual(
+            py_out, cir_out,
+            msg=f"legacy vs CIR divergence.\n{py_out!r}\n{cir_out!r}\n{src}",
+        )
+        if _has_wasm_tools() and _has_wasmtime_py():
+            wasm_out = _capture_stdout(lambda: _run_wasm(src))
+            self.assertEqual(
+                py_out, wasm_out,
+                msg=f"legacy vs Wasm divergence.\n{py_out!r}\n{wasm_out!r}\n{src}",
+            )
+
+    def test_plain_data_container_ops(self):
+        src = (
+            "type LedgerEvent { amt: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    var xs: List<LedgerEvent> = []\n"
+            "    xs.push(LedgerEvent { amt: 1 })\n"
+            "    xs.push(LedgerEvent { amt: 2 })\n"
+            "    let n = xs.length()\n"
+            "    let _ = xs.get(0)\n"
+            "    var m = new_map()\n"
+            '    m.set("k", "s")\n'
+            '    let has = m.contains_key("k")\n'
+            "    var st = new_set()\n"
+            "    st.add(3)\n"
+            '    stdio.println("n=${n} has=${has}")\n'
+        )
+        self._assert_three_way(src)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2771,6 +2771,43 @@ class _IfcMixin:
                 )
                 return
 
+    def _check_no_linear_into_container(self, e: A.MethodCall, recv_ty) -> None:
+        """Reject inserting a linear / typestate value into a container via
+        a mutator (``List.push`` / ``Set.add`` / ``Map.set``). Mirrors
+        ``_check_no_cap_into_container`` but for the single-owner predicate:
+        a linear value packed into a collection escapes name-threading, so a
+        later read yields an unbounded number of aliases to a value that must
+        be consumed exactly once -- a double-free / leak. Decision 4b of the
+        linearity design forbids it; this is the entry gate at the insertion
+        site.
+
+        The element / value argument positions are exactly the ones the IFC
+        taint check keys on (``_CONTAINER_MUTATORS``). The predicate is
+        TYPE-based so it covers owned, borrowed, fresh, and carrier
+        provenances in one test: ``_ty_is_linear`` catches a directly linear
+        / typestate element, and ``_type_carries_linear`` catches a struct
+        that merely OWNS a linear field (``Session`` / ``Settlement``)."""
+        cap_name = getattr(recv_ty, "name", None)
+        if cap_name is None:
+            return
+        positions = _CONTAINER_MUTATORS.get((cap_name, e.method))
+        if not positions:
+            return
+        for idx in positions:
+            if idx >= len(e.args):
+                continue
+            at = self._resolve_ty(self.types.get(id(e.args[idx])))
+            if self._ty_is_linear(at) or self._type_carries_linear(at):
+                self._err(
+                    "a linear/typestate value cannot be stored in a "
+                    "container (List / Map / Set); a single-owner value "
+                    "must be threaded by name and consumed in scope (e.g. "
+                    "passed to a `consume` function), never packed into a "
+                    "collection",
+                    e.args[idx].pos,
+                )
+                return
+
     def _check_container_closure_store(self, e: A.MethodCall, recv_ty) -> None:
         """Higher-order IFC: inserting a secret-returning closure into a
         public-declared container (``List.push`` / ``Set.add`` /

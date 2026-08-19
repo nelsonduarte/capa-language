@@ -1448,6 +1448,10 @@ class _ExpressionsMixin:
             for el in e.elements:
                 ety = self._check_expr(el)
                 actual_elems.append(ety)
+                # Linearity decision 4b (list-literal facet): a linear /
+                # typestate element -- including a fresh one -- may not be
+                # packed into a collection.
+                self._reject_linear_list_element(ety, el.pos)
                 if not self._assignable(expected_elem, ety, el):
                     self._err(
                         f"list literal: element has type {ty_str(ety)}, "
@@ -1462,8 +1466,14 @@ class _ExpressionsMixin:
             elem = self._raise_fun_labels(expected_elem, actual_elems)
             return TyName("List", (elem,))
         first_ty = self._check_expr(e.elements[0])
+        # Linearity decision 4b (list-literal facet): a linear / typestate
+        # element -- including a fresh one -- may not be packed into a
+        # collection. Elements share a type here, so checking each by
+        # position gives the precise site.
+        self._reject_linear_list_element(first_ty, e.elements[0].pos)
         for el in e.elements[1:]:
             ety = self._check_expr(el)
+            self._reject_linear_list_element(ety, el.pos)
             if not compatible(first_ty, ety):
                 self._err(
                     f"list literal: element has type {ty_str(ety)}, "
