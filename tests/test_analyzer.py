@@ -5191,6 +5191,92 @@ class TestUserDefinedCapabilities(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestStructCapConsume(unittest.TestCase):
+    """Audit B-F2: a cap-bearing STRUCT is a consumable capability source
+    on the argument-consume path, so ``dispose(m); m.send(..)`` (m a
+    struct cap) is use-after-consume, exactly as a directly-typed cap is.
+    A struct cap stays droppable and is not linear-by-containment: a
+    multi-use with no consume still compiles."""
+
+    _SETUP = (
+        "capability SendEmail\n"
+        "    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>\n"
+        "type SmtpMailer {\n"
+        "    server: String,\n"
+        "    net: Net\n"
+        "}\n"
+        "impl SendEmail for SmtpMailer\n"
+        "    fun send(self, to: String, subject: String, body: String) -> Result<Unit, IoError>\n"
+        "        return Ok(())\n"
+        "fun dispose(consume m: SmtpMailer)\n"
+        "    return\n"
+    )
+
+    def test_struct_cap_use_after_consume_ident_rejected(self):
+        # Consume a struct cap by bare Ident, then use it: rejected.
+        msgs = errors_of(
+            self._SETUP
+            + "fun run(m: SmtpMailer)\n"
+            + "    dispose(m)\n"
+            + "    let _ = m.send(\"a@b\", \"s\", \"b\")\n"
+        )
+        self.assertTrue(
+            any(
+                "'m' was consumed earlier and cannot be used again" in msg
+                for msg in msgs
+            ),
+            msgs,
+        )
+
+    def test_struct_cap_use_after_consume_field_rejected(self):
+        # FieldAccess variant: consume ``box.mailer`` then use it. The
+        # wrapping Box implements a user cap so the struct field is legal.
+        msgs = errors_of(
+            self._SETUP
+            + "capability Mailbox\n"
+            + "    fun noop(self)\n"
+            + "type Box {\n"
+            + "    mailer: SmtpMailer\n"
+            + "}\n"
+            + "impl Mailbox for Box\n"
+            + "    fun noop(self)\n"
+            + "        return\n"
+            + "fun run(box: Box)\n"
+            + "    dispose(box.mailer)\n"
+            + "    let _ = box.mailer.send(\"a@b\", \"s\", \"b\")\n"
+        )
+        self.assertTrue(
+            any(
+                "'box.mailer' was consumed earlier and cannot be used again"
+                in msg
+                for msg in msgs
+            ),
+            msgs,
+        )
+
+    def test_struct_cap_multi_use_no_consume_compiles(self):
+        # No consume anywhere: a struct cap may be used repeatedly.
+        r = check(
+            self._SETUP
+            + "fun run(m: SmtpMailer)\n"
+            + "    let _ = m.send(\"a@b\", \"s\", \"b\")\n"
+            + "    let _ = m.send(\"c@d\", \"s\", \"b\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+    def test_struct_cap_let_bound_from_factory_then_used_compiles(self):
+        # let-bound from a factory then used: still droppable, compiles.
+        r = check(
+            self._SETUP
+            + "fun make_smtp_mailer(net: Net, server: String) -> SmtpMailer\n"
+            + "    return SmtpMailer { server: server, net: net.restrict_to(server) }\n"
+            + "fun run(net: Net)\n"
+            + "    let mailer = make_smtp_mailer(net, \"smtp.example.com\")\n"
+            + "    let _ = mailer.send(\"a@b\", \"s\", \"b\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 # =============================================================
 # JSON: built-in JsonValue type and parse_json/to_json
 # =============================================================
