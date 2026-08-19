@@ -1110,9 +1110,14 @@ class _DispatchMixin:
 
         # Roadmap S1: a ``consume self`` method discharges the linear
         # obligation on its receiver (``h.close()`` releases ``h``).
-        if getattr(method_sym, "consumes_self", False) and isinstance(
-            e.receiver, A.Ident
-        ):
-            self._linear_discharge(e.receiver.name, e.receiver.pos)
+        if getattr(method_sym, "consumes_self", False):
+            if isinstance(e.receiver, A.Ident):
+                self._linear_discharge(e.receiver.name, e.receiver.pos)
+            elif isinstance(e.receiver, A.FieldAccess):
+                # ``s.conn.close()`` consumes a linear FIELD; move it out
+                # of its carrier so the whole-value consume scan sees it.
+                place = self._linear_place(e.receiver)
+                if place is not None:
+                    self._linear_move_field(place, e.receiver.pos)
 
         return ret_ty

@@ -90,6 +90,30 @@ class _LinearMixin:
                 out.extend(self._linear_field_paths(sub, fty, _depth + 1))
         return out
 
+    def _linear_place(self, expr: "A.Expr") -> Optional[str]:
+        """The canonical dotted place for an Ident-rooted ``expr`` whose
+        LEAF type is linear/typestate, or ``None``. This is ``_path_of``
+        restricted to the linear/typestate places the discipline tracks,
+        with the ``_LINEAR_PATH_MAX_DEPTH`` collapse: a chain deeper than K
+        fields collapses to its base name so a pathological type stays
+        finite. An index (``xs[i]``) or any non-static component yields
+        ``None`` via ``_path_of`` -- the Model-B container collapse for
+        free (no per-element move path)."""
+        path = self._path_of(expr)
+        if path is None:
+            return None
+        from .. import capa_ast as _A
+        if isinstance(expr, _A.Ident):
+            sym = self.scope.lookup(expr.name)
+            leaf_ty = sym.ty if sym is not None else None
+        else:
+            leaf_ty = self.types.get(id(expr))
+        if not self._ty_is_linear(leaf_ty):
+            return None
+        if path.count(".") > self._LINEAR_PATH_MAX_DEPTH:
+            return path.split(".", 1)[0]
+        return path
+
     def _prefix_consumed(self, place: str) -> bool:
         """True iff ``place`` or a ``.``-split prefix of it is in
         ``_consumed``. Component-wise, never a raw ``startswith``: the
@@ -194,6 +218,24 @@ class _LinearMixin:
             self._consumed.add(name)
             self._linear_names.add(name)
 
+    def _linear_move_field(self, place: str, pos: Pos) -> None:
+        """HOLE-1 (ii): consume / move a linear FIELD ``place`` (``s.conn``)
+        -- via ``close(s.conn)``, ``become(s.conn, ..)``, a ``consume self``
+        method on it, or a projection ``let c = s.conn``. Poison the path in
+        ``_consumed`` so the whole-value consume scan and the scope-exit
+        per-field enumeration both see it, and so a later read of the same
+        field is rejected as use-after-move by the ordinary FieldAccess
+        use-site check.
+
+        A double move of the same field (``place`` or a prefix already in
+        ``_consumed``) is left to that use-site check, which fires when the
+        field expression is re-evaluated at the second consume; this method
+        simply does not re-poison, so the diagnostic is reported once."""
+        if self._prefix_consumed(place):
+            return
+        self._consumed.add(place)
+        self._linear_names.add(place)
+
     def _linear_transfer_if_alias(self, value: "A.Expr", target: str) -> None:
         """When a ``let``/``var`` RHS is a bare identifier naming a still-
         live linear obligation (``let h2 = h``), MOVE the obligation off
@@ -227,6 +269,15 @@ class _LinearMixin:
         check on the RHS itself."""
         from .. import capa_ast as _A
         self._borrowed_linear.discard(target)
+        if isinstance(value, _A.FieldAccess):
+            # HOLE-1 (ii): a projection ``let c = s.conn`` MOVES the linear
+            # field out of its carrier -- poison ``s.conn`` so the carrier
+            # can no longer consume it, and let ``_linear_bind`` arm ``c``
+            # as the fresh owner.
+            place = self._linear_place(value)
+            if place is not None:
+                self._linear_move_field(place, value.pos)
+            return
         if not isinstance(value, _A.Ident):
             return
         if value.name in self._borrowed_linear:

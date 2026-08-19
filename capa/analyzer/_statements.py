@@ -1029,3 +1029,9 @@ class _StatementsMixin:
             or s.value.name in self._borrowed_linear
         ):
             self._linear_discharge(s.value.name, s.pos)
+        elif isinstance(s.value, A.FieldAccess):
+            # ``return s.conn`` transfers a linear FIELD to the caller;
+            # move it out of its carrier so it is not re-reported at exit.
+            place = self._linear_place(s.value)
+            if place is not None:
+                self._linear_move_field(place, s.pos)

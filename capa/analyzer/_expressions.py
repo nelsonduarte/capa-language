@@ -1316,6 +1316,12 @@ class _ExpressionsMixin:
         # re-registers as live).
         if isinstance(e.value, A.Ident):
             self._linear_discharge(e.value.name, e.value.pos)
+        elif isinstance(e.value, A.FieldAccess):
+            # ``become(s.claim, Settled)`` transitions a linear FIELD in
+            # place; move it out of its carrier so it is accounted for.
+            place = self._linear_place(e.value)
+            if place is not None:
+                self._linear_move_field(place, e.value.pos)
         return TyName(val_ty.name, state=e.state)
 
     def _check_struct_lit(self, e: A.StructLit) -> Ty:

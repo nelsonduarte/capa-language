@@ -80,6 +80,28 @@ class _DisciplineMixin:
                     continue
                 self._linear_discharge(arg.name, arg.pos)
                 continue
+            # Roadmap S1 (move-paths): a ``consume`` param also moves a
+            # linear FIELD when the arg is a field place naming a live
+            # linear/typestate value (``close(s.conn)``). Poison the path so
+            # the whole-value consume scan and scope-exit accounting see it.
+            if isinstance(arg, A.FieldAccess):
+                lin_place = self._linear_place(arg)
+                if lin_place is not None:
+                    root = lin_place.split(".", 1)[0]
+                    if self._lambda_local_names_stack and not any(
+                        root in frame
+                        for frame in self._lambda_local_names_stack
+                    ):
+                        self._err(
+                            f"cannot consume linear value {lin_place!r} "
+                            f"captured from enclosing scope; closures may be "
+                            f"invoked multiple times, but a `linear type` / "
+                            f"typestate value can only be consumed once",
+                            arg.pos,
+                        )
+                        continue
+                    self._linear_move_field(lin_place, arg.pos)
+                    continue
             path = self._consumable_cap_path(arg)
             if path is None:
                 continue
