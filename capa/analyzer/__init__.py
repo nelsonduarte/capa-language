@@ -694,6 +694,12 @@ class Analyzer(
         # mirror of ``_cap_container_reported``). Dedups a re-checked node so
         # the gate reports once per container-of-linear-typed sub-expression.
         self._linear_container_reported: set[int] = set()
+        # Expression nodes already reported as a linear/typestate value flowing
+        # through a conditional / match expression (the Finding-1 alias bar in
+        # ``_check_expr``). Node ids are stable and unique, so this dedups the
+        # gate that fires once per if/match wrapper selecting a linear place (a
+        # re-checked node must not double-report).
+        self._linear_conditional_reported: set[int] = set()
         # Names of user-defined struct types whose values must
         # not be field-mutated, because the type appears
         # (directly or transitively) in a ``Set<...>`` or

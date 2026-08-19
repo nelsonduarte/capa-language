@@ -10032,6 +10032,189 @@ class TestLinearMovePaths(unittest.TestCase):
         )
 
 
+class TestLinearConditionalAlias(unittest.TestCase):
+    """Finding 1: a linear/typestate value cannot flow through an if/match
+    EXPRESSION whose arm selects an existing place.
+
+    The move / consume / return / receiver seams recognise only a bare
+    ``Ident`` / ``FieldAccess`` node, so an ``if`` / ``match`` wrapper that
+    yields a linear place was invisible to them: binding, consuming, or
+    returning the wrapper opened a SECOND obligation on the same runtime
+    value, a double-free. ``_check_linear_conditional_alias`` bars it at a
+    single ``_check_expr`` site, covering the bind RHS, consume argument,
+    ``consume self`` receiver, return value, ``become`` value, and struct-
+    literal element uniformly.
+
+    The bar is PRECISE and syntactic: only an ``Ident`` / linear-rooted
+    ``FieldAccess`` arm (recursing through nested wrappers) is barred, so the
+    legitimate fresh-factory conditional (arms are calls) stays legal, and a
+    non-linear conditional (String / Int / Option / plain struct) is untouched.
+    Both facets (``linear type`` and ``typestate``) are exercised; the reject
+    parity across the three backends is pinned by ``test_ir_wasm_parity``."""
+
+    # A bare linear resource with an indexed factory and a consume sink.
+    _LIN = (
+        "linear type Conn { id: Int }\n"
+        "fun open(n: Int) -> Conn\n"
+        "    return Conn { id: n }\n"
+        "fun close(consume c: Conn) -> Unit\n"
+        "    return ()\n"
+    )
+    # A NON-linear carrier S owning a linear field conn plus a scalar tag.
+    _NL = _LIN + (
+        "type S { conn: Conn, tag: Int }\n"
+        "fun mks() -> S\n"
+        "    return S { conn: open(1), tag: 0 }\n"
+    )
+    # Typestate facet: an authorization that must be settled exactly once.
+    _TS = (
+        "typestate Auth\n    Pending\n    Settled\n"
+        "fun mk() -> Auth[Pending]\n"
+        "    return Auth[Pending] {}\n"
+        "fun settle(consume a: Auth[Pending]) -> Unit\n"
+        "    return ()\n"
+    )
+    _MSG = "cannot be selected through a conditional / match expression"
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    def _assert_barred(self, body: str) -> None:
+        errs = self._errs(body)
+        self.assertTrue(any(self._MSG in e for e in errs), errs)
+
+    # ---- must REJECT: whole value / field / borrowed / all sites ----
+
+    def test_1a_whole_value_via_if_bind(self):
+        # ``let t = if true then s else s; close(s); close(t)`` double-frees.
+        self._assert_barred(
+            self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
+            "    let t = if true then s else s\n"
+            "    close(s)\n    close(t)\n"
+        )
+
+    def test_a3_whole_value_via_match_bind(self):
+        self._assert_barred(
+            self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
+            "    let t = match 0\n        _ -> s\n"
+            "    close(s)\n    close(t)\n"
+        )
+
+    def test_1b_linear_field_via_if(self):
+        # b1: a linear field of a non-linear carrier, selected through if.
+        self._assert_barred(
+            self._NL + "fun main(_s: Stdio)\n    let s = mks()\n"
+            "    let c = if true then s.conn else s.conn\n"
+            "    close(c)\n    close(s.conn)\n"
+        )
+
+    def test_1c_borrowed_carrier_field_via_if_return(self):
+        # b2: a borrowed carrier's field returned through if bypasses the
+        # borrow guard; the wrapper is barred outright.
+        self._assert_barred(
+            self._NL + "fun bad(s: S) -> Conn\n"
+            "    return if true then s.conn else s.conn\n"
+        )
+
+    def test_consume_arg_form(self):
+        # ``close(if c then s else s)`` -- the wrapper as a consume argument.
+        self._assert_barred(
+            self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
+            "    close(if true then s else s)\n    close(s)\n"
+        )
+
+    def test_return_form_on_borrowed_param(self):
+        # ``return if c then s else s`` on a borrowed param -- borrow bypass.
+        self._assert_barred(
+            self._LIN + "fun bad(c: Conn) -> Conn\n"
+            "    return if true then c else c\n"
+        )
+
+    def test_nested_wrapper_form(self):
+        # ``if a then s else (if b then s else s)`` -- a place at depth.
+        self._assert_barred(
+            self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
+            "    let t = if true then s else (if false then s else s)\n"
+            "    close(t)\n"
+        )
+
+    def test_claimdesk_double_disbursement_typestate(self):
+        # The claimdesk shape: one authorization settled twice via an alias
+        # laundered through a conditional.
+        self._assert_barred(
+            self._TS + "fun main(_s: Stdio)\n    let authz = mk()\n"
+            "    let dup = if true then authz else authz\n"
+            "    settle(authz)\n    settle(dup)\n"
+        )
+
+    def test_typestate_whole_value_via_if_bind(self):
+        self._assert_barred(
+            self._TS + "fun main(_s: Stdio)\n    let a = mk()\n"
+            "    let t = if true then a else a\n"
+            "    settle(a)\n    settle(t)\n"
+        )
+
+    def test_selection_of_distinct_places_rejected(self):
+        # Per the design's (2) rule: selecting between two DISTINCT live
+        # linear resources is barred (not tracked-through).
+        self._assert_barred(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    let a = open(1)\n    let b = open(2)\n"
+            "    let t = if true then a else b\n"
+            "    close(t)\n"
+        )
+
+    # ---- must COMPILE: fresh factory + non-linear conditionals ----
+
+    def test_fresh_factory_conditional_ok(self):
+        # Arms are CALLS (fresh values), not places, so the bar does not fire.
+        r = check(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    let t = if true then open(1) else open(2)\n"
+            "    close(t)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_fresh_factory_via_match_ok(self):
+        r = check(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    let t = match 0\n        _ -> open(1)\n"
+            "    close(t)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_non_linear_int_conditional_ok(self):
+        r = check(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    let n = if true then 1 else 2\n    let _ = n\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_non_linear_string_conditional_ok(self):
+        r = check(
+            "fun verdict(live: Bool) -> String\n"
+            "    return if live then \"yes\" else \"no\"\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_non_linear_option_match_ok(self):
+        r = check(
+            "fun pick(o: Option<Int>) -> Int\n"
+            "    return match o\n        Some(x) -> x\n        None -> 0\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_non_linear_carrier_field_conditional_ok(self):
+        # Selecting a NON-linear field (the scalar tag) through a conditional
+        # is untouched: the bar keys on the linear/typestate leaf type only.
+        r = check(
+            self._NL + "fun main(_s: Stdio)\n    let s = mks()\n"
+            "    let n = if true then s.tag else 0\n"
+            "    close(s.conn)\n    let _ = n\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+
 class TestLinearIntoContainerReject(unittest.TestCase):
     """Linearity decision 4b: a linear / typestate value (or a struct that
     OWNS one) cannot enter a container.

@@ -6834,5 +6834,106 @@ class TestLinearIntoContainerParity(unittest.TestCase):
         self._assert_three_way(src)
 
 
+class TestLinearConditionalAliasRejectParity(unittest.TestCase):
+    """Finding 1: a linear/typestate value selected through an if/match
+    EXPRESSION is refused UNIFORMLY on all three backends.
+
+    The refusal is a front-end (analyzer) one: ``_parse_and_analyze`` raises
+    before any backend codegen, so the legacy Python transpiler, the CIR
+    ``--ir`` emitter, and the Wasm emitter all reject the same programs for
+    the same reason (there is no backend that could accept a program the
+    analyzer refused). Each shape below is checked two ways: the analyzer
+    result is not ``ok``, and every backend runner refuses to run it. The
+    fresh-factory control confirms the refusal is precise, not a blanket ban
+    on conditionals producing linear values."""
+
+    _LIN = (
+        "linear type Conn { id: Int }\n"
+        "fun open(n: Int) -> Conn\n"
+        "    return Conn { id: n }\n"
+        "fun close(consume c: Conn) -> Unit\n"
+        "    return ()\n"
+    )
+    _NL = _LIN + (
+        "type S { conn: Conn, tag: Int }\n"
+        "fun mks() -> S\n"
+        "    return S { conn: open(1), tag: 0 }\n"
+    )
+    _TS = (
+        "typestate Auth\n    Pending\n    Settled\n"
+        "fun mk() -> Auth[Pending]\n"
+        "    return Auth[Pending] {}\n"
+        "fun settle(consume a: Auth[Pending]) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _assert_all_reject(self, src: str) -> None:
+        result = analyze(
+            Parser(Lexer(src).lex(), source=src).parse_module(), source=src,
+        )
+        self.assertFalse(
+            result.ok,
+            msg=f"analyzer accepted a barred program:\n{src}",
+        )
+        # Every backend funnels through _parse_and_analyze, so each refuses.
+        runners = [_run_python, _run_cir]
+        if _has_wasm_tools() and _has_wasmtime_py():
+            runners.append(_run_wasm)
+        for runner in runners:
+            with self.assertRaises(AssertionError):
+                runner(src)
+
+    def test_a2_if_whole_value(self):
+        self._assert_all_reject(
+            self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
+            "    let t = if true then s else s\n"
+            "    close(s)\n    close(t)\n"
+        )
+
+    def test_a3_match_whole_value(self):
+        self._assert_all_reject(
+            self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
+            "    let t = match 0\n        _ -> s\n"
+            "    close(s)\n    close(t)\n"
+        )
+
+    def test_b1_field_if(self):
+        self._assert_all_reject(
+            self._NL + "fun main(_s: Stdio)\n    let s = mks()\n"
+            "    let c = if true then s.conn else s.conn\n"
+            "    close(c)\n    close(s.conn)\n"
+        )
+
+    def test_b2_borrow_if_return(self):
+        self._assert_all_reject(
+            self._NL + "fun bad(s: S) -> Conn\n"
+            "    return if true then s.conn else s.conn\n"
+        )
+
+    def test_claimdesk_double_disbursement(self):
+        self._assert_all_reject(
+            self._TS + "fun main(_s: Stdio)\n    let authz = mk()\n"
+            "    let dup = if true then authz else authz\n"
+            "    settle(authz)\n    settle(dup)\n"
+        )
+
+    def test_fresh_factory_control_compiles_and_runs(self):
+        # Precision control: arms are calls (fresh values), so the bar does
+        # NOT fire and all three backends run it byte-identically.
+        src = (
+            self._LIN + "fun main(stdio: Stdio)\n"
+            "    let t = if true then open(1) else open(2)\n"
+            "    close(t)\n"
+            "    stdio.println(\"ok\")\n"
+        )
+        py = _capture_stdout(lambda: _run_python(src))
+        cir = _capture_stdout(lambda: _run_cir(src))
+        self.assertEqual(py, cir)
+        self.assertEqual(py.strip(), "ok")
+        if _has_wasm_tools() and _has_wasmtime_py():
+            wasm = _capture_stdout(lambda: _run_wasm(src))
+            self.assertEqual(py, wasm)
+
+
 if __name__ == "__main__":
     unittest.main()

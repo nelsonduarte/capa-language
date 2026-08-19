@@ -633,6 +633,16 @@ class _ExpressionsMixin:
         # check, not here. A container whose element type only settles LATER is
         # caught by the end-of-function deferred recheck instead.
         self._linear_container_use_gate(e, ty)
+        # Finding 1: a linear/typestate value flowing through an if/match
+        # EXPRESSION whose arm selects an existing place (a bare Ident or
+        # Ident-rooted linear FieldAccess) aliases an obligation the move /
+        # consume / return / receiver seams cannot see (they match only bare
+        # Ident / FieldAccess nodes), so the wrapper opens a second obligation
+        # on the same runtime value -- a double-free. Barring it at this single
+        # resolved-type site closes the RHS, consume-arg, consume-self
+        # receiver, return, become, and struct-literal-element forms at once,
+        # while the fresh-factory conditional (arms are calls) stays legal.
+        self._check_linear_conditional_alias(e, ty)
         # A value read OUT of an empty-origin container surfaces the bare
         # element variable (``xs[0]``, a matched ``Some(v)`` from
         # ``m.get(k)``, a ``for`` element of a set). Referencing the

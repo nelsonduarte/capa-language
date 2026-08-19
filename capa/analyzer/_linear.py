@@ -154,6 +154,101 @@ class _LinearMixin:
             e.pos,
         )
 
+    # ---- conditional/match alias bar (Finding 1) ------------------
+
+    def _arm_is_linear_place(self, arm: "A.Expr") -> bool:
+        """True iff ``arm`` yields an EXISTING linear/typestate place: a bare
+        ``Ident`` or an Ident-rooted ``FieldAccess`` whose leaf type is
+        linear/typestate. A nested ``IfExpr`` / ``MatchExpr`` wrapper is
+        recursively unwrapped (``if a then s else (if b then s else s)``), so a
+        place selected at any nesting depth counts. A call / literal /
+        ``become`` / struct-literal produces a FRESH value that cannot alias an
+        existing obligation, so it is not a place and is not barred.
+
+        A ``FieldAccess`` is judged through ``_linear_place`` (the same
+        Ident-rooted, linear-leaf recognition the move seams use), so a
+        projection of a non-linear carrier down to a linear field
+        (``s.conn``) counts while a non-linear field (``s.name``) does not."""
+        from .. import capa_ast as _A
+        if isinstance(arm, _A.IfExpr):
+            return (
+                self._arm_is_linear_place(arm.then_expr)
+                or self._arm_is_linear_place(arm.else_expr)
+            )
+        if isinstance(arm, _A.MatchExpr):
+            return any(
+                isinstance(a.body, _A.Expr)
+                and self._arm_is_linear_place(a.body)
+                for a in arm.arms
+            )
+        if isinstance(arm, _A.Ident):
+            sym = self.scope.lookup(arm.name)
+            return self._ty_is_linear(sym.ty if sym is not None else None)
+        if isinstance(arm, _A.FieldAccess):
+            return self._linear_place(arm) is not None
+        return False
+
+    def _conditional_selects_linear_place(self, e: "A.Expr") -> bool:
+        """True iff the conditional/match wrapper ``e`` yields an EXISTING
+        linear/typestate place in at least one arm (recursing through nested
+        wrappers). The arm bodies are ``IfExpr.then_expr`` / ``else_expr`` and
+        each ``MatchExpr`` arm body that is an ``Expr`` (a multi-line ``Block``
+        arm body is Unit-typed, so it can never host a place)."""
+        from .. import capa_ast as _A
+        if isinstance(e, _A.IfExpr):
+            return (
+                self._arm_is_linear_place(e.then_expr)
+                or self._arm_is_linear_place(e.else_expr)
+            )
+        if isinstance(e, _A.MatchExpr):
+            return any(
+                isinstance(a.body, _A.Expr)
+                and self._arm_is_linear_place(a.body)
+                for a in e.arms
+            )
+        return False
+
+    def _check_linear_conditional_alias(
+        self, e: "A.Expr", ty: Optional[Ty],
+    ) -> None:
+        """Per-expression bar (Finding 1): reject an ``if`` / ``match``
+        expression that selects an EXISTING linear/typestate place in a branch.
+
+        A conditional whose value is a linear place aliases an obligation the
+        analysis already tracks under its own name: the move / consume / return
+        / receiver seams recognise only a bare ``Ident`` / ``FieldAccess``, not
+        an ``if`` / ``match`` wrapper, so binding, consuming, or returning the
+        wrapper opens a SECOND obligation on the same runtime value (a double-
+        free). Because every producing context (a ``let`` / ``var`` RHS, a
+        consume argument, a ``consume self`` receiver, a ``return`` value, a
+        ``become`` value, a struct-literal element) evaluates the wrapper
+        through ``_check_expr``, this ONE gate closes every site.
+
+        Barred syntactically on the arm nodes plus a type lookup, so it does
+        not depend on the live-set at the check moment. Only an ``Ident`` /
+        ``FieldAccess`` arm of linear type can alias an existing obligation; a
+        call / literal / ``become`` arm yields a FRESH value, so the legitimate
+        conditional factory (``let t = if c then open(1) else open(2)``) is not
+        barred. Deduped per node. A NON-linear conditional (yielding a String /
+        Int / Option / plain struct) is filtered out first by ``ty``."""
+        from .. import capa_ast as _A
+        if not isinstance(e, (_A.IfExpr, _A.MatchExpr)):
+            return
+        if not (self._ty_is_linear(ty) or self._type_carries_linear(ty)):
+            return
+        if id(e) in self._linear_conditional_reported:
+            return
+        if not self._conditional_selects_linear_place(e):
+            return
+        self._linear_conditional_reported.add(id(e))
+        self._err(
+            "a linear/typestate value cannot be selected through a "
+            "conditional / match expression; bind it directly (e.g. "
+            "`let x = ...` in each branch) or open a fresh value per branch, "
+            "so each resource has a single owner",
+            e.pos,
+        )
+
     def _check_no_linear_container(
         self, ty: Optional[Ty], pos: Pos, context: str,
     ) -> None:
