@@ -685,6 +685,28 @@ class _StatementsMixin:
                 f"{ty_str(target_ty)}",
                 s.value.pos,
             )
+        # WARNING-3: overwriting a LIVE linear/typestate field
+        # (``s.conn = fresh()`` while the current ``s.conn`` was never
+        # consumed) drops the old value with no consume -- a leak, symmetric
+        # with the whole-name reassign guarded by ``_linear_reassign``. A
+        # store after a legitimate prior consume/move of the field re-arms
+        # it (the field place leaves ``_consumed``), so the fresh value is
+        # tracked afresh.
+        if isinstance(s.target, A.FieldAccess):
+            place = self._linear_place(s.target)
+            if place is not None:
+                if place in self._consumed:
+                    self._consumed.discard(place)
+                    self._linear_names.discard(place)
+                elif not self._prefix_consumed(place):
+                    self._err(
+                        f"linear field {place!r} is overwritten without "
+                        f"being consumed; a `linear type` / typestate value "
+                        f"cannot be dropped -- consume the current value "
+                        f"(e.g. a `consume self` method like `close`) before "
+                        f"re-assigning",
+                        s.pos,
+                    )
         # Roadmap S2 (per-field IFC): a field store ``p.f = x`` raises
         # that field's per-field label monotonically (and the binding's
         # collapsed label), so a field made secret by a later assignment

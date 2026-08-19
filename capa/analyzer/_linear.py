@@ -65,6 +65,25 @@ class _LinearMixin:
             return None
         return sym.struct_fields
 
+    def _type_carries_linear(self, ty: Optional[Ty], _depth: int = 0) -> bool:
+        """True iff ``ty`` transitively reaches a linear/typestate type
+        through struct fields (never through a container element or a
+        ``Fun`` signature), bounded by ``_LINEAR_PATH_MAX_DEPTH``. Mirrors
+        ``_contains_any_capability`` but for the linear/typestate predicate.
+        Used by the HOLE-2 alias-move rule: a NON-linear struct that owns a
+        linear/typestate field is still move-on-alias."""
+        if _depth >= self._LINEAR_PATH_MAX_DEPTH:
+            return False
+        fields = self._struct_fields_of(ty)
+        if fields is None:
+            return False
+        for fty in fields.values():
+            if self._ty_is_linear(fty):
+                return True
+            if self._type_carries_linear(fty, _depth + 1):
+                return True
+        return False
+
     def _linear_field_paths(
         self, place: str, ty: Optional[Ty], _depth: int = 0,
     ) -> list[str]:
@@ -283,9 +302,25 @@ class _LinearMixin:
         if value.name in self._borrowed_linear:
             self._borrowed_linear.add(target)
             return
-        if value.name not in self._live_linear:
+        if value.name in self._live_linear:
+            self._linear_discharge(value.name)
             return
-        self._linear_discharge(value.name)
+        # HOLE-2 (option a): aliasing a value whose type TRANSITIVELY
+        # carries a linear/typestate field -- a struct that may be
+        # NON-linear itself (``Session``, ``Settlement``) -- MOVES the base:
+        # poison it so any later consume / move / read of the moved-out
+        # original rejects as use-after-move, while ``target`` becomes the
+        # sole accessor. Without this, ``let t = s; close(s.conn);
+        # close(t.conn)`` would double-free the shared field. A projection
+        # (``let settled = result.claim``) is a field access, handled above,
+        # so a carrier that is only projected from is never moved here.
+        val_ty = self.types.get(id(value))
+        if val_ty is None:
+            sym = self.scope.lookup(value.name)
+            val_ty = sym.ty if sym is not None else None
+        if self._type_carries_linear(val_ty):
+            self._consumed.add(value.name)
+            self._linear_names.add(value.name)
 
     def _linear_reassign(self, name: str, ty: Optional[Ty], pos: Pos) -> None:
         """Handle ``h = <expr>`` re-assignment to an existing name.
