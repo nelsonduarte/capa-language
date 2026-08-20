@@ -314,7 +314,15 @@ def _leaky_implicit_program(draw):
          "match_secret_return", "match_secret_break",
          "match_secret_continue", "match_secret_guard_return",
          "val_match_secret_return", "val_match_secret_break",
-         "assign_match_secret_return"]
+         "assign_match_secret_return",
+         # IFC-1: cross-function implicit flow -- a public sink behind a
+         # helper CALL inside a secret-conditioned construct. The sink runs
+         # a secret-dependent number of times / conditionally, so these are
+         # genuine leaks (the REJECT direction), one per branch form plus a
+         # 3-hop transitive chain and a method receiver.
+         "call_helper_secret_if", "call_helper_secret_while",
+         "call_helper_secret_for", "call_helper_secret_match_arm",
+         "call_helper_depth3", "call_method_helper_secret_if"]
     ))
     pub = draw(_PUB_STR)
     header = []
@@ -429,6 +437,63 @@ def _leaky_implicit_program(draw):
         lines.append("        0 -> return")
         lines.append('        _ -> "y"')
         lines.append(f'    stdio.println("{pub}")')
+
+    elif shape == "call_helper_secret_if":
+        # IFC-1: the public sink is behind a helper CALL inside a secret
+        # ``if``. The sink runs iff the secret-conditioned branch is taken.
+        header.append("fun leak(stdio: Stdio)")
+        header.append(f'    stdio.println("{pub}")')
+        lines.append("    if s.length() > 3")
+        lines.append("        leak(stdio)")
+
+    elif shape == "call_helper_secret_while":
+        header.append("fun leak(stdio: Stdio)")
+        header.append(f'    stdio.println("{pub}")')
+        lines.append("    var i = 0")
+        lines.append("    while i < s.length()")
+        lines.append("        leak(stdio)")
+        lines.append("        i = i + 1")
+
+    elif shape == "call_helper_secret_for":
+        header.append("fun leak(stdio: Stdio)")
+        header.append(f'    stdio.println("{pub}")')
+        lines.append('    let parts = s.split("-")')
+        lines.append("    for _p in parts")
+        lines.append("        leak(stdio)")
+
+    elif shape == "call_helper_secret_match_arm":
+        # A secret scrutinee raises the pc inside each arm, so a helper call
+        # in an arm runs under secret control flow.
+        header.append("fun leak(stdio: Stdio)")
+        header.append(f'    stdio.println("{pub}")')
+        lines.append("    match s.length()")
+        lines.append("        0 -> leak(stdio)")
+        lines.append("        _ -> leak(stdio)")
+
+    elif shape == "call_helper_depth3":
+        # A 3-hop transitive chain: only ``h3`` sinks, but the summary
+        # fixpoint carries the sink-reaching-pc bit up through ``h2`` /
+        # ``h1``, so calling ``h1`` under secret control flow is flagged.
+        header.append("fun h3(stdio: Stdio)")
+        header.append(f'    stdio.println("{pub}")')
+        header.append("fun h2(stdio: Stdio)")
+        header.append("    h3(stdio)")
+        header.append("fun h1(stdio: Stdio)")
+        header.append("    h2(stdio)")
+        lines.append("    if s.length() > 3")
+        lines.append("        h1(stdio)")
+
+    elif shape == "call_method_helper_secret_if":
+        # A METHOD receiver: ``show`` sinks via a built-in Stdio call, so
+        # the method carries the bit and the call under a secret ``if`` is
+        # flagged.
+        header.append("type Printer { tag: String }")
+        header.append("impl Printer")
+        header.append("    fun show(self, stdio: Stdio)")
+        header.append("        stdio.println(self.tag)")
+        lines.append('    let p = Printer { tag: "t" }')
+        lines.append("    if s.length() > 3")
+        lines.append("        p.show(stdio)")
 
     return "\n".join(header + lines) + "\n"
 
@@ -872,6 +937,384 @@ class TestMatchDivergenceCF1(unittest.TestCase):
                 f"errors: {[e.message for e in result.errors]}"
             ),
         )
+
+
+# ===========================================================
+# Deterministic cross-call implicit-flow cases (IFC-1)
+# ===========================================================
+#
+# Under @strict_ifc the intra-procedural implicit-flow rule caught a public
+# sink inside a secret-conditioned branch, but did NOT compose across a
+# function call: a sink behind a HELPER call under a secret branch was
+# certified clean and leaked at runtime (every sink cap, any depth, any
+# branch form). IFC-1 closes this with a per-callable sink-reaching-pc
+# summary bit plus a call-site check. These deterministic cases pin both
+# directions the randomised generator cannot: the must-REJECT mirrors
+# (so the fix bites) and the must-COMPILE controls (so it does not
+# over-reject -- especially ``xs.get(i)``, whose ``get`` collides by name
+# with ``Net.get`` but is type-resolved to a clean ``List`` receiver).
+
+# Must-REJECT: 1-hop + 3-hop; if / while / for / match; free fn + method;
+# one case per sink capability (Stdio / Net / Fs / Db). Each is a genuine
+# cross-call implicit leak and must be a hard information-flow error.
+_IFC1_CROSSCALL_REJECTIONS = {
+    "free_if_stdio": '''fun leak(stdio: Stdio)
+    stdio.println("pub")
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        leak(stdio)
+''',
+    "free_while_stdio": '''fun leak(stdio: Stdio)
+    stdio.println("pub")
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    var i = 0
+    while i < s.length()
+        leak(stdio)
+        i = i + 1
+''',
+    "free_for_stdio": '''fun leak(stdio: Stdio)
+    stdio.println("pub")
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let parts = s.split("-")
+    for _p in parts
+        leak(stdio)
+''',
+    "free_match_arm_stdio": '''fun leak(stdio: Stdio)
+    stdio.println("pub")
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    match s.length()
+        0 -> leak(stdio)
+        _ -> leak(stdio)
+''',
+    "free_depth3_stdio": '''fun h3(stdio: Stdio)
+    stdio.println("pub")
+fun h2(stdio: Stdio)
+    h3(stdio)
+fun h1(stdio: Stdio)
+    h2(stdio)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        h1(stdio)
+''',
+    "method_if_stdio": '''type Printer { tag: String }
+impl Printer
+    fun show(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let p = Printer { tag: "t" }
+    if s.length() > 3
+        p.show(stdio)
+''',
+    "free_if_net": '''fun leak(net: Net)
+    let _r = net.get("http://example.com")
+
+@strict_ifc()
+fun main(net: Net, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        leak(net)
+''',
+    "free_if_fs": '''fun leak(fs: Fs)
+    let _r = fs.write("/tmp/x", "data")
+
+@strict_ifc()
+fun main(fs: Fs, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        leak(fs)
+''',
+    "free_if_db": '''fun leak(db: Db)
+    let _r = db.exec("INSERT", "x")
+
+@strict_ifc()
+fun main(db: Db, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        leak(db)
+''',
+    # A genuinely DYNAMIC receiver (a trait-typed param, dispatched at
+    # runtime) whose impl method reaches a sink still bites via the sound
+    # by-name union -- the tightening that closes the built-in-container
+    # false positive must NOT drop this real dynamic-dispatch rejection.
+    "dynamic_trait_receiver_stdio": '''trait Speaker
+    fun say(self, stdio: Stdio)
+
+type Loud { tag: String }
+impl Speaker for Loud
+    fun say(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun run(sp: Speaker, stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        sp.say(stdio)
+''',
+    # A USER-DEFINED capability dynamically dispatched, whose impl method
+    # reaches a sink, still bites via the by-name union: the user-origin
+    # gate that drops a BUILT-IN capability's union must NOT drop a
+    # USER capability's. (User-defined capabilities with a sink-reaching
+    # method ARE expressible in Capa, so the union has a real job here.)
+    "dynamic_user_capability_stdio": '''capability Announcer
+    fun announce(self, stdio: Stdio)
+
+type Loud { tag: String }
+impl Announcer for Loud
+    fun announce(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun run(a: Announcer, stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        a.announce(stdio)
+''',
+    # A TWO-impl trait where a REAL dispatch target (``Loud``) sinks: the
+    # dispatch-target restriction must still OR in every concrete type that
+    # implements the receiver trait, so this must still REJECT. The
+    # completeness guard against under-reporting when the union is narrowed.
+    "two_impl_trait_one_target_sinks": '''trait Speaker
+    fun say(self, stdio: Stdio)
+
+type Quiet { tag: String }
+impl Speaker for Quiet
+    fun say(self, _stdio: Stdio)
+        let _x = self.tag
+
+type Loud { tag: String }
+impl Speaker for Loud
+    fun say(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun run(sp: Speaker, stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        sp.say(stdio)
+''',
+}
+
+# Must-COMPILE controls (the over-reject guard): each stays ACCEPTED before
+# AND after the fix.
+_IFC1_CROSSCALL_ACCEPT_CONTROLS = {
+    # (i) A sink-reaching helper called under a PUBLIC pc: no secret branch,
+    # so the call is clean.
+    "sink_helper_public_pc": '''fun leak(stdio: Stdio)
+    stdio.println("pub")
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let _s = env.get("SECRET0").unwrap_or("d")
+    leak(stdio)
+''',
+    # (ii) A helper with NO real sink, called under a secret pc: the bit is
+    # never set, so no leak.
+    "no_sink_helper_secret_pc": '''fun compute(x: Int) -> Int
+    return x + 1
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        let _v = compute(2)
+    stdio.println("fixed")
+''',
+    # (iii) THE critical control: ``xs.get(i)`` on a ``List`` receiver under
+    # a secret pc. ``get`` collides by NAME with ``Net.get``, but the
+    # receiver is TYPE-resolved to ``List`` (not a sink), so the bit stays
+    # clear and the call compiles.
+    "list_get_helper_secret_pc": '''fun peek(xs: List<String>, i: Int) -> Option<String>
+    return xs.get(i)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let xs = ["a", "b"]
+    if s.length() > 3
+        let _v = peek(xs, 0)
+    stdio.println("fixed")
+''',
+    # (iv) A recursive sink helper called under a PUBLIC pc: the fixpoint
+    # converges (self-recursion) and, with no secret branch at the call, the
+    # program compiles.
+    "recursive_sink_helper_public_pc": '''fun rec(stdio: Stdio, n: Int)
+    if n > 0
+        stdio.println("x")
+        rec(stdio, n - 1)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let _s = env.get("SECRET0").unwrap_or("d")
+    rec(stdio, 2)
+''',
+    # (v) THE load-bearing over-reject pin: a built-in ``List.get(i)`` under
+    # a secret branch in a module that ALSO defines a user type with a
+    # SINK-REACHING method named ``get``. ``List.get`` is not a sink, so the
+    # pc check must NOT import the unrelated user ``get``'s bit via the
+    # by-name union (a concrete built-in receiver has no user method). RED
+    # on 6aae42e (rejected as ``calling 'List.get' runs a public sink``),
+    # GREEN after the method-key tightening.
+    "list_get_collides_with_user_get_sink": '''type Logger { tag: String }
+impl Logger
+    fun get(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let xs = ["a", "b"]
+    if s.length() > 3
+        let _v = xs.get(0)
+    stdio.println("fixed")
+''',
+    # (vi) The ``Map.get`` analogue of the same collision, kept alongside so
+    # the two built-in container getters behave consistently.
+    "map_get_collides_with_user_get_sink": '''type Logger { tag: String }
+impl Logger
+    fun get(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let m: Map<String, Int> = new_map()
+    if s.length() > 3
+        let _v = m.get("a")
+    stdio.println("fixed")
+''',
+    # (vii) The BUILT-IN CAPABILITY analogue: ``env.get(k)`` under a secret
+    # branch, with a user ``Logger.get`` sink. A built-in capability lands
+    # as SymbolKind.CAPABILITY (dynamic), so the union must be gated on the
+    # receiver's USER origin, not the kind, or this false-positives as
+    # ``calling 'Env.get' runs a public sink``. RED on a9a6644, GREEN after
+    # the user-origin gate.
+    "env_get_collides_with_user_get_sink": '''type Logger { tag: String }
+impl Logger
+    fun get(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        let _v2 = env.get("OTHER").unwrap_or("d")
+    stdio.println("fixed")
+''',
+    # (viii) A second built-in capability getter collision (``fs.read`` vs a
+    # user ``read`` sink method), so the origin gate is pinned across more
+    # than one built-in capability.
+    "fs_read_collides_with_user_read_sink": '''type Logger { tag: String }
+impl Logger
+    fun read(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env, fs: Fs)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        let _c = fs.read("/tmp/x")
+    stdio.println("fixed")
+''',
+    # (ix) THE unrelated-same-name pin: a receiver trait ``Speaker`` whose
+    # only impl (``Quiet``) does NOT sink, plus an UNRELATED ``Loud`` (an
+    # inherent impl, implementing no trait) with a sinking method of the
+    # SAME name ``say``. The dynamic call ``q.say()`` can only dispatch to
+    # ``Quiet``, never to the unrelated ``Loud``, so it must COMPILE. RED on
+    # ccba795 (over-reject ``calling 'Speaker.say' runs a public sink`` via
+    # the module-wide by-name union), GREEN after the dispatch-target
+    # restriction.
+    "unrelated_same_name_dispatch_clean": '''trait Speaker
+    fun say(self)
+
+type Quiet { tag: String }
+impl Speaker for Quiet
+    fun say(self)
+        let _x = self.tag
+
+type Loud { tag: String }
+impl Loud
+    fun say(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun run(q: Speaker, stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        q.say()
+    stdio.println("fixed")
+''',
+}
+
+
+class TestImplicitCrossCallIFC1(unittest.TestCase):
+    """Deterministic guards for IFC-1 (strict implicit-flow composed across
+    a function call)."""
+
+    def _analyze(self, source: str):
+        module = Parser(Lexer(source).lex(), source=source).parse_module()
+        return module, analyze(module, source=source)
+
+    def test_crosscall_implicit_leak_rejected(self):
+        """Each cross-call implicit-flow shape (1-hop + 3-hop; if / while /
+        for / match; free + method; per sink cap) is a hard
+        information-flow rejection. RED on the pre-fix analyzer (accepted),
+        GREEN after."""
+        for name, source in _IFC1_CROSSCALL_REJECTIONS.items():
+            with self.subTest(shape=name):
+                _module, result = self._analyze(source)
+                self.assertFalse(
+                    result.ok,
+                    msg=(
+                        f"IFC-1 GAP: shape {name!r} was ACCEPTED under "
+                        f"@strict_ifc (expected a cross-call implicit-flow "
+                        f"rejection).\n{textwrap.indent(source, '    ')}"
+                    ),
+                )
+                self.assertTrue(
+                    _is_ifc_rejection(result),
+                    msg=(
+                        f"shape {name!r} was rejected, but NOT (only) for an "
+                        f"information-flow reason:\n"
+                        f"{textwrap.indent(source, '    ')}\n"
+                        f"errors: {[e.message for e in result.errors]}"
+                    ),
+                )
+
+    def test_crosscall_accept_controls_stay_accepted(self):
+        """Each over-reject control stays ACCEPTED. The load-bearing one is
+        ``list_get_helper_secret_pc``: ``xs.get(i)`` must not be mistaken
+        for ``Net.get`` (the receiver-capability test is TYPE-resolved, not
+        by-name)."""
+        for name, source in _IFC1_CROSSCALL_ACCEPT_CONTROLS.items():
+            with self.subTest(shape=name):
+                _module, result = self._analyze(source)
+                self.assertTrue(
+                    result.ok,
+                    msg=(
+                        f"IFC-1 OVER-REJECT: control {name!r} was REJECTED "
+                        f"(expected it to stay accepted):\n"
+                        f"{textwrap.indent(source, '    ')}\n"
+                        f"errors: {[e.message for e in result.errors]}"
+                    ),
+                )
 
 
 if __name__ == "__main__":

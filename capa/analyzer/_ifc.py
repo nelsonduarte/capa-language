@@ -3186,6 +3186,164 @@ class _IfcMixin:
                 callee_sink_caps.get(param_idx, frozenset()),
             )
 
+    def _check_ifc_call_pc(self, e: A.Call, sym) -> None:
+        """IFC-1 (strict implicit-flow across a call): under ``@strict_ifc``,
+        calling a free function that can EXECUTE a public sink under its own
+        control flow while the caller's pc is SECRET (the call sits inside a
+        branch whose condition is @secret) leaks whether that branch was
+        taken -- exactly the intra-procedural implicit-flow rule
+        (``_check_ifc_sink``), now composed across the function boundary.
+
+        The callee's ``sink_reaching_pc`` bit is a STATIC property from the
+        summary pre-pass (whether the body reaches a real built-in sink or
+        ``panic``, directly or transitively), so no live pc / label of the
+        callee is consulted here. A free-function name resolves to exactly
+        one callable, so the lookup is precise. Hard error under
+        ``@strict_ifc`` ONLY (no default-tier warning), matching the inline
+        rule's tier."""
+        if not getattr(self, "_strict_ifc", False):
+            return
+        if L.normalize(getattr(self, "_pc_label", L.PUBLIC)) != L.SECRET:
+            return
+        if self._ifc_sink_pc.get(("fun", sym.name), False):
+            self._emit_ifc_call_pc(repr(sym.name), e.pos)
+
+    def _check_ifc_method_call_pc(
+        self, e: A.MethodCall, type_sym, recv_ty,
+    ) -> None:
+        """IFC-1 (strict implicit-flow), method-call form. Resolves the
+        callee's ``sink_reaching_pc`` bit:
+
+        * a USER-DEFINED dynamic receiver (a user trait or user capability,
+          dispatched at runtime) ORs the bit over every impl method of this
+          name -- the sound by-name over-approximation, since the concrete
+          user impl is not known statically;
+        * a CONCRETE user-typed receiver whose exact ``("method", T,
+          method)`` key is present uses that one bit precisely;
+        * ANY BUILT-IN receiver contributes NO bit. A built-in container /
+          primitive (``List`` / ``Map`` / ``String`` ...) and a built-in
+          CAPABILITY (``Env`` / ``Stdio`` / ``Net`` / ``Fs`` / ``Db`` /
+          ``Serve`` / ``Clock`` / ``Proc``) both have no user-defined method
+          that could transitively reach a user sink, and a built-in
+          capability's OWN direct sink call is already caught by the inline
+          ``_check_ifc_sink`` -- so a built-in receiver must never import an
+          unrelated same-named user method's bit through the union.
+
+        The built-in-vs-user distinction is by SYMBOL ORIGIN
+        (``_receiver_type_is_user_defined``, the ``BUILTIN_POS`` test the
+        summary's ``_name_is_builtin_immutable`` also uses), NOT by the kind
+        alone: a built-in capability lands as ``SymbolKind.CAPABILITY`` just
+        like a user capability, so keying the union on ``recv_is_dynamic``
+        alone would still widen ``env.get(...)`` to a user ``Logger.get``.
+
+        Note the DIFFERENCE from ``_check_ifc_method_call_summary``: the pc
+        bit does NOT fall to the by-name union for a built-in receiver. The
+        data channel there gates its by-name union on a SECRET argument, but
+        the pc channel fires on ANY argument, so widening a built-in getter
+        (``xs.get(i)`` / ``env.get(k)``) to a same-named user sink method
+        (``Logger.get``) would be a false positive on a plain
+        ``if secret: xs.get(0)``. Keeping the union only for a user-defined
+        dynamic receiver closes that without weakening any real rejection: a
+        user method reached via its exact key or a user trait / capability
+        dynamic receiver still bites. Hard error under ``@strict_ifc`` ONLY,
+        as with the free form."""
+        if not getattr(self, "_strict_ifc", False):
+            return
+        if L.normalize(getattr(self, "_pc_label", L.PUBLIC)) != L.SECRET:
+            return
+        exact_key = ("method", recv_ty.name, e.method)
+        from . import SymbolKind
+        recv_is_dynamic = type_sym is not None and getattr(
+            type_sym, "kind", None,
+        ) in (SymbolKind.TRAIT, SymbolKind.CAPABILITY)
+        if recv_is_dynamic and self._receiver_type_is_user_defined(
+            recv_ty.name,
+        ):
+            # OR the bit over the receiver's ACTUAL dispatch targets only,
+            # not every module-wide same-named method: a dynamic call to
+            # ``R.m`` can land on a concrete type implementing ``R`` (or,
+            # for a capability / self-implemented trait, on ``R`` itself),
+            # never on an unrelated type that merely has a same-named method
+            # under a DIFFERENT trait. Widening to all ``methods_by_name``
+            # false-positived a clean ``q.say()`` because an unrelated
+            # ``Loud.say`` (implementing another trait) sank.
+            reaches = any(
+                self._ifc_sink_pc.get(k, False)
+                for k in self._dispatch_target_keys(recv_ty.name, e.method)
+            )
+        else:
+            # A concrete user-typed receiver -> its precise exact-key bit;
+            # ANY built-in receiver (container / primitive / capability) ->
+            # NONE, since its exact key is absent (no user method body to
+            # summarise) so the lookup yields False.
+            reaches = self._ifc_sink_pc.get(exact_key, False)
+        if reaches:
+            self._emit_ifc_call_pc(
+                repr(f"{recv_ty.name}.{e.method}"), e.pos,
+            )
+
+    def _receiver_type_is_user_defined(self, name: str) -> bool:
+        """True when the receiver type ``name`` resolves to a USER-defined
+        symbol (its ``pos`` is not the built-in source position), so its
+        by-name union of user impl methods is meaningful. A built-in type
+        (a container / primitive OR a built-in capability such as ``Env`` /
+        ``Stdio`` / ``Net``) sits at ``BUILTIN_POS`` and returns False, so
+        the IFC-1 pc check never imports a same-named user method's bit for
+        it. Mirrors the origin test the summary's
+        ``_name_is_builtin_immutable`` uses."""
+        from ..builtins import BUILTIN_POS
+        sym = self.global_scope.lookup(name)
+        return sym is not None and sym.pos != BUILTIN_POS
+
+    def _dispatch_target_keys(self, recv_name: str, method: str) -> set:
+        """The summary keys a dynamic call ``recv.method(...)`` on a
+        USER-defined trait / capability ``recv_name`` can actually dispatch
+        to -- the set the IFC-1 pc-union must OR over (NOT every module-wide
+        same-named method). It is:
+
+        * ``("method", T, method)`` for every concrete type ``T`` that
+          implements ``recv_name`` (from the ``impl recv_name for T``
+          reverse index); PLUS
+        * ``("method", recv_name, method)`` -- the receiver's OWN key. This
+          is the COMPLETENESS clause: a user capability with a direct
+          ``impl recv_name`` (or a trait with a direct impl on itself) keys
+          its methods under ``recv_name`` and lists nothing in any type's
+          ``implements``, so the reverse index alone would be empty and a
+          capability-own-impl sink would be UNDER-reported. An absent key is
+          a harmless no-op (``.get`` yields False), so always including it is
+          sound and never widens to an unrelated type."""
+        keys = {("method", recv_name, method)}
+        for tname in self._impl_reverse_index().get(recv_name, ()):
+            keys.add(("method", tname, method))
+        return keys
+
+    def _impl_reverse_index(self) -> dict:
+        """``trait / capability name -> {concrete type names implementing
+        it}``, built once (memoised) from the populated global scope's
+        ``Symbol.implements`` sets (populated at ``impl Trait for T``). The
+        reverse of each type's ``implements``, used to restrict the IFC-1
+        pc-union to a dynamic receiver's real dispatch targets."""
+        if self._ifc_impl_index is None:
+            index: dict = {}
+            for sym in self.global_scope.symbols.values():
+                for r in getattr(sym, "implements", ()) or ():
+                    index.setdefault(r, set()).add(sym.name)
+            self._ifc_impl_index = index
+        return self._ifc_impl_index
+
+    def _emit_ifc_call_pc(self, callee: str, pos) -> None:
+        """Emit the IFC-1 cross-call implicit-flow diagnostic. Mirrors the
+        inline strict implicit-flow error (``_check_ifc_sink``) reworded for
+        the call site."""
+        self._err(
+            f"information-flow (strict): calling {callee} runs a public "
+            f"sink under secret control flow (inside a branch whose "
+            f"condition is @secret), which leaks whether that branch was "
+            f"taken. Move the call outside the secret-conditioned branch "
+            f"so its execution does not depend on the secret.",
+            pos,
+        )
+
     def _check_ifc_local_lambda_call(self, e: A.Call, sym) -> None:
         """Sink-side lambda-flow check at a call ``g(args)`` whose callee
         ``g`` is a LOCAL / parameter / constant that resolves to ONE certain
