@@ -318,6 +318,26 @@ authoritative full run stays `unittest discover`. The suite must be run
 with the extra installed either way: it was a missing PyYAML that let
 eleven supply-chain tests skip while the run printed OK.
 
+Capa also **dogfoods its own supply-chain posture in its own build**.
+The compiler has **zero third-party runtime dependencies** (it is pure
+Python standard library), so the published wheel and sdist are
+dependency-free and `pip install capa-language` pulls nothing from
+third parties; the optional extras in
+[`pyproject.toml`](https://github.com/nelsonduarte/capa-language/blob/main/pyproject.toml)
+are version floors for dev/CI tooling, never runtime pins. In CI, those
+dev/CI dependencies (test, wasm, and LSP tooling) are installed from
+universal, hash-pinned lockfiles
+([`requirements-test.lock`](https://github.com/nelsonduarte/capa-language/blob/main/requirements-test.lock)
+and [`requirements-ci.lock`](https://github.com/nelsonduarte/capa-language/blob/main/requirements-ci.lock),
+both `uv`-generated) under `pip install --require-hashes`, so every CI
+dependency is verified byte-for-byte against a sha256 and a tampered or
+drifted dependency fails the build closed. This is build- and CI-level
+reproducibility and tamper-evidence for how Capa is developed, not a
+runtime or user-install guarantee (there are no runtime dependencies to
+protect). It sits alongside SHA-pinned GitHub Actions, PyPI Trusted
+Publishing (OIDC + PEP 740 attestations), and a `pip-audit` CVE gate on
+the dev surface.
+
 The Tier 1 supply-chain artefacts are **all shipping** today:
 
 | Artefact | Command | Notes |
