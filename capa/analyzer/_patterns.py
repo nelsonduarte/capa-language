@@ -703,29 +703,23 @@ class _PatternsMixin:
             # pattern's fields so this single diagnostic is the only one, with
             # no cascade of undefined-name errors on the binders.
             #
+            # The SAME-NAMED generic-constructor launder is now CLOSED at the
+            # construction seams, not here. When a generic type's own parameter
+            # shares the caller's rigid parameter NAME (``type Wrap<T>`` used
+            # inside ``fun leak<T>``), constructing ``Wrap { v: t }`` /
+            # ``Wrapped(t)`` unifies the payload variable ``T`` against the
+            # rigid ``T`` and ``unify``'s reflexive same-name short-circuit
+            # (``typesys.py:416-423``) returns True WITHOUT binding. The struct
+            # and variant construction seams used to read
+            # ``mapping.get(p, TyUnknown)`` and collapse the type argument to
+            # ``TyUnknown``, erasing the rigid provenance before it reached this
+            # guard. Both seams now route through the shared
+            # ``_constructor_result_args`` helper, which restores the rigid
+            # ``TyVar(p)`` when a field / payload still carries it, so the
+            # constructed value stays rigid and a downstream public-twin
+            # destructure reaches this reject with a rigid scrutinee (the nested
+            # ``List<T>`` sibling closes with the same parallel walk).
             # DISCLOSED OPEN RESIDUALS (not closed here):
-            #   - A rigid value laundered through a SAME-NAMED generic
-            #     constructor payload. When a sum type's own type parameter
-            #     shares the caller's rigid parameter NAME (``type Wrap<T>``
-            #     used inside ``fun leak<T>``), constructing ``Wrapped(t)``
-            #     unifies the payload variable ``T`` against the rigid ``T``,
-            #     and ``unify``'s reflexive same-name short-circuit
-            #     (``typesys.py:416-423``) returns True WITHOUT binding. Variant
-            #     construction then reads ``mapping.get(p, TyUnknown)``
-            #     (``_dispatch.py:350``) and collapses the type argument to
-            #     ``TyUnknown``, so the constructed value is ``Wrap<TyUnknown>``
-            #     and a match payload binds as ``TyUnknown`` (NOT as a rigid
-            #     ``TyVar``, and NOT as a flexible ``?``). The rigid provenance
-            #     is ERASED before it reaches this guard, so a downstream
-            #     public-twin destructure resolves nothing and the reject does
-            #     not fire: the @secret still leaks, silently, on both backends.
-            #     This is NOT a flexible-``?`` evasion; the ``is_flexible``
-            #     exclusion above is not implicated (a DIFFERENT
-            #     constructor-parameter name keeps the payload rigid and the
-            #     guard correctly rejects it). Closing it needs its own design
-            #     cycle (candidate: seed a rigid self-binding at variant
-            #     construction, mirroring the method-dispatcher precedent at
-            #     ``typesys.py:425-441``).
             #   - A TRAIT-typed scrutinee (``s: Shape`` then
             #     ``let Circle { r } = s``): ``ty.name`` resolves to a TRAIT,
             #     not a struct and not a type variable, so the legitimate

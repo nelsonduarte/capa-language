@@ -355,9 +355,13 @@ class _DispatchMixin:
                         )
                     if sym.variant_owner is not None:
                         owner = sym.variant_owner
-                        args = tuple(
-                            mapping.get(p, TyUnknown)
-                            for p in owner.type_params
+                        field_pairs = [
+                            (exp_ty, arg_tys[i])
+                            for i, exp_ty in enumerate(expected)
+                            if i < len(arg_tys)
+                        ]
+                        args = self._constructor_result_args(
+                            tuple(owner.type_params), mapping, field_pairs,
                         )
                         return TyName(owner.name, args)
                     return TyUnknown

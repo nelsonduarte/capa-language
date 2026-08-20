@@ -57,19 +57,29 @@ A FLEXIBLE ``?`` inference placeholder is EXCLUDED from the reject: an as-yet
 unresolved element type (the empty-list for-destructure, ``let xs = [];
 for Point { x } in xs``) is pinned to a concrete type later and stays legal.
 
+The SAME-NAMED generic-constructor launder is now CLOSED. A rigid value
+constructed through a generic STRUCT literal or VARIANT call whose type
+parameter shares the caller's rigid NAME (``type Wrap<T>`` used inside
+``fun leak<T>``, and the nested ``type Wrap<T> { v: List<T> }`` sibling) kept
+its rigid provenance only up to the construction seam: ``unify``'s reflexive
+same-name short-circuit returns without binding, and the seam then collapsed
+the type argument to ``TyUnknown``, erasing the rigid ``T`` so a downstream
+public-twin destructure resolved nothing and the @secret leaked, silently, on
+both backends. A single shared construction-site helper
+(``_constructor_result_args``, routed by both the struct-literal seam and the
+variant-call seam) restores the rigid marker the seam was dropping: when a
+field / payload carries the same rigid ``TyVar(p)`` unify left unbound, the
+constructed value keeps ``TyVar(p)`` instead of erasing to ``TyUnknown``, so
+the value behaves exactly like holding the rigid ``t`` directly and the
+existing rigid-scrutinee reject fires at the twin destructure. ``unify`` is
+untouched; a DIFFERENT constructor-parameter name (``type Wrap<E>``) already
+bound the payload rigid and was already rejected. The remaining same-name
+erasure SITES the prior analysis named (closure-return, ``?``-on-``Result``,
+map/filter) are separate seams and stay open.
+
 DISCLOSED OPEN RESIDUALS (each accepted TODAY, pinned so a future tightening
 is a deliberate, visible change):
 
-* a rigid value laundered through a SAME-NAMED generic constructor payload
-  (``type Wrap<T>`` used inside ``fun leak<T>``): the shared type-parameter
-  NAME makes ``unify``'s reflexive same-name short-circuit return without
-  binding, so variant construction collapses the payload's type argument to
-  ``TyUnknown`` (erasing the rigid provenance BEFORE the binder guard). The
-  match payload then binds as ``TyUnknown`` (not a rigid ``TyVar``, not a
-  flexible ``?``), a downstream public-twin destructure does not fire, and the
-  @secret still leaks, silently, on both backends. This is NOT a flexible-``?``
-  evasion; the ``is_flexible`` exclusion is not implicated (a DIFFERENT
-  constructor-parameter name keeps the payload rigid and the guard rejects it);
 * a TRAIT-typed scrutinee (``s: Shape`` then ``let OtherCircle { r } = s``):
   ``ty.name`` resolves to a trait, not a struct and not a type variable, so
   the downcast stays accepted and a public-twin downcast is not caught
@@ -1160,18 +1170,19 @@ RES_TRAIT_LAUNDER = (
     "fun main(stdio: Stdio)\n"
     "    leak(Circle { r: 7 }, stdio)\n")
 
-# A rigid value laundered through a SAME-NAMED generic constructor payload.
-# ``type Wrap<T>`` shares the caller's rigid parameter NAME (``fun leak<T>``),
-# so constructing ``Wrapped(t)`` unifies the payload variable ``T`` against the
-# rigid ``T``; ``unify``'s reflexive same-name short-circuit returns True
-# WITHOUT binding, and variant construction reads ``mapping.get('T', TyUnknown)``
-# and collapses the type argument to ``TyUnknown``. The match payload ``inner``
-# then binds as ``TyUnknown`` (not a rigid ``TyVar``, not a flexible ``?``), so
-# the downstream public-twin destructure resolves nothing and the rigid reject
-# does not fire: accepted at --check and LEAKS the secret, silently, on both
-# backends. A KNOWN-OPEN residual (see the module docstring); pinned so a future
-# change to the accept/leak behavior is deliberate and visible. NOT a
-# flexible-``?`` evasion: the differently-named twin below stays rejected.
+# A rigid value laundered through a SAME-NAMED generic VARIANT constructor
+# payload. ``type Wrap<T>`` shares the caller's rigid parameter NAME
+# (``fun leak<T>``), so constructing ``Wrapped(t)`` unifies the payload variable
+# ``T`` against the rigid ``T``; ``unify``'s reflexive same-name short-circuit
+# returns True WITHOUT binding. Before the construction-site fix the variant
+# seam read ``mapping.get('T', TyUnknown)`` and collapsed the type argument to
+# ``TyUnknown``, so the match payload ``inner`` bound as ``TyUnknown`` and the
+# @secret leaked silently. The shared ``_constructor_result_args`` helper now
+# restores ``TyVar('T')``, so ``inner`` binds rigid and the downstream
+# public-twin destructure is REJECTED. This is the variant arm of the closed
+# class below (its name is kept for continuity with the prior disclosed
+# residual). NOT a flexible-``?`` evasion: the differently-named twin also
+# rejects.
 RES_SAME_NAME_CTOR_LAUNDER = (_SEC +
     "type Wrap<T> =\n"
     "    Wrapped(T)\n"
@@ -1218,7 +1229,9 @@ class TestDisclosedResidualsPinned(unittest.TestCase):
     """The disclosed open residuals behave AS DOCUMENTED: the trait scrutinee
     is accepted (concrete named trait type, out of this rule's scope); the
     sum-scrutinee D1-cousin is accepted at --check and faults loud on both
-    backends."""
+    backends. The same-name-constructor launder is no longer here: it is CLOSED
+    (see ``TestSameNameCtorLaunderNowRejected``); ``RES_DIFF_NAME_CTOR_REJECTED``
+    stays pinned to confirm the differently-named case rejects as before."""
 
     def test_trait_launder_accepted_and_leaks(self):
         r = _analyze(RES_TRAIT_LAUNDER)
@@ -1226,20 +1239,6 @@ class TestDisclosedResidualsPinned(unittest.TestCase):
         self.assertEqual(len(_mismatch_errors(r)), 0,
                          [e.message for e in r.errors])
         self.assertEqual(_run_py(RES_TRAIT_LAUNDER), "7\n")
-
-    def test_same_name_ctor_launder_accepted_and_leaks(self):
-        # NEWLY DISCLOSED open residual: the type-parameter name collision
-        # erases the rigid provenance (payload binds ``TyUnknown``), so the
-        # binder guard never sees a rigid ``TyVar`` and the @secret leaks
-        # silently. Accepted at --check with no mismatch error and no IFC
-        # noise, then leaks on Python. Pinned so a future close is deliberate.
-        r = _analyze(RES_SAME_NAME_CTOR_LAUNDER)
-        self.assertTrue(r.ok, [e.message for e in r.errors])
-        self.assertEqual(len(_mismatch_errors(r)), 0,
-                         [e.message for e in r.errors])
-        self.assertEqual(len(_flow_warnings(r)), 0,
-                         [w.message for w in r.warnings])
-        self.assertEqual(_run_py(RES_SAME_NAME_CTOR_LAUNDER), "s3cr3t\n")
 
     def test_diff_name_ctor_still_rejected(self):
         # The mechanism boundary: a DIFFERENT constructor-parameter name keeps
@@ -1262,6 +1261,182 @@ class TestDisclosedResidualsPinned(unittest.TestCase):
         if _wasm_unavailable() is None:
             with self.assertRaises(Exception):
                 _run_wasm(RES_SUM_D1_COUSIN)
+
+
+# ---- CLOSED: the SAME-NAMED generic-constructor launder now REJECTS -------
+#
+# A rigid value constructed through a generic STRUCT literal or VARIANT call
+# whose type parameter shares the caller's rigid NAME (``type Wrap<T>`` used
+# inside ``fun leak<T>``) used to erase the rigid ``T`` to ``TyUnknown`` at the
+# construction seam, so a downstream public-twin destructure resolved nothing
+# and the @secret leaked silently on both backends. The shared
+# ``_constructor_result_args`` helper restores the rigid marker, so the value
+# stays rigid and the existing rigid-scrutinee reject fires. Every shape is now
+# a hard type error at BOTH tiers, refused by all three runtimes.
+
+# STRUCT-literal direct: ``let w = Wrap { v: t }`` then a public-twin
+# destructure of the field (the target shape).
+STRUCTCTOR_DIRECT = (_SEC + _WRAP +
+    "fun leak<T>(t: T, stdio: Stdio)\n"
+    "    let w = Wrap { v: t }\n"
+    "    let Wrap { v } = w\n"
+    "    let Other { a } = v\n"
+    "    stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(ASecret { a: \"s3cr3t\" }, stdio)\n")
+
+# NESTED sibling: the field is a ``List<T>``; the rigid ``T`` survives the
+# parallel walk one level down, so the for-destructure twin over ``v`` rejects.
+_WRAP_LIST = "type WrapL<T> { v: List<T> }\n"
+STRUCTCTOR_NESTED = (_SEC + _WRAP_LIST +
+    "fun leak<T>(t: T, stdio: Stdio)\n"
+    "    let w = WrapL { v: [t] }\n"
+    "    let WrapL { v } = w\n"
+    "    for Other { a } in v\n"
+    "        stdio.println(a)\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak(ASecret { a: \"s3cr3t\" }, stdio)\n")
+
+# name -> (source, function holding the twin destructure). The variant arm is
+# the flipped former disclosed residual.
+_CTOR_REJECT = {
+    "structctor_direct": (STRUCTCTOR_DIRECT, "leak"),
+    "structctor_nested": (STRUCTCTOR_NESTED, "leak"),
+    "variant_ctor": (RES_SAME_NAME_CTOR_LAUNDER, "leak"),
+}
+
+
+class TestSameNameCtorLaunderNowRejected(unittest.TestCase):
+    """The same-name generic-constructor launder is CLOSED at the construction
+    seams: the struct-literal, the nested ``List<T>`` field, and the variant
+    call each keep the rigid ``T``, so the twin destructure is a hard type
+    error with the mismatch diagnostic at BOTH tiers and is refused by all
+    three runtimes."""
+
+    def test_mismatch_at_both_tiers(self):
+        for name, (src, fn) in _CTOR_REJECT.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertFalse(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_mismatch_errors(r)), 1,
+                                 [e.message for e in r.errors])
+                self.assertEqual(len(_flow_warnings(r)), 0,
+                                 [w.message for w in r.warnings])
+                rs = _analyze(_strict(src, fn))
+                self.assertEqual(len(_mismatch_errors(rs)), 1,
+                                 [e.message for e in rs.errors])
+
+    def test_all_runtimes_refuse(self):
+        with tempfile.TemporaryDirectory() as td:
+            for name, (src, _fn) in _CTOR_REJECT.items():
+                with self.subTest(shape=name):
+                    p = Path(td) / f"ctor_{name}.capa"
+                    p.write_text(src, encoding="utf-8")
+                    for argv in (
+                        ["--check", str(p)],
+                        ["--run", str(p)],
+                        ["--run", "--wasm", str(p)],
+                    ):
+                        rc, _out, _err = _cli(argv)
+                        self.assertEqual(rc, 1, (name, argv, _err))
+
+
+# ---- CONTROLS: the construction-site fix must NOT over-reject -------------
+
+# ``rewrap<T>`` constructs a generic struct, destructures it to a NAME (not a
+# concrete twin), and returns it. The rigid ``T`` is preserved but never
+# downcast, so it must still compile and run.
+REWRAP_OK = (_WRAP +
+    "fun rewrap<T>(t: T) -> T\n"
+    "    let w = Wrap { v: t }\n"
+    "    let Wrap { v } = w\n"
+    "    return v\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${rewrap(7)}\")\n")
+
+# A CONCRETE payload constructed inside a generic function: the field binds to
+# ``Inner`` (unify binds nothing about ``T`` from it), so the field read is fine.
+CONCRETE_PAYLOAD_OK = (
+    "type Inner { n: Int }\n" + _WRAP +
+    "fun f<T>(t: T, stdio: Stdio)\n"
+    "    let w = Wrap { v: Inner { n: 7 } }\n"
+    "    let Wrap { v } = w\n"
+    "    stdio.println(\"${v.n}\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    f(\"x\", stdio)\n")
+
+_CTOR_CONTROL = {
+    "rewrap": (REWRAP_OK, "7\n"),
+    "concrete_payload": (CONCRETE_PAYLOAD_OK, "7\n"),
+}
+
+
+class TestSameNameCtorControlsStillCompile(unittest.TestCase):
+    """The over-reject guards: a generic constructor destructured to a NAME
+    (``rewrap<T>``) and a concrete-payload construction inside a generic
+    function stay accepted with no mismatch error and run on Python. The
+    differently-named ``Wrap<E>`` still rejects (its pin lives in
+    ``TestDisclosedResidualsPinned``)."""
+
+    def test_accepted_and_runs_python(self):
+        for name, (src, out) in _CTOR_CONTROL.items():
+            with self.subTest(shape=name):
+                r = _analyze(src)
+                self.assertTrue(r.ok, [e.message for e in r.errors])
+                self.assertEqual(len(_mismatch_errors(r)), 0,
+                                 [e.message for e in r.errors])
+                self.assertEqual(_run_py(src), out)
+
+
+class TestConstructorResultArgsSingleSource(unittest.TestCase):
+    """Cross-check (Principle 4): the struct-literal and variant construction
+    seams BOTH route through the ONE ``_constructor_result_args`` helper, so
+    they cannot drift. A direct unit call reproduces the rigid-preservation
+    rule for each of the three per-parameter branches."""
+
+    def _analyzer(self):
+        from capa.analyzer import Analyzer
+        return Analyzer(source="")
+
+    def test_helper_preserves_rigid_and_erases_unconstrained(self):
+        from capa.typesys import TyName, TyUnknown, TyVar
+        a = self._analyzer()
+        rigid = TyVar("T")
+        # (1) bound param -> the binding; (2) reflexive same-name collision
+        # (expected T, actual the rigid T) -> preserved TyVar('T'); the nested
+        # List<T> witness closes with the same walk; (3) unconstrained -> erased.
+        bound = a._constructor_result_args(
+            ("T",), {"T": TyName("Int", ())}, [(rigid, rigid)],
+        )
+        self.assertEqual(bound, (TyName("Int", ()),))
+        preserved = a._constructor_result_args(
+            ("T",), {}, [(rigid, rigid)],
+        )
+        self.assertEqual(preserved, (rigid,))
+        nested = a._constructor_result_args(
+            ("T",), {},
+            [(TyName("List", (rigid,)), TyName("List", (rigid,)))],
+        )
+        self.assertEqual(nested, (rigid,))
+        erased = a._constructor_result_args(
+            ("T",), {}, [(rigid, TyUnknown)],
+        )
+        self.assertEqual(erased, (TyUnknown,))
+
+    def test_both_seams_call_the_helper(self):
+        # Guard against a future edit re-inlining ``mapping.get(p, TyUnknown)``
+        # at either seam: the source of each seam must reference the shared
+        # helper by name.
+        import inspect
+        from capa.analyzer import _dispatch, _expressions
+        self.assertIn(
+            "_constructor_result_args",
+            inspect.getsource(_expressions),
+        )
+        self.assertIn(
+            "_constructor_result_args",
+            inspect.getsource(_dispatch),
+        )
 
 
 if __name__ == "__main__":

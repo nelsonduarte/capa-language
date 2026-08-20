@@ -1390,8 +1390,13 @@ class _ExpressionsMixin:
                 f"{', '.join(sorted(missing))}",
                 e.pos,
             )
-        type_args = tuple(
-            mapping.get(p, TyUnknown) for p in sym.type_params
+        field_pairs = [
+            (sym.struct_fields[fname], self.types.get(id(fexpr), TyUnknown))
+            for fname, fexpr in e.fields
+            if fname in sym.struct_fields
+        ]
+        type_args = self._constructor_result_args(
+            tuple(sym.type_params), mapping, field_pairs,
         )
         return TyName(sym.name, type_args)
 
