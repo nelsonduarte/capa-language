@@ -3186,6 +3186,77 @@ class _IfcMixin:
                 callee_sink_caps.get(param_idx, frozenset()),
             )
 
+    def _check_ifc_call_pc(self, e: A.Call, sym) -> None:
+        """IFC-1 (strict implicit-flow across a call): under ``@strict_ifc``,
+        calling a free function that can EXECUTE a public sink under its own
+        control flow while the caller's pc is SECRET (the call sits inside a
+        branch whose condition is @secret) leaks whether that branch was
+        taken -- exactly the intra-procedural implicit-flow rule
+        (``_check_ifc_sink``), now composed across the function boundary.
+
+        The callee's ``sink_reaching_pc`` bit is a STATIC property from the
+        summary pre-pass (whether the body reaches a real built-in sink or
+        ``panic``, directly or transitively), so no live pc / label of the
+        callee is consulted here. A free-function name resolves to exactly
+        one callable, so the lookup is precise. Hard error under
+        ``@strict_ifc`` ONLY (no default-tier warning), matching the inline
+        rule's tier."""
+        if not getattr(self, "_strict_ifc", False):
+            return
+        if L.normalize(getattr(self, "_pc_label", L.PUBLIC)) != L.SECRET:
+            return
+        if self._ifc_sink_pc.get(("fun", sym.name), False):
+            self._emit_ifc_call_pc(repr(sym.name), e.pos)
+
+    def _check_ifc_method_call_pc(
+        self, e: A.MethodCall, type_sym, recv_ty,
+    ) -> None:
+        """IFC-1 (strict implicit-flow), method-call form. Resolves the
+        callee's ``sink_reaching_pc`` bit exactly as
+        ``_check_ifc_method_call_summary`` resolves its sink-reaching set: a
+        statically-known CONCRETE receiver whose exact ``("method", T,
+        method)`` key is present uses that one bit; a TRAIT- / capability-
+        typed (dynamically dispatched) receiver, or a concrete receiver
+        whose exact key is absent, ORs the bit over every impl method of
+        this name (the same sound by-name over-approximation the summary
+        uses). Hard error under ``@strict_ifc`` ONLY, as with the free
+        form."""
+        if not getattr(self, "_strict_ifc", False):
+            return
+        if L.normalize(getattr(self, "_pc_label", L.PUBLIC)) != L.SECRET:
+            return
+        exact_key = ("method", recv_ty.name, e.method)
+        from . import SymbolKind
+        recv_is_dynamic = type_sym is not None and getattr(
+            type_sym, "kind", None,
+        ) in (SymbolKind.TRAIT, SymbolKind.CAPABILITY)
+        if not recv_is_dynamic and exact_key in self._ifc_summaries:
+            reaches = self._ifc_sink_pc.get(exact_key, False)
+        else:
+            from ._ifc_summary import methods_by_name
+            grouping = methods_by_name(self._ifc_summaries)
+            reaches = any(
+                self._ifc_sink_pc.get(k, False)
+                for k in grouping.get(e.method, ())
+            )
+        if reaches:
+            self._emit_ifc_call_pc(
+                repr(f"{recv_ty.name}.{e.method}"), e.pos,
+            )
+
+    def _emit_ifc_call_pc(self, callee: str, pos) -> None:
+        """Emit the IFC-1 cross-call implicit-flow diagnostic. Mirrors the
+        inline strict implicit-flow error (``_check_ifc_sink``) reworded for
+        the call site."""
+        self._err(
+            f"information-flow (strict): calling {callee} runs a public "
+            f"sink under secret control flow (inside a branch whose "
+            f"condition is @secret), which leaks whether that branch was "
+            f"taken. Move the call outside the secret-conditioned branch "
+            f"so its execution does not depend on the secret.",
+            pos,
+        )
+
     def _check_ifc_local_lambda_call(self, e: A.Call, sym) -> None:
         """Sink-side lambda-flow check at a call ``g(args)`` whose callee
         ``g`` is a LOCAL / parameter / constant that resolves to ONE certain

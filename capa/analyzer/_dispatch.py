@@ -279,6 +279,10 @@ class _DispatchMixin:
                         # parameter order, so it doubles as the
                         # param-index -> arg-index map.
                         self._check_ifc_call_summary(e, sym, perm)
+                        # IFC-1: calling a sink-reaching helper under a
+                        # secret pc is an implicit-flow leak (the call's
+                        # execution reveals the secret-conditioned branch).
+                        self._check_ifc_call_pc(e, sym)
                         # ``panic(message)`` writes to stderr, so the
                         # builtin is a public sink like Stdio.eprintln.
                         # A user function named ``panic`` shadows the
@@ -1007,6 +1011,10 @@ class _DispatchMixin:
         self._check_ifc_method_call_summary(
             e, type_sym, method_sym, recv_ty, perm,
         )
+        # IFC-1: calling a sink-reaching method under a secret pc is an
+        # implicit-flow leak (the call's execution reveals the
+        # secret-conditioned branch).
+        self._check_ifc_method_call_pc(e, type_sym, recv_ty)
         # Cross-function mutation effect (closes gap 1): a method that
         # stores a secret-derived value into a field of ``self`` / a
         # parameter -- or pushes one into a container reached through

@@ -245,6 +245,14 @@ _MAX_FIELD_PATH = 5
 _SECRET_SOURCE_CAPS: frozenset = frozenset(cap for cap, _m in _SECRET_SOURCES)
 _SECRET_SOURCE_METHODS: frozenset = frozenset(m for _c, m in _SECRET_SOURCES)
 
+# The built-in sink CAPABILITY type names (Stdio / Net / Fs / Db / Serve),
+# derived from ``_PUBLIC_SINKS``. Used by the strict implicit-flow
+# (sink-reaching-pc) recognition to decide, TYPE-AWARELY, whether a
+# method-call receiver is a real built-in sink capability -- so
+# ``xs.get(i)`` on a ``List`` receiver is never mistaken for ``Net.get``,
+# the by-name collision the pc bit must not over-report on.
+_SINK_CAPS: frozenset = frozenset(cap for cap, _m in _PUBLIC_SINKS)
+
 
 # A callable's parameters, in the canonical order the analyzer uses:
 # for a method, index 0 is ``self`` and the explicit parameters follow
@@ -258,9 +266,9 @@ _SECRET_SOURCE_METHODS: frozenset = frozenset(m for _c, m in _SECRET_SOURCES)
 
 def compute_ifc_summaries(
     module: A.Module, global_scope,
-) -> tuple[dict, dict, dict, dict, dict, dict]:
+) -> tuple[dict, dict, dict, dict, dict, dict, dict]:
     """Return ``(sink_summaries, field_effects, return_effects,
-    sink_caps, sink_paths, capture_sink_paths)``:
+    sink_caps, sink_paths, capture_sink_paths, sink_reaching_pc)``:
 
     * ``sink_summaries``: ``{callable_key: frozenset(sink_reaching
       param indices)}`` -- a value parameter whose value reaches a
@@ -323,6 +331,16 @@ def compute_ifc_summaries(
       Computed ONCE after the fixpoint (it only reads the final named
       summaries), by seeding each lambda's captures as sources in the SAME
       declassify-aware body walk.
+    * ``sink_reaching_pc``: ``{callable_key: bool}`` -- the STRICT
+      implicit-flow (IFC-1) bit: True iff the body can EXECUTE a real
+      built-in public sink (a ``_PUBLIC_SINKS`` method whose receiver
+      resolves type-awarely to a built-in sink capability, or builtin
+      ``panic``) on SOME path under its own control flow, directly or
+      transitively through a resolved call. NOT parameter-indexed and NOT
+      data-taint gated: it records only "invoking this function is
+      observable at a public sink", which the call site
+      (``_check_ifc_call_pc``) hard-errors on when the invocation sits
+      under a secret pc.
 
     ``global_scope`` is the analyzer's populated global scope, used to
     tell user functions / variants / capabilities apart at call sites.
@@ -383,6 +401,20 @@ class _SummaryBuilder:
         # reaches a sink (conservative default, prefix-compatible with every
         # tainted path). Parallel to ``summaries`` and on the SAME fixpoint.
         self.sink_paths: dict = {}
+        # callable_key -> bool: the STRICT IMPLICIT-FLOW (sink-reaching-pc)
+        # bit (IFC-1). True iff the body, on SOME path under its own control
+        # flow, can EXECUTE a real built-in public sink -- a ``_PUBLIC_SINKS``
+        # method whose RECEIVER resolves (type-awarely, via ``_cur_value_types``)
+        # to a built-in sink capability, or builtin ``panic`` -- directly or
+        # transitively through a call to another user callable. NOT
+        # parameter-indexed, NOT data-taint gated, NOT declassify-sensitive:
+        # it records only "invoking this function is observable at a public
+        # sink". The call site (``_check_ifc_call_pc`` in :mod:`._ifc`) hard-
+        # errors under ``@strict_ifc`` when such a callee is invoked under a
+        # secret pc, closing the cross-call implicit-flow noninterference hole.
+        # Computed to the SAME monotone fixpoint (a single bool per callable,
+        # a finite lattice), so self / mutual recursion converge.
+        self.sink_reaching_pc: dict = {}
         # callable_key -> {target param idx -> set of source param idx /
         # INTERNAL_SECRET}: the mutation effect -- a field store OR a
         # container mutation (see module docstring).
@@ -552,6 +584,7 @@ class _SummaryBuilder:
                 self.summaries[key] = set()
                 self.sink_caps[key] = {}
                 self.sink_paths[key] = {}
+                self.sink_reaching_pc[key] = False
                 self.field_effects[key] = {}
                 self.return_effects[key] = {}
                 self.secret_source_params[key] = self._secret_source_params(
@@ -581,6 +614,7 @@ class _SummaryBuilder:
                     self.summaries[key] = set()
                     self.sink_caps[key] = {}
                     self.sink_paths[key] = {}
+                    self.sink_reaching_pc[key] = False
                     self.field_effects[key] = {}
                     self.return_effects[key] = {}
                     self.secret_source_params[key] = (
@@ -647,6 +681,7 @@ class _SummaryBuilder:
             self.summaries[key] = set()
             self.sink_caps[key] = {}
             self.sink_paths[key] = {}
+            self.sink_reaching_pc[key] = False
             self.field_effects[key] = {}
             self.return_effects[key] = {}
             self.secret_source_params[key] = self._secret_source_params(
@@ -864,11 +899,16 @@ class _SummaryBuilder:
             changed = False
             for key in self.callables:
                 names, decl, _is_method = self.callables[key]
-                reaching, effects, returns, scaps, spaths = self._analyze_body(
-                    names, decl, key,
-                )
+                (
+                    reaching, effects, returns, scaps, spaths, reaches_pc,
+                ) = self._analyze_body(names, decl, key)
                 if not reaching <= self.summaries[key]:
                     self.summaries[key] |= reaching
+                    changed = True
+                # The sink-reaching-pc bit is monotone (once True it stays
+                # True); grow it on the SAME fixpoint as the sink summaries.
+                if reaches_pc and not self.sink_reaching_pc[key]:
+                    self.sink_reaching_pc[key] = True
                     changed = True
                 # ``scaps`` is a per-parameter map (param idx -> set of
                 # sink caps), merged monotonically exactly like the
@@ -916,8 +956,9 @@ class _SummaryBuilder:
                     name: frozenset(paths) for name, paths in cp.items()
                 }
         self.capture_sink_paths = capture_sink_paths
+        sink_reaching_pc = dict(self.sink_reaching_pc)
         return sinks, feffects, reffects, sink_caps, sink_paths, \
-            capture_sink_paths
+            capture_sink_paths, sink_reaching_pc
 
     @staticmethod
     def _merge_effects(acc: dict, new: dict) -> bool:
@@ -939,7 +980,7 @@ class _SummaryBuilder:
 
     def _analyze_body(
         self, param_names: list[str], decl: A.FunDecl, key,
-    ) -> tuple[set, dict, set, dict, dict]:
+    ) -> tuple[set, dict, set, dict, dict, bool]:
         """Compute (a) which parameter indices of ``decl`` reach a sink,
         (b) the field-write effects, and (c) the return-secret sources,
         using the summaries computed so far for transitive calls.
@@ -1034,6 +1075,13 @@ class _SummaryBuilder:
         # parameter reaching a sink (the conservative default).
         sink_paths_local: dict = {}
         self._cur_sink_paths = sink_paths_local
+        # Strict implicit-flow (IFC-1): whether THIS body can execute a real
+        # built-in public sink (or ``panic``) under its own control flow,
+        # directly or transitively. Set True at the direct-sink recognition
+        # (a receiver typed as a built-in sink capability) and at every
+        # resolved call to a callee whose own bit is already True. Read back
+        # in ``run()`` and merged onto the monotone fixpoint.
+        self._cur_reaches_sink_pc = False
         # Per-callable analysis state consulted inside the walk (which
         # threads only ``env`` / ``reaching`` through its signatures):
         # the names of secret-source-capability params, the accumulating
@@ -1111,7 +1159,8 @@ class _SummaryBuilder:
             self._record_return(body_stmts[-1].expr, env, reaching)
         else:
             self._walk_block(decl.body, env, reaching)
-        return reaching, effects, returns, sink_caps_local, sink_paths_local
+        return reaching, effects, returns, sink_caps_local, \
+            sink_paths_local, self._cur_reaches_sink_pc
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
         for stmt in block.stmts:
@@ -2351,6 +2400,10 @@ class _SummaryBuilder:
             and arg_srcs
         ):
             reaching |= arg_srcs[0]
+            # Strict implicit-flow (IFC-1): ``panic`` IS a public sink, so a
+            # body that panics is sink-reaching under its own control flow
+            # regardless of the message's label.
+            self._cur_reaches_sink_pc = True
             # Observational (feature #6, B1): ``panic`` writes its message
             # to stderr, treated as Stdio egress (matching the
             # intra-procedural panic sink). Attribute Stdio to each param
@@ -2391,6 +2444,11 @@ class _SummaryBuilder:
             invoke_src = set(env.get(e.callee.name, set()))
         if key in self.callables:
             names, _decl, _is_method = self.callables[key]
+            # Strict implicit-flow (IFC-1) transitive closure: calling a
+            # free function that can itself run a public sink under its own
+            # control flow makes THIS body sink-reaching too.
+            if self.sink_reaching_pc.get(key):
+                self._cur_reaches_sink_pc = True
             perm = self._bind_args(e, names)
             sink_params = self.summaries.get(key, set())
             callee_caps = self.sink_caps.get(key, {})
@@ -2486,6 +2544,18 @@ class _SummaryBuilder:
             and e.receiver.name in self._cur_secret_source_params
         ):
             return {INTERNAL_SECRET}
+
+        # Strict implicit-flow (IFC-1): a DIRECT built-in public sink makes
+        # THIS body sink-reaching under its own control flow, independent of
+        # the argument labels (the mere fact the sink runs leaks the branch
+        # bit). Recognised TYPE-AWARELY: the receiver must resolve, via
+        # ``_cur_value_types``, to a built-in sink capability AND ``(cap,
+        # method)`` must be a public sink. This is why ``xs.get(i)`` (``xs``
+        # -> ``List``, ``("List", "get")`` not a sink) stays clean -- the
+        # by-name path below is deliberately NOT reused here.
+        cap = self._receiver_capability_name(e)
+        if cap in _SINK_CAPS and (cap, e.method) in _PUBLIC_SINKS:
+            self._cur_reaches_sink_pc = True
 
         # Built-in public sink (Stdio.println, Net.post, ...): a
         # param-derived value in a sink argument position reaches a
@@ -2600,6 +2670,16 @@ class _SummaryBuilder:
         # name. ``self`` is parameter index 0, the explicit args
         # follow (positional / named).
         candidate_keys = self.methods_by_name.get(e.method, [])
+        # Strict implicit-flow (IFC-1) transitive closure: invoking ANY
+        # candidate method that can itself run a public sink under its own
+        # control flow makes THIS body sink-reaching too. Over the SAME
+        # by-name candidate set the data channel uses, and -- unlike the
+        # data loop below -- NOT gated on ``sink_params`` (a method can reach
+        # a sink under its own control with no sink-reaching parameter).
+        for key in candidate_keys:
+            if self.sink_reaching_pc.get(key):
+                self._cur_reaches_sink_pc = True
+                break
         for key in candidate_keys:
             names, _decl, _is_method = self.callables[key]
             sink_params = self.summaries.get(key, set())
@@ -2791,6 +2871,22 @@ class _SummaryBuilder:
         gating the by-name shortcut out never loses a real leak."""
         candidate_keys = self.methods_by_name.get(e.method, [])
         return bool(self._result_candidate_keys(e, candidate_keys))
+
+    def _receiver_capability_name(self, e: A.MethodCall):
+        """The built-in CAPABILITY TYPE name a method-call receiver
+        resolves to via the walk's value-type map (``_cur_value_types``,
+        seeded from the declared parameter types), or ``None`` when the
+        receiver is not a plain Ident or its type is not statically known.
+
+        TYPE-RESOLVED, never by-name: the strict implicit-flow direct-sink
+        recognition uses it so ``xs.get(i)`` on a ``List`` receiver resolves
+        to ``"List"`` (not a sink) rather than colliding with ``Net.get``.
+        A by-name match would over-report the ``get`` / ``write`` / ``send``
+        method-name collisions the built-in sink capabilities share with
+        container / user methods."""
+        if isinstance(e.receiver, A.Ident):
+            return self._cur_value_types.get(e.receiver.name)
+        return None
 
     def _is_trait_type(self, type_name: str) -> bool:
         """True if ``type_name`` resolves to a TRAIT (dynamic dispatch),

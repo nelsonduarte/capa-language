@@ -722,6 +722,16 @@ class Analyzer(
         # before-def secret is soundly re-flagged on top of the def-time body
         # check).
         self._ifc_capture_sink_paths: dict = {}
+        # IFC-1 -- STRICT IMPLICIT-FLOW (sink-reaching-pc): callable_key ->
+        # bool, True iff the callee can execute a real built-in public sink
+        # (or ``panic``) on some path under its own control flow, directly or
+        # transitively. Consulted at each user call / method-call site
+        # (``_check_ifc_call_pc``): under ``@strict_ifc``, invoking such a
+        # callee while the pc is secret is a hard error, since the mere fact
+        # the call ran leaks whether the secret-conditioned branch was taken.
+        # This composes the intra-procedural implicit-flow rule across a
+        # function boundary.
+        self._ifc_sink_pc: dict = {}
 
     # Type-substitution machinery (_fresh_ty_var, _resolve_ty,
     # _commit_fresh_substitutions, _apply_mapping) lives in
@@ -779,6 +789,7 @@ class Analyzer(
             self._ifc_sink_caps,
             self._ifc_sink_paths,
             self._ifc_capture_sink_paths,
+            self._ifc_sink_pc,
         ) = compute_ifc_summaries(module, self.global_scope)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
