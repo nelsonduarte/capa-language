@@ -3212,15 +3212,30 @@ class _IfcMixin:
         self, e: A.MethodCall, type_sym, recv_ty,
     ) -> None:
         """IFC-1 (strict implicit-flow), method-call form. Resolves the
-        callee's ``sink_reaching_pc`` bit exactly as
-        ``_check_ifc_method_call_summary`` resolves its sink-reaching set: a
-        statically-known CONCRETE receiver whose exact ``("method", T,
-        method)`` key is present uses that one bit; a TRAIT- / capability-
-        typed (dynamically dispatched) receiver, or a concrete receiver
-        whose exact key is absent, ORs the bit over every impl method of
-        this name (the same sound by-name over-approximation the summary
-        uses). Hard error under ``@strict_ifc`` ONLY, as with the free
-        form."""
+        callee's ``sink_reaching_pc`` bit:
+
+        * a genuinely DYNAMIC receiver (a TRAIT- / capability-typed
+          receiver, dispatched at runtime) ORs the bit over every impl
+          method of this name -- the sound by-name over-approximation, since
+          the concrete impl is not known statically;
+        * a CONCRETE receiver whose exact ``("method", T, method)`` key is
+          present uses that one bit precisely;
+        * a CONCRETE receiver whose exact key is ABSENT contributes NO bit.
+          This is a BUILT-IN container / primitive receiver (``List`` /
+          ``Map`` / ``String`` ...), which has no user method that could
+          reach a sink, so it must not import an unrelated user method's bit.
+
+        Note the DIFFERENCE from ``_check_ifc_method_call_summary``: the pc
+        bit does NOT fall to the by-name union for a concrete-key-absent
+        receiver. The data channel there gates its by-name union on a SECRET
+        argument, but the pc channel fires on ANY argument, so widening a
+        built-in container getter (``xs.get(i)``) to a same-named user sink
+        method (``Logger.get``) would be a false positive on a plain
+        ``if secret: xs.get(0)``. Keeping the union only for a truly dynamic
+        receiver closes that without weakening any real rejection: a user
+        method reached via its exact key or a dynamic trait/capability
+        receiver still bites. Hard error under ``@strict_ifc`` ONLY, as with
+        the free form."""
         if not getattr(self, "_strict_ifc", False):
             return
         if L.normalize(getattr(self, "_pc_label", L.PUBLIC)) != L.SECRET:
@@ -3230,15 +3245,18 @@ class _IfcMixin:
         recv_is_dynamic = type_sym is not None and getattr(
             type_sym, "kind", None,
         ) in (SymbolKind.TRAIT, SymbolKind.CAPABILITY)
-        if not recv_is_dynamic and exact_key in self._ifc_summaries:
-            reaches = self._ifc_sink_pc.get(exact_key, False)
-        else:
+        if recv_is_dynamic:
             from ._ifc_summary import methods_by_name
             grouping = methods_by_name(self._ifc_summaries)
             reaches = any(
                 self._ifc_sink_pc.get(k, False)
                 for k in grouping.get(e.method, ())
             )
+        else:
+            # A concrete receiver: its precise exact-key bit, or NONE when
+            # the key is absent (a built-in container / primitive, which has
+            # no user sink method to import).
+            reaches = self._ifc_sink_pc.get(exact_key, False)
         if reaches:
             self._emit_ifc_call_pc(
                 repr(f"{recv_ty.name}.{e.method}"), e.pos,

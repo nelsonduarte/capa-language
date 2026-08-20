@@ -1050,6 +1050,24 @@ fun main(db: Db, env: Env)
     if s.length() > 3
         leak(db)
 ''',
+    # A genuinely DYNAMIC receiver (a trait-typed param, dispatched at
+    # runtime) whose impl method reaches a sink still bites via the sound
+    # by-name union -- the tightening that closes the built-in-container
+    # false positive must NOT drop this real dynamic-dispatch rejection.
+    "dynamic_trait_receiver_stdio": '''trait Speaker
+    fun say(self, stdio: Stdio)
+
+type Loud { tag: String }
+impl Speaker for Loud
+    fun say(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun run(sp: Speaker, stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        sp.say(stdio)
+''',
 }
 
 # Must-COMPILE controls (the over-reject guard): each stays ACCEPTED before
@@ -1104,6 +1122,41 @@ fun main(stdio: Stdio, env: Env)
 fun main(stdio: Stdio, env: Env)
     let _s = env.get("SECRET0").unwrap_or("d")
     rec(stdio, 2)
+''',
+    # (v) THE load-bearing over-reject pin: a built-in ``List.get(i)`` under
+    # a secret branch in a module that ALSO defines a user type with a
+    # SINK-REACHING method named ``get``. ``List.get`` is not a sink, so the
+    # pc check must NOT import the unrelated user ``get``'s bit via the
+    # by-name union (a concrete built-in receiver has no user method). RED
+    # on 6aae42e (rejected as ``calling 'List.get' runs a public sink``),
+    # GREEN after the method-key tightening.
+    "list_get_collides_with_user_get_sink": '''type Logger { tag: String }
+impl Logger
+    fun get(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let xs = ["a", "b"]
+    if s.length() > 3
+        let _v = xs.get(0)
+    stdio.println("fixed")
+''',
+    # (vi) The ``Map.get`` analogue of the same collision, kept alongside so
+    # the two built-in container getters behave consistently.
+    "map_get_collides_with_user_get_sink": '''type Logger { tag: String }
+impl Logger
+    fun get(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let m: Map<String, Int> = new_map()
+    if s.length() > 3
+        let _v = m.get("a")
+    stdio.println("fixed")
 ''',
 }
 
