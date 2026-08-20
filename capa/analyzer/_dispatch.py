@@ -283,6 +283,11 @@ class _DispatchMixin:
                         # secret pc is an implicit-flow leak (the call's
                         # execution reveals the secret-conditioned branch).
                         self._check_ifc_call_pc(e, sym)
+                        # IFC-2: inside a @constant_time function, passing a
+                        # @secret to a parameter that drives a variable-time
+                        # op inside the callee leaks it through timing (the
+                        # cross-call twin of the inline CT checks).
+                        self._check_ct_call(e, sym, perm)
                         # ``panic(message)`` writes to stderr, so the
                         # builtin is a public sink like Stdio.eprintln.
                         # A user function named ``panic`` shadows the
@@ -1015,6 +1020,11 @@ class _DispatchMixin:
         # implicit-flow leak (the call's execution reveals the
         # secret-conditioned branch).
         self._check_ifc_method_call_pc(e, type_sym, recv_ty)
+        # IFC-2: inside a @constant_time function, passing a @secret to a
+        # method parameter that drives a variable-time op inside the callee
+        # leaks it through timing (the cross-call twin of the inline CT
+        # checks; dispatch-target-restricted like the IFC-1 pc check).
+        self._check_ct_method_call(e, type_sym, method_sym, recv_ty, perm)
         # Cross-function mutation effect (closes gap 1): a method that
         # stores a secret-derived value into a field of ``self`` / a
         # parameter -- or pushes one into a container reached through

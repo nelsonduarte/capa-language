@@ -187,6 +187,8 @@ import dataclasses
 from .. import capa_ast as A
 from ._ifc import (
     _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
+    _VARIABLE_TIME_OPS, _SHORT_CIRCUIT_COMPARE_OPS,
+    _CT_INDEX_METHODS, _CT_SHORT_CIRCUIT_METHODS,
     _pattern_bound_names, _prefix_compatible,
 )
 
@@ -266,9 +268,10 @@ _SINK_CAPS: frozenset = frozenset(cap for cap, _m in _PUBLIC_SINKS)
 
 def compute_ifc_summaries(
     module: A.Module, global_scope,
-) -> tuple[dict, dict, dict, dict, dict, dict, dict]:
+) -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
     """Return ``(sink_summaries, field_effects, return_effects,
-    sink_caps, sink_paths, capture_sink_paths, sink_reaching_pc)``:
+    sink_caps, sink_paths, capture_sink_paths, sink_reaching_pc,
+    ct_sensitive)``:
 
     * ``sink_summaries``: ``{callable_key: frozenset(sink_reaching
       param indices)}`` -- a value parameter whose value reaches a
@@ -341,6 +344,22 @@ def compute_ifc_summaries(
       observable at a public sink", which the call site
       (``_check_ifc_call_pc``) hard-errors on when the invocation sits
       under a secret pc.
+    * ``ct_sensitive``: ``{callable_key: frozenset(param_idx)}`` -- the
+      CONSTANT-TIME (IFC-2) data channel: the 0-based indices of value
+      parameters whose value flows (directly or transitively, on the SAME
+      monotone fixpoint) into a VARIABLE-TIME operation inside the body --
+      division / modulo, a data-dependent branch condition / scrutinee, a
+      variable-time String / List compare, or a data-dependent index /
+      lookup. Annotation-BLIND (computed for every callable, not just
+      ``@constant_time`` ones): a compiling ``@constant_time`` callee has a
+      ct-sensitive parameter only if that parameter is un-annotated (public
+      inside), which is exactly the leaking case a caller must be stopped
+      from routing a secret into. Parameter-indexed like ``sink_summaries``
+      (index 0 = ``self`` for a method), the timing-side-channel twin of it.
+      The call site (``_check_ct_call`` / ``_check_ct_method_call``)
+      hard-errors, inside a ``@constant_time`` function, on a @secret
+      argument bound to a ct-sensitive parameter -- closing the cross-call
+      blind spot the inline CT checks (``_check_ct_arith`` etc.) miss.
 
     ``global_scope`` is the analyzer's populated global scope, used to
     tell user functions / variants / capabilities apart at call sites.
@@ -415,6 +434,21 @@ class _SummaryBuilder:
         # Computed to the SAME monotone fixpoint (a single bool per callable,
         # a finite lattice), so self / mutual recursion converge.
         self.sink_reaching_pc: dict = {}
+        # callable_key -> set of CT-SENSITIVE param indices (IFC-2): a value
+        # parameter whose value flows, directly or transitively, into a
+        # VARIABLE-TIME operation inside the body (division / modulo, a
+        # data-dependent branch condition / scrutinee, a variable-time String
+        # / List compare, or a data-dependent index / lookup). Parameter-
+        # indexed, ANNOTATION-BLIND (computed for every callable), the
+        # timing-side-channel twin of ``summaries``: it never affects the
+        # sink-reaching data decision, and the call site
+        # (``_check_ct_call`` / ``_check_ct_method_call``) hard-errors, inside
+        # a ``@constant_time`` function, on a @secret argument bound to one of
+        # these parameters -- closing the cross-call blind spot the inline CT
+        # checks miss. Computed to the SAME monotone finite-subset fixpoint as
+        # ``summaries`` (grows until stable), so self / mutual recursion
+        # converge.
+        self.ct_sensitive: dict = {}
         # callable_key -> {target param idx -> set of source param idx /
         # INTERNAL_SECRET}: the mutation effect -- a field store OR a
         # container mutation (see module docstring).
@@ -585,6 +619,7 @@ class _SummaryBuilder:
                 self.sink_caps[key] = {}
                 self.sink_paths[key] = {}
                 self.sink_reaching_pc[key] = False
+                self.ct_sensitive[key] = set()
                 self.field_effects[key] = {}
                 self.return_effects[key] = {}
                 self.secret_source_params[key] = self._secret_source_params(
@@ -615,6 +650,7 @@ class _SummaryBuilder:
                     self.sink_caps[key] = {}
                     self.sink_paths[key] = {}
                     self.sink_reaching_pc[key] = False
+                    self.ct_sensitive[key] = set()
                     self.field_effects[key] = {}
                     self.return_effects[key] = {}
                     self.secret_source_params[key] = (
@@ -682,6 +718,7 @@ class _SummaryBuilder:
             self.sink_caps[key] = {}
             self.sink_paths[key] = {}
             self.sink_reaching_pc[key] = False
+            self.ct_sensitive[key] = set()
             self.field_effects[key] = {}
             self.return_effects[key] = {}
             self.secret_source_params[key] = self._secret_source_params(
@@ -901,6 +938,7 @@ class _SummaryBuilder:
                 names, decl, _is_method = self.callables[key]
                 (
                     reaching, effects, returns, scaps, spaths, reaches_pc,
+                    ct_new,
                 ) = self._analyze_body(names, decl, key)
                 if not reaching <= self.summaries[key]:
                     self.summaries[key] |= reaching
@@ -909,6 +947,12 @@ class _SummaryBuilder:
                 # True); grow it on the SAME fixpoint as the sink summaries.
                 if reaches_pc and not self.sink_reaching_pc[key]:
                     self.sink_reaching_pc[key] = True
+                    changed = True
+                # The CT-sensitive param set (IFC-2) is a monotone finite
+                # subset, grown on the SAME fixpoint exactly like the sink
+                # summaries.
+                if not ct_new <= self.ct_sensitive[key]:
+                    self.ct_sensitive[key] |= ct_new
                     changed = True
                 # ``scaps`` is a per-parameter map (param idx -> set of
                 # sink caps), merged monotonically exactly like the
@@ -957,8 +1001,9 @@ class _SummaryBuilder:
                 }
         self.capture_sink_paths = capture_sink_paths
         sink_reaching_pc = dict(self.sink_reaching_pc)
+        ct_sensitive = {k: frozenset(v) for k, v in self.ct_sensitive.items()}
         return sinks, feffects, reffects, sink_caps, sink_paths, \
-            capture_sink_paths, sink_reaching_pc
+            capture_sink_paths, sink_reaching_pc, ct_sensitive
 
     @staticmethod
     def _merge_effects(acc: dict, new: dict) -> bool:
@@ -980,7 +1025,7 @@ class _SummaryBuilder:
 
     def _analyze_body(
         self, param_names: list[str], decl: A.FunDecl, key,
-    ) -> tuple[set, dict, set, dict, dict, bool]:
+    ) -> tuple[set, dict, set, dict, dict, bool, set]:
         """Compute (a) which parameter indices of ``decl`` reach a sink,
         (b) the field-write effects, and (c) the return-secret sources,
         using the summaries computed so far for transitive calls.
@@ -1082,6 +1127,15 @@ class _SummaryBuilder:
         # resolved call to a callee whose own bit is already True. Read back
         # in ``run()`` and merged onto the monotone fixpoint.
         self._cur_reaches_sink_pc = False
+        # Constant-time (IFC-2): the source-param / internal-secret set whose
+        # value flows into a VARIABLE-TIME operation in THIS body -- a
+        # division / modulo, a branch condition / scrutinee, a variable-time
+        # String / List compare, or a data-dependent index / lookup.
+        # Accumulated by the walk in parallel with ``reaching`` at the five
+        # recognition sites, and grown transitively at a resolved call over
+        # the callee's own ct-sensitive set. Read back in ``run()`` and merged
+        # onto the SAME monotone fixpoint.
+        self._cur_ct_sensitive: set = set()
         # Per-callable analysis state consulted inside the walk (which
         # threads only ``env`` / ``reaching`` through its signatures):
         # the names of secret-source-capability params, the accumulating
@@ -1160,7 +1214,8 @@ class _SummaryBuilder:
         else:
             self._walk_block(decl.body, env, reaching)
         return reaching, effects, returns, sink_caps_local, \
-            sink_paths_local, self._cur_reaches_sink_pc
+            sink_paths_local, self._cur_reaches_sink_pc, \
+            self._cur_ct_sensitive
 
     def _walk_block(self, block: A.Block, env: dict, reaching: set) -> None:
         for stmt in block.stmts:
@@ -1467,14 +1522,16 @@ class _SummaryBuilder:
             # scoped: each branch is isolated from a snapshot of the content
             # at that point, and every branch's delta is unioned into the
             # enclosing scope after ALL branches are walked (deferred union).
-            self._taint_of(stmt.cond, env, reaching)
+            # CT (IFC-2) recognition site 3: the ``if`` / ``elif`` CONDITION
+            # is a data-dependent branch, so its taint is ct-sensitive.
+            self._cur_ct_sensitive |= self._taint_of(stmt.cond, env, reaching)
             posts = [self._content_isolated(
                 lambda: self._walk_scoped_block(
                     stmt.then_block, env, reaching,
                 ),
             )]
             for cond, blk in stmt.elif_arms:
-                self._taint_of(cond, env, reaching)
+                self._cur_ct_sensitive |= self._taint_of(cond, env, reaching)
                 posts.append(self._content_isolated(
                     lambda b=blk: self._walk_scoped_block(b, env, reaching),
                 ))
@@ -1486,7 +1543,10 @@ class _SummaryBuilder:
                 ))
             self._content_merge(posts)
         elif isinstance(stmt, A.WhileStmt):
-            self._taint_of(stmt.cond, env, reaching)
+            # CT (IFC-2) recognition site 3: the ``while`` CONDITION is a
+            # data-dependent branch (it decides whether to iterate), so its
+            # taint is ct-sensitive.
+            self._cur_ct_sensitive |= self._taint_of(stmt.cond, env, reaching)
             # A single body, but routed through the same rule so a read
             # AFTER the loop reflects a cross-function mutation in the body.
             self._content_merge([self._content_isolated(
@@ -1962,19 +2022,40 @@ class _SummaryBuilder:
                     out |= self._taint_of(p, env, reaching)
             return out
         if isinstance(e, A.BinOp):
-            return (
-                self._taint_of(e.left, env, reaching)
-                | self._taint_of(e.right, env, reaching)
-            )
+            left = self._taint_of(e.left, env, reaching)
+            right = self._taint_of(e.right, env, reaching)
+            # CT (IFC-2) recognition sites 1 + 4, mirroring the inline
+            # ``_check_ct_arith`` / ``_check_ct_compare``:
+            #   1. a VARIABLE-TIME op (``/`` / ``%``) is unconditional and
+            #      type-independent -- any param flowing into EITHER operand
+            #      becomes ct-sensitive (the variable-latency divider).
+            #   4. a SHORT-CIRCUIT compare (``==`` / ``!=`` / ordering) is a
+            #      byte-scan ONLY when an operand's static type resolves to
+            #      String / List (an Int / Float compare is fixed-latency);
+            #      union the RESOLVED operand's taint. When neither operand's
+            #      type resolves, do NOT flag (the disclosed-residual class --
+            #      blanket-including every ``==`` would over-reject Int
+            #      compares).
+            if e.op in _VARIABLE_TIME_OPS:
+                self._cur_ct_sensitive |= left | right
+            elif e.op in _SHORT_CIRCUIT_COMPARE_OPS:
+                if self._ct_operand_byte_scanned(e.left):
+                    self._cur_ct_sensitive |= left
+                if self._ct_operand_byte_scanned(e.right):
+                    self._cur_ct_sensitive |= right
+            return left | right
         if isinstance(e, A.UnaryOp):
             return self._taint_of(e.operand, env, reaching)
         if isinstance(e, A.Try):
             return self._taint_of(e.expr, env, reaching)
         if isinstance(e, A.Index):
-            return (
-                self._taint_of(e.receiver, env, reaching)
-                | self._taint_of(e.index, env, reaching)
-            )
+            recv = self._taint_of(e.receiver, env, reaching)
+            idx = self._taint_of(e.index, env, reaching)
+            # CT (IFC-2) recognition site 2: an index-by-value ``xs[v]`` is a
+            # data-dependent memory access (mirrors ``_check_ct_index``), so
+            # any param flowing into the INDEX position becomes ct-sensitive.
+            self._cur_ct_sensitive |= idx
+            return recv | idx
         if isinstance(e, A.FieldAccess):
             # The BASE data-flow taint (the receiver walked for its
             # ``reaching`` side effects, a declared-@secret field of ``type
@@ -2013,7 +2094,9 @@ class _SummaryBuilder:
             # cross-function mutation in the ``then`` branch is not seen by
             # the ``else`` branch's read (no false positive), while the
             # value taint is the union over both branches.
-            self._taint_of(e.cond, env, reaching)
+            # CT (IFC-2) recognition site 3: the if-expr CONDITION is a
+            # data-dependent branch, so its taint is ct-sensitive.
+            self._cur_ct_sensitive |= self._taint_of(e.cond, env, reaching)
             results: list = []
             posts = [
                 self._content_isolated(
@@ -2031,6 +2114,9 @@ class _SummaryBuilder:
             return results[0] | results[1]
         if isinstance(e, A.MatchExpr):
             scrut = self._taint_of(e.scrutinee, env, reaching)
+            # CT (IFC-2) recognition site 3: the match SCRUTINEE drives which
+            # arm runs, a data-dependent branch, so its taint is ct-sensitive.
+            self._cur_ct_sensitive |= scrut
             out = set()
             # Uniform content-channel rule: each arm BODY is mutually
             # exclusive, so it is isolated from a snapshot of the content and
@@ -2453,6 +2539,18 @@ class _SummaryBuilder:
             sink_params = self.summaries.get(key, set())
             callee_caps = self.sink_caps.get(key, {})
             callee_sink_paths = self.sink_paths.get(key, {})
+            # CT (IFC-2) transitive closure, PARALLEL to the sink-reaching
+            # loop below: if an argument bound to a ct-sensitive callee
+            # parameter carries source taint, that taint drives a variable-
+            # time op inside the callee, so it is ct-sensitive HERE too.
+            callee_ct = self.ct_sensitive.get(key, set())
+            for pidx, arg_idx in perm.items():
+                if (
+                    pidx in callee_ct
+                    and arg_idx < len(arg_srcs)
+                    and arg_srcs[arg_idx]
+                ):
+                    self._cur_ct_sensitive |= arg_srcs[arg_idx]
             for pidx, arg_idx in perm.items():
                 if (
                     pidx in sink_params
@@ -2556,6 +2654,28 @@ class _SummaryBuilder:
         cap = self._receiver_capability_name(e)
         if cap in _SINK_CAPS and (cap, e.method) in _PUBLIC_SINKS:
             self._cur_reaches_sink_pc = True
+
+        # CT (IFC-2) recognition site 5: the method-call form of the index /
+        # compare checks (mirrors ``_check_ct_method_index`` /
+        # ``_check_ct_method_compare``), type-scoped to the RESOLVED receiver
+        # capability so ``xs.get(i)`` on a ``List`` is a data-dependent lookup
+        # while an unrelated ``get`` is not misread. A ``_CT_INDEX_METHODS``
+        # lookup makes the INDEX / key argument ct-sensitive; a
+        # ``_CT_SHORT_CIRCUIT_METHODS`` byte-scan makes both the RECEIVER and
+        # the listed argument positions ct-sensitive (the scan walks the
+        # secret's bytes on either side).
+        if cap is not None:
+            idx_args = _CT_INDEX_METHODS.get((cap, e.method))
+            if idx_args:
+                for pos in idx_args:
+                    if pos < len(arg_srcs):
+                        self._cur_ct_sensitive |= arg_srcs[pos]
+            cmp_args = _CT_SHORT_CIRCUIT_METHODS.get((cap, e.method))
+            if cmp_args:
+                self._cur_ct_sensitive |= recv_src
+                for pos in cmp_args:
+                    if pos < len(arg_srcs):
+                        self._cur_ct_sensitive |= arg_srcs[pos]
 
         # Built-in public sink (Stdio.println, Net.post, ...): a
         # param-derived value in a sink argument position reaches a
@@ -2739,6 +2859,34 @@ class _SummaryBuilder:
                         callee_sink_paths.get(full_pidx),
                     )
 
+        # CT (IFC-2) transitive closure across the (possibly
+        # over-approximated) candidate methods, PARALLEL to the data channel
+        # above: the receiver binds ``self`` (param 0) and the explicit args
+        # follow. If an argument bound to a ct-sensitive callee parameter
+        # carries source taint, that taint drives a variable-time op inside
+        # the callee, so it is ct-sensitive HERE too. Over the SAME by-name
+        # candidate union the data channel uses.
+        for key in candidate_keys:
+            names, _decl, _is_method = self.callables[key]
+            callee_ct = self.ct_sensitive.get(key, set())
+            if not callee_ct:
+                continue
+            if 0 in callee_ct and recv_src:
+                self._cur_ct_sensitive |= recv_src
+            explicit = names[1:] if names and names[0] == "self" else names
+            perm = self._bind_explicit_args(e, explicit)
+            for local_pidx, arg_idx in perm.items():
+                full_pidx = (
+                    local_pidx + 1
+                    if names and names[0] == "self" else local_pidx
+                )
+                if (
+                    full_pidx in callee_ct
+                    and arg_idx < len(arg_srcs)
+                    and arg_srcs[arg_idx]
+                ):
+                    self._cur_ct_sensitive |= arg_srcs[arg_idx]
+
         # Transitive mutation effect across the (possibly
         # over-approximated) candidate methods. The full-order argument
         # map binds ``self`` (param 0) to the receiver and the explicit
@@ -2887,6 +3035,19 @@ class _SummaryBuilder:
         if isinstance(e.receiver, A.Ident):
             return self._cur_value_types.get(e.receiver.name)
         return None
+
+    def _ct_operand_byte_scanned(self, operand: A.Expr) -> bool:
+        """True when a short-circuit-compare OPERAND's static type resolves,
+        via ``_cur_value_types`` (seeded from the declared parameter types),
+        to String or List -- the byte-scan compare the inline
+        ``_check_ct_compare`` scopes to. Only an Ident operand is resolved
+        here (the summary tracks value types by name); a non-Ident operand
+        (a field read, a call result) leaves the compare unflagged -- the
+        disclosed non-Ident-operand-typing residual, so a later widening is a
+        conscious choice, never a silent one."""
+        if isinstance(operand, A.Ident):
+            return self._cur_value_types.get(operand.name) in ("String", "List")
+        return False
 
     def _is_trait_type(self, type_name: str) -> bool:
         """True if ``type_name`` resolves to a TRAIT (dynamic dispatch),
