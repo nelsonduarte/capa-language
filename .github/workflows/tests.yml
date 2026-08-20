@@ -31,11 +31,21 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install the package
-        # The `.[test]` extra adds hypothesis (and pytest) for the
-        # property-based suite in tests/test_properties.py. The
-        # core compiler keeps no third-party runtime dependencies.
-        run: pip install -e .[test]
+      - name: Install the pinned test dependencies
+        # The test matrix installs the `[test]` extra only, pinned to a
+        # universal, fully-hashed lockfile (requirements-test.lock) under
+        # --require-hashes, so every wheel is verified against a sha256
+        # and no transitive resolution happens at CI time. This lock has
+        # no wasmtime/pygls, so the matrix keeps exactly the `.[test]`
+        # surface it had before (the wasm-parity tests still skip here;
+        # the dedicated wasi job installs the wasm binding). The lock is
+        # a CI-only input; the published wheel stays dependency-free.
+        # Then install the compiler itself editable with --no-deps
+        # (--require-hashes rejects a bare editable project, and the
+        # core compiler has no third-party runtime deps to resolve).
+        run: |
+          pip install --require-hashes -r requirements-test.lock
+          pip install -e . --no-deps
 
       - name: Run the test suite
         run: python -m unittest discover tests -v
@@ -76,10 +86,14 @@ jobs:
         # Resolve the exact dependency tree pip-audit will scan - the
         # package plus the lsp/wasm/test extras - into a dedicated venv
         # the action then audits directly (via `virtual-environment`).
+        # The extras come from the pinned, fully-hashed lockfile (the
+        # [lsp,wasm,test] union) under --require-hashes; the compiler
+        # itself is added editable with --no-deps.
         run: |
           python -m venv .audit-venv
           .audit-venv/bin/python -m pip install --upgrade pip
-          .audit-venv/bin/python -m pip install -e .[lsp,wasm,test]
+          .audit-venv/bin/python -m pip install --require-hashes -r requirements-ci.lock
+          .audit-venv/bin/python -m pip install -e . --no-deps
 
       - name: Audit dependencies for known vulnerabilities
         uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266  # v1.1.0
@@ -120,12 +134,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install the package with the wasm extra
-        # The `wasm` extra adds the wasmtime Python binding. The
-        # experimental --wasi mode reaches wasi:http through wasmtime's
-        # C-ABI (validated on wasmtime 44 and 45); the extra pins the
-        # supported floor.
-        run: pip install -e .[test,wasm]
+      - name: Install the pinned CI dependencies (with the wasm binding)
+        # The pinned lockfile is the [lsp,wasm,test] union, so it
+        # already carries the wasmtime Python binding this job needs.
+        # The experimental --wasi mode reaches wasi:http through
+        # wasmtime's C-ABI (validated on wasmtime 44 and 45); the lock
+        # pins the exact hashed wheels. Install under --require-hashes,
+        # then add the compiler editable with --no-deps.
+        run: |
+          pip install --require-hashes -r requirements-ci.lock
+          pip install -e . --no-deps
 
       - name: Install wasm-tools (pinned)
         run: |
