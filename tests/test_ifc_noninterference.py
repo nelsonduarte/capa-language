@@ -1087,6 +1087,29 @@ fun run(a: Announcer, stdio: Stdio, env: Env)
     if s.length() > 3
         a.announce(stdio)
 ''',
+    # A TWO-impl trait where a REAL dispatch target (``Loud``) sinks: the
+    # dispatch-target restriction must still OR in every concrete type that
+    # implements the receiver trait, so this must still REJECT. The
+    # completeness guard against under-reporting when the union is narrowed.
+    "two_impl_trait_one_target_sinks": '''trait Speaker
+    fun say(self, stdio: Stdio)
+
+type Quiet { tag: String }
+impl Speaker for Quiet
+    fun say(self, _stdio: Stdio)
+        let _x = self.tag
+
+type Loud { tag: String }
+impl Speaker for Loud
+    fun say(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun run(sp: Speaker, stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        sp.say(stdio)
+''',
 }
 
 # Must-COMPILE controls (the over-reject guard): each stays ACCEPTED before
@@ -1208,6 +1231,34 @@ fun main(stdio: Stdio, env: Env, fs: Fs)
     let s = env.get("SECRET0").unwrap_or("d")
     if s.length() > 3
         let _c = fs.read("/tmp/x")
+    stdio.println("fixed")
+''',
+    # (ix) THE unrelated-same-name pin: a receiver trait ``Speaker`` whose
+    # only impl (``Quiet``) does NOT sink, plus an UNRELATED ``Loud`` (an
+    # inherent impl, implementing no trait) with a sinking method of the
+    # SAME name ``say``. The dynamic call ``q.say()`` can only dispatch to
+    # ``Quiet``, never to the unrelated ``Loud``, so it must COMPILE. RED on
+    # ccba795 (over-reject ``calling 'Speaker.say' runs a public sink`` via
+    # the module-wide by-name union), GREEN after the dispatch-target
+    # restriction.
+    "unrelated_same_name_dispatch_clean": '''trait Speaker
+    fun say(self)
+
+type Quiet { tag: String }
+impl Speaker for Quiet
+    fun say(self)
+        let _x = self.tag
+
+type Loud { tag: String }
+impl Loud
+    fun say(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun run(q: Speaker, stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        q.say()
     stdio.println("fixed")
 ''',
 }

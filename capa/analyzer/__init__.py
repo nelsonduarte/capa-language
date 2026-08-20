@@ -732,6 +732,12 @@ class Analyzer(
         # This composes the intra-procedural implicit-flow rule across a
         # function boundary.
         self._ifc_sink_pc: dict = {}
+        # Memoised reverse implements-index (trait / capability name ->
+        # concrete types implementing it), built lazily from the populated
+        # global scope by ``_impl_reverse_index``. Restricts the IFC-1
+        # pc-union to a dynamic receiver's real dispatch targets so an
+        # unrelated same-named sink method does not false-positive.
+        self._ifc_impl_index: Optional[dict] = None
 
     # Type-substitution machinery (_fresh_ty_var, _resolve_ty,
     # _commit_fresh_substitutions, _apply_mapping) lives in

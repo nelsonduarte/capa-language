@@ -3259,11 +3259,17 @@ class _IfcMixin:
         if recv_is_dynamic and self._receiver_type_is_user_defined(
             recv_ty.name,
         ):
-            from ._ifc_summary import methods_by_name
-            grouping = methods_by_name(self._ifc_summaries)
+            # OR the bit over the receiver's ACTUAL dispatch targets only,
+            # not every module-wide same-named method: a dynamic call to
+            # ``R.m`` can land on a concrete type implementing ``R`` (or,
+            # for a capability / self-implemented trait, on ``R`` itself),
+            # never on an unrelated type that merely has a same-named method
+            # under a DIFFERENT trait. Widening to all ``methods_by_name``
+            # false-positived a clean ``q.say()`` because an unrelated
+            # ``Loud.say`` (implementing another trait) sank.
             reaches = any(
                 self._ifc_sink_pc.get(k, False)
-                for k in grouping.get(e.method, ())
+                for k in self._dispatch_target_keys(recv_ty.name, e.method)
             )
         else:
             # A concrete user-typed receiver -> its precise exact-key bit;
@@ -3288,6 +3294,42 @@ class _IfcMixin:
         from ..builtins import BUILTIN_POS
         sym = self.global_scope.lookup(name)
         return sym is not None and sym.pos != BUILTIN_POS
+
+    def _dispatch_target_keys(self, recv_name: str, method: str) -> set:
+        """The summary keys a dynamic call ``recv.method(...)`` on a
+        USER-defined trait / capability ``recv_name`` can actually dispatch
+        to -- the set the IFC-1 pc-union must OR over (NOT every module-wide
+        same-named method). It is:
+
+        * ``("method", T, method)`` for every concrete type ``T`` that
+          implements ``recv_name`` (from the ``impl recv_name for T``
+          reverse index); PLUS
+        * ``("method", recv_name, method)`` -- the receiver's OWN key. This
+          is the COMPLETENESS clause: a user capability with a direct
+          ``impl recv_name`` (or a trait with a direct impl on itself) keys
+          its methods under ``recv_name`` and lists nothing in any type's
+          ``implements``, so the reverse index alone would be empty and a
+          capability-own-impl sink would be UNDER-reported. An absent key is
+          a harmless no-op (``.get`` yields False), so always including it is
+          sound and never widens to an unrelated type."""
+        keys = {("method", recv_name, method)}
+        for tname in self._impl_reverse_index().get(recv_name, ()):
+            keys.add(("method", tname, method))
+        return keys
+
+    def _impl_reverse_index(self) -> dict:
+        """``trait / capability name -> {concrete type names implementing
+        it}``, built once (memoised) from the populated global scope's
+        ``Symbol.implements`` sets (populated at ``impl Trait for T``). The
+        reverse of each type's ``implements``, used to restrict the IFC-1
+        pc-union to a dynamic receiver's real dispatch targets."""
+        if self._ifc_impl_index is None:
+            index: dict = {}
+            for sym in self.global_scope.symbols.values():
+                for r in getattr(sym, "implements", ()) or ():
+                    index.setdefault(r, set()).add(sym.name)
+            self._ifc_impl_index = index
+        return self._ifc_impl_index
 
     def _emit_ifc_call_pc(self, callee: str, pos) -> None:
         """Emit the IFC-1 cross-call implicit-flow diagnostic. Mirrors the
