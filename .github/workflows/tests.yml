@@ -31,18 +31,20 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install the pinned CI dependencies
-        # Dev/CI dependencies come from a single universal,
-        # fully-hashed lockfile (requirements-ci.lock, the union of
-        # the [lsp,wasm,test] extras) installed under --require-hashes,
-        # so every wheel is verified against a pinned sha256 and no
-        # transitive resolution happens at CI time. The lock is a
-        # CI-only input; the published wheel stays dependency-free.
+      - name: Install the pinned test dependencies
+        # The test matrix installs the `[test]` extra only, pinned to a
+        # universal, fully-hashed lockfile (requirements-test.lock) under
+        # --require-hashes, so every wheel is verified against a sha256
+        # and no transitive resolution happens at CI time. This lock has
+        # no wasmtime/pygls, so the matrix keeps exactly the `.[test]`
+        # surface it had before (the wasm-parity tests still skip here;
+        # the dedicated wasi job installs the wasm binding). The lock is
+        # a CI-only input; the published wheel stays dependency-free.
         # Then install the compiler itself editable with --no-deps
         # (--require-hashes rejects a bare editable project, and the
         # core compiler has no third-party runtime deps to resolve).
         run: |
-          pip install --require-hashes -r requirements-ci.lock
+          pip install --require-hashes -r requirements-test.lock
           pip install -e . --no-deps
 
       - name: Run the test suite
