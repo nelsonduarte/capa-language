@@ -796,6 +796,7 @@ class Analyzer(
             self._ifc_sink_paths,
             self._ifc_capture_sink_paths,
             self._ifc_sink_pc,
+            self._ct_sensitive_params,
         ) = compute_ifc_summaries(module, self.global_scope)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:

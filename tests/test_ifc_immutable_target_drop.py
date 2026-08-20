@@ -82,8 +82,8 @@ def _field_effect_targets(src: str, callable_key) -> set:
     module = _parse(src)
     an = Analyzer()
     an.analyze(module)
-    _sinks, feffects, _reffects, _scaps, _spaths, _cspaths, _sink_pc = \
-        compute_ifc_summaries(module, an.global_scope)
+    _sinks, feffects, _reffects, _scaps, _spaths, _cspaths, _sink_pc, \
+        _ct_sensitive = compute_ifc_summaries(module, an.global_scope)
     return {key[0] for key in feffects.get(callable_key, {})}
 
 

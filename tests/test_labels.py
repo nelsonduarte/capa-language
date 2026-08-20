@@ -1579,6 +1579,209 @@ class TestConstantTime(unittest.TestCase):
         self.assertFalse(by_name["plain"]["constant_time"])
 
 
+class TestConstantTimeCrossCall(unittest.TestCase):
+    """IFC-2: the constant-time checks are no longer intra-procedural. A
+    @secret value passed to an un-annotated helper that performs a
+    variable-time operation ON THAT VALUE -- division / modulo, a
+    data-dependent branch, a variable-time String / List compare, or a
+    data-dependent index / lookup -- is now flagged at the call site inside a
+    @constant_time function, closing the timing-side-channel twin of the
+    IFC-1 cross-call implicit-flow hole. Reuses ``TestConstantTime``'s
+    ``_analyze`` / ``_ct_errors``, and shares the parameter-indexed
+    ``ct_sensitive`` summary + dispatch-target resolution."""
+
+    def _analyze(self, src: str):
+        from capa import analyze
+        m = _parse(src)
+        return analyze(m, source=src)
+
+    def _ct_errors(self, r):
+        return [e for e in r.errors if "constant-time" in e.message]
+
+    # ---- RED before / GREEN after (each rejects with one ct error) ----
+
+    def test_free_fn_division_rejected(self):
+        # The canonical case: a @secret divisor routed into an un-annotated
+        # helper whose body does the variable-time divide.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret Int) -> Int\n"
+            "    return divide(100, s)\n"
+            "fun divide(a: Int, b: Int) -> Int\n"
+            "    return a / b\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._ct_errors(r)), 1)
+
+    def test_cross_call_data_dependent_branch_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret Int) -> Int\n"
+            "    return choose(s)\n"
+            "fun choose(x: Int) -> Int\n"
+            "    if x > 0\n"
+            "        return 1\n"
+            "    return 2\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._ct_errors(r)), 1)
+
+    def test_cross_call_variable_time_compare_rejected(self):
+        # ``a == b`` on String short-circuits byte-by-byte (the compare
+        # oracle), so a helper doing it is ct-sensitive in both params.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret String) -> Bool\n"
+            "    return eq(s, \"x\")\n"
+            "fun eq(a: String, b: String) -> Bool\n"
+            "    return a == b\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._ct_errors(r)), 1)
+
+    def test_cross_call_index_by_value_rejected(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(table: List<Int>, s: @secret Int) -> Int\n"
+            "    return pick(table, s)\n"
+            "fun pick(xs: List<Int>, i: Int) -> Int\n"
+            "    return xs[i]\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._ct_errors(r)), 1)
+
+    def test_method_form_rejected(self):
+        r = self._analyze(
+            "type Box { n: Int }\n"
+            "impl Box\n"
+            "    fun div(self, d: Int) -> Int\n"
+            "        return self.n / d\n"
+            "@constant_time()\n"
+            "fun f(s: @secret Int) -> Int\n"
+            "    let b = Box { n: 100 }\n"
+            "    return b.div(s)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._ct_errors(r)), 1)
+
+    def test_depth_2_transitive_rejected(self):
+        # ``outer`` merely forwards its param to ``inner``, which divides:
+        # the ct-sensitive fact propagates transitively on the fixpoint.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret Int) -> Int\n"
+            "    return outer(s)\n"
+            "fun outer(x: Int) -> Int\n"
+            "    return inner(x)\n"
+            "fun inner(y: Int) -> Int\n"
+            "    return 100 / y\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._ct_errors(r)), 1)
+
+    def test_dynamic_dispatch_rejected(self):
+        # A trait-typed receiver dispatches dynamically; the check ORs the
+        # ct-sensitive set over the receiver's real dispatch targets
+        # (``FastDiv.apply`` divides), so it still bites.
+        r = self._analyze(
+            "trait Divider\n"
+            "    fun apply(self, d: Int) -> Int\n"
+            "type FastDiv { k: Int }\n"
+            "impl Divider for FastDiv\n"
+            "    fun apply(self, d: Int) -> Int\n"
+            "        return 100 / d\n"
+            "@constant_time()\n"
+            "fun f(dv: Divider, s: @secret Int) -> Int\n"
+            "    return dv.apply(s)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._ct_errors(r)), 1)
+
+    def test_constant_time_callee_unannotated_param_rejected(self):
+        # Pins the ANNOTATION-BLIND rule: a @constant_time callee whose
+        # param is UN-annotated (public inside, ``x / 2`` compiles at its own
+        # definition) is exactly the leaking case when called with a secret.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun g(x: Int) -> Int\n"
+            "    return x / 2\n"
+            "@constant_time()\n"
+            "fun f(s: @secret Int) -> Int\n"
+            "    return g(s)\n"
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self._ct_errors(r)), 1)
+
+    # ---- must-COMPILE controls (the over-reject guards) ----
+
+    def test_secret_into_non_ct_helper_compiles(self):
+        # ``add`` does only fixed-latency arithmetic, so no param is
+        # ct-sensitive and routing a secret in is clean.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret Int) -> Int\n"
+            "    return add(s, 1)\n"
+            "fun add(a: Int, b: Int) -> Int\n"
+            "    return a + b\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(self._ct_errors(r), [])
+
+    def test_public_value_into_ct_helper_compiles(self):
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f() -> Int\n"
+            "    return divide(100, 7)\n"
+            "fun divide(a: Int, b: Int) -> Int\n"
+            "    return a / b\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(self._ct_errors(r), [])
+
+    def test_declassified_secret_into_ct_helper_compiles(self):
+        # declassify lowers the argument to PUBLIC, so the boundary check
+        # (which reads the label declassify-aware) does not fire.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret Int) -> Int\n"
+            "    return divide(100, declassify(s, reason: \"ok\"))\n"
+            "fun divide(a: Int, b: Int) -> Int\n"
+            "    return a / b\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(self._ct_errors(r), [])
+
+    def test_ct_callee_secret_param_branchless_compiles(self):
+        # Trusted-where-safe: a @constant_time callee whose @secret param
+        # provably reaches NO variable-time op (branchless ``x + 1``) has an
+        # EMPTY ct-sensitive set, so calling it with a secret is clean.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun g(x: @secret Int) -> Int\n"
+            "    return x + 1\n"
+            "@constant_time()\n"
+            "fun f(s: @secret Int) -> Int\n"
+            "    return g(s)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(self._ct_errors(r), [])
+
+    def test_int_compare_not_type_scoped_compiles(self):
+        # The disclosed-residual boundary: an Int ``==`` compare is
+        # fixed-latency and NOT type-scoped to String / List, so the helper
+        # has no ct-sensitive param and calling it with a secret compiles. A
+        # later widening to non-String compares is then a conscious choice.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun f(s: @secret Int) -> Bool\n"
+            "    return cmp(s, 3)\n"
+            "fun cmp(a: Int, b: Int) -> Bool\n"
+            "    return a == b\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertEqual(self._ct_errors(r), [])
+
+
 class TestVarReassignTaint(unittest.TestCase):
     """Audit 2026-06-17 (Finding 3): a reassignment ``x = secret`` is an
     EXPLICIT data flow, so the RHS label must join onto the target's

@@ -2470,6 +2470,131 @@ class _IfcMixin:
             e.pos,
         )
 
+    # ---- constant-time across a call (IFC-2) ---------------------
+
+    def _check_ct_call(self, e: A.Call, sym, perm: list[int]) -> None:
+        """IFC-2 (constant-time across a call): inside a ``@constant_time``
+        function, passing a @secret argument to a free-function parameter
+        that drives a VARIABLE-TIME operation inside the callee (its
+        ct-sensitive parameter set, computed to a fixpoint in
+        :mod:`._ifc_summary`) leaks the secret through timing. The inline CT
+        checks (``_check_ct_arith`` / ``_check_ct_compare`` / ...) catch such
+        an op TEXTUALLY in this body; this catches it across the call
+        boundary -- the timing-side-channel twin of ``_check_ifc_call_pc``.
+
+        ``perm`` is the parameter-order argument permutation (as for
+        ``_check_ifc_call_summary``): ``e.args[perm[i]]`` binds the callee's
+        i-th parameter. The argument label is taken declassify-aware via
+        ``_sink_param_arg_label``, so a declassified argument (PUBLIC) is not
+        flagged. The ``@constant_time`` callee is NOT special-cased: the
+        annotation-blind summary is already correct (a compiling
+        ``@constant_time`` callee has a ct-sensitive parameter only if that
+        parameter is un-annotated, i.e. public inside, which is exactly the
+        leaking case). HARD ERROR whenever ``@constant_time`` is set --
+        matching the inline CT tier, NOT IFC-1's strict-only pc gate."""
+        if not getattr(self, "_constant_time", False):
+            return
+        ct_params = self._ct_sensitive_params.get(("fun", sym.name))
+        if not ct_params:
+            return
+        param_tys = getattr(getattr(sym, "ty", None), "params", ())
+        for param_idx, arg_idx in enumerate(perm):
+            if param_idx not in ct_params:
+                continue
+            if arg_idx >= len(e.args):
+                continue
+            arg = e.args[arg_idx]
+            ptype = param_tys[param_idx] if param_idx < len(param_tys) else None
+            label = self._sink_param_arg_label(arg, ptype)
+            if label is None or L.normalize(label) != L.SECRET:
+                continue
+            pname = (
+                sym.param_names[param_idx]
+                if param_idx < len(sym.param_names)
+                else f"argument {arg_idx + 1}"
+            )
+            self._emit_ct_call_leak(pname, repr(sym.name), arg.pos)
+
+    def _check_ct_method_call(
+        self, e: A.MethodCall, type_sym, method_sym, recv_ty,
+        perm: list[int],
+    ) -> None:
+        """IFC-2 method-call form. Resolves the callee's ct-sensitive
+        parameter set with the SAME structure as ``_check_ifc_method_call_pc``
+        (IFC-1's dispatch-target-restricted resolution):
+
+        * a CONCRETE receiver whose exact ``("method", T, method)`` key is
+          present uses it precisely; a
+        * USER-DEFINED dynamic (trait / capability) receiver ORs the
+          ct-sensitive set over the receiver's ACTUAL dispatch targets
+          (``_dispatch_target_keys``), never a raw module-wide by-name union;
+        * ANY BUILT-IN receiver contributes nothing (its exact key is absent).
+
+        The receiver binds parameter index 0 (its label read from
+        ``e.receiver`` when the method takes ``self``); the explicit
+        parameters follow via ``perm`` with the +1 self shift. The
+        secret-label predicate and the declassify-aware label read match the
+        free form. HARD ERROR whenever ``@constant_time`` is set."""
+        if not getattr(self, "_constant_time", False):
+            return
+        exact_key = ("method", recv_ty.name, e.method)
+        from . import SymbolKind
+        recv_is_dynamic = type_sym is not None and getattr(
+            type_sym, "kind", None,
+        ) in (SymbolKind.TRAIT, SymbolKind.CAPABILITY)
+        if recv_is_dynamic and self._receiver_type_is_user_defined(
+            recv_ty.name,
+        ):
+            ct_params: set = set()
+            for k in self._dispatch_target_keys(recv_ty.name, e.method):
+                ct_params |= self._ct_sensitive_params.get(k, frozenset())
+        else:
+            ct_params = self._ct_sensitive_params.get(exact_key, frozenset())
+        if not ct_params:
+            return
+        callee_name = f"{recv_ty.name}.{e.method}"
+        has_self = getattr(method_sym, "has_self", False)
+        if (
+            has_self and 0 in ct_params
+            and L.normalize(self._label_of(e.receiver)) == L.SECRET
+        ):
+            self._emit_ct_call_leak(
+                "self (the receiver)", repr(callee_name), e.receiver.pos,
+            )
+        param_tys = getattr(getattr(method_sym, "ty", None), "params", ())
+        for local_idx, arg_idx in enumerate(perm):
+            full_idx = local_idx + 1 if has_self else local_idx
+            if full_idx not in ct_params:
+                continue
+            if arg_idx >= len(e.args):
+                continue
+            arg = e.args[arg_idx]
+            ptype = param_tys[local_idx] if local_idx < len(param_tys) else None
+            label = self._sink_param_arg_label(arg, ptype)
+            if label is None or L.normalize(label) != L.SECRET:
+                continue
+            pname = (
+                method_sym.param_names[local_idx]
+                if local_idx < len(method_sym.param_names)
+                else f"argument {arg_idx + 1}"
+            )
+            self._emit_ct_call_leak(pname, repr(callee_name), arg.pos)
+
+    def _emit_ct_call_leak(self, param: str, callee: str, pos) -> None:
+        """Emit the IFC-2 cross-call constant-time diagnostic, mirroring the
+        inline CT wording reworded for the call site. HARD ERROR whenever
+        ``@constant_time`` is set (the CT tier is a hard error at every tier,
+        unlike IFC-1's strict-only pc gate)."""
+        self._err(
+            f"constant-time violation: passing a @secret value to parameter "
+            f"{param} of {callee} leaks it through timing -- that parameter "
+            f"drives a variable-time operation (division/modulo, a "
+            f"data-dependent branch, or a variable-time compare/lookup) "
+            f"inside the callee. A @constant_time function must route secret "
+            f"data only into constant-time operations.",
+            pos,
+        )
+
     # ---- declassify (roadmap S2.5) -------------------------------
 
     def _is_declassify_call(self, e: A.Expr) -> bool:
