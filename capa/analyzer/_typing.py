@@ -207,3 +207,96 @@ class _TypingMixin:
                 ret_label=ty.ret_label,
             )
         return ty
+
+    def _carries_rigid_param(
+        self, param: str, expected: Ty, actual: Ty,
+    ) -> bool:
+        """True when constructing a value binds ``param`` to the SAME rigid
+        ``TyVar(param)`` it already stands for -- the reflexive same-name
+        collision that ``unify``'s short-circuit (``typesys.py:416-423``)
+        leaves unbound in ``mapping``.
+
+        Walks ``expected`` (the field/payload signature, which may mention
+        ``TyVar(param)``) and ``actual`` (the resolved type of the supplied
+        value) in PARALLEL. The witness is a position where ``expected`` is
+        ``TyVar(param)`` and ``actual`` is that SAME non-flexible rigid
+        variable. Requiring the actual side to be the rigid variable (not a
+        flexible ``?`` and not ``TyUnknown``) is what keeps this from
+        fabricating rigidity: a genuinely unconstrained or ``TyUnknown``-fed
+        slot has no such witness. The parallel descent into containers,
+        tuples, and function types closes the nested sibling (``List<T>``
+        payload) with the same code."""
+        if not occurs_in(param, expected):
+            return False
+        if isinstance(expected, TyVar) and expected.name == param:
+            return (
+                isinstance(actual, TyVar)
+                and not is_flexible(actual)
+                and actual.name == param
+            )
+        if (
+            isinstance(expected, TyName) and isinstance(actual, TyName)
+            and expected.name == actual.name
+            and len(expected.args) == len(actual.args)
+        ):
+            return any(
+                self._carries_rigid_param(param, x, y)
+                for x, y in zip(expected.args, actual.args)
+            )
+        if (
+            isinstance(expected, TyTuple) and isinstance(actual, TyTuple)
+            and len(expected.elements) == len(actual.elements)
+        ):
+            return any(
+                self._carries_rigid_param(param, x, y)
+                for x, y in zip(expected.elements, actual.elements)
+            )
+        if (
+            isinstance(expected, TyFun) and isinstance(actual, TyFun)
+            and len(expected.params) == len(actual.params)
+        ):
+            return any(
+                self._carries_rigid_param(param, x, y)
+                for x, y in zip(expected.params, actual.params)
+            ) or self._carries_rigid_param(param, expected.ret, actual.ret)
+        return False
+
+    def _constructor_result_args(
+        self,
+        type_params: tuple[str, ...],
+        mapping: dict[str, Ty],
+        field_pairs: list[tuple[Ty, Ty]],
+    ) -> tuple[Ty, ...]:
+        """The result type arguments for a generic STRUCT / VARIANT value
+        constructed inside a generic body. Single source of truth for both
+        construction seams (struct-literal and variant call), so they cannot
+        drift.
+
+        For each declared type parameter ``p``:
+
+        * if ``unify`` bound it (``p in mapping``), use that binding (the
+          concrete and differently-named cases, unchanged);
+        * else if some ``(expected, actual)`` field pair carries the rigid
+          ``TyVar(p)`` (the reflexive same-name collision ``unify`` left
+          unbound), use ``TyVar(p)`` so the constructed value keeps its rigid
+          provenance -- a later public-twin destructure then sees a rigid
+          scrutinee and the existing reject fires, instead of a ``TyUnknown``
+          value that launders the secret;
+        * else ``TyUnknown`` (genuinely unconstrained / ``TyUnknown``-fed,
+          unchanged).
+
+        This only RESTORES the rigid marker the seam was dropping; it adds no
+        reject logic and never rebinds a parameter ``unify`` already resolved,
+        so it cannot over-reject."""
+        args: list[Ty] = []
+        for p in type_params:
+            if p in mapping:
+                args.append(mapping[p])
+            elif any(
+                self._carries_rigid_param(p, expected, self._resolve_ty(actual))
+                for expected, actual in field_pairs
+            ):
+                args.append(TyVar(p))
+            else:
+                args.append(TyUnknown)
+        return tuple(args)
