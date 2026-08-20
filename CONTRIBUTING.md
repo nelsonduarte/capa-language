@@ -36,6 +36,17 @@ Install the `[test]` extra, not the bare package: hypothesis and PyYAML
 live there, and without them whole test modules skip instead of failing,
 so the run prints OK while verifying less than you think.
 
+CI does not resolve dependencies at build time. It installs a single
+universal, fully-hashed lockfile, `requirements-ci.lock` (the union of
+the `[lsp,wasm,test]` extras), with `pip install --require-hashes`, then
+adds the compiler with `pip install -e . --no-deps`. The lock is a
+CI-only input; the published wheel stays dependency-free. If you bump a
+version floor in the `[lsp]`, `[wasm]`, or `[test]` extras, or add or
+remove a dependency in any of them, regenerate the lock with
+`scripts/relock.sh` (it needs `uv`) and commit the result alongside the
+`pyproject.toml` change. The `[eval]` extra is not locked; it runs in no
+CI job.
+
 Run the test suite (a few minutes, currently ~5,034 tests):
 
 ```bash
