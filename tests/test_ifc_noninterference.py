@@ -1068,6 +1068,25 @@ fun run(sp: Speaker, stdio: Stdio, env: Env)
     if s.length() > 3
         sp.say(stdio)
 ''',
+    # A USER-DEFINED capability dynamically dispatched, whose impl method
+    # reaches a sink, still bites via the by-name union: the user-origin
+    # gate that drops a BUILT-IN capability's union must NOT drop a
+    # USER capability's. (User-defined capabilities with a sink-reaching
+    # method ARE expressible in Capa, so the union has a real job here.)
+    "dynamic_user_capability_stdio": '''capability Announcer
+    fun announce(self, stdio: Stdio)
+
+type Loud { tag: String }
+impl Announcer for Loud
+    fun announce(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun run(a: Announcer, stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        a.announce(stdio)
+''',
 }
 
 # Must-COMPILE controls (the over-reject guard): each stays ACCEPTED before
@@ -1156,6 +1175,39 @@ fun main(stdio: Stdio, env: Env)
     let m: Map<String, Int> = new_map()
     if s.length() > 3
         let _v = m.get("a")
+    stdio.println("fixed")
+''',
+    # (vii) The BUILT-IN CAPABILITY analogue: ``env.get(k)`` under a secret
+    # branch, with a user ``Logger.get`` sink. A built-in capability lands
+    # as SymbolKind.CAPABILITY (dynamic), so the union must be gated on the
+    # receiver's USER origin, not the kind, or this false-positives as
+    # ``calling 'Env.get' runs a public sink``. RED on a9a6644, GREEN after
+    # the user-origin gate.
+    "env_get_collides_with_user_get_sink": '''type Logger { tag: String }
+impl Logger
+    fun get(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        let _v2 = env.get("OTHER").unwrap_or("d")
+    stdio.println("fixed")
+''',
+    # (viii) A second built-in capability getter collision (``fs.read`` vs a
+    # user ``read`` sink method), so the origin gate is pinned across more
+    # than one built-in capability.
+    "fs_read_collides_with_user_read_sink": '''type Logger { tag: String }
+impl Logger
+    fun read(self, stdio: Stdio)
+        stdio.println(self.tag)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env, fs: Fs)
+    let s = env.get("SECRET0").unwrap_or("d")
+    if s.length() > 3
+        let _c = fs.read("/tmp/x")
     stdio.println("fixed")
 ''',
 }

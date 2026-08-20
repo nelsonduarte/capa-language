@@ -3214,28 +3214,39 @@ class _IfcMixin:
         """IFC-1 (strict implicit-flow), method-call form. Resolves the
         callee's ``sink_reaching_pc`` bit:
 
-        * a genuinely DYNAMIC receiver (a TRAIT- / capability-typed
-          receiver, dispatched at runtime) ORs the bit over every impl
-          method of this name -- the sound by-name over-approximation, since
-          the concrete impl is not known statically;
-        * a CONCRETE receiver whose exact ``("method", T, method)`` key is
-          present uses that one bit precisely;
-        * a CONCRETE receiver whose exact key is ABSENT contributes NO bit.
-          This is a BUILT-IN container / primitive receiver (``List`` /
-          ``Map`` / ``String`` ...), which has no user method that could
-          reach a sink, so it must not import an unrelated user method's bit.
+        * a USER-DEFINED dynamic receiver (a user trait or user capability,
+          dispatched at runtime) ORs the bit over every impl method of this
+          name -- the sound by-name over-approximation, since the concrete
+          user impl is not known statically;
+        * a CONCRETE user-typed receiver whose exact ``("method", T,
+          method)`` key is present uses that one bit precisely;
+        * ANY BUILT-IN receiver contributes NO bit. A built-in container /
+          primitive (``List`` / ``Map`` / ``String`` ...) and a built-in
+          CAPABILITY (``Env`` / ``Stdio`` / ``Net`` / ``Fs`` / ``Db`` /
+          ``Serve`` / ``Clock`` / ``Proc``) both have no user-defined method
+          that could transitively reach a user sink, and a built-in
+          capability's OWN direct sink call is already caught by the inline
+          ``_check_ifc_sink`` -- so a built-in receiver must never import an
+          unrelated same-named user method's bit through the union.
+
+        The built-in-vs-user distinction is by SYMBOL ORIGIN
+        (``_receiver_type_is_user_defined``, the ``BUILTIN_POS`` test the
+        summary's ``_name_is_builtin_immutable`` also uses), NOT by the kind
+        alone: a built-in capability lands as ``SymbolKind.CAPABILITY`` just
+        like a user capability, so keying the union on ``recv_is_dynamic``
+        alone would still widen ``env.get(...)`` to a user ``Logger.get``.
 
         Note the DIFFERENCE from ``_check_ifc_method_call_summary``: the pc
-        bit does NOT fall to the by-name union for a concrete-key-absent
-        receiver. The data channel there gates its by-name union on a SECRET
-        argument, but the pc channel fires on ANY argument, so widening a
-        built-in container getter (``xs.get(i)``) to a same-named user sink
-        method (``Logger.get``) would be a false positive on a plain
-        ``if secret: xs.get(0)``. Keeping the union only for a truly dynamic
-        receiver closes that without weakening any real rejection: a user
-        method reached via its exact key or a dynamic trait/capability
-        receiver still bites. Hard error under ``@strict_ifc`` ONLY, as with
-        the free form."""
+        bit does NOT fall to the by-name union for a built-in receiver. The
+        data channel there gates its by-name union on a SECRET argument, but
+        the pc channel fires on ANY argument, so widening a built-in getter
+        (``xs.get(i)`` / ``env.get(k)``) to a same-named user sink method
+        (``Logger.get``) would be a false positive on a plain
+        ``if secret: xs.get(0)``. Keeping the union only for a user-defined
+        dynamic receiver closes that without weakening any real rejection: a
+        user method reached via its exact key or a user trait / capability
+        dynamic receiver still bites. Hard error under ``@strict_ifc`` ONLY,
+        as with the free form."""
         if not getattr(self, "_strict_ifc", False):
             return
         if L.normalize(getattr(self, "_pc_label", L.PUBLIC)) != L.SECRET:
@@ -3245,7 +3256,9 @@ class _IfcMixin:
         recv_is_dynamic = type_sym is not None and getattr(
             type_sym, "kind", None,
         ) in (SymbolKind.TRAIT, SymbolKind.CAPABILITY)
-        if recv_is_dynamic:
+        if recv_is_dynamic and self._receiver_type_is_user_defined(
+            recv_ty.name,
+        ):
             from ._ifc_summary import methods_by_name
             grouping = methods_by_name(self._ifc_summaries)
             reaches = any(
@@ -3253,14 +3266,28 @@ class _IfcMixin:
                 for k in grouping.get(e.method, ())
             )
         else:
-            # A concrete receiver: its precise exact-key bit, or NONE when
-            # the key is absent (a built-in container / primitive, which has
-            # no user sink method to import).
+            # A concrete user-typed receiver -> its precise exact-key bit;
+            # ANY built-in receiver (container / primitive / capability) ->
+            # NONE, since its exact key is absent (no user method body to
+            # summarise) so the lookup yields False.
             reaches = self._ifc_sink_pc.get(exact_key, False)
         if reaches:
             self._emit_ifc_call_pc(
                 repr(f"{recv_ty.name}.{e.method}"), e.pos,
             )
+
+    def _receiver_type_is_user_defined(self, name: str) -> bool:
+        """True when the receiver type ``name`` resolves to a USER-defined
+        symbol (its ``pos`` is not the built-in source position), so its
+        by-name union of user impl methods is meaningful. A built-in type
+        (a container / primitive OR a built-in capability such as ``Env`` /
+        ``Stdio`` / ``Net``) sits at ``BUILTIN_POS`` and returns False, so
+        the IFC-1 pc check never imports a same-named user method's bit for
+        it. Mirrors the origin test the summary's
+        ``_name_is_builtin_immutable`` uses."""
+        from ..builtins import BUILTIN_POS
+        sym = self.global_scope.lookup(name)
+        return sym is not None and sym.pos != BUILTIN_POS
 
     def _emit_ifc_call_pc(self, callee: str, pos) -> None:
         """Emit the IFC-1 cross-call implicit-flow diagnostic. Mirrors the
