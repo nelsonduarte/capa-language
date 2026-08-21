@@ -68,6 +68,43 @@ _CAPA_INT_HELPERS = {
 }
 
 
+#: The CIR instruction kinds ``_emit_instr`` renders, one per
+#: ``isinstance`` branch. Declared handled-set for the M1 exhaustiveness
+#: net, pinned against ``ir._nodes.Instr.__subclasses__()``
+#: (``tests/test_node_exhaustiveness.py``). A new ``Instr`` this backend
+#: forgets fails that test rather than reaching this emitter's
+#: ``NotImplementedError`` only when some program happens to lower to it.
+#: ``ExprStmt`` and ``ForeignCall`` are the deliberate non-members (the
+#: test records them as excluded); keep this set in lockstep with the
+#: branches below.
+PYTHON_EMITTED_INSTRS = frozenset({
+    AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
+    If, While, Break, Continue,
+    MakeStruct, MakeList, MakeMap, MakeRange, MakeSet, MakeTuple,
+    FieldAccess, FieldStore, Index, FormatStr, For,
+    TryUnwrap, MakeLambda, Match, Return,
+})
+
+
+#: The CIR pattern kinds ``_format_pattern`` renders. Declared handled-set
+#: for the M1 exhaustiveness net, pinned against
+#: ``ir._nodes.Pattern.__subclasses__()``. ``PatOr`` / ``PatStruct`` are
+#: the deliberate non-members here, but NOT because they never reach this
+#: renderer: the shared lowerer DOES build them
+#: (``_lower_pattern.py`` PatOr / PatStruct), and they DO reach
+#: ``_format_pattern`` on the ``--run --ir`` path, where it raises
+#: ``NotImplementedError`` (below). That is a KNOWN, PRE-EXISTING
+#: unimplemented gap in the CIR Python pattern renderer (audit OBS-1,
+#: "--ir backend crashes on PatStruct/PatOr"); the Wasm backend and the
+#: legacy transpiler handle both correctly. They are excluded from THIS
+#: net because the gap is a separately-tracked pre-existing bug, not
+#: because the dispatcher is silently unhandled. Fixing the crash is out
+#: of M1's scope.
+PYTHON_EMITTED_PATTERNS = frozenset({
+    PatWildcard, PatIdent, PatLiteral, PatVariant, PatTuple,
+})
+
+
 class PythonEmitter:
     def __init__(self, indent_unit: str = "    "):
         self._lines: List[str] = []

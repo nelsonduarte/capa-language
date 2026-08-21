@@ -27,6 +27,24 @@ from .._nodes import (
 from ._layout import WasmEmissionError, _strip_type_qualifiers
 
 
+#: The CIR instruction kinds ``_emit_instr`` routes, one per ``isinstance``
+#: branch. Declared handled-set for the M1 exhaustiveness net, pinned
+#: against ``ir._nodes.Instr.__subclasses__()``
+#: (``tests/test_node_exhaustiveness.py``). Paired with the Python
+#: backend's ``PYTHON_EMITTED_INSTRS`` it closes the one-backend-silent
+#: gap: a new ``Instr`` wired into only one emitter fails the other's net
+#: rather than mis-compiling on the neglected backend. ``ExprStmt`` is the
+#: single deliberate non-member (the test records it as excluded); keep
+#: this set in lockstep with the branches below.
+WASM_EMITTED_INSTRS = frozenset({
+    AssignConst, Reassign, MethodCall,
+    MakeStruct, MakeList, MakeMap, MakeSet, MakeTuple, MakeRange, MakeLambda,
+    FieldAccess, FieldStore, Index, For, Match, FormatStr,
+    BinOp, UnaryOp, If, While, Break, Continue, Return, Call,
+    ForeignCall, TryUnwrap,
+})
+
+
 class _InstrDispatchMixin:
     def _emit_instr(self, instr: Instr) -> None:
         if isinstance(instr, AssignConst):
