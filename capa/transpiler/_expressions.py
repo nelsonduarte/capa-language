@@ -26,6 +26,23 @@ from __future__ import annotations
 from .. import capa_ast as A
 
 
+#: The AST expression kinds ``_emit_expr`` renders, one per ``isinstance``
+#: branch. Declared handled-set for the M1 exhaustiveness net, pinned
+#: against ``capa_ast.Expr.__subclasses__()``
+#: (``tests/test_node_exhaustiveness.py``). The legacy transpiler is the
+#: DEFAULT ``--run`` backend, so a new ``Expr`` node it forgets would
+#: mis-compile the primary execution path (falling through to the loud
+#: ``TranspilerError`` only when a program happens to use it); this net
+#: turns that into a test failure. Keep it in lockstep with the branches
+#: below.
+TRANSPILED_EXPR_KINDS = frozenset({
+    A.IntLit, A.FloatLit, A.StringLit, A.InterpolatedString, A.CharLit,
+    A.BoolLit, A.UnitLit, A.Ident, A.BinOp, A.UnaryOp, A.Call, A.MethodCall,
+    A.FieldAccess, A.Index, A.Try, A.Become, A.StructLit, A.ListLit,
+    A.TupleLit, A.MatchExpr, A.IfExpr, A.LambdaExpr, A.RangeExpr,
+})
+
+
 class _ExpressionsMixin:
     def _emit_expr(self, e: A.Expr) -> str:
         from . import _safe_ident, _BINOP_MAP, _UNARY_MAP, TranspilerError

@@ -35,6 +35,15 @@ COVERED dispatchers (chosen because a missed kind is a correctness bug):
   (``WASM_EMITTED_INSTRS``) -- the Wasm backend. Paired with the Python
   ``Instr`` net, this is the direct guard for the one-backend-silent gap:
   an ``Instr`` wired into only one emitter fails the other's net.
+- ``transpiler._expressions._emit_expr`` over AST ``Expr``
+  (``TRANSPILED_EXPR_KINDS``) -- the legacy transpiler, the DEFAULT
+  ``--run`` backend (it walks the AST directly, not the CIR).
+- ``transpiler._statements._emit_stmt`` over AST ``Stmt``
+  (``TRANSPILED_STMT_KINDS``) -- the legacy transpiler's statement
+  dispatch.
+- ``transpiler._statements._emit_pattern_match`` over AST ``Pattern``
+  (``TRANSPILED_MATCH_PATTERNS``) -- the legacy transpiler's match-pattern
+  renderer.
 
 DELIBERATELY EXCLUDED dispatchers (faking a handled-set here would be
 theater, per the M1 brief):
@@ -49,11 +58,14 @@ theater, per the M1 brief):
 - ``ir._emit_python._format_value`` dispatches on ``Value.kind`` (a
   string tag); ``Value`` has no subclass tree, so there are no node kinds
   to enumerate.
-- The ~13 reflectively-walked consumers (``capa_ast.dump``, ``_borrow``,
+- The reflectively-walked consumers (``capa_ast.dump``, ``_borrow``,
   ``formatter/_comments``, the LSP walkers, ``manifest/_calls`` /
-  ``_flow``, the transpiler walkers, ``foreign`` / ``migrate`` / ``repl``)
-  iterate ``__dataclass_fields__`` and so AUTO-ADAPT to a new node kind;
-  they need no guard.
+  ``_flow``, ``foreign`` / ``migrate`` / ``repl``) iterate
+  ``__dataclass_fields__`` and so AUTO-ADAPT to a new node kind; they need
+  no guard. NOTE: the transpiler's CODEGEN dispatchers (``_emit_expr`` /
+  ``_emit_stmt`` / ``_emit_pattern_match``) are NOT reflective -- they are
+  hand-written isinstance chains, and so are COVERED above; only the
+  transpiler's incidental name-collection helpers walk reflectively.
 
 This test is pure Python over class hierarchies (no wasm tooling, no
 compilation), so it always collects. It is additive: it changes no
@@ -73,6 +85,10 @@ from capa.ir._emit_python import (
     PYTHON_EMITTED_INSTRS, PYTHON_EMITTED_PATTERNS,
 )
 from capa.ir._emit_wasm._dispatch import WASM_EMITTED_INSTRS
+from capa.transpiler._expressions import TRANSPILED_EXPR_KINDS
+from capa.transpiler._statements import (
+    TRANSPILED_STMT_KINDS, TRANSPILED_MATCH_PATTERNS,
+)
 
 
 def _concrete_subclasses(base, package):
@@ -117,6 +133,32 @@ _COVERED = [
         excluded=frozenset(),
     ),
     Dispatcher(
+        label="transpiler._expressions._emit_expr (AST Expr)",
+        base=A.Expr, package="capa.capa_ast",
+        handled=TRANSPILED_EXPR_KINDS,
+        # The legacy transpiler (default --run backend) renders every
+        # expression form; nothing is excluded.
+        excluded=frozenset(),
+    ),
+    Dispatcher(
+        label="transpiler._statements._emit_stmt (AST Stmt)",
+        base=A.Stmt, package="capa.capa_ast",
+        handled=TRANSPILED_STMT_KINDS,
+        # The legacy transpiler renders every statement form; nothing is
+        # excluded.
+        excluded=frozenset(),
+    ),
+    Dispatcher(
+        label="transpiler._statements._emit_pattern_match (AST Pattern)",
+        base=A.Pattern, package="capa.capa_ast",
+        handled=TRANSPILED_MATCH_PATTERNS,
+        # The match-pattern renderer covers the full pattern domain with a
+        # loud TranspilerError fallthrough; nothing is excluded. (The
+        # sibling _emit_pattern_lvalue handles only the let/for-lvalue
+        # subset and is deliberately not part of this net.)
+        excluded=frozenset(),
+    ),
+    Dispatcher(
         label="ir._emit_python._emit_instr (CIR Instr)",
         base=I.Instr, package="capa.ir",
         handled=PYTHON_EMITTED_INSTRS,
@@ -136,9 +178,15 @@ _COVERED = [
         base=I.Pattern, package="capa.ir",
         handled=PYTHON_EMITTED_PATTERNS,
         excluded=frozenset({
-            # PatOr / PatStruct: the Python IR pattern renderer does not
-            # emit these forms; source programs that use them are compiled
-            # by the legacy transpiler, not the CIR Python backend.
+            # PatOr / PatStruct: NOT because they never reach this
+            # renderer. The shared lowerer builds them and they DO reach
+            # _format_pattern under --run --ir, where it raises
+            # NotImplementedError. This is a known, pre-existing
+            # unimplemented gap in the CIR Python pattern renderer (audit
+            # OBS-1, "--ir backend crashes on PatStruct/PatOr"); the Wasm
+            # backend and the legacy transpiler handle both correctly.
+            # Excluded here because the crash is a separately-tracked
+            # pre-existing bug, out of M1's scope, not a silent miss.
             PatOr, PatStruct,
         }),
     ),

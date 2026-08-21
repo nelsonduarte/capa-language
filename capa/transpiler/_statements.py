@@ -23,6 +23,33 @@ from __future__ import annotations
 from .. import capa_ast as A
 
 
+#: The AST statement kinds ``_emit_stmt`` renders, one per ``isinstance``
+#: branch. Declared handled-set for the M1 exhaustiveness net, pinned
+#: against ``capa_ast.Stmt.__subclasses__()``
+#: (``tests/test_node_exhaustiveness.py``). The legacy transpiler is the
+#: DEFAULT ``--run`` backend; a new ``Stmt`` node it forgets would
+#: mis-compile the primary execution path. Keep it in lockstep with the
+#: branches below.
+TRANSPILED_STMT_KINDS = frozenset({
+    A.LetStmt, A.VarStmt, A.AssignStmt, A.IfStmt, A.WhileStmt, A.ForStmt,
+    A.ReturnStmt, A.BreakStmt, A.ContinueStmt, A.ExprStmt,
+})
+
+
+#: The AST pattern kinds ``_emit_pattern_match`` renders as a Python
+#: ``case`` pattern, one per ``isinstance`` branch. Declared handled-set
+#: for the M1 exhaustiveness net, pinned against
+#: ``capa_ast.Pattern.__subclasses__()``. This dispatcher covers the FULL
+#: pattern domain with a loud ``TranspilerError`` fallthrough, so nothing
+#: is excluded. (The sibling ``_emit_pattern_lvalue`` deliberately handles
+#: only the let/for-lvalue subset and is not part of the net.) Keep it in
+#: lockstep with the branches below.
+TRANSPILED_MATCH_PATTERNS = frozenset({
+    A.WildcardPat, A.IdentPat, A.LiteralPat, A.VariantPat, A.StructPat,
+    A.TuplePat, A.OrPat,
+})
+
+
 class _StatementsMixin:
     def _emit_block_body(self, block: A.Block) -> None:
         if not block.stmts:
