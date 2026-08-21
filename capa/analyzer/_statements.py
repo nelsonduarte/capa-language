@@ -34,6 +34,18 @@ from ..typesys import (
 )
 
 
+#: The AST statement kinds ``_check_stmt`` dispatches on, one per
+#: ``isinstance`` branch in that method. Declared handled-set for the M1
+#: exhaustiveness net, pinned against ``capa_ast.Stmt.__subclasses__()``
+#: (``tests/test_node_exhaustiveness.py``): a new ``Stmt`` node this
+#: dispatcher forgets fails that test rather than being silently skipped.
+#: Keep it in lockstep with the branches below.
+CHECKED_STMT_KINDS = frozenset({
+    A.LetStmt, A.VarStmt, A.AssignStmt, A.IfStmt, A.WhileStmt, A.ForStmt,
+    A.ReturnStmt, A.BreakStmt, A.ContinueStmt, A.ExprStmt,
+})
+
+
 class _StatementsMixin:
     def _check_block(self, block: A.Block) -> None:
         self._push_scope()

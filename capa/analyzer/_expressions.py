@@ -40,6 +40,21 @@ from ..typesys import (
 _I64_MIN_MAGNITUDE = 1 << 63
 
 
+#: The AST expression kinds ``_check_expr_inner`` dispatches on, one per
+#: ``isinstance`` branch in that method. This is the declared handled-set
+#: the M1 exhaustiveness net pins against ``capa_ast.Expr.__subclasses__()``
+#: (``tests/test_node_exhaustiveness.py``): a new ``Expr`` node that this
+#: dispatcher forgets fails that test rather than falling through to the
+#: ``unknown expression`` default at runtime on one path only. Keep it in
+#: lockstep with the branches below.
+CHECKED_EXPR_KINDS = frozenset({
+    A.IntLit, A.FloatLit, A.StringLit, A.InterpolatedString, A.CharLit,
+    A.BoolLit, A.UnitLit, A.Ident, A.BinOp, A.UnaryOp, A.Call, A.MethodCall,
+    A.FieldAccess, A.Index, A.Try, A.Become, A.StructLit, A.ListLit,
+    A.TupleLit, A.MatchExpr, A.IfExpr, A.LambdaExpr, A.RangeExpr,
+})
+
+
 class _ExpressionsMixin:
     # Built-in types both backends know how to render in a string
     # interpolation without a user ``to_string``. Mirrors the Wasm
