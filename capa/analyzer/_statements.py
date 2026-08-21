@@ -328,10 +328,14 @@ class _StatementsMixin:
                     s.value, expected_elem=declared_ann.args[0]
                 )
                 # Replicate the bookkeeping _check_expr would have done
-                # (record the node's type, label it) since we bypassed
-                # it to pass the expected element type.
+                # (record the node's type, label it, and run the container-of-
+                # linear use-gate) since we bypassed it to pass the expected
+                # element type. The cap analogue is caught by the
+                # _check_no_capability on the binding below; the linear one has
+                # no such binding gate, so it is replicated here.
                 self.types[id(s.value)] = actual
                 self._label_expr(s.value)
+                self._linear_container_use_gate(s.value, actual)
         if actual is None:
             actual = self._check_expr(s.value)
         if s.type_expr is not None:
@@ -418,7 +422,7 @@ class _StatementsMixin:
             # obligation onto the new name (poisoning the source) so the
             # value stays single-owner; without this the source and alias
             # would each be independently consumable -> double-consume.
-            self._linear_transfer_if_alias(s.value)
+            self._linear_transfer_if_alias(s.value, s.pattern.name)
             self._linear_bind(s.pattern.name, actual, s.pos)
         elif isinstance(s.pattern, A.WildcardPat):
             # ``let _ = open()`` drops a linear value into a slot that
@@ -512,7 +516,7 @@ class _StatementsMixin:
         # makes the slot re-assignable, it does not waive the obligation.
         # An aliasing ``var h2 = h`` MOVES the obligation off ``h`` (as in
         # ``let``) so the value remains single-owner.
-        self._linear_transfer_if_alias(s.value)
+        self._linear_transfer_if_alias(s.value, s.name)
         self._linear_bind(s.name, actual, s.pos)
 
     def _check_assign(self, s: A.AssignStmt) -> None:
@@ -527,6 +531,18 @@ class _StatementsMixin:
         if isinstance(s.target, A.Ident) and s.target.name in self._consumed:
             self._consumed.discard(s.target.name)
             self._linear_names.discard(s.target.name)
+        # Same for a FIELD target: ``close(s.conn); s.conn = open()`` is the
+        # legitimate re-arm of a linear field after a prior consume/move, so
+        # lift the poison on that exact path before evaluating the write
+        # target. Remembered so the WARNING-3 drop check below treats this
+        # as a re-arm (not a drop of a live value).
+        _field_target_rearm = False
+        if isinstance(s.target, A.FieldAccess):
+            _tpath = self._path_of(s.target)
+            if _tpath is not None and _tpath in self._consumed:
+                _field_target_rearm = True
+                self._consumed.discard(_tpath)
+                self._linear_names.discard(_tpath)
         target_ty = self._check_expr(s.target)
         value_ty = self._check_expr(s.value)
         # Higher-order IFC: reassigning a secret-returning closure into a
@@ -685,6 +701,30 @@ class _StatementsMixin:
                 f"{ty_str(target_ty)}",
                 s.value.pos,
             )
+        # WARNING-3: overwriting a LIVE linear/typestate field
+        # (``s.conn = fresh()`` while the current ``s.conn`` was never
+        # consumed) drops the old value with no consume -- a leak, symmetric
+        # with the whole-name reassign guarded by ``_linear_reassign``. A
+        # store after a legitimate prior consume/move of the field re-arms
+        # it (the field place leaves ``_consumed``), so the fresh value is
+        # tracked afresh.
+        if isinstance(s.target, A.FieldAccess):
+            place = self._linear_place(s.target)
+            if place is not None:
+                if _field_target_rearm or place in self._consumed:
+                    # Re-arm after a legitimate prior consume/move: the fresh
+                    # value is tracked afresh, no drop.
+                    self._consumed.discard(place)
+                    self._linear_names.discard(place)
+                elif not self._prefix_consumed(place):
+                    self._err(
+                        f"linear field {place!r} is overwritten without "
+                        f"being consumed; a `linear type` / typestate value "
+                        f"cannot be dropped -- consume the current value "
+                        f"(e.g. a `consume self` method like `close`) before "
+                        f"re-assigning",
+                        s.pos,
+                    )
         # Roadmap S2 (per-field IFC): a field store ``p.f = x`` raises
         # that field's per-field label monotonically (and the binding's
         # collapsed label), so a field made secret by a later assignment
@@ -1021,6 +1061,17 @@ class _StatementsMixin:
             )
         # Roadmap S1: ``return h`` transfers the linear obligation to
         # the caller -- discharge it here so it isn't reported as a
-        # leak at function exit.
-        if isinstance(s.value, A.Ident) and s.value.name in self._live_linear:
-            self._linear_discharge(s.value.name)
+        # leak at function exit. B-F1: returning a BORROWED linear param
+        # (the caller still owns it) routes into the discharge guard,
+        # which rejects the transfer.
+        if isinstance(s.value, A.Ident) and (
+            s.value.name in self._live_linear
+            or s.value.name in self._borrowed_linear
+        ):
+            self._linear_discharge(s.value.name, s.pos)
+        elif isinstance(s.value, A.FieldAccess):
+            # ``return s.conn`` transfers a linear FIELD to the caller;
+            # move it out of its carrier so it is not re-reported at exit.
+            place = self._linear_place(s.value)
+            if place is not None:
+                self._linear_move_field(place, s.pos)

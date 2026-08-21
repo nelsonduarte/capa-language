@@ -619,6 +619,30 @@ class _ExpressionsMixin:
                 f"parameter), never packed inside a list, set, map, or tuple",
                 e.pos,
             )
+        # Linear/typestate mirror of the cap use-gate: a value whose resolved
+        # type packs a linear/typestate value inside a list / set / map / tuple
+        # can never be produced, stored, passed, or read out soundly (a later
+        # read hands out aliases to a value that must be consumed exactly once,
+        # a double-free / leak). Flagging every sub-expression that resolves to
+        # one closes the whole family of shapes at a single site: a container /
+        # tuple literal built with a linear element, a producing higher-order
+        # ``map`` / ``flat_map`` whose closure returns a linear value, a
+        # container-typed binding / param / return on use, and any nesting. The
+        # check is by NAME (see ``_container_carries_linear``): a linear value
+        # captured inside a closure is barred separately by the capture-consume
+        # check, not here. A container whose element type only settles LATER is
+        # caught by the end-of-function deferred recheck instead.
+        self._linear_container_use_gate(e, ty)
+        # Finding 1: a linear/typestate value flowing through an if/match
+        # EXPRESSION whose arm selects an existing place (a bare Ident or
+        # Ident-rooted linear FieldAccess) aliases an obligation the move /
+        # consume / return / receiver seams cannot see (they match only bare
+        # Ident / FieldAccess nodes), so the wrapper opens a second obligation
+        # on the same runtime value -- a double-free. Barring it at this single
+        # resolved-type site closes the RHS, consume-arg, consume-self
+        # receiver, return, become, and struct-literal-element forms at once,
+        # while the fresh-factory conditional (arms are calls) stays legal.
+        self._check_linear_conditional_alias(e, ty)
         # A value read OUT of an empty-origin container surfaces the bare
         # element variable (``xs[0]``, a matched ``Some(v)`` from
         # ``m.get(k)``, a ``for`` element of a set). Referencing the
@@ -871,6 +895,10 @@ class _ExpressionsMixin:
         if isinstance(e, A.ListLit):
             return self._check_list_lit(e)
         if isinstance(e, A.TupleLit):
+            # B-F1: a borrowed linear / typestate value must not escape
+            # into a tuple element.
+            for x in e.elements:
+                self._linear_check_borrowed_escape(x, x.pos)
             elems = tuple(self._check_expr(x) for x in e.elements)
             return TyTuple(elems)
         if isinstance(e, A.MatchExpr):
@@ -1311,7 +1339,13 @@ class _ExpressionsMixin:
         # to the freshly-typed result (which the surrounding binding
         # re-registers as live).
         if isinstance(e.value, A.Ident):
-            self._linear_discharge(e.value.name)
+            self._linear_discharge(e.value.name, e.value.pos)
+        elif isinstance(e.value, A.FieldAccess):
+            # ``become(s.claim, Settled)`` transitions a linear FIELD in
+            # place; move it out of its carrier so it is accounted for.
+            place = self._linear_place(e.value)
+            if place is not None:
+                self._linear_move_field(place, e.value.pos)
         return TyName(val_ty.name, state=e.state)
 
     def _check_struct_lit(self, e: A.StructLit) -> Ty:
@@ -1338,6 +1372,9 @@ class _ExpressionsMixin:
                     f"duplicate field {fname!r} in struct literal", e.pos,
                 )
             seen.add(fname)
+            # B-F1: a borrowed linear / typestate value must not escape
+            # into a struct field.
+            self._linear_check_borrowed_escape(fexpr, fexpr.pos)
             if fname not in sym.struct_fields:
                 hint = self._hint_did_you_mean(
                     fname, list(sym.struct_fields.keys()),
@@ -1383,6 +1420,14 @@ class _ExpressionsMixin:
                 expected, substituted, e.type_name, fexpr.pos,
                 slot=f"field {fname!r}",
             )
+            # The container-of-linear invariant mirrors that: a struct field
+            # whose generic slot is instantiated to a container-of-linear
+            # (``Box<List<T>>`` at ``T = Conn``) smuggles a single-owner value
+            # into storage behind a ``T``, so reject it at the same site.
+            self._reject_linear_leak_via_substitution(
+                expected, substituted, e.type_name, fexpr.pos,
+                slot=f"field {fname!r}",
+            )
         missing = set(sym.struct_fields.keys()) - seen
         if missing:
             self._err(
@@ -1403,6 +1448,10 @@ class _ExpressionsMixin:
     def _check_list_lit(
         self, e: A.ListLit, expected_elem: Optional[Ty] = None,
     ) -> Ty:
+        # B-F1: a borrowed linear / typestate value must not escape into a
+        # list element.
+        for el in e.elements:
+            self._linear_check_borrowed_escape(el, el.pos)
         if not e.elements:
             # Fresh TyVar: the element type will be refined by
             # later uses (push, indexing, etc.). An annotated empty

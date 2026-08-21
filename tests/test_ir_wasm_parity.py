@@ -6738,5 +6738,202 @@ class TestCirIntegerArithmeticParity(unittest.TestCase):
         self._assert_three_way(src)
 
 
+class TestLinearMovePathParity(unittest.TestCase):
+    """Struct field move-paths run byte-identically on all three backends.
+
+    The move-path discipline is analyzer-only (reject-only), so a program
+    it ACCEPTS must produce the same output on the legacy Python path, the
+    CIR (``--ir``) path, and the Wasm backend -- the analyzer change must
+    not perturb codegen. Exercises a field move-out of a non-linear carrier
+    (both the ``linear type`` and the ``typestate`` facet), a projection,
+    and a whole-value scalar read after the move."""
+
+    def _assert_three_way(self, src: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        cir_out = _capture_stdout(lambda: _run_cir(src))
+        self.assertEqual(
+            py_out, cir_out,
+            msg=f"legacy vs CIR divergence.\n{py_out!r}\n{cir_out!r}\n{src}",
+        )
+        if _has_wasm_tools() and _has_wasmtime_py():
+            wasm_out = _capture_stdout(lambda: _run_wasm(src))
+            self.assertEqual(
+                py_out, wasm_out,
+                msg=f"legacy vs Wasm divergence.\n{py_out!r}\n{wasm_out!r}\n{src}",
+            )
+
+    def test_field_move_out_linear_and_typestate(self):
+        src = (
+            "linear type Conn { id: Int }\n"
+            "fun open(n: Int) -> Conn\n"
+            "    return Conn { id: n }\n"
+            "fun close(consume c: Conn) -> Int\n"
+            "    return c.id\n"
+            "type S { conn: Conn, tag: Int }\n"
+            "fun mks(n: Int) -> S\n"
+            "    return S { conn: open(n), tag: n * 10 }\n"
+            "typestate Claim { amount: Int }\n"
+            "    Draft\n"
+            "    Settled\n"
+            "fun mk(n: Int) -> Claim[Draft]\n"
+            "    return Claim[Draft] { amount: n }\n"
+            "fun archive(consume c: Claim[Settled]) -> Int\n"
+            "    return c.amount\n"
+            "type Record { claim: Claim[Settled], tag: Int }\n"
+            "fun mkrec(n: Int) -> Record\n"
+            "    return Record { claim: become(mk(n), Settled), tag: n + 1 }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let s = mks(3)\n"
+            "    let c = s.conn\n"
+            "    let id = close(c)\n"
+            '    stdio.println("id=${id} tag=${s.tag}")\n'
+            "    let rec = mkrec(7)\n"
+            "    let settled = rec.claim\n"
+            "    let amt = archive(settled)\n"
+            '    stdio.println("amt=${amt} rectag=${rec.tag}")\n'
+        )
+        self._assert_three_way(src)
+
+
+class TestLinearIntoContainerParity(unittest.TestCase):
+    """The no-linear-into-a-container reject is analyzer-only, so a program
+    it ACCEPTS (plain-data containers) must compile and run byte-identically
+    on all three backends. Guards against the reject perturbing codegen for
+    the ordinary container path."""
+
+    def _assert_three_way(self, src: str) -> None:
+        py_out = _capture_stdout(lambda: _run_python(src))
+        cir_out = _capture_stdout(lambda: _run_cir(src))
+        self.assertEqual(
+            py_out, cir_out,
+            msg=f"legacy vs CIR divergence.\n{py_out!r}\n{cir_out!r}\n{src}",
+        )
+        if _has_wasm_tools() and _has_wasmtime_py():
+            wasm_out = _capture_stdout(lambda: _run_wasm(src))
+            self.assertEqual(
+                py_out, wasm_out,
+                msg=f"legacy vs Wasm divergence.\n{py_out!r}\n{wasm_out!r}\n{src}",
+            )
+
+    def test_plain_data_container_ops(self):
+        src = (
+            "type LedgerEvent { amt: Int }\n"
+            "fun main(stdio: Stdio)\n"
+            "    var xs: List<LedgerEvent> = []\n"
+            "    xs.push(LedgerEvent { amt: 1 })\n"
+            "    xs.push(LedgerEvent { amt: 2 })\n"
+            "    let n = xs.length()\n"
+            "    let _ = xs.get(0)\n"
+            "    var m = new_map()\n"
+            '    m.set("k", "s")\n'
+            '    let has = m.contains_key("k")\n'
+            "    var st = new_set()\n"
+            "    st.add(3)\n"
+            '    stdio.println("n=${n} has=${has}")\n'
+        )
+        self._assert_three_way(src)
+
+
+class TestLinearConditionalAliasRejectParity(unittest.TestCase):
+    """Finding 1: a linear/typestate value selected through an if/match
+    EXPRESSION is refused UNIFORMLY on all three backends.
+
+    The refusal is a front-end (analyzer) one: ``_parse_and_analyze`` raises
+    before any backend codegen, so the legacy Python transpiler, the CIR
+    ``--ir`` emitter, and the Wasm emitter all reject the same programs for
+    the same reason (there is no backend that could accept a program the
+    analyzer refused). Each shape below is checked two ways: the analyzer
+    result is not ``ok``, and every backend runner refuses to run it. The
+    fresh-factory control confirms the refusal is precise, not a blanket ban
+    on conditionals producing linear values."""
+
+    _LIN = (
+        "linear type Conn { id: Int }\n"
+        "fun open(n: Int) -> Conn\n"
+        "    return Conn { id: n }\n"
+        "fun close(consume c: Conn) -> Unit\n"
+        "    return ()\n"
+    )
+    _NL = _LIN + (
+        "type S { conn: Conn, tag: Int }\n"
+        "fun mks() -> S\n"
+        "    return S { conn: open(1), tag: 0 }\n"
+    )
+    _TS = (
+        "typestate Auth\n    Pending\n    Settled\n"
+        "fun mk() -> Auth[Pending]\n"
+        "    return Auth[Pending] {}\n"
+        "fun settle(consume a: Auth[Pending]) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _assert_all_reject(self, src: str) -> None:
+        result = analyze(
+            Parser(Lexer(src).lex(), source=src).parse_module(), source=src,
+        )
+        self.assertFalse(
+            result.ok,
+            msg=f"analyzer accepted a barred program:\n{src}",
+        )
+        # Every backend funnels through _parse_and_analyze, so each refuses.
+        runners = [_run_python, _run_cir]
+        if _has_wasm_tools() and _has_wasmtime_py():
+            runners.append(_run_wasm)
+        for runner in runners:
+            with self.assertRaises(AssertionError):
+                runner(src)
+
+    def test_a2_if_whole_value(self):
+        self._assert_all_reject(
+            self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
+            "    let t = if true then s else s\n"
+            "    close(s)\n    close(t)\n"
+        )
+
+    def test_a3_match_whole_value(self):
+        self._assert_all_reject(
+            self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
+            "    let t = match 0\n        _ -> s\n"
+            "    close(s)\n    close(t)\n"
+        )
+
+    def test_b1_field_if(self):
+        self._assert_all_reject(
+            self._NL + "fun main(_s: Stdio)\n    let s = mks()\n"
+            "    let c = if true then s.conn else s.conn\n"
+            "    close(c)\n    close(s.conn)\n"
+        )
+
+    def test_b2_borrow_if_return(self):
+        self._assert_all_reject(
+            self._NL + "fun bad(s: S) -> Conn\n"
+            "    return if true then s.conn else s.conn\n"
+        )
+
+    def test_claimdesk_double_disbursement(self):
+        self._assert_all_reject(
+            self._TS + "fun main(_s: Stdio)\n    let authz = mk()\n"
+            "    let dup = if true then authz else authz\n"
+            "    settle(authz)\n    settle(dup)\n"
+        )
+
+    def test_fresh_factory_control_compiles_and_runs(self):
+        # Precision control: arms are calls (fresh values), so the bar does
+        # NOT fire and all three backends run it byte-identically.
+        src = (
+            self._LIN + "fun main(stdio: Stdio)\n"
+            "    let t = if true then open(1) else open(2)\n"
+            "    close(t)\n"
+            "    stdio.println(\"ok\")\n"
+        )
+        py = _capture_stdout(lambda: _run_python(src))
+        cir = _capture_stdout(lambda: _run_cir(src))
+        self.assertEqual(py, cir)
+        self.assertEqual(py.strip(), "ok")
+        if _has_wasm_tools() and _has_wasmtime_py():
+            wasm = _capture_stdout(lambda: _run_wasm(src))
+            self.assertEqual(py, wasm)
+
+
 if __name__ == "__main__":
     unittest.main()

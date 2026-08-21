@@ -57,7 +57,10 @@ class _DisciplineMixin:
             # live linear value. (Linear values are user structs, not
             # capabilities, so they don't match ``_is_capability_ident``
             # below; handle them first and continue.)
-            if isinstance(arg, A.Ident) and arg.name in self._live_linear:
+            if isinstance(arg, A.Ident) and (
+                arg.name in self._live_linear
+                or arg.name in self._borrowed_linear
+            ):
                 # Consuming a linear value CAPTURED from an enclosing scope
                 # is an error for the same reason a captured capability is:
                 # the closure may be invoked multiple times, but the value
@@ -75,9 +78,31 @@ class _DisciplineMixin:
                         arg.pos,
                     )
                     continue
-                self._linear_discharge(arg.name)
+                self._linear_discharge(arg.name, arg.pos)
                 continue
-            path = self._is_capability_ident(arg)
+            # Roadmap S1 (move-paths): a ``consume`` param also moves a
+            # linear FIELD when the arg is a field place naming a live
+            # linear/typestate value (``close(s.conn)``). Poison the path so
+            # the whole-value consume scan and scope-exit accounting see it.
+            if isinstance(arg, A.FieldAccess):
+                lin_place = self._linear_place(arg)
+                if lin_place is not None:
+                    root = lin_place.split(".", 1)[0]
+                    if self._lambda_local_names_stack and not any(
+                        root in frame
+                        for frame in self._lambda_local_names_stack
+                    ):
+                        self._err(
+                            f"cannot consume linear value {lin_place!r} "
+                            f"captured from enclosing scope; closures may be "
+                            f"invoked multiple times, but a `linear type` / "
+                            f"typestate value can only be consumed once",
+                            arg.pos,
+                        )
+                        continue
+                    self._linear_move_field(lin_place, arg.pos)
+                    continue
+            path = self._consumable_cap_path(arg)
             if path is None:
                 continue
             root = path.split(".", 1)[0]
@@ -151,6 +176,43 @@ class _DisciplineMixin:
                 return None
             ty = self.types.get(id(expr))
             if ty is None or not self._ty_is_capability(ty):
+                return None
+            return path
+        return None
+
+    def _consumable_cap_path(self, expr: A.Expr) -> Optional[str]:
+        """Canonical dotted path for a ``consume``-position argument
+        that names a capability SOURCE: a bare capability, OR a
+        cap-bearing struct (a value whose type reaches a capability via
+        :meth:`_contains_any_capability`).
+
+        This widens :meth:`_is_capability_ident` -- which recognises
+        only a bare / field-accessed built-in or user capability -- so a
+        struct that carries a cap (``m: SmtpMailer``) is also a
+        consumable source. That closes audit hole B-F2: ``dispose(m)``
+        followed by ``m.send(..)`` on a struct cap is now use-after-
+        consume, exactly as a directly-typed cap already was.
+
+        Used ONLY on the consume path (:meth:`_mark_consumed_args`); the
+        aliasing and structural checks keep the narrower
+        ``_ty_is_capability`` predicate, because a cap-bearing struct
+        stays droppable and is not linear-by-containment. Two shapes
+        resolve: a bare ``Ident`` and an Ident-rooted ``FieldAccess``
+        chain, keyed by :meth:`_path_of` so the recorded key matches the
+        later use-site check."""
+        if isinstance(expr, A.Ident):
+            sym = self.scope.lookup(expr.name)
+            if sym is None or sym.ty is None:
+                return None
+            if self._contains_any_capability(sym.ty) is not None:
+                return expr.name
+            return None
+        if isinstance(expr, A.FieldAccess):
+            path = self._path_of(expr)
+            if path is None:
+                return None
+            ty = self.types.get(id(expr))
+            if ty is None or self._contains_any_capability(ty) is None:
                 return None
             return path
         return None

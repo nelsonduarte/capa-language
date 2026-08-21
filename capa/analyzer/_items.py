@@ -242,6 +242,14 @@ class _ItemsMixin:
                 self._check_no_cap_container(
                     pty, p.pos, f"the type of parameter {p.name!r}",
                 )
+                # A parameter typed as a container of linear/typestate values
+                # (``List<Conn>`` / ``(Conn, Int)`` / ``Map<K, Conn>``) is
+                # barred up front; a bare linear/typestate parameter stays
+                # legal (that is how single-owner values flow), so this uses
+                # the container-scoped predicate.
+                self._check_no_linear_container(
+                    pty, p.pos, f"the type of parameter {p.name!r}",
+                )
                 if contains_capability(pty) is not None:
                     cap_param_syms.append(psym)
             if self.scope.lookup_local(p.name) is not None:
@@ -318,6 +326,33 @@ class _ItemsMixin:
         # inside the body (``let h = open()``).
         prev_live_linear = self._live_linear
         self._live_linear = {}
+        prev_live_linear_ty = self._live_linear_ty
+        self._live_linear_ty = {}
+        # B-F1: seed the borrowed-linear set. A non-``consume`` parameter
+        # of a linear / typestate type is borrowed -- the caller keeps the
+        # obligation, so the callee may read and forward it but must not
+        # consume, return, alias, or pack it into an aggregate. A
+        # ``consume`` param is the terminal owner (not borrowed); a
+        # non-linear param carries no obligation. ``self`` (whose declared
+        # type is the impl's ``self_type``) is included, so a non-consume
+        # ``self`` receiver is borrowed too.
+        prev_borrowed_linear = self._borrowed_linear
+        self._borrowed_linear = set()
+        for p in fn.params:
+            if p.consuming:
+                continue
+            p_ty = (
+                self.self_type if p.name == "self"
+                else (self._resolve_type(p.type_expr) if p.type_expr else None)
+            )
+            # A non-``consume`` parameter is borrowed when it is itself a
+            # linear/typestate value OR a struct that transitively OWNS a
+            # linear/typestate field (a `Session` / `Settlement` carrier):
+            # the caller keeps the obligation on that field, so the callee
+            # may read it but must not consume, move, or alias-then-consume
+            # it (else it double-frees the caller's field).
+            if self._ty_is_linear(p_ty) or self._type_carries_linear(p_ty):
+                self._borrowed_linear.add(p.name)
         # Fresh TyVar substitution universe for the function.
         prev_subs = self._ty_subs
         self._ty_subs = {}
@@ -412,6 +447,27 @@ class _ItemsMixin:
                     read_pos,
                 )
                 continue
+            # Deferred container-of-linear recheck (mirror of the cap case
+            # above). The inferred-empty-then-populated local, or a linear
+            # value pushed inside a generic helper that only surfaces as the
+            # caller's ``List<Conn>``, resolves to a linear/typestate element
+            # only now that the whole body has been analysed. Reject the
+            # read-out here, since the use-gate could not see it at production
+            # time (the element variable was still open).
+            if (
+                self._ty_is_linear(resolved_elem)
+                or self._type_carries_linear(resolved_elem)
+            ):
+                self._err(
+                    "a linear/typestate value cannot be read out of a "
+                    "container: this local resolves to a container of "
+                    "single-owner values, and a linear/typestate value may "
+                    "only flow as a bare, top-level value (a direct parameter "
+                    "/ return / binding), never packed inside a list, set, "
+                    "map, or tuple",
+                    read_pos,
+                )
+                continue
             if is_flexible(resolved_elem):
                 if var_name.startswith("?lst"):
                     kind, example = "list", "let xs: List<Int> = []"
@@ -435,6 +491,8 @@ class _ItemsMixin:
         # restore the enclosing function's live set.
         self._linear_check_dropped(set(self._live_linear))
         self._live_linear = prev_live_linear
+        self._live_linear_ty = prev_live_linear_ty
+        self._borrowed_linear = prev_borrowed_linear
 
         self._consumed = prev_consumed
         self._linear_names = prev_linear_names
