@@ -29,7 +29,8 @@ from __future__ import annotations
 from typing import List, Optional
 
 from ._cap_binding import main_handle_cap_types, wit_cap_slot_name
-from ._nodes import Module, Call, MethodCall
+from ._cap_discovery import classify_cap_method
+from ._nodes import Module, Call
 from ._walk import walk_module
 
 
@@ -661,66 +662,29 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     # inside a method or a closure must appear in the WIT too, or
     # the component link fails with a missing-import mismatch.
     for _fn, instr in walk_module(module):
-        if isinstance(instr, MethodCall):
-            cap = instr.cap_used
-            if cap is None:
-                rty = instr.receiver.ty or ""
-                if rty in BUILTIN_CAPS:
-                    cap = rty
-            if cap is not None:
-                # ``restrict_to`` / ``restrict_to_keys`` /
-                # ``restrict_to_after`` are pure attenuators
-                # tracked in the analyzer + the Wasm emit's
-                # attenuation chain. They never become host
-                # calls, so they must not appear in the WIT
-                # interface (which would force the host to
-                # provide a matching no-op stub it never
-                # calls). The core-wasm discovery pass
-                # already filters them; this mirrors that rule
-                # so WIT and core imports stay in lockstep.
-                #
-                # Slice 25.2 - 25.6 exception (2026-05-30):
-                # ``Fs.restrict_to`` / ``Net.restrict_to`` /
-                # ``Db.restrict_to`` / ``Proc.restrict_to`` /
-                # ``Env.restrict_to_keys`` /
-                # ``Clock.restrict_to_after`` graduated to real
-                # host calls that take the parent handle + the
-                # attenuation arg and return a child handle, so
-                # they stay in the WIT.
-                if (
-                    cap in ("Fs", "Net", "Db", "Proc")
-                    and instr.method == "restrict_to"
-                ):
-                    pass
-                elif (
-                    cap == "Env"
-                    and instr.method == "restrict_to_keys"
-                ):
-                    pass
-                elif (
-                    cap == "Clock"
-                    and instr.method == "restrict_to_after"
-                ):
-                    pass
-                elif instr.method in (
-                    "restrict_to",
-                    "restrict_to_keys",
-                    "restrict_to_after",
-                ):
-                    continue
-                out.setdefault(cap, set()).add(instr.method)
-                # Slice 13 (2026-05-29): Clock.sleep with a
-                # restrict_to_after chain compiles to an
-                # inline ``$Clock_now_secs >= deadline`` gate
-                # around the host sleep. The core-wasm
-                # discovery agrees with this rule; WIT must
-                # advertise ``now-secs`` too or the component
-                # link fails on "import interface is missing
-                # function now-secs".
-                if (cap == "Clock"
-                        and instr.method == "sleep"
-                        and getattr(instr, "attenuations", None)):
-                    out.setdefault(cap, set()).add("now_secs")
+        # Capability classification is single-sourced with the core-wasm
+        # discovery pass in
+        # ``capa.ir._cap_discovery.classify_cap_method``: it resolves the
+        # receiver cap (``cap_used`` else a built-in receiver type) and
+        # drops the pure attenuators elided at emit time --
+        # ``restrict_to`` / ``restrict_to_keys`` / ``restrict_to_after``
+        # that did NOT graduate to a real host call (audit slices
+        # 25.2 - 25.6). What is left is projected here to the
+        # ``cap -> {method}`` map the WIT interfaces are built from.
+        classified = classify_cap_method(instr)
+        if classified is None:
+            continue
+        cap, method = classified
+        out.setdefault(cap, set()).add(method)
+        # Slice 13 (2026-05-29): Clock.sleep with a restrict_to_after
+        # chain compiles to an inline ``$Clock_now_secs >= deadline``
+        # gate around the host sleep. The core-wasm discovery agrees with
+        # this rule; WIT must advertise ``now-secs`` too or the component
+        # link fails on "import interface is missing function now-secs".
+        if (cap == "Clock"
+                and method == "sleep"
+                and getattr(instr, "attenuations", None)):
+            out.setdefault(cap, set()).add("now_secs")
     # ``Random`` is special: source-level methods (``with_seed``,
     # ``int_range``, ``float_unit``) all run guest-side in pure WAT
     # (SplitMix64 over a module-local i64 state). The only host
@@ -735,7 +699,6 @@ def collect_used_capabilities(module: Module) -> dict[str, set[str]]:
     return out
 
 
-from ._capa_types import BUILTIN_CAPS
 from ._python_only_caps import find_rejection as find_python_only_rejection
 
 
