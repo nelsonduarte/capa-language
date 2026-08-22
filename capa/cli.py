@@ -875,7 +875,8 @@ def _enforce_floor_for_file_root(
     The second is DEPTH. Every file-based invocation re-checks here, not
     just the four artefact-emitting ones, so the floor does not rest on
     a single predicate. It used to have a second layer inside
-    ``_capa_search_paths``; that one was scoped to ``Path.cwd()``, so it
+    ``_capa_search_paths`` (in :mod:`capa.loader_paths`); that one was
+    scoped to ``Path.cwd()``, so it
     saw nothing from a subdirectory, and it never ran for a command that
     does not resolve modules (``--parse``). This seam is scoped to the
     root the command actually acts on and runs for every file, which is
@@ -997,7 +998,8 @@ def _main_dispatch() -> int:
     # on a file in a different, satisfied project both proceeded at exit
     # 0, while that project's own file was still refused. The cwd
     # project is not a bystander in those two runs: ``_capa_search_paths``
-    # reads ``Path.cwd() / "capa.toml"``, so it supplies module
+    # (in :mod:`capa.loader_paths`) reads ``Path.cwd() / "capa.toml"``, so
+    # it supplies module
     # resolution for the build and materially shapes the artefact while
     # its own floor goes unenforced. Not a live bypass, because the
     # predicate is correct as shipped. It is the reason to keep BOTH
