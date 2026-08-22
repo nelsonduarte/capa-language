@@ -125,35 +125,6 @@ class _NodeEntry:
     depth: int          # 0 for Module, 1 for top-level items, ...
 
 
-def _iter_children(node: A.Node):
-    """Yield direct child :class:`A.Node` instances of ``node``.
-
-    Walks the dataclass fields and unwraps lists / tuples (the AST
-    uses tuples in a few places: ``IfStmt.elif_arms``,
-    ``StructLit.fields``, ``StructPat.fields``).
-    """
-    for f in node.__dataclass_fields__.values():
-        if f.name == "pos":
-            continue
-        v = getattr(node, f.name, None)
-        if v is None:
-            continue
-        if isinstance(v, A.Node):
-            yield v
-        elif isinstance(v, list):
-            for item in v:
-                if isinstance(item, A.Node):
-                    yield item
-                elif isinstance(item, tuple):
-                    for sub in item:
-                        if isinstance(sub, A.Node):
-                            yield sub
-        elif isinstance(v, tuple):
-            for sub in v:
-                if isinstance(sub, A.Node):
-                    yield sub
-
-
 def _build_node_index(
     module: A.Module, tokens: list[Token],
 ) -> list[_NodeEntry]:
@@ -188,7 +159,7 @@ def _build_node_index(
         pos = getattr(node, "pos", None)
         start = pos.offset if pos is not None else 0
         end = start
-        children: list[A.Node] = list(_iter_children(node))
+        children: list[A.Node] = list(A.children(node))
         for child in children:
             child_end = visit(child, node, depth + 1)
             if child_end > end:
