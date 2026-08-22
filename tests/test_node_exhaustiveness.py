@@ -21,6 +21,19 @@ so a node kind that is neither handled nor explicitly excluded fails HERE,
 at the seam, naming the node and the dispatcher, rather than by a silent
 fall-through later.
 
+That forward check alone is only half the agreement: it proves every node
+kind is NAMED in a dispatcher's declared handled-set, not that the
+dispatcher's ``isinstance`` ladder actually DISPATCHES each kind it names.
+A kind could sit in the constant while its ``isinstance`` branch is missing
+(or wired on only one backend) -- the exact one-backend-silent gap this net
+advertises to guard. So this module also adds the REVERSE check: for each
+covered dispatcher it DERIVES the dispatched set straight from the
+function's source (the ``isinstance(x, Kind)`` branches read via
+``inspect.getsource`` + a regex, the same technique
+``tests/test_method_emit_agreement.py::_special_cased`` uses) and asserts it
+equals the declared constant minus the deliberate exclusions. Forward plus
+reverse is a genuine bidirectional constant<->code agreement.
+
 COVERED dispatchers (chosen because a missed kind is a correctness bug):
 
 - ``analyzer._expressions._check_expr_inner`` over AST ``Expr``
@@ -72,6 +85,8 @@ compilation), so it always collects. It is additive: it changes no
 production behaviour.
 """
 
+import inspect
+import re
 import unittest
 from collections import namedtuple
 
@@ -79,15 +94,24 @@ from capa import capa_ast as A
 from capa.ir import _nodes as I
 from capa.ir._lower_pattern import PatOr, PatStruct
 
-from capa.analyzer._expressions import CHECKED_EXPR_KINDS
-from capa.analyzer._statements import CHECKED_STMT_KINDS
-from capa.ir._emit_python import (
-    PYTHON_EMITTED_INSTRS, PYTHON_EMITTED_PATTERNS,
+from capa.analyzer._expressions import (
+    CHECKED_EXPR_KINDS, _ExpressionsMixin as _AnalyzerExprMixin,
 )
-from capa.ir._emit_wasm._dispatch import WASM_EMITTED_INSTRS
-from capa.transpiler._expressions import TRANSPILED_EXPR_KINDS
+from capa.analyzer._statements import (
+    CHECKED_STMT_KINDS, _StatementsMixin as _AnalyzerStmtMixin,
+)
+from capa.ir._emit_python import (
+    PYTHON_EMITTED_INSTRS, PYTHON_EMITTED_PATTERNS, PythonEmitter,
+)
+from capa.ir._emit_wasm._dispatch import (
+    WASM_EMITTED_INSTRS, _InstrDispatchMixin,
+)
+from capa.transpiler._expressions import (
+    TRANSPILED_EXPR_KINDS, _ExpressionsMixin as _TranspilerExprMixin,
+)
 from capa.transpiler._statements import (
     TRANSPILED_STMT_KINDS, TRANSPILED_MATCH_PATTERNS,
+    _StatementsMixin as _TranspilerStmtMixin,
 )
 
 
@@ -109,17 +133,45 @@ def _concrete_subclasses(base, package):
     return out
 
 
-#: One covered dispatcher. ``handled`` is the production-side declared
-#: handled-set constant; ``excluded`` is the set this test asserts the
-#: dispatcher DELIBERATELY does not handle (each with a reason below).
+def _dispatched_kinds(fn, base, package):
+    """The set of node-kind NAMES ``fn`` dispatches, read straight from its
+    source: the ``isinstance(x, Kind)`` (and ``isinstance(x, (K1, K2))``)
+    branches keyed on the function's own dispatch variable (its first
+    parameter after ``self``).
+
+    Reuses ``test_method_emit_agreement._special_cased``'s technique
+    (``inspect.getsource`` + a regex over the branch guards) so a newly
+    added or removed branch is picked up automatically rather than by a
+    hand-list. The result is filtered to real concrete subclasses of
+    ``base`` under ``package``, so a non-node ``isinstance`` on the same
+    variable (``isinstance(p, str)``) and node names spelled with or without
+    an ``A.`` / ``I.`` module prefix are both handled correctly."""
+    params = [p for p in inspect.signature(fn).parameters if p != "self"]
+    var = re.escape(params[0])
+    names = {c.__name__ for c in _concrete_subclasses(base, package)}
+    src = inspect.getsource(fn)
+    tokens = re.findall(rf'isinstance\(\s*{var}\s*,\s*([\w.]+)\s*\)', src)
+    for group in re.findall(
+        rf'isinstance\(\s*{var}\s*,\s*\(([^)]*)\)\s*\)', src
+    ):
+        tokens += re.findall(r'[\w.]+', group)
+    return {t.split(".")[-1] for t in tokens if t.split(".")[-1] in names}
+
+
+#: One covered dispatcher. ``fn`` is the dispatch function itself (used by
+#: the reverse check to derive its handled-set from source). ``handled`` is
+#: the production-side declared handled-set constant; ``excluded`` is the set
+#: this test asserts the dispatcher DELIBERATELY does not handle (each with a
+#: reason below).
 Dispatcher = namedtuple(
-    "Dispatcher", "label base package handled excluded",
+    "Dispatcher", "label fn base package handled excluded",
 )
 
 
 _COVERED = [
     Dispatcher(
         label="analyzer._expressions._check_expr_inner (AST Expr)",
+        fn=_AnalyzerExprMixin._check_expr_inner,
         base=A.Expr, package="capa.capa_ast",
         handled=CHECKED_EXPR_KINDS,
         # The analyzer types every expression form; nothing is excluded.
@@ -127,6 +179,7 @@ _COVERED = [
     ),
     Dispatcher(
         label="analyzer._statements._check_stmt (AST Stmt)",
+        fn=_AnalyzerStmtMixin._check_stmt,
         base=A.Stmt, package="capa.capa_ast",
         handled=CHECKED_STMT_KINDS,
         # The analyzer checks every statement form; nothing is excluded.
@@ -134,6 +187,7 @@ _COVERED = [
     ),
     Dispatcher(
         label="transpiler._expressions._emit_expr (AST Expr)",
+        fn=_TranspilerExprMixin._emit_expr,
         base=A.Expr, package="capa.capa_ast",
         handled=TRANSPILED_EXPR_KINDS,
         # The legacy transpiler (default --run backend) renders every
@@ -142,6 +196,7 @@ _COVERED = [
     ),
     Dispatcher(
         label="transpiler._statements._emit_stmt (AST Stmt)",
+        fn=_TranspilerStmtMixin._emit_stmt,
         base=A.Stmt, package="capa.capa_ast",
         handled=TRANSPILED_STMT_KINDS,
         # The legacy transpiler renders every statement form; nothing is
@@ -150,6 +205,7 @@ _COVERED = [
     ),
     Dispatcher(
         label="transpiler._statements._emit_pattern_match (AST Pattern)",
+        fn=_TranspilerStmtMixin._emit_pattern_match,
         base=A.Pattern, package="capa.capa_ast",
         handled=TRANSPILED_MATCH_PATTERNS,
         # The match-pattern renderer covers the full pattern domain with a
@@ -160,6 +216,7 @@ _COVERED = [
     ),
     Dispatcher(
         label="ir._emit_python._emit_instr (CIR Instr)",
+        fn=PythonEmitter._emit_instr,
         base=I.Instr, package="capa.ir",
         handled=PYTHON_EMITTED_INSTRS,
         excluded=frozenset({
@@ -175,6 +232,7 @@ _COVERED = [
     ),
     Dispatcher(
         label="ir._emit_python._format_pattern (CIR Pattern)",
+        fn=PythonEmitter._format_pattern,
         base=I.Pattern, package="capa.ir",
         handled=PYTHON_EMITTED_PATTERNS,
         excluded=frozenset({
@@ -192,6 +250,7 @@ _COVERED = [
     ),
     Dispatcher(
         label="ir._emit_wasm._dispatch._emit_instr (CIR Instr)",
+        fn=_InstrDispatchMixin._emit_instr,
         base=I.Instr, package="capa.ir",
         handled=WASM_EMITTED_INSTRS,
         excluded=frozenset({
@@ -220,6 +279,27 @@ class TestNodeExhaustiveness(unittest.TestCase):
                     f"that dispatcher's branch AND its declared handled-set, "
                     f"or record it as a deliberate exclusion in "
                     f"tests/test_node_exhaustiveness.py.",
+                )
+
+    def test_declared_constant_matches_the_dispatched_ladder(self):
+        """The reverse half of the agreement: every kind NAMED in a
+        dispatcher's declared handled-set must actually be dispatched by its
+        ``isinstance`` ladder, and vice versa. A kind left in the constant
+        while its branch is dropped (or wired on only one backend) fails
+        here, naming the dispatcher and the drifted kind -- the
+        one-backend-silent gap the forward check cannot see."""
+        for d in _COVERED:
+            with self.subTest(dispatcher=d.label):
+                dispatched = _dispatched_kinds(d.fn, d.base, d.package)
+                declared = {c.__name__ for c in (d.handled - d.excluded)}
+                self.assertEqual(
+                    dispatched, declared,
+                    f"{d.label}: its source-derived isinstance ladder and "
+                    f"its declared handled-set disagree. In the constant but "
+                    f"not dispatched: {sorted(declared - dispatched)}; "
+                    f"dispatched but not in the constant: "
+                    f"{sorted(dispatched - declared)}. Re-sync the "
+                    f"dispatcher's branches with its handled-set constant.",
                 )
 
     def test_handled_and_excluded_are_disjoint(self):
