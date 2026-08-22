@@ -82,7 +82,7 @@ sibling is not over-tainted:
   still raises the struct's COLLAPSED whole-value label for the same-body
   reads, so no same-body coverage is lost.
 * a CONTAINER MUTATION, ``xs.push(v)`` and every other entry of the
-  ``_CONTAINER_MUTATORS`` registry in :mod:`._ifc` (its single source of
+  ``_CONTAINER_MUTATORS`` registry in :mod:`._ifc_tables` (its single source of
   truth), is FIELD-KEYED onto the branch-scoped ``(root, field-path)``
   container channel the intra container mutation
   (``_check_ifc_container_mutation``) uses. A FIELD read of the path

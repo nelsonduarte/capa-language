@@ -119,8 +119,9 @@ the project; each is intentionally compact.
   design discussion. The code is intentionally readable rather than
   clever, and trades simplicity for performance; restructurings need
   to preserve that balance.
-- New built-in capabilities. The seven we have are deliberate; adding
-  one is a language-design decision that needs justification.
+- New built-in capabilities. The ten we have (Stdio, Fs, Net, Env,
+  Proc, Clock, Random, Db, Serve, Unsafe) are deliberate; adding one is
+  a language-design decision that needs justification.
 - Major dependencies. The compiler currently has zero runtime
   dependencies outside the Python standard library; a PR that adds
   one needs to argue why.
