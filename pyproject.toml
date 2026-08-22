@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 # stays ``capa`` (see ``[project.scripts]``); only the distribution
 # identity is ``capa-language``.
 name = "capa-language"
-version = "1.31.0"
+version = "1.32.0"
 description = "A capability-typed language that emits machine-verifiable supply-chain SBOMs by construction"
 readme = "README.md"
 requires-python = ">=3.10"
