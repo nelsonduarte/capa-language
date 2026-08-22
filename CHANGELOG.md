@@ -134,6 +134,12 @@ unsound are affected. GHSA identifiers are assigned at publication.
   hand-synced codegen pairs (M2), and hardened the test net from the QA pass with
   a bidirectional node net, a reverse M1 agreement net, and an IFC-harness
   presence guard. These pin existing behaviour; none change compiler output.
+- *Hash-pinned reproducible dev / CI dependency install.* The development and CI
+  dependencies now install from hash-pinned lockfiles under `--require-hashes`,
+  making the toolchain used to build and test Capa reproducible and tamper-evident
+  at the build / CI level. This is not a runtime or user-install guarantee: the
+  published package stays dependency-free, so it does not change what a downstream
+  consumer installs or runs. No user-facing or security-advisory impact.
 
 **Known issues (disclosed-open, shipped as documented).** These are honestly
 scoped residuals that ship with `1.32.0`, each pinned by a test; they are NOT
