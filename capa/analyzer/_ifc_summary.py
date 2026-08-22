@@ -185,11 +185,12 @@ from __future__ import annotations
 import dataclasses
 
 from .. import capa_ast as A
-from ._ifc import (
+from ._ifc_tables import (
     _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
     _VARIABLE_TIME_OPS, _SHORT_CIRCUIT_COMPARE_OPS,
     _CT_INDEX_METHODS, _CT_SHORT_CIRCUIT_METHODS,
     _pattern_bound_names, _prefix_compatible,
+    INTERNAL_SECRET, _bind, methods_by_name,
 )
 
 
@@ -208,11 +209,6 @@ class _LambdaCallable:
     def __init__(self, body: A.Block) -> None:
         self.body = body
 
-
-# Sentinel source for a field written from an internal secret source
-# (``env.get(...)``) rather than from another parameter. Distinct from
-# any real 0-based parameter index.
-INTERNAL_SECRET = -1
 
 # Absent-marker for the body-scoped for-loop binder seed: distinguishes a
 # name that was ABSENT from ``_cur_value_types`` / ``_cur_elem_types`` before
@@ -368,25 +364,6 @@ def compute_ifc_summaries(
     """
     builder = _SummaryBuilder(module, global_scope)
     return builder.run()
-
-
-def methods_by_name(summaries: dict) -> dict[str, list]:
-    """Group method summary keys by method name:
-    ``method_name -> [("method", type_name, method_name), ...]``.
-
-    Derived from the summary table's keys so the same by-name
-    over-approximation the builder uses at a receiver-type-unknown
-    method call (``_taint_of_method_call``) is available to the
-    call-site checker (``_check_ifc_method_call_summary``) without
-    duplicating the grouping logic. A trait-typed (dynamic-dispatch)
-    receiver, or a missing exact key, falls back to the UNION over
-    every concrete impl type that defines a method of that name -- a
-    sound over-approximation (never misses a leak)."""
-    out: dict[str, list] = {}
-    for key in summaries:
-        if isinstance(key, tuple) and len(key) == 3 and key[0] == "method":
-            out.setdefault(key[2], []).append(key)
-    return out
 
 
 class _SummaryBuilder:
@@ -3177,23 +3154,3 @@ class _SummaryBuilder:
         hand-rolled check looked at -- displaces the built-in."""
         from .._declassify import is_declassify_call
         return is_declassify_call(e, module_scope=self.global_scope)
-
-
-def _bind(args: list, arg_names: list, param_names: list[str]) -> dict:
-    """Return ``{param_index: arg_index}`` resolving positional and
-    named arguments against ``param_names``. Mirrors the analyzer's
-    ``_resolve_named_args`` shape but is permissive about errors (a
-    malformed call is diagnosed by the main walk; here we only need a
-    best-effort binding for taint flow)."""
-    name_to_param = {p: i for i, p in enumerate(param_names)}
-    out: dict = {}
-    names = arg_names if arg_names else [None] * len(args)
-    for arg_idx, n in enumerate(names):
-        if n is None:
-            if arg_idx < len(param_names):
-                out[arg_idx] = arg_idx
-        else:
-            pidx = name_to_param.get(n)
-            if pidx is not None:
-                out[pidx] = arg_idx
-    return out

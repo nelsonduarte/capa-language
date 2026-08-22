@@ -38,145 +38,14 @@ from typing import Optional
 
 from .. import capa_ast as A
 from .. import _labels as L
+from ._ifc_tables import (
+    _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
+    _VARIABLE_TIME_OPS, _SHORT_CIRCUIT_COMPARE_OPS,
+    _CT_INDEX_METHODS, _CT_SHORT_CIRCUIT_METHODS,
+    _pattern_bound_names, _prefix_compatible,
+    INTERNAL_SECRET, _bind, methods_by_name,
+)
 
-
-# Built-in capability methods that exfiltrate data out of the program
-# -- the public sinks. A ``@secret`` value reaching any of these
-# argument positions is an information-flow violation unless it was
-# declassified. Keyed by ``(CapName, method)`` -> the set of 0-based
-# argument indices that are sinks. Roadmap S2.4.
-#
-# Receiver-only / pure-query methods (allows, exists, read, get from
-# Env, now_secs, ...) are NOT sinks: they bring data IN or inspect,
-# they don't send it out. ``restrict_to*`` take a config string, not
-# user data. The path argument of fs.write is included (a secret
-# written to an attacker-chosen path is still disclosure), as is the
-# URL of net.get/post (a secret in a URL leaks via the request line /
-# server logs).
-_PUBLIC_SINKS: dict[tuple[str, str], set[int]] = {
-    ("Stdio", "print"):    {0},
-    ("Stdio", "println"):  {0},
-    ("Stdio", "eprintln"): {0},
-    ("Net", "get"):        {0},
-    ("Net", "post"):       {0, 1},
-    ("Fs", "write"):       {0, 1},
-    ("Db", "exec"):        {0, 1},
-    ("Db", "query"):       {0, 1},
-    # Serve.send writes bytes to whoever is on the other end of an
-    # inbound connection -- exfiltration exactly like Net.post. Only
-    # argument 1 (the payload) is a sink; argument 0 is the connection
-    # id the runtime handed out, not program data, so gating it would
-    # be noise.
-    #
-    # It is spelled ``send`` and not ``write`` because the summary pass
-    # in ``_ifc_summary`` attributes a sink to a capability BY METHOD
-    # NAME (it has no receiver type at that point), which is sound only
-    # while each sink method name belongs to exactly one capability.
-    # ``Fs.write`` already owns "write", so a ``Serve.write`` made every
-    # ``fs.write`` report Serve as a reached capability too -- caught by
-    # tests/test_unaudited_secret_sink_fact.py when this landed.
-    ("Serve", "send"):     {1},
-}
-
-# Built-in capability methods that PRODUCE secret data -- the sources.
-# Their result is labelled ``@secret`` regardless of argument labels,
-# so a program that reads a secret and routes it to a public sink is
-# caught without the programmer annotating anything. Roadmap S2
-# (source caps). Keyed ``(CapName, method)``.
-#
-# Conservative on purpose -- only ``Env.get`` for now. Environment
-# variables are where API keys / tokens / credentials live (the
-# headline prompt-injection-exfiltration case), so treating them as
-# secret-by-default is the safe and accurate call. ``Fs.read`` is
-# deliberately NOT a source: a config / data file is usually public,
-# and over-labelling it would warn on every legitimate file echo. A
-# program that does hold a secret in a file can annotate the binding
-# ``@secret`` explicitly. Future levels could make this configurable.
-#
-# ``Serve.read`` is deliberately NOT a source either, and this is the
-# one entry whose ABSENCE is a decision worth spelling out. Serve
-# (2026-07) is the language's first INBOUND data source, so it is the
-# first time the question "is data arriving from outside secret?" has
-# an answer to give. It is ``@public``.
-#
-# The reason is that this lattice models CONFIDENTIALITY -- who is
-# allowed to LEARN a value -- and not integrity or taint. An inbound
-# request is untrusted, but "untrusted" is an integrity property, and
-# labelling it ``@secret`` would encode it in the wrong lattice: the
-# immediate consequence is that echoing a request back to the client
-# that sent it (the single most ordinary thing a server does) becomes
-# a reported violation. The useful signal would drown in that noise.
-#
-# ``Serve.read`` being ``@public`` therefore asserts only "these bytes
-# are not a secret whose disclosure this analysis must prevent". It
-# asserts NOTHING about whether they can be trusted. Integrity /
-# taint tracking would be a second lattice, not a relabelling of this
-# one.
-_SECRET_SOURCES: frozenset = frozenset({
-    ("Env", "get"),
-})
-
-# Mutating methods that can inject tainted data INTO a mutable
-# container. When called with a @secret argument in one of the listed
-# positions, the receiver container becomes @secret: a later read
-# (``get`` / ``contains`` / ``keys`` / iteration) would otherwise
-# launder the secret back to public. Keyed ``(TypeName, method)`` ->
-# the 0-based argument positions that carry data into the container.
-# This is the mutable-container analogue of the aggregate-literal
-# rule; together they stop a secret from being hidden in a collection.
-_CONTAINER_MUTATORS: dict[tuple[str, str], set[int]] = {
-    ("List", "push"): {0},
-    ("Set",  "add"):  {0},
-    ("Map",  "set"):  {0, 1},
-}
-
-# Lookup methods whose index / key argument selects which memory is
-# touched. In a ``@constant_time`` function (roadmap S4) a @secret in
-# one of these positions is a data-dependent access (the cache-timing
-# side channel behind table lookups, e.g. an AES S-box). Keyed
-# ``(TypeName, method)`` -> the 0-based argument positions that act as
-# the index / key. This is the method-call analogue of ``xs[secret]``.
-_CT_INDEX_METHODS: dict[tuple[str, str], set[int]] = {
-    ("List",   "get"):          {0},
-    ("Map",    "get"):          {0},
-    ("Map",    "contains_key"): {0},
-    ("Set",    "contains"):     {0},
-    ("String", "char_at"):      {0},
-}
-
-# Operators whose latency depends on operand values on the targets we
-# emit (the variable-latency divider, CWE-208). A @secret operand of any
-# of these leaks through timing. Add the next variable-time operator
-# here, and ``_check_ct_arith`` picks it up with no further change.
-_VARIABLE_TIME_OPS: frozenset[str] = frozenset({"/", "%"})
-
-# Comparison operators that short-circuit byte-by-byte over a String /
-# List operand on the targets we emit (CWE-208). ``==`` / ``!=`` on a
-# String or List run ``$str_eq`` / element-wise compare with a
-# length fast-path and an early exit at the first differing element, so
-# the timing reveals the position of the first difference -- the classic
-# MAC / token / password compare oracle. The ordering operators
-# (``<`` ``<=`` ``>`` ``>=``) on a String are a lexicographic byte scan
-# with the same early exit. A @secret operand of any of these in a
-# ``@constant_time`` function is rejected (see ``_check_ct_compare``).
-# Int / Float scalar comparison is single-cycle and stays allowed.
-_SHORT_CIRCUIT_COMPARE_OPS: frozenset[str] = frozenset({
-    "==", "!=", "<", "<=", ">", ">=",
-})
-
-# String / List methods that short-circuit byte-by-byte against a
-# @secret operand, the method-call analogue of the comparison operators
-# above. ``starts_with`` / ``ends_with`` / ``contains`` early-exit at the
-# first mismatch; ``index_of`` scans for a match. Keyed
-# ``(TypeName, method)`` -> the 0-based argument positions whose @secret
-# label (or a @secret receiver) makes the call a timing oracle.
-_CT_SHORT_CIRCUIT_METHODS: dict[tuple[str, str], set[int]] = {
-    ("String", "starts_with"): {0},
-    ("String", "ends_with"):   {0},
-    ("String", "contains"):    {0},
-    ("String", "index_of"):    {0},
-    ("List",   "contains"):    {0},
-}
 
 # Higher-order IFC precision (Phase B1). Built-in combinators whose
 # result is element-granular: the closure's return label taints the
@@ -666,7 +535,6 @@ class _IfcMixin:
         sources = self._ifc_return_effects.get(("fun", e.callee.name))
         if sources is None:
             return conservative
-        from ._ifc_summary import INTERNAL_SECRET, _bind
         sym = self.bindings.get(id(e.callee))
         param_names = getattr(sym, "param_names", []) if sym is not None else []
         perm = _bind(e.args, e.arg_names, param_names)
@@ -3152,7 +3020,6 @@ class _IfcMixin:
             return False
         sym = self.bindings.get(id(e.callee))
         param_names = getattr(sym, "param_names", []) if sym is not None else []
-        from ._ifc_summary import _bind
         perm = _bind(e.args, e.arg_names, param_names)
         return self._return_sources_fire(sources, perm, e.args)
 
@@ -3165,7 +3032,6 @@ class _IfcMixin:
         recv_name = getattr(recv_ty, "name", None)
         if recv_name is None:
             return False
-        from ._ifc_summary import methods_by_name
         exact_key = ("method", recv_name, e.method)
         keys = ([exact_key] if exact_key in self._ifc_return_effects
                 else methods_by_name(self._ifc_return_effects).get(e.method, ()))
@@ -3215,7 +3081,6 @@ class _IfcMixin:
         back to the conservative whole-value join of the receiver and all
         argument labels -- the original, sound rule -- so e.g. a read off
         a @secret container is still @secret."""
-        from ._ifc_summary import methods_by_name
         conservative = L.join(
             self._label_of(e.receiver),
             L.join_all(self._label_of(a) for a in e.args),
@@ -3272,7 +3137,6 @@ class _IfcMixin:
         internal-secret sentinel, or a real parameter index whose bound
         argument is @secret. ``perm`` maps a parameter index to an index
         into ``args`` (a list for free calls, a dict for method calls)."""
-        from ._ifc_summary import INTERNAL_SECRET
         def arg_for(pidx):
             if isinstance(perm, dict):
                 idx = perm.get(pidx)
@@ -3680,7 +3544,6 @@ class _IfcMixin:
             sink_caps = self._ifc_sink_caps.get(exact_key, {})
             sink_paths = self._ifc_sink_paths.get(exact_key, {})
         else:
-            from ._ifc_summary import methods_by_name
             grouping = methods_by_name(self._ifc_summaries)
             sink_params = set()
             # PER-PARAMETER caps map (full param idx -> caps), unioned over
@@ -3951,7 +3814,6 @@ class _IfcMixin:
         container-mutation channel where the effect is keyable, else the
         whole-value carrier, so a dynamic-dispatch receiver never drops
         the taint."""
-        from ._ifc_summary import methods_by_name
         exact_key = ("method", recv_ty.name, e.method)
         keys = [exact_key] if exact_key in self._ifc_field_effects else \
             methods_by_name(self._ifc_field_effects).get(e.method, ())
@@ -3988,7 +3850,6 @@ class _IfcMixin:
                 return None
             return args[idx]
 
-        from ._ifc_summary import INTERNAL_SECRET
         for (target_pidx, field_path), sources in effects.items():
             fires = False
             for s in sources:
@@ -4078,19 +3939,6 @@ class _IfcMixin:
             if getattr(member, "field_labels", None) is not None:
                 self._escaped_struct_syms.add(id(member))
 
-def _prefix_compatible(a: tuple, b: tuple) -> bool:
-    """True when access paths ``a`` and ``b`` lie on the same root-to-leaf
-    line: one is a prefix of the other. Used by the Stage 2 read-side check
-    to decide whether a TAINTED access path is actually SUNK. ``a`` sunk at
-    ``b``: the container taint at ``a`` reaches a sink iff the sunk path
-    ``b`` is at or under ``a`` (``b`` reads into the tainted container) or
-    ``a`` is at or under ``b`` (the tainted sub-path is inside what the
-    callee sinks). The sentinel ``()`` (whole struct / param) is a prefix
-    of everything, so it is compatible with any path -- the conservative
-    catch-all."""
-    n = min(len(a), len(b))
-    return a[:n] == b[:n]
-
 
 def _deepcopy_field_map(node):
     """Recursively copy a per-field label map so a binding's map is
@@ -4177,24 +4025,3 @@ def _is_ty_name(ty) -> bool:
     the receiver type is the resolved TyName or anything carrying a
     ``.name``."""
     return type(ty).__name__ == "TyName"
-
-
-def _pattern_bound_names(pat: A.Pattern):
-    """Yield every name a pattern binds, walking nested payloads,
-    tuple elements, and struct fields. Wildcard / literal patterns
-    bind nothing; or-patterns bind nothing in v0 (the parser forbids
-    bindings inside alternatives)."""
-    if isinstance(pat, A.IdentPat):
-        yield pat.name
-    elif isinstance(pat, A.VariantPat):
-        for sub in pat.payloads:
-            yield from _pattern_bound_names(sub)
-    elif isinstance(pat, A.TuplePat):
-        for sub in pat.elements:
-            yield from _pattern_bound_names(sub)
-    elif isinstance(pat, A.StructPat):
-        for _field, sub in pat.fields:
-            if sub is not None:
-                yield from _pattern_bound_names(sub)
-            else:
-                yield _field

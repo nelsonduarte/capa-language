@@ -621,7 +621,7 @@ class TestServeIsRegistered(unittest.TestCase):
         self.assertIn("Serve", _BUILTIN_CAPABILITIES)
 
     def test_serve_send_is_an_ifc_sink_and_recv_is_not_a_secret_source(self):
-        from capa.analyzer._ifc import _PUBLIC_SINKS, _SECRET_SOURCES
+        from capa.analyzer._ifc_tables import _PUBLIC_SINKS, _SECRET_SOURCES
         # Sending bytes to a client is exfiltration, like Net.post.
         # Argument 1 is the payload; argument 0 is the connection id.
         self.assertEqual(_PUBLIC_SINKS[("Serve", "send")], {1})
@@ -645,7 +645,7 @@ class TestServeIsRegistered(unittest.TestCase):
         # tests/test_unaudited_secret_sink_fact.py. Renaming to ``send``
         # fixed it; this guard means the next capability cannot
         # reintroduce the collision quietly.
-        from capa.analyzer._ifc import _PUBLIC_SINKS
+        from capa.analyzer._ifc_tables import _PUBLIC_SINKS
         seen: dict = {}
         collisions = []
         for cap, method in _PUBLIC_SINKS:
@@ -662,7 +662,7 @@ class TestServeIsRegistered(unittest.TestCase):
     def test_secret_source_method_names_are_unique_per_capability(self):
         # Same argument, for the source side: ``_ifc_summary`` matches
         # ``_SECRET_SOURCE_METHODS`` by name too.
-        from capa.analyzer._ifc import _SECRET_SOURCES
+        from capa.analyzer._ifc_tables import _SECRET_SOURCES
         methods = [m for _c, m in _SECRET_SOURCES]
         self.assertEqual(len(methods), len(set(methods)))
 

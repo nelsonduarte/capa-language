@@ -25,7 +25,7 @@ without a leak program here fails the suite.
 import unittest
 
 from capa import Lexer, Parser
-from capa.analyzer._ifc import _CONTAINER_MUTATORS
+from capa.analyzer._ifc_tables import _CONTAINER_MUTATORS
 
 
 def _parse(src: str):
