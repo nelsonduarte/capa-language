@@ -9,6 +9,126 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+## [1.32.0], 2026-08-22
+
+A security-hardening release that closes seven soundness gaps found in the audit
+of the whole compiler and in the internal hardening pass that followed `1.31.0`,
+alongside a modularization and test-net effort with no behaviour change. Every
+security fix tightens the static analysis or the Wasm codegen so a program that
+previously compiled (or, on Wasm, compiled to a wrong branch) is now rejected or
+compiled correctly; each is claimed under the [`STABILITY.md`](STABILITY.md)
+security exception and ships as a MINOR bump, not a MAJOR one, matching every
+prior static-analysis-tightening soundness fix. Only programs that were already
+unsound are affected. GHSA identifiers are assigned at publication.
+
+**Security.**
+
+- *Information-flow and constant-time checks did not compose across a function
+  call (findings IFC-1, IFC-2).* Under `@strict_ifc` the implicit-flow (pc) rule
+  caught a public sink placed inline in a secret-conditioned branch but not one
+  reached through a helper CALL, so the branch bit leaked (IFC-1); the same
+  cross-call blind spot let a `@secret` value flow into a variable-time operation
+  inside an un-annotated helper under `@constant_time` (IFC-2, a timing oracle).
+  A per-callable `sink_reaching_pc` summary bit and a `ct_sensitive` summary
+  output, both grown on the existing least fixpoint, now flag the composed flow at
+  each call site: IFC-1 a hard error under `@strict_ifc`, IFC-2 a hard error at
+  every tier. The method-call pc-union is narrowed to the receiver's real dispatch
+  targets so no clean built-in getter or unrelated same-named user method
+  over-rejects. Analyzer-only, reject-only, three-backend output byte-identical.
+  Advisory:
+  [`docs/advisories/2026-08-22-ifc-cross-call-implicit-flow.md`](docs/advisories/2026-08-22-ifc-cross-call-implicit-flow.md)
+  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+- *A rigid same-name-collision destructure laundered a `@secret` through a generic
+  constructor (finding IFC-3).* A rigid value constructed through a generic struct
+  literal or variant call whose type parameter shared the caller's rigid parameter
+  NAME (`Wrap<T>` used inside `fun leak<T>`) erased the rigid `T` to `TyUnknown` at
+  the construction seam, so a downstream public-twin destructure resolved nothing
+  and the secret laundered silently at both tiers on all backends. A shared
+  `_constructor_result_args` helper now restores the rigid marker at both seams, so
+  the existing rigid-scrutinee reject fires at the twin destructure. Covers the
+  struct-literal, variant, and nested `List<T>` shapes. Type-inference only,
+  reject-only, output byte-identical. Advisory:
+  [`docs/advisories/2026-08-22-ifc-rigid-destructure-launder.md`](docs/advisories/2026-08-22-ifc-rigid-destructure-launder.md)
+  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+- *`@strict_ifc` did not raise the block pc after a secret-conditioned `match`
+  divergence (finding C-F1).* An incomplete prior fix: finding B3 of the
+  `2026-06-17` advisory (shipped with `1.4.0`) raised the block pc after a
+  secret-conditioned divergence for `if` / `while` / `for` but overlooked `match`,
+  so a divergence inside a secret-scrutinee or secret-guard `match` arm followed by
+  a public sink leaked the predicate bit under `@strict_ifc`. The same single
+  mechanism now covers `match` in statement and value position on a may-diverge
+  (sound-direction) basis. Strict-only, reject-only, no default-tier or output
+  change. Advisory:
+  [`docs/advisories/2026-08-22-ifc-strict-match-divergence.md`](docs/advisories/2026-08-22-ifc-strict-match-divergence.md)
+  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+- *A Wasm `match` on a String-literal pattern read dangling memory and could
+  spuriously match (finding C-F2).* On the Wasm Component Model backend a pattern
+  String literal appearing nowhere else in the module was first interned past the
+  frozen `heap_start` with no backing data block, so `$str_eq` compared against
+  undefined bytes: usually a silent wrong branch, occasionally a spurious match
+  that bypasses an authorization gate. The module still passed `wasm-tools
+  validate`. The discovery pass now interns every match-pattern String literal at
+  any nesting depth before the data segment freezes, and a one-way `_strings_frozen`
+  high-water guard makes any post-freeze intern fail loud. Wasm backend only; the
+  Python backends were never affected. Output for correct programs unchanged.
+  Advisory:
+  [`docs/advisories/2026-08-22-wasm-match-pattern-dangling-read.md`](docs/advisories/2026-08-22-wasm-match-pattern-dangling-read.md)
+  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+- *A borrowed linear / typestate value and a consumed cap-bearing struct could be
+  discharged twice with no diagnostic (findings B-F1, B-F2).* A borrowed
+  (non-`consume`) linear or typestate parameter was tracked as owned, so returning
+  it, aliasing it, packing it into an aggregate, transitioning it with `become`, or
+  releasing it via `consume self` double-discharged it while the caller still owned
+  the value (B-F1, a double-consume / double-free); a cap-bearing struct used after
+  `consume` was undiagnosed (B-F2); and a linear / typestate value selected through
+  an `if` / `match` expression escaped every move seam. The concrete route set
+  (direct return, container escape, struct-field move-paths, and conditional
+  selection) is now sealed by a `_borrowed_linear` set with a single discharge
+  guard, a `_consumable_cap_path` recogniser on the consume path, and a syntactic
+  conditional-alias bar. Analyzer-only, reject-only, output byte-identical. The
+  generic type-variable passthrough seal is shelved for a future
+  sound-by-construction rebuild (disclosed-open). Advisory:
+  [`docs/advisories/2026-08-22-linear-borrow-double-free.md`](docs/advisories/2026-08-22-linear-borrow-double-free.md)
+  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+
+**Changed and internal (no behaviour change).**
+
+- *Compiler modularization.* Broke the `_ifc` / `_ifc_summary` import cycle by
+  extracting the pure IFC tables and helpers into `_ifc_tables.py` (M4);
+  single-sourced the module search path so the LSP matches the compiler (M6) and
+  the capability-discovery classification in the IR (M8); and added canonical
+  `capa_ast.children()` / `walk()` enumeration helpers, migrating the formatter
+  and the three reflective manifest walkers onto them (M7).
+- *Fail-closed test nets.* Added an AST / IR node-kind exhaustiveness guard (M1,
+  extended to the transpiler codegen), fail-closed agreement nets for the two
+  hand-synced codegen pairs (M2), and hardened the test net from the QA pass with
+  a bidirectional node net, a reverse M1 agreement net, and an IFC-harness
+  presence guard. These pin existing behaviour; none change compiler output.
+
+**Known issues (disclosed-open, shipped as documented).** These are honestly
+scoped residuals that ship with `1.32.0`, each pinned by a test; they are NOT
+fixed here.
+
+- *Trait-typed scrutinee IFC downcast leak (Python backend).* A downcast
+  destructure off a trait-typed scrutinee (`s: Shape` then `let Circle { r } = s`)
+  resolves to a trait, not a struct or a type variable, so a public-twin downcast
+  is not caught and leaks on the Python backend. Disclosed in source at
+  [`capa/analyzer/_patterns.py`](capa/analyzer/_patterns.py) lines 722-731; needs a
+  runtime tag check. Related to finding IFC-3 above.
+- *`--ir` backend crash on `PatStruct` / `PatOr` patterns.* The CIR Python pattern
+  renderer raises `NotImplementedError` on `PatStruct` / `PatOr` via `--run --ir`
+  (audit OBS-1); the Wasm backend and the legacy transpiler handle both correctly.
+  Disclosed in source at [`capa/ir/_emit_python.py`](capa/ir/_emit_python.py) lines
+  89-102.
+- *Typestate name-mangling on the Wasm backend.* The Wasm name-mangler leaves `[`
+  and `]` unescaped, so a generic monomorphised at a qualified typestate via a
+  return annotation emits invalid WAT that fails `wasm-tools` parse. It is
+  fail-loud (an emission error), not a silent miscompile.
+- *`_apply_mapping` recursion on a cyclic type mapping.* A cyclic transient type
+  mapping drives
+  [`capa/analyzer/_typing.py`](capa/analyzer/_typing.py) `_apply_mapping` (around
+  line 182) into a `RecursionError` rather than a diagnostic.
+
 ## [1.31.0], 2026-08-11
 
 An information-flow soundness fix that follows on from `1.30.0` and `1.30.1`. It
