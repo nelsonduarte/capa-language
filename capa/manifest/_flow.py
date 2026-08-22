@@ -78,20 +78,8 @@ def _build_attenuation_map(
                 out[name] = atts
             return
         if isinstance(n, A.Node):
-            for f in n.__dataclass_fields__.values():
-                if f.name == "pos":
-                    continue
-                v = getattr(n, f.name)
-                if isinstance(v, A.Node):
-                    visit(v)
-                elif isinstance(v, list):
-                    for it in v:
-                        if isinstance(it, A.Node):
-                            visit(it)
-                        elif isinstance(it, tuple):
-                            for tt in it:
-                                if isinstance(tt, A.Node):
-                                    visit(tt)
+            for child in A.children(n):
+                visit(child)
 
     visit(body)
     return out
