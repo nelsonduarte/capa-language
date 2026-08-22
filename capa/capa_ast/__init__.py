@@ -101,6 +101,7 @@ from ._stmts import (
     WhileStmt,
 )
 from ._types import FunType, TupleType, TypeName, UnitType
+from ._walk import children, walk
 
 
 # ===========================================================
