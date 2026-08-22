@@ -25,27 +25,28 @@ from ..analyzer import AnalysisResult, analyze
 from ..errors import LexerError
 from ..lexer import Lexer
 from ..loader import LinkedModule, LoaderError, ModuleLoader
+from ..loader_paths import resolve_loader_paths
 from ..parser import Parser, ParserError
+from ..pkg import BrokenRootManifestError, VendorVerificationError
 from ..tokens import Pos
 
 
-def _capa_search_paths() -> list[Path]:
-    """Same parse of ``CAPA_PATH`` as the CLI uses, duplicated here
-    so the LSP resolves imports the way the user's compile would.
+def _build_module_loader() -> ModuleLoader:
+    """Construct the loader the way the compiler does.
+
+    The search roots and declared-dependency map come from the SAME
+    :func:`capa.loader_paths.resolve_loader_paths` the CLI uses, so the
+    editor resolves ``import`` statements exactly the way ``capa --check``
+    on the same project would. This closes a defect where the LSP kept a
+    poorer copy that read only ``CAPA_PATH`` and dropped
+    ``dependency_roots``, silencing go-to-definition and diagnostics on
+    vendored / path-dependency imports.
     """
-    import os
-    raw = os.environ.get("CAPA_PATH", "")
-    if not raw:
-        return []
-    out: list[Path] = []
-    for entry in raw.split(os.pathsep):
-        entry = entry.strip()
-        if not entry:
-            continue
-        p = Path(entry).expanduser()
-        if p.is_dir():
-            out.append(p)
-    return out
+    paths = resolve_loader_paths()
+    return ModuleLoader(
+        search_paths=paths.search_paths,
+        dependency_roots=paths.dependency_roots,
+    )
 
 
 @dataclass
@@ -98,12 +99,23 @@ class LspContext:
         privates_map: Optional[dict[str, set[str]]] = None
         if _has_imports(module) and _filename_on_disk(filename):
             try:
-                loader = ModuleLoader(search_paths=_capa_search_paths())
+                loader = _build_module_loader()
                 linked = loader.load_root(source, filename)
                 module_for_analysis = linked.module
                 sources_map = linked.sources
                 privates_map = linked.module_privates
-            except (LexerError, ParserError, LoaderError, OSError):
+            except (
+                LexerError, ParserError, LoaderError, OSError,
+                BrokenRootManifestError, VendorVerificationError,
+            ):
+                # ``resolve_loader_paths`` fails CLOSED on a broken /
+                # unverifiable ``capa.toml`` (the two pkg exceptions),
+                # matching the compiler. The compiler aborts there; the
+                # editor instead degrades to single-file analysis so a
+                # mid-edit manifest never crashes a hover. This is
+                # sound: the LSP compiles nothing, so a dropped
+                # cross-file view only means fewer editor features
+                # until the manifest is fixed, never a bad artifact.
                 linked = None
 
         try:
