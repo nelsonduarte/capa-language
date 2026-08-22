@@ -96,28 +96,11 @@ def _collect_calls(
             _collect_calls(arg, calls, attenuation_map=attenuation_map)
         return
 
-    # Generic AST traversal: visit any Node-typed or list-of-Node field.
+    # Generic AST traversal: visit every direct child node (shared
+    # enumeration, byte-identical to the former inline dataclass walk).
     if isinstance(node, A.Node):
-        for f in node.__dataclass_fields__.values():
-            if f.name == "pos":
-                continue
-            v = getattr(node, f.name)
-            if isinstance(v, A.Node):
-                _collect_calls(v, calls, attenuation_map=attenuation_map)
-            elif isinstance(v, list):
-                for item in v:
-                    if isinstance(item, A.Node):
-                        _collect_calls(
-                            item, calls, attenuation_map=attenuation_map,
-                        )
-                    elif isinstance(item, tuple):
-                        # struct field pairs (name, Expr), match arms etc.
-                        for it in item:
-                            if isinstance(it, A.Node):
-                                _collect_calls(
-                                    it, calls,
-                                    attenuation_map=attenuation_map,
-                                )
+        for child in A.children(node):
+            _collect_calls(child, calls, attenuation_map=attenuation_map)
 
 
 def _collect_declassifications(
@@ -165,26 +148,7 @@ def _collect_declassifications(
     # Always keep walking: a declassify can be nested anywhere, and a
     # declassified value may itself contain a nested declassify.
     if isinstance(node, A.Node):
-        for f in node.__dataclass_fields__.values():
-            if f.name == "pos":
-                continue
-            v = getattr(node, f.name)
-            if isinstance(v, A.Node):
-                _collect_declassifications(
-                    v, sites, bindings=bindings, expr_labels=expr_labels,
-                )
-            elif isinstance(v, list):
-                for item in v:
-                    if isinstance(item, A.Node):
-                        _collect_declassifications(
-                            item, sites,
-                            bindings=bindings, expr_labels=expr_labels,
-                        )
-                    elif isinstance(item, tuple):
-                        for it in item:
-                            if isinstance(it, A.Node):
-                                _collect_declassifications(
-                                    it, sites,
-                                    bindings=bindings,
-                                    expr_labels=expr_labels,
-                                )
+        for child in A.children(node):
+            _collect_declassifications(
+                child, sites, bindings=bindings, expr_labels=expr_labels,
+            )

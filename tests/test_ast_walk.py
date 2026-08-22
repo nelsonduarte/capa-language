@@ -20,9 +20,13 @@ Two things are pinned:
 """
 
 import unittest
+from pathlib import Path
 
+from capa import Lexer, Parser
 from capa import capa_ast as A
 from capa.tokens import Pos
+
+_EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
 
 def _p() -> Pos:
@@ -205,6 +209,39 @@ class TestReferenceEquivalence(unittest.TestCase):
                 [id(c) for c in _reference_iter_children(node)],
                 msg=f"children/_iter_children diverge on {type(node).__name__}",
             )
+
+    def test_children_equals_reference_over_example_corpus(self):
+        """The same equivalence over every node of every parsed example.
+
+        This is the guard the manifest migration (its ``_collect_calls``,
+        ``_collect_declassifications`` and ``_flow`` tails now call
+        :func:`A.children` in place of their own inline copy of this same
+        walk) rests on: over real parsed programs, not just a synthetic
+        tree, ``children`` yields exactly what the frozen inline walk did,
+        in the same order, so no call site or declassify record can be
+        dropped from a signed SBOM."""
+        sources = sorted(_EXAMPLES.rglob("*.capa"))
+        self.assertGreater(len(sources), 0, "no example corpus found")
+        checked = 0
+        for path in sources:
+            src = path.read_text(encoding="utf-8")
+            try:
+                module = Parser(Lexer(src).lex(), source=src).parse_module()
+            except Exception:
+                # A deliberately malformed example is not a walk corpus;
+                # the equivalence only needs a parseable AST.
+                continue
+            for node in A.walk(module):
+                self.assertEqual(
+                    [id(c) for c in A.children(node)],
+                    [id(c) for c in _reference_iter_children(node)],
+                    msg=(
+                        f"children/_iter_children diverge on "
+                        f"{type(node).__name__} in {path.name}"
+                    ),
+                )
+                checked += 1
+        self.assertGreater(checked, 0, "no nodes walked")
 
 
 if __name__ == "__main__":
