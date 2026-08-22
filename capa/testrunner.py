@@ -140,7 +140,7 @@ def _child_env(root: Path) -> dict:
     could not, with no fetch, no verification, no lockfile entry and
     no SBOM record. The child runs with cwd = ``root``, so it derives
     the self-reference by name from ``capa.toml`` itself (see
-    ``cli._capa_dependency_roots``) and package-style self-imports
+    ``loader_paths._capa_dependency_roots``) and package-style self-imports
     still resolve."""
     env = dict(os.environ)
     parts = [str(root)]

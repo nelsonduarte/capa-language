@@ -704,7 +704,11 @@ class StructuralTests(unittest.TestCase):
         carried on. The catch-all is gone, so the re-raise arm has
         nothing left to defend against and the stronger invariant is
         that the catch-all does not come back: ``ignoring capa.toml``
-        must not appear in ``capa/cli.py`` at all.
+        must not appear in ``capa/loader_paths.py`` at all.
+
+        The two helpers now live in ``capa/loader_paths.py``, the single
+        source of truth the compiler and the LSP share; the source-level
+        guard follows them there.
 
         Checked textually because the invariant is an ABSENCE. The
         behavioural counterparts are
@@ -713,7 +717,9 @@ class StructuralTests(unittest.TestCase):
         """
         import ast
 
-        source = (REPO_ROOT / "capa" / "cli.py").read_text(encoding="utf-8")
+        source = (
+            REPO_ROOT / "capa" / "loader_paths.py"
+        ).read_text(encoding="utf-8")
         self.assertNotIn("ignoring capa.toml", source)
 
         tree = ast.parse(source)
@@ -739,7 +745,7 @@ class StructuralTests(unittest.TestCase):
 
 
 class SearchPathFailClosedTests(unittest.TestCase):
-    """``cli``'s two module-resolution helpers must fail closed.
+    """``loader_paths``'s two module-resolution helpers must fail closed.
 
     Both used to sit behind an ``except Exception`` arm that degraded a
     broken ``capa.toml`` to a warning and continued: ``_capa_search_paths``
@@ -767,22 +773,22 @@ class SearchPathFailClosedTests(unittest.TestCase):
             os.chdir(original)
 
     def test_broken_manifest_refused_by_capa_search_paths(self):
-        from capa import cli
+        from capa import loader_paths
 
         (self.tmp / "capa.toml").write_text(
             "this is not [ valid toml", encoding="utf-8",
         )
         with self.assertRaises(BrokenRootManifestError):
-            self._in_tmp(cli._capa_search_paths)
+            self._in_tmp(loader_paths._capa_search_paths)
 
     def test_broken_manifest_refused_by_capa_dependency_roots(self):
-        from capa import cli
+        from capa import loader_paths
 
         (self.tmp / "capa.toml").write_text(
             "this is not [ valid toml", encoding="utf-8",
         )
         with self.assertRaises(BrokenRootManifestError):
-            self._in_tmp(cli._capa_dependency_roots)
+            self._in_tmp(loader_paths._capa_dependency_roots)
 
 
 # ---------------------------------------------------------------------------
