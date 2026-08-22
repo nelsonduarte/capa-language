@@ -40,6 +40,7 @@ from .._nodes import (
 )
 from .._lower_pattern import PatStruct, PatOr
 from .._capa_types import BUILTIN_CAPS
+from .._cap_discovery import classify_cap_method
 from .._python_only_caps import find_rejection
 from .._emit_wit import _WIT_SIGNATURES
 from .._walk import iter_functions, walk_instrs, walk_module
@@ -533,93 +534,41 @@ class _DiscoveryMixin:
 
     def _discover_instrs(self, instrs: list[Instr]) -> None:
         for instr in walk_instrs(instrs):
-            # Cap dispatch: prefer instr.cap_used, fall back to the
-            # receiver type for impl-method-internal calls where
-            # the analyzer doesn't propagate cap_used through. The
-            # emit-side dispatch in _emit_instr mirrors this rule.
-            cap_from_recv = None
-            if isinstance(instr, MethodCall) and not instr.cap_used:
-                rty = (instr.receiver.ty or "")
-                if rty in BUILTIN_CAPS:
-                    cap_from_recv = rty
-            if isinstance(instr, MethodCall) and (instr.cap_used or cap_from_recv):
-                cap = instr.cap_used or cap_from_recv
+            # Capability classification is single-sourced with the WIT
+            # collector in ``capa.ir._cap_discovery.classify_cap_method``:
+            # it resolves the receiver cap (``cap_used`` else a built-in
+            # receiver type) and drops the attenuators elided at emit
+            # time -- ``restrict_to`` / ``restrict_to_keys`` /
+            # ``restrict_to_after`` that did NOT graduate to a real host
+            # call (audit slices 25.2 - 25.6). What is left is projected
+            # here to the core-wasm host-import set.
+            classified = classify_cap_method(instr)
+            if classified is not None:
+                cap, method = classified
                 if cap not in BUILTIN_CAPS:
                     raise WasmEmissionError(
                         f"Phase 6B: capability {cap!r} not in the "
                         f"built-in set; user-defined capabilities "
                         f"land in a later phase"
                     )
-                # Attenuator methods (``restrict_to`` /
-                # ``restrict_to_keys`` / ``restrict_to_after``) are
-                # elided at emit time (the audit C2 inline check on
-                # the privileged op is what enforces the discipline).
-                # Skip importing them so the host doesn't need to
-                # define a matching no-op stub.
-                #
-                # Slices 25.2 - 25.6 exception (2026-05-30):
-                # ``Fs.restrict_to`` / ``Net.restrict_to`` /
-                # ``Db.restrict_to`` / ``Proc.restrict_to`` /
-                # ``Env.restrict_to_keys`` /
-                # ``Clock.restrict_to_after`` are no longer no-ops -
-                # they cross the host bridge with the parent handle
-                # and return a fresh i32 handle bound to a narrower
-                # restriction. Register the imports so the linker
-                # resolves the host callbacks.
-                #
-                # Registry note: the three branches below TOGETHER
-                # cover exactly ``HANDLE_BEARING_CAPS``; the split is
-                # by ATTENUATOR METHOD NAME, not by cap class - Env
-                # narrows via ``restrict_to_keys`` and Clock via
-                # ``restrict_to_after``, so only the remaining four
-                # share the ``restrict_to`` spelling.
-                if (cap in ("Fs", "Net", "Db", "Proc")
-                        and instr.method == "restrict_to"):
-                    self._used_caps.add((cap, "restrict_to"))
-                elif (cap == "Env"
-                        and instr.method == "restrict_to_keys"):
-                    self._used_caps.add((cap, "restrict_to_keys"))
-                elif (cap == "Clock"
-                        and instr.method == "restrict_to_after"):
-                    self._used_caps.add((cap, "restrict_to_after"))
-                elif instr.method in (
-                    "restrict_to", "restrict_to_keys", "restrict_to_after",
-                ):
-                    pass
-                elif (cap in ("Fs", "Env", "Db", "Proc", "Net")
-                      and instr.method == "allows"):
-                    # Registry note: ``HANDLE_BEARING_CAPS`` minus
-                    # Clock, mirroring the emitter split in
-                    # ``_caps._emit_cap_method_call`` - these five
-                    # take a string arg, ``Clock.allows`` is nullary
-                    # and already had its own host route.
-                    #
-                    # GAP-2b (2026-06-21): Fs.allows / Env.allows /
-                    # Db.allows / Proc.allows / Net.allows route
-                    # through the authoritative host function
-                    # ``$<Cap>_allows(handle, arg) -> bool`` (the same
-                    # host-route ``Clock.allows`` already used).
-                    # Register the host import so the linker resolves
-                    # the callback. No string pre-interning is needed
-                    # anymore: the arg travels guest->host as a normal
-                    # ``(ptr, len)`` string, so the host-route embeds
-                    # nothing statically (this is what fixes the
-                    # dynamic-prefix gap and the silent Env divergence).
-                    self._used_caps.add((cap, "allows"))
-                elif cap == "Random" and instr.method in (
+                # SplitMix64 runs entirely guest-side; the user-facing
+                # Random methods (``with_seed`` / ``int_range`` /
+                # ``float_unit``) have no WIT signature and no host
+                # import, they only pull the lazy ``system-seed`` import
+                # (also registered below for an unseeded ``Random()``).
+                if cap == "Random" and method in (
                     "with_seed", "int_range", "float_unit",
                 ):
-                    # SplitMix64 runs entirely guest-side; no WIT
-                    # signature, no host import for the user-facing
-                    # methods. The lazy ``system-seed`` import is
-                    # registered separately below so the host bridge
-                    # is reachable for unseeded ``Random()``.
                     self._used_caps.add(("Random", "system_seed"))
                 else:
-                    key = (cap, instr.method)
-                    if (cap, instr.method) not in _WIT_SIGNATURES:
+                    # Every other kept method (the graduated attenuators
+                    # and the GAP-2b ``allows`` host route included) must
+                    # have a matching WIT/Wasm signature, or the module
+                    # would import a host function nobody defines.
+                    key = (cap, method)
+                    if key not in _WIT_SIGNATURES:
                         raise WasmEmissionError(
-                            f"Phase 6B: capability method {cap}.{instr.method} "
+                            f"Phase 6B: capability method {cap}.{method} "
                             f"has no WIT/Wasm encoding yet; widen the "
                             f"signature tables in capa.ir._emit_wit and "
                             f"capa.ir._emit_wasm together"
