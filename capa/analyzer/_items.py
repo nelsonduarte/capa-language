@@ -593,7 +593,7 @@ class _ItemsMixin:
         shorthand ``Box { k }``, nested, tuple, and variant patterns -- via
         ``_pattern_bound_names``, so a struct-shorthand shadow is not
         missed."""
-        from ._ifc import _pattern_bound_names
+        from ._ifc_tables import _pattern_bound_names
         import dataclasses
         if node is None or isinstance(node, str):
             return
