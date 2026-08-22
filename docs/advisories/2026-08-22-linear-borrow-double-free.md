@@ -4,10 +4,13 @@
 > resource-discipline false negatives in the analyzer: a borrowed (non-`consume`)
 > linear or typestate parameter could be discharged a second time while the caller
 > still owned it (finding B-F1, a double-consume / double-free), a cap-bearing
-> struct could be used after `consume` (finding B-F2), and a linear / typestate
-> value selected through an `if` / `match` expression escaped every move seam
-> (the conditional-selection route). Each is a soundness fix and ships as a
-> **MINOR** bump under the [`STABILITY.md`](../../STABILITY.md) security exception.
+> struct could be used after `consume` (finding B-F2), a linear / typestate value
+> selected through an `if` / `match` expression escaped every move seam (the
+> conditional-selection route), and a single-owner linear / typestate value packed
+> into a `List` / `Map` / `Set` / tuple escaped name threading and handed out
+> unbounded aliases (the container-of-linear route). Each is a soundness fix and
+> ships as a **MINOR** bump under the [`STABILITY.md`](../../STABILITY.md) security
+> exception.
 
 This advisory satisfies the `STABILITY.md` requirement that a security fix
 changing observable behaviour without a major bump "ships with a security
@@ -50,8 +53,10 @@ concrete fix landed in `c73c0ad`, which seals the concrete route set and builds
 on the incremental work in `8b2f995` (recognise a cap-bearing struct on the
 argument-consume path, B-F2), `c9ddb69` (track borrowed linear / typestate params
 so they cannot escape, B-F1), the struct-field move-path series (`69c69f6`,
-`ff7d517`, `3ab1fe1`, `425be41`), and `79c9d92` (bar a linear / typestate value
-selected through a conditional). The generic type-variable passthrough seal was
+`ff7d517`, `3ab1fe1`, `425be41`), `79c9d92` (bar a linear / typestate value
+selected through a conditional), and `f2570b6` / `84e089c` (bar a linear /
+typestate value from entering a container, and seal the container-of-linear class
+via a type-formation invariant). The generic type-variable passthrough seal was
 **shelved** for a future sound-by-construction rebuild because its route-by-route
 over-approximation did not converge; that is disclosed below.
 
@@ -131,6 +136,29 @@ linear-carrying AND at least one arm yields a place (recursing through nested
 receiver, return, `become`, and struct-literal element. All-fresh arms (calls /
 literals / `become`) yield a value that cannot alias an existing obligation, so
 the legitimate factory `let t = if c then open(1) else open(2)` still compiles.
+
+## The container-of-linear route
+
+A single-owner linear / typestate value (owned, borrowed, fresh, or a
+linear-carrying carrier struct) packed into a `List` / `Map` / `Set` or a tuple
+escapes name threading: a later read of the container hands out an unbounded number
+of aliases to a value that must be discharged exactly once, a double-free / leak
+the earlier move-path work did not cover.
+
+`f2570b6` bars the value at the insertion site: `_check_no_linear_into_container`
+in `capa/analyzer/_ifc.py` (mirroring the capability check
+`_check_no_cap_into_container`) rejects an element / key / value position of
+`List.push` / `Set.add` / `Map.set` whose type is linear or linear-carrying, and
+`_reject_linear_list_element` rejects a fresh linear packed straight into a list
+literal that never passes through a mutator. `84e089c` then seals the class as a
+**type-formation invariant** with the same four mechanisms the capability
+discipline already uses (driven by `_container_carries_linear`): a per-expression
+use-gate, a deferred end-of-function recheck for late-inferred element types, a
+signature entry-gate at the parameter, return, struct field, typestate field,
+sum-variant payload, and const positions, and a generic-substitution gate that
+fires only when substitution turns a non-container-of-linear into one. A bare
+linear value at top level stays legal; only its containment in a `List` / `Map` /
+`Set` / tuple at any nesting depth is refused. Analyzer-only and reject-only.
 
 ## Scope and known residuals
 

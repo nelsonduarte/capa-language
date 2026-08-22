@@ -11,9 +11,10 @@ breaking changes and the discipline is still being shaped.
 
 ## [1.32.0], 2026-08-22
 
-A security-hardening release that closes seven soundness gaps found in the audit
-of the whole compiler and in the internal hardening pass that followed `1.31.0`,
-alongside a modularization and test-net effort with no behaviour change. Every
+A security-hardening release that closes a set of soundness gaps found in the
+audit of the whole compiler and in the internal hardening pass that followed
+`1.31.0`, disclosed as the seven advisories below, alongside a modularization and
+test-net effort with no behaviour change. Every
 security fix tightens the static analysis or the Wasm codegen so a program that
 previously compiled (or, on Wasm, compiled to a wrong branch) is now rejected or
 compiled correctly; each is claimed under the [`STABILITY.md`](STABILITY.md)
@@ -38,16 +39,19 @@ unsound are affected. GHSA identifiers are assigned at publication.
   Advisory:
   [`docs/advisories/2026-08-22-ifc-cross-call-implicit-flow.md`](docs/advisories/2026-08-22-ifc-cross-call-implicit-flow.md)
   (GHSA-XXXX-XXXX-XXXX, to be assigned).
-- *A rigid same-name-collision destructure laundered a `@secret` through a generic
-  constructor (finding IFC-3).* A rigid value constructed through a generic struct
-  literal or variant call whose type parameter shared the caller's rigid parameter
-  NAME (`Wrap<T>` used inside `fun leak<T>`) erased the rigid `T` to `TyUnknown` at
-  the construction seam, so a downstream public-twin destructure resolved nothing
-  and the secret laundered silently at both tiers on all backends. A shared
-  `_constructor_result_args` helper now restores the rigid marker at both seams, so
-  the existing rigid-scrutinee reject fires at the twin destructure. Covers the
-  struct-literal, variant, and nested `List<T>` shapes. Type-inference only,
-  reject-only, output byte-identical. Advisory:
+- *A struct-destructuring pattern could launder a `@secret` through a public twin
+  (finding IFC-3 and its foundation).* A nominal destructuring pattern bound each
+  field with the type it has in the PATTERN's struct, never the scrutinee's, and
+  the pattern's struct name was never checked against the value's type, so a
+  public-twin pattern over a `@secret` value rebound the secret field under a
+  public label. The class was closed in four faces: type-checking the pattern
+  against the scrutinee's concrete struct, substituting the scrutinee's generic
+  arguments into the destructured field types (a silent leak even under
+  `@strict_ifc`), rejecting a rigid type-parameter scrutinee (a silent both-backends
+  leak on the struct arm; fail-closed on the variant arm), and restoring a rigid
+  marker erased at a generic same-name construction seam via a shared
+  `_constructor_result_args` helper. Type-inference and reject only, output
+  byte-identical. Advisory:
   [`docs/advisories/2026-08-22-ifc-rigid-destructure-launder.md`](docs/advisories/2026-08-22-ifc-rigid-destructure-launder.md)
   (GHSA-XXXX-XXXX-XXXX, to be assigned).
 - *`@strict_ifc` did not raise the block pc after a secret-conditioned `match`
@@ -80,15 +84,41 @@ unsound are affected. GHSA identifiers are assigned at publication.
   it, aliasing it, packing it into an aggregate, transitioning it with `become`, or
   releasing it via `consume self` double-discharged it while the caller still owned
   the value (B-F1, a double-consume / double-free); a cap-bearing struct used after
-  `consume` was undiagnosed (B-F2); and a linear / typestate value selected through
-  an `if` / `match` expression escaped every move seam. The concrete route set
-  (direct return, container escape, struct-field move-paths, and conditional
-  selection) is now sealed by a `_borrowed_linear` set with a single discharge
-  guard, a `_consumable_cap_path` recogniser on the consume path, and a syntactic
-  conditional-alias bar. Analyzer-only, reject-only, output byte-identical. The
-  generic type-variable passthrough seal is shelved for a future
-  sound-by-construction rebuild (disclosed-open). Advisory:
+  `consume` was undiagnosed (B-F2); a linear / typestate value selected through an
+  `if` / `match` expression escaped every move seam; and a single-owner linear /
+  typestate value packed into a `List` / `Map` / `Set` / tuple escaped name
+  threading and handed out unbounded aliases (the container-of-linear route). The
+  routes are now sealed by a `_borrowed_linear` set with a single discharge guard,
+  a `_consumable_cap_path` recogniser on the consume path, a syntactic
+  conditional-alias bar, and a container-of-linear type-formation invariant.
+  Analyzer-only, reject-only, output byte-identical. The generic type-variable
+  passthrough seal is shelved for a future sound-by-construction rebuild
+  (disclosed-open). Advisory:
   [`docs/advisories/2026-08-22-linear-borrow-double-free.md`](docs/advisories/2026-08-22-linear-borrow-double-free.md)
+  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+- *A `@secret` could be laundered through a function's return-value channel.* A
+  `@secret` introduced inside a callee (a declared-`@secret` field, or an opaque
+  call that returns one) and returned to the caller through a field store into a
+  local, a deep field-access chain, a `for`-loop or destructuring binder, or a
+  locally-resolved lambda's result was not tracked at the field precision the sink
+  check needs, so it laundered to a public sink `--check`-clean at both tiers and
+  on both backends. `return_effects` is now a per-path field map, a direct field
+  store content-writes at its path, the deep-field walk resolves the root type
+  through the declared field-type chain (seeding the `for`-loop and destructuring
+  binders type-precisely), and a locally-resolved lambda's cached result label is
+  joined at the invocation. Analyzer-only, output byte-identical. Advisory:
+  [`docs/advisories/2026-08-22-ifc-return-channel-launder.md`](docs/advisories/2026-08-22-ifc-return-channel-launder.md)
+  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+- *A name-shadow diverged between the Python and Wasm backends and could silently
+  disclose a `@secret`.* A binding whose name shadowed an enclosing binding or a
+  read module-level const / function was `--check`-clean yet compiled to different
+  behaviour on the Python backends (function scope) and the Wasm backend (lexical
+  capture), so a captured or read `@secret` was disclosed on one backend while the
+  other crashed or bound a different value, breaking the byte-identical-output
+  promise. The analyzer now rejects the diverging lambda-body and plain-function
+  shadows, and the lowerer tracks live locals and records call routing so a
+  legal shadow compiles identically on both backends. Advisory:
+  [`docs/advisories/2026-08-22-name-shadow-backend-divergence.md`](docs/advisories/2026-08-22-name-shadow-backend-divergence.md)
   (GHSA-XXXX-XXXX-XXXX, to be assigned).
 
 **Changed and internal (no behaviour change).**
