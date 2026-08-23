@@ -41,7 +41,7 @@ shipped. The leaking shape was reproduced on the current `main` before the fix.
 
 **Fixed in:** `1.32.0`.
 
-**GHSA:** GHSA-XXXX-XXXX-XXXX (to be assigned at publication).
+**GHSA:** GHSA-w9m5-7pcc-mq3p.
 
 **Reporter / process:** internal hardening pass for the `1.32.0` release. Fix
 commit `88e2a30` (extend the B3 block-pc-raise mechanism to `match`), with a

@@ -41,7 +41,7 @@ affected release was not bisected by executing each historical binary.
 
 **Fixed in:** `1.32.0`.
 
-**GHSA:** GHSA-XXXX-XXXX-XXXX (to be assigned at publication).
+**GHSA:** GHSA-ppp5-344c-j7x9.
 
 **Reporter / process:** internal hardening pass following the `1.31.0` release
 (this was disclosed as an open backlog residual when `1.31.0` shipped). Fix

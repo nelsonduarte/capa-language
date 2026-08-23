@@ -42,7 +42,7 @@ bisected by executing each historical binary.
 
 **Fixed in:** `1.32.0`.
 
-**GHSA:** GHSA-XXXX-XXXX-XXXX (to be assigned at publication).
+**GHSA:** GHSA-fwph-gx2p-x9cr.
 
 **Reporter / process:** internal hardening pass following the `1.31.0` release,
 extending the field-store access-path channel built in `1.30.1`. Fix commits (a

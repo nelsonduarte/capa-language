@@ -42,7 +42,7 @@ release was not bisected by executing each historical binary.
 
 **Fixed in:** `1.32.0`.
 
-**GHSA:** GHSA-XXXX-XXXX-XXXX (to be assigned at publication).
+**GHSA:** GHSA-22qh-gw83-x9mj.
 
 **Reporter / process:** internal hardening pass for the `1.32.0` release,
 following the audit of the whole compiler (audit finding C-F2). Fix commit

@@ -45,7 +45,7 @@ bisected by executing each historical binary.
 
 **Fixed in:** `1.32.0`.
 
-**GHSA:** GHSA-XXXX-XXXX-XXXX (to be assigned at publication).
+**GHSA:** GHSA-8q38-5qm9-5q2r.
 
 **Reporter / process:** internal hardening pass for the `1.32.0` release,
 following the audit of the whole compiler (audit criticals B-F1 and B-F2). The

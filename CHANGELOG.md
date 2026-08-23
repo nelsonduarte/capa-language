@@ -38,7 +38,7 @@ unsound are affected. GHSA identifiers are assigned at publication.
   over-rejects. Analyzer-only, reject-only, three-backend output byte-identical.
   Advisory:
   [`docs/advisories/2026-08-22-ifc-cross-call-implicit-flow.md`](docs/advisories/2026-08-22-ifc-cross-call-implicit-flow.md)
-  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+  (GHSA-hcq6-x556-7r23).
 - *A struct-destructuring pattern could launder a `@secret` through a public twin
   (finding IFC-3 and its foundation).* A nominal destructuring pattern bound each
   field with the type it has in the PATTERN's struct, never the scrutinee's, and
@@ -53,7 +53,7 @@ unsound are affected. GHSA identifiers are assigned at publication.
   `_constructor_result_args` helper. Type-inference and reject only, output
   byte-identical. Advisory:
   [`docs/advisories/2026-08-22-ifc-rigid-destructure-launder.md`](docs/advisories/2026-08-22-ifc-rigid-destructure-launder.md)
-  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+  (GHSA-7pf3-h2cq-52wm).
 - *`@strict_ifc` did not raise the block pc after a secret-conditioned `match`
   divergence (finding C-F1).* An incomplete prior fix: finding B3 of the
   `2026-06-17` advisory (shipped with `1.4.0`) raised the block pc after a
@@ -64,7 +64,7 @@ unsound are affected. GHSA identifiers are assigned at publication.
   (sound-direction) basis. Strict-only, reject-only, no default-tier or output
   change. Advisory:
   [`docs/advisories/2026-08-22-ifc-strict-match-divergence.md`](docs/advisories/2026-08-22-ifc-strict-match-divergence.md)
-  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+  (GHSA-w9m5-7pcc-mq3p).
 - *A Wasm `match` on a String-literal pattern read dangling memory and could
   spuriously match (finding C-F2).* On the Wasm Component Model backend a pattern
   String literal appearing nowhere else in the module was first interned past the
@@ -77,7 +77,7 @@ unsound are affected. GHSA identifiers are assigned at publication.
   Python backends were never affected. Output for correct programs unchanged.
   Advisory:
   [`docs/advisories/2026-08-22-wasm-match-pattern-dangling-read.md`](docs/advisories/2026-08-22-wasm-match-pattern-dangling-read.md)
-  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+  (GHSA-22qh-gw83-x9mj).
 - *A borrowed linear / typestate value and a consumed cap-bearing struct could be
   discharged twice with no diagnostic (findings B-F1, B-F2).* A borrowed
   (non-`consume`) linear or typestate parameter was tracked as owned, so returning
@@ -95,7 +95,7 @@ unsound are affected. GHSA identifiers are assigned at publication.
   passthrough seal is shelved for a future sound-by-construction rebuild
   (disclosed-open). Advisory:
   [`docs/advisories/2026-08-22-linear-borrow-double-free.md`](docs/advisories/2026-08-22-linear-borrow-double-free.md)
-  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+  (GHSA-8q38-5qm9-5q2r).
 - *A `@secret` could be laundered through a function's return-value channel.* A
   `@secret` introduced inside a callee (a declared-`@secret` field, or an opaque
   call that returns one) and returned to the caller through a field store into a
@@ -108,7 +108,7 @@ unsound are affected. GHSA identifiers are assigned at publication.
   binders type-precisely), and a locally-resolved lambda's cached result label is
   joined at the invocation. Analyzer-only, output byte-identical. Advisory:
   [`docs/advisories/2026-08-22-ifc-return-channel-launder.md`](docs/advisories/2026-08-22-ifc-return-channel-launder.md)
-  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+  (GHSA-fwph-gx2p-x9cr).
 - *A name-shadow diverged between the Python and Wasm backends and could silently
   disclose a `@secret`.* A binding whose name shadowed an enclosing binding or a
   read module-level const / function was `--check`-clean yet compiled to different
@@ -119,7 +119,7 @@ unsound are affected. GHSA identifiers are assigned at publication.
   shadows, and the lowerer tracks live locals and records call routing so a
   legal shadow compiles identically on both backends. Advisory:
   [`docs/advisories/2026-08-22-name-shadow-backend-divergence.md`](docs/advisories/2026-08-22-name-shadow-backend-divergence.md)
-  (GHSA-XXXX-XXXX-XXXX, to be assigned).
+  (GHSA-ppp5-344c-j7x9).
 
 **Changed and internal (no behaviour change).**
 

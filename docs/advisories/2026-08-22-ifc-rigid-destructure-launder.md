@@ -42,7 +42,7 @@ release was not bisected by executing each historical binary.
 
 **Fixed in:** `1.32.0`.
 
-**GHSA:** GHSA-XXXX-XXXX-XXXX (to be assigned at publication).
+**GHSA:** GHSA-7pf3-h2cq-52wm.
 
 **Reporter / process:** internal hardening pass for the `1.32.0` release. The
 class was closed by a sequence of commits, each face building on the last:

@@ -48,7 +48,7 @@ binary.
 
 **Fixed in:** `1.32.0`.
 
-**GHSA:** GHSA-XXXX-XXXX-XXXX (to be assigned at publication).
+**GHSA:** GHSA-hcq6-x556-7r23.
 
 **Reporter / process:** internal hardening pass for the `1.32.0` release,
 following the audit of the whole compiler. Fix commits: IFC-1 in `6aae42e` (the
