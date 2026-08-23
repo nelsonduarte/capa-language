@@ -77,17 +77,72 @@ bound the payload rigid and was already rejected. The remaining same-name
 erasure SITES the prior analysis named (closure-return, ``?``-on-``Result``,
 map/filter) are separate seams and stay open.
 
-DISCLOSED OPEN RESIDUALS (each accepted TODAY, pinned so a future tightening
-is a deliberate, visible change):
+The TRAIT-typed scrutinee launder is now CLOSED (analyzer-only, no codegen).
+When a ``StructPat`` destructures a scrutinee whose static type is a TRAIT
+(``s: Shape`` then ``let OtherCircle { r } = s``), each bound field's IFC label
+is raised to the JOIN, over every concrete implementor of that trait, of the
+implementor's same-named DECLARED field label. The runtime value must be one of
+the trait's implementors, so this join is a sound upper bound on the true
+runtime field label -- no runtime tag needed -- so a public twin over a value
+whose real implementor declares the field ``@secret`` no longer launders it: the
+bound field carries ``@secret`` and the sink warns (default) / hard-errors
+(``@strict_ifc``). The trait path only RAISES labels; it emits no reject and
+consumes none, so the concrete-twin / rigid-``TyVar`` rejects above are
+untouched. Its soundness rests on whole-program visibility of every implementor
+at the certifying analysis (true today; unsound only under a future
+separate-compilation / trusted-precompiled-library path).
 
-* a TRAIT-typed scrutinee (``s: Shape`` then ``let OtherCircle { r } = s``):
-  ``ty.name`` resolves to a trait, not a struct and not a type variable, so
-  the downcast stays accepted and a public-twin downcast is not caught
-  (Python leak; needs a runtime tag check);
+Closed at BOTH seams over the scrutinee forms each pass can resolve to a trait
+type. The intra-procedural (``let`` / ``for`` / ``match``) seam types the
+scrutinee from the type-checker's inferred type, so it covers every form. The
+cross-function-summary seam re-derives the scrutinee's static type in
+``_ifc_summary._scrutinee_static_type``, now a single COMPOSITIONAL resolver
+rather than a flat list of per-spelling special cases: it types a receiver by
+RECURSION and reads each next hop's declared type from an existing signature /
+field table, so a field / index / method chain is typed hop by hop whatever its
+root is -- a parameter / ``self`` / copy / field-chain / struct-literal root,
+composed through field reads, index reads, hoisted call/method/index bindings,
+named-function return types, and (receiver-typed, including trait-receiver)
+method return types. This certifies a trait-downcast destructure for every hop
+the NAME-ONLY type representation that pre-Phase-2 pass carries can express (a
+single-level element / named field / hoisted-binding / named
+function-or-method-return chain off any resolvable root), so the class the qa
+pass and the architect found leaking form-by-form (``get().s``, ``self.make()``,
+``mk().make()``, ``f.make()``, ``get()[0]``, ``xs[0].s``, a hoisted ``let s =
+get(); ... s``, ``s.clone()`` on a trait receiver, a ``match`` arm whose value
+is a call) is closed. It is NOT closed "by construction" for EVERY scrutinee:
+two hops the name-only representation cannot carry stay open (below).
+
+DISCLOSED OPEN RESIDUALS (accepted TODAY, pinned so a future tightening is a
+deliberate, visible change):
+
 * a SUM / primitive scrutinee (``let Other { a } = <sum value>``): the
   scrutinee is not a struct in the table, so the mismatch is not caught
   here; it faults LOUD on both backends at runtime (a pre-existing
   D1-cousin, no silent leak).
+* a hop whose type is ERASED by the name-only representation: a NESTED-container
+  element, ``List<List<Trait>>`` indexed past the first level. The element-type
+  tables (``_param_elem_type_names`` / ``_cur_elem_types``) store only
+  ``args[0].name``, so ``List<List<Shape>>`` collapses to the bare name
+  ``"List"`` and the inner ``<Shape>`` is erased before the resolver runs;
+  recursion cannot recover an erased type. So ``let OtherCircle { r } =
+  xss[0][0]`` launders a ``@secret`` across a boundary SILENTLY on Python /
+  ``--ir`` (still caught INTRA-procedurally; Wasm refuses the whole class loud).
+  Closing it needs a STRUCTURED-type representation, scheduled as a separate
+  design item (B) -- the same representational ceiling pinned at
+  ``tests/test_ifc_forloop_destructure_deep_return.py``. Pinned by
+  ``RES_TRAIT_NESTED_CONTAINER_ELEM_LAUNDER``.
+* a hop that is not statically NAMEABLE at all, disclosed by ROOT CAUSE rather
+  than spelling: a call to a GENERIC callee returning a type PARAMETER, a
+  receiver of dynamic / unknown static type, or an untracked / foreign callee.
+  The canonical case is the generic return (``idish<T>(x: T) -> T``): the summary
+  reads the declared return NAME ``"T"`` (not a trait), so the join does not fire
+  and the secret crosses a boundary SILENTLY on Python / ``--ir`` only (Wasm
+  refuses the whole class loud) and is still caught INTRA-procedurally. This is
+  the pre-pass's inherent inference ceiling -- it runs in Phase 1d, BEFORE the
+  type-checker's per-expression map exists, and cannot instantiate ``T`` to
+  ``Shape``; raising the ceiling by single-sourcing that map is a separate,
+  larger architectural change. Pinned by ``RES_TRAIT_GENERIC_RETURN_LAUNDER``.
 """
 
 import shutil
@@ -1153,10 +1208,13 @@ class TestZeroCollateralBattery(unittest.TestCase):
 
 # ---- DISCLOSED-RESIDUAL pins (accepted TODAY, KNOWN-OPEN) ----------------
 
-# A trait-typed scrutinee destructured via a public twin: ``ty.name`` is a
-# trait (not a struct and not a type variable), so the guard does not fire;
-# accepted and LEAKS on Python. Out of the rigid-scrutinee rule's scope.
-RES_TRAIT_LAUNDER = (
+# A trait-typed scrutinee destructured via a public twin. The scrutinee's
+# static type is a TRAIT (``Shape``), so the destructure binder does not
+# reject (that is disjoint from the concrete-twin / rigid-TyVar rejects). It
+# is now CAUGHT by the IFC seams: the bound field ``r`` is raised to the join
+# over ``Shape``'s implementors of field ``r`` (``Circle.r`` is @secret), so
+# the sink warns at the default tier and hard-errors under ``@strict_ifc``.
+TRAIT_LET_LAUNDER = (
     "trait Shape\n"
     "    fun area(self) -> Int\n"
     "type Circle { r: @secret Int }\n"
@@ -1169,6 +1227,356 @@ RES_TRAIT_LAUNDER = (
     "    stdio.println(\"${r}\")\n"
     "fun main(stdio: Stdio)\n"
     "    leak(Circle { r: 7 }, stdio)\n")
+
+# The ``for``-over-``List<Shape>`` cousin: the loop binder's element type is the
+# trait ``Shape``, so the same implementor-join raises ``r`` to @secret.
+TRAIT_FOR_LAUNDER = (
+    "trait Shape\n"
+    "    fun area(self) -> Int\n"
+    "type Circle { r: @secret Int }\n"
+    "type OtherCircle { r: Int }\n"
+    "impl Shape for Circle\n"
+    "    fun area(self) -> Int\n"
+    "        return 0\n"
+    "fun leak(xs: List<Shape>, stdio: Stdio)\n"
+    "    for OtherCircle { r } in xs\n"
+    "        stdio.println(\"${r}\")\n"
+    "fun main(stdio: Stdio)\n"
+    "    leak([Circle { r: 7 }], stdio)\n")
+
+# The CROSS-FUNCTION return twin: the trait launder happens in a callee whose
+# result the caller sinks. Proves the summary (fourth) seam got the fix -- the
+# intra-procedural seam alone does not cross the boundary.
+TRAIT_XFN_LAUNDER = (
+    "trait Shape\n"
+    "    fun area(self) -> Int\n"
+    "type Circle { r: @secret Int }\n"
+    "type OtherCircle { r: Int }\n"
+    "impl Shape for Circle\n"
+    "    fun area(self) -> Int\n"
+    "        return 0\n"
+    "fun reveal(s: Shape) -> Int\n"
+    "    let OtherCircle { r } = s\n"
+    "    return r\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${reveal(Circle { r: 7 })}\")\n")
+
+# C-1: the CROSS-FUNCTION twin whose trait scrutinee is a CALL RESULT rather
+# than a parameter. ``reveal`` destructures ``get() -> Shape`` and returns the
+# public-twin field; before the summary resolver learned to type a call result,
+# ``reveal``'s return summary stayed public and the caller's sink was silent.
+TRAIT_XFN_CALLRET_LAUNDER = (
+    "trait Shape\n"
+    "    fun area(self) -> Int\n"
+    "type Circle { r: @secret Int }\n"
+    "type OtherCircle { r: Int }\n"
+    "impl Shape for Circle\n"
+    "    fun area(self) -> Int\n"
+    "        return 0\n"
+    "fun get() -> Shape\n"
+    "    return Circle { r: 7 }\n"
+    "fun reveal() -> Int\n"
+    "    let OtherCircle { r } = get()\n"
+    "    return r\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${reveal()}\")\n")
+
+# The INDEX sibling: the trait scrutinee is ``xs[0]`` where ``xs: List<Shape>``,
+# so the summary resolver types it from the parameter's element type.
+TRAIT_XFN_INDEX_LAUNDER = (
+    "trait Shape\n"
+    "    fun area(self) -> Int\n"
+    "type Circle { r: @secret Int }\n"
+    "type OtherCircle { r: Int }\n"
+    "impl Shape for Circle\n"
+    "    fun area(self) -> Int\n"
+    "        return 0\n"
+    "fun reveal(xs: List<Shape>) -> Int\n"
+    "    let OtherCircle { r } = xs[0]\n"
+    "    return r\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${reveal([Circle { r: 7 }])}\")\n")
+
+# The IF-EXPRESSION sibling: both branches are calls returning ``Shape``, so the
+# resolver types the conditional to their common trait type.
+TRAIT_XFN_IFEXPR_LAUNDER = (
+    "trait Shape\n"
+    "    fun area(self) -> Int\n"
+    "type Circle { r: @secret Int }\n"
+    "type OtherCircle { r: Int }\n"
+    "impl Shape for Circle\n"
+    "    fun area(self) -> Int\n"
+    "        return 0\n"
+    "fun g1() -> Shape\n"
+    "    return Circle { r: 7 }\n"
+    "fun g2() -> Shape\n"
+    "    return Circle { r: 8 }\n"
+    "fun reveal(b: Bool) -> Int\n"
+    "    let OtherCircle { r } = if b then g1() else g2()\n"
+    "    return r\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${reveal(true)}\")\n")
+
+# The MATCH-EXPRESSION sibling: every (expression-bodied) arm returns ``Shape``,
+# so the resolver types the match to their common trait type.
+TRAIT_XFN_MATCHEXPR_LAUNDER = (
+    "trait Shape\n"
+    "    fun area(self) -> Int\n"
+    "type Circle { r: @secret Int }\n"
+    "type OtherCircle { r: Int }\n"
+    "impl Shape for Circle\n"
+    "    fun area(self) -> Int\n"
+    "        return 0\n"
+    "fun g1() -> Shape\n"
+    "    return Circle { r: 7 }\n"
+    "fun reveal(b: Bool) -> Int\n"
+    "    let OtherCircle { r } = match b\n"
+    "        true -> g1()\n"
+    "        false -> g1()\n"
+    "    return r\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${reveal(true)}\")\n")
+
+# ---- COMPOSITIONAL-RESOLVER spellings (single source for BOTH seams) ------
+#
+# The summary seam types a destructure scrutinee COMPOSITIONALLY
+# (``_ifc_summary._scrutinee_static_type``): a receiver is typed by recursion
+# and each next hop's declared type is read from an existing signature / field
+# table. Every shape below used to leave the scrutinee untyped (the join did not
+# fire) and laundered the secret across the return boundary SILENTLY, form by
+# form; each is now CAUGHT. Each spelling is captured ONCE, as its scrutinee
+# expression plus the extra declarations it needs, and the INTRA and SUMMARY
+# programs are GENERATED from it (``_intra_launder`` / ``_summary_launder``), so
+# the behavioural cross-check runs the SAME shape through both seams and bites
+# if the two resolvers ever diverge.
+
+_SHAPE_HDR = (
+    "trait Shape\n"
+    "    fun area(self) -> Int\n"
+    "type Circle { r: @secret Int }\n"
+    "type OtherCircle { r: Int }\n"
+    "impl Shape for Circle\n"
+    "    fun area(self) -> Int\n"
+    "        return 0\n"
+)
+_HOLDER = "type Holder { s: Shape }\n"
+_FACTORY = (
+    "type Factory { }\n"
+    "impl Factory\n"
+    "    fun make(self) -> Shape\n"
+    "        return Circle { r: 7 }\n"
+)
+_GET_SHAPE = "fun get() -> Shape\n    return Circle { r: 7 }\n"
+_GET_HOLDER = (
+    _HOLDER
+    + "fun get() -> Holder\n    return Holder { s: Circle { r: 7 } }\n"
+)
+_GET_LIST = (
+    "fun get() -> List<Shape>\n"
+    "    let xs: List<Shape> = [Circle { r: 7 }]\n"
+    "    return xs\n"
+)
+_MK_FACTORY = _FACTORY + "fun mk() -> Factory\n    return Factory { }\n"
+
+# name -> (extra decls, callee/leak parameter list, caller argument, in-body
+# HOIST statements, scrutinee). The scrutinee -- plus an optional preceding
+# ``let`` HOIST -- is the ONLY varying part; both programs are generated from
+# it. A hoist captures a call / method / index result into a local so the
+# scrutinee is a later bare ``Ident`` / ``Index`` off it (the RC1 shapes), which
+# the summary resolver types through the CALL-DERIVED provenance path.
+_COMPOSITIONAL_SPELLINGS = {
+    # ---- un-hoisted: the scrutinee expression is itself the call chain ----
+    # A FIELD read off a CALL result (``let OtherCircle { r } = get().s``).
+    "field_of_call": (_GET_HOLDER, "", "", "", "get().s"),
+    # A METHOD call on a PARAMETER receiver: ``f: Factory`` resolves, so
+    # ``f.make() -> Shape`` types.
+    "method_on_param": (_FACTORY, "f: Factory", "Factory { }", "", "f.make()"),
+    # A METHOD call on a CALL result: the receiver ``mk() -> Factory`` is typed
+    # by recursion before the method's return type is read.
+    "method_on_call": (_MK_FACTORY, "", "", "", "mk().make()"),
+    # An INDEX of a CALL result: the element type is read from the return type's
+    # first generic argument.
+    "index_of_call": (_GET_LIST, "", "", "", "get()[0]"),
+    # A FIELD read off an INDEX of an ``Ident`` (``xs[0].s`` where
+    # ``xs: List<Holder>``): the index element type then the field type.
+    "field_of_index": (
+        _HOLDER, "xs: List<Holder>",
+        "[Holder { s: Circle { r: 7 } }]", "", "xs[0].s",
+    ),
+    # ---- hoisted (RC1): a call/method/index result captured into a local,
+    # then a later bare-Ident / Index scrutinee off it ----
+    # B-2a: ``let s = get(); let OtherCircle { r } = s``.
+    "hoist_call": (_GET_SHAPE, "", "", "    let s = get()\n", "s"),
+    # P1: ``let s = f.make(); ... s`` (method on a parameter, hoisted).
+    "hoist_method_on_param": (
+        _FACTORY, "f: Factory", "Factory { }", "    let s = f.make()\n", "s",
+    ),
+    # P2b: ``let s = get()[0]; ... s`` (index of a call result, hoisted).
+    "hoist_index_of_call": (_GET_LIST, "", "", "    let s = get()[0]\n", "s"),
+    # P3: ``let h = get().s; ... h`` (field of a call result, hoisted).
+    "hoist_field_of_call": (_GET_HOLDER, "", "", "    let h = get().s\n", "h"),
+    # P5: ``let f = mk(); ... f.make()`` (the receiver is a hoisted call
+    # result, the scrutinee a method on it).
+    "hoist_receiver_method": (
+        _MK_FACTORY, "", "", "    let f = mk()\n", "f.make()",
+    ),
+    # P6: ``let ys = get(); ... ys[0]`` (a hoisted container, the scrutinee an
+    # index off it -- the CALL-DERIVED element-type path).
+    "hoist_list_then_index": (_GET_LIST, "", "", "    let ys = get()\n", "ys[0]"),
+    # A hoisted METHOD CHAIN: ``let s = mk().make(); ... s``.
+    "hoist_method_chain": (
+        _MK_FACTORY, "", "", "    let s = mk().make()\n", "s",
+    ),
+}
+
+
+def _summary_launder(prelude, params, arg, hoist, scrut):
+    """A CROSS-FUNCTION program for a compositional spelling: ``reveal`` runs
+    the optional ``hoist``, destructures ``scrut`` through a public twin and
+    returns the bound field; ``main`` sinks the result, so only the SUMMARY seam
+    crosses this boundary. Opt ``main`` into ``@strict_ifc`` (via ``_strict``)
+    to make the flow a hard error."""
+    return (_SHAPE_HDR + prelude
+            + "fun reveal(" + params + ") -> Int\n"
+            + hoist
+            + "    let OtherCircle { r } = " + scrut + "\n"
+              "    return r\n"
+              "fun main(stdio: Stdio)\n"
+              '    stdio.println("${reveal(' + arg + ')}")\n')
+
+
+def _intra_launder(prelude, params, arg, hoist, scrut):
+    """The SAME spelling with the hoist, destructure and sink in ONE function,
+    so the INTRA-procedural seam fires (a flow warning at the default tier)."""
+    plist = (params + ", stdio: Stdio") if params else "stdio: Stdio"
+    call_arg = (arg + ", stdio") if arg else "stdio"
+    return (_SHAPE_HDR + prelude
+            + "fun leak(" + plist + ")\n"
+            + hoist
+            + "    let OtherCircle { r } = " + scrut + "\n"
+              '    stdio.println("${r}")\n'
+              "fun main(stdio: Stdio)\n"
+              "    leak(" + call_arg + ")\n")
+
+
+# ``self.make()`` is an impl-METHOD destructure (``self`` resolves to the impl
+# owner type), structurally distinct from the free-function spellings, so its
+# two programs are written out rather than generated.
+TRAIT_XFN_SELF_METHOD_LAUNDER = (_SHAPE_HDR +
+    "type Factory { }\n"
+    "impl Factory\n"
+    "    fun make(self) -> Shape\n"
+    "        return Circle { r: 7 }\n"
+    "    fun reveal(self) -> Int\n"
+    "        let OtherCircle { r } = self.make()\n"
+    "        return r\n"
+    "fun main(stdio: Stdio)\n"
+    "    let f = Factory { }\n"
+    '    stdio.println("${f.reveal()}")\n')
+
+TRAIT_INTRA_SELF_METHOD_LAUNDER = (_SHAPE_HDR +
+    "type Factory { }\n"
+    "impl Factory\n"
+    "    fun make(self) -> Shape\n"
+    "        return Circle { r: 7 }\n"
+    "    fun leak(self, stdio: Stdio)\n"
+    "        let OtherCircle { r } = self.make()\n"
+    '        stdio.println("${r}")\n'
+    "fun main(stdio: Stdio)\n"
+    "    let f = Factory { }\n"
+    "    f.leak(stdio)\n")
+
+# RC2: a method call on a TRAIT-typed receiver (``s.clone()`` where
+# ``s: Shape``). The trait's ``clone`` signature is registered as a callable
+# keyed by the TRAIT name, so the summary reads its declared return type
+# ``Shape`` for the destructure scrutinee. ``_HDR2`` is a Shape trait that also
+# declares ``clone``; its impl returns a Circle.
+_HDR2 = (
+    "trait Shape\n"
+    "    fun area(self) -> Int\n"
+    "    fun clone(self) -> Shape\n"
+    "type Circle { r: @secret Int }\n"
+    "type OtherCircle { r: Int }\n"
+    "impl Shape for Circle\n"
+    "    fun area(self) -> Int\n"
+    "        return 0\n"
+    "    fun clone(self) -> Shape\n"
+    "        return Circle { r: 7 }\n"
+)
+# B-2b, cross-function (summary seam): the scrutinee ``s.clone()`` is a method
+# call on a trait-typed PARAMETER, destructured in a callee whose result the
+# caller sinks.
+TRAIT_XFN_TRAIT_METHOD_LAUNDER = (_HDR2 +
+    "fun reveal(s: Shape) -> Int\n"
+    "    let OtherCircle { r } = s.clone()\n"
+    "    return r\n"
+    "fun main(stdio: Stdio)\n"
+    '    stdio.println("${reveal(Circle { r: 7 })}")\n')
+# B-2b, intra seam.
+TRAIT_INTRA_TRAIT_METHOD_LAUNDER = (_HDR2 +
+    "fun leak(s: Shape, stdio: Stdio)\n"
+    "    let OtherCircle { r } = s.clone()\n"
+    '    stdio.println("${r}")\n'
+    "fun main(stdio: Stdio)\n"
+    "    leak(Circle { r: 7 }, stdio)\n")
+
+# A CALL RESULT passed as an ARGUMENT, destructured in the callee: ``reveal`` is
+# called as ``reveal(get())`` and destructures its trait-typed PARAMETER. The
+# summary types the scrutinee from the parameter's declared trait type.
+TRAIT_XFN_CALL_ARG_LAUNDER = (_SHAPE_HDR +
+    "fun get() -> Shape\n"
+    "    return Circle { r: 7 }\n"
+    "fun reveal(s: Shape) -> Int\n"
+    "    let OtherCircle { r } = s\n"
+    "    return r\n"
+    "fun main(stdio: Stdio)\n"
+    '    stdio.println("${reveal(get())}")\n')
+
+# DISCLOSED RESIDUAL (by ROOT CAUSE, not spelling): a scrutinee one of whose
+# hops the summary PRE-PASS cannot resolve -- here a call to a GENERIC callee
+# whose declared return type is a type PARAMETER (``idish<T>(x: T) -> T``). The
+# summary reads the declared return NAME ``"T"``, which is not a trait, so the
+# join does not fire and the secret crosses the boundary SILENTLY. This is the
+# pre-pass's inference ceiling: it runs before the type-checker's per-expression
+# map exists and cannot instantiate ``T`` to ``Shape``. Raising the ceiling
+# (single-sourcing that map) is a separate architectural change. Pinned so a
+# future tightening is a deliberate, visible change; the intra seam still
+# catches an in-function sink of the same value.
+RES_TRAIT_GENERIC_RETURN_LAUNDER = (_SHAPE_HDR +
+    "fun idish<T>(x: T) -> T\n"
+    "    return x\n"
+    "fun get() -> Shape\n"
+    "    return Circle { r: 7 }\n"
+    "fun reveal() -> Int\n"
+    "    let OtherCircle { r } = idish(get())\n"
+    "    return r\n"
+    "fun main(stdio: Stdio)\n"
+    "    stdio.println(\"${reveal()}\")\n")
+
+# DISCLOSED RESIDUAL (by ROOT CAUSE): a hop whose type is ERASED by the
+# summary's NAME-ONLY type representation -- a NESTED-container element,
+# ``List<List<Shape>>`` indexed past the first level. The element-type tables
+# (``_param_elem_type_names`` / ``_cur_elem_types``) store only ``args[0].name``,
+# so ``List<List<Shape>>`` collapses to the bare name ``"List"`` and the inner
+# ``<Shape>`` is erased before the resolver runs; recursion cannot recover an
+# erased type, so ``xss[0][0]`` resolves to nothing, the join does not fire and
+# the secret crosses the boundary SILENTLY on Python / ``--ir`` (Wasm refuses the
+# whole class loud; still caught INTRA-procedurally). Closing it needs a
+# STRUCTURED-type representation (design item B) -- the same representational
+# ceiling pinned at ``tests/test_ifc_forloop_destructure_deep_return.py``. The
+# HOISTED twin (``let inner = xss[0]; ... let OtherCircle { r } = inner[0]``) and
+# the field- / call-rooted nested twins (``bag.grid[0][0]``, ``get()[0][0]``)
+# share the SAME name-only-erasure root cause, so this one pin's disclosure
+# covers them. Pinned so a future tightening is a deliberate, visible change; the
+# intra seam still catches an in-function sink of the same value.
+RES_TRAIT_NESTED_CONTAINER_ELEM_LAUNDER = (_SHAPE_HDR +
+    "fun reveal(xss: List<List<Shape>>) -> Int\n"
+    "    let OtherCircle { r } = xss[0][0]\n"
+    "    return r\n"
+    "fun main(stdio: Stdio)\n"
+    "    let inner: List<Shape> = [Circle { r: 7 }]\n"
+    "    let xss: List<List<Shape>> = [inner]\n"
+    "    stdio.println(\"${reveal(xss)}\")\n")
 
 # A rigid value laundered through a SAME-NAMED generic VARIANT constructor
 # payload. ``type Wrap<T>`` shares the caller's rigid parameter NAME
@@ -1225,20 +1633,150 @@ RES_SUM_D1_COUSIN = (
     "    stdio.println(a)\n")
 
 
-class TestDisclosedResidualsPinned(unittest.TestCase):
-    """The disclosed open residuals behave AS DOCUMENTED: the trait scrutinee
-    is accepted (concrete named trait type, out of this rule's scope); the
-    sum-scrutinee D1-cousin is accepted at --check and faults loud on both
-    backends. The same-name-constructor launder is no longer here: it is CLOSED
-    (see ``TestSameNameCtorLaunderNowRejected``); ``RES_DIFF_NAME_CTOR_REJECTED``
-    stays pinned to confirm the differently-named case rejects as before."""
+class TestTraitDowncastLaunderNowCaught(unittest.TestCase):
+    """The trait-typed-scrutinee launder is CLOSED (analyzer-only). A public
+    twin over a value whose real implementor declares the field ``@secret``
+    raises the bound field to the implementor-join ``@secret``, so the sink
+    warns at the default tier and hard-errors under ``@strict_ifc`` -- at the
+    intra-procedural (``let`` / ``for``) AND cross-function-return seams. The
+    destructure binder does NOT reject (the trait path only raises labels), so
+    there is still no mismatch error.
 
-    def test_trait_launder_accepted_and_leaks(self):
-        r = _analyze(RES_TRAIT_LAUNDER)
-        self.assertTrue(r.ok, [e.message for e in r.errors])
+    The cross-function seam types the scrutinee COMPOSITIONALLY, so it covers a
+    PARAMETER, a CALL result (C-1), an INDEX of a trait-element list, an agreeing
+    ``if`` / ``match`` expression, AND every field / index / method hop off a
+    call / index / method / ``self`` root (``get().s``, ``self.make()``,
+    ``mk().make()``, ``f.make()``, ``get()[0]``, ``xs[0].s``). What stays a
+    disclosed residual is only the pre-pass's inference ceiling -- a hop of
+    dynamic / generic / unknown static type
+    (``RES_TRAIT_GENERIC_RETURN_LAUNDER``)."""
+
+    def test_let_launder_caught(self):
+        # Default tier: a flow WARNING, still ``ok``, no mismatch reject.
+        r = _analyze(TRAIT_LET_LAUNDER)
         self.assertEqual(len(_mismatch_errors(r)), 0,
                          [e.message for e in r.errors])
-        self.assertEqual(_run_py(RES_TRAIT_LAUNDER), "7\n")
+        self.assertEqual(len(_flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+        # Strict: a hard information-flow error.
+        rs = _analyze(_strict(TRAIT_LET_LAUNDER, "leak"))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_for_launder_caught(self):
+        r = _analyze(TRAIT_FOR_LAUNDER)
+        self.assertEqual(len(_mismatch_errors(r)), 0,
+                         [e.message for e in r.errors])
+        self.assertEqual(len(_flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(TRAIT_FOR_LAUNDER, "leak"))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_cross_function_return_launder_caught(self):
+        # The FOURTH (summary) seam: the launder is in a callee whose result
+        # the caller sinks. Caught under ``@strict_ifc`` on the caller.
+        rs = _analyze(_strict(TRAIT_XFN_LAUNDER, "main"))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_mismatch_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_cross_function_call_result_launder_caught(self):
+        # C-1: the callee's trait scrutinee is a CALL RESULT (``get() ->
+        # Shape``), not a parameter. The summary resolver now types the call
+        # result, so the join fires, ``reveal``'s return summary carries the
+        # taint, and the caller's sink hard-errors under ``@strict_ifc`` -- so
+        # the strict program is a COMPILE ERROR and never runs to print ``7``.
+        rs = _analyze(_strict(TRAIT_XFN_CALLRET_LAUNDER, "main"))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_mismatch_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_cross_function_index_result_launder_caught(self):
+        # The scrutinee is ``xs[0]`` of a ``List<Shape>`` parameter.
+        rs = _analyze(_strict(TRAIT_XFN_INDEX_LAUNDER, "main"))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_cross_function_if_expression_launder_caught(self):
+        # The scrutinee is ``if b then g1() else g2()``, both branches Shape.
+        rs = _analyze(_strict(TRAIT_XFN_IFEXPR_LAUNDER, "main"))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_cross_function_match_expression_launder_caught(self):
+        # The scrutinee is a ``match`` whose arms are each a CALL returning
+        # Shape -- the architect-named "match arm whose value is a call" form.
+        rs = _analyze(_strict(TRAIT_XFN_MATCHEXPR_LAUNDER, "main"))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_compositional_scrutinee_spellings_caught(self):
+        # Every compositional-resolver spelling -- a field / index / method hop
+        # off a call / index / method / ``self`` root -- is now CAUGHT
+        # cross-function under ``@strict_ifc``: a flow error, so the strict
+        # program never runs to print the secret. This is the class the qa
+        # pass and the architect found leaking form-by-form
+        # (``get().s`` = ``field_of_call``, ``f.make()`` = ``method_on_param``,
+        # ``mk().make()``, ``get()[0]``, ``xs[0].s``, and ``self.make()``).
+        progs = {
+            name: _summary_launder(*pieces)
+            for name, pieces in _COMPOSITIONAL_SPELLINGS.items()
+        }
+        progs["self_method"] = TRAIT_XFN_SELF_METHOD_LAUNDER
+        for name, src in progs.items():
+            with self.subTest(shape=name):
+                rs = _analyze(_strict(src, "main"))
+                self.assertFalse(rs.ok, [e.message for e in rs.errors])
+                self.assertEqual(len(_mismatch_errors(rs)), 0,
+                                 [e.message for e in rs.errors])
+                self.assertEqual(len(_flow_errors(rs)), 1,
+                                 [e.message for e in rs.errors])
+
+    def test_trait_receiver_method_launder_caught(self):
+        # B-2b (RC2): the scrutinee is ``s.clone()`` on a TRAIT-typed receiver.
+        # The trait's ``clone`` signature is now a registered callable, so the
+        # summary reads its declared return type ``Shape`` and the join fires.
+        # Caught at BOTH seams: an intra flow warning and a cross-function
+        # strict flow error.
+        ri = _analyze(TRAIT_INTRA_TRAIT_METHOD_LAUNDER)
+        self.assertEqual(len(_flow_warnings(ri)), 1,
+                         [w.message for w in ri.warnings])
+        rs = _analyze(_strict(TRAIT_XFN_TRAIT_METHOD_LAUNDER, "main"))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_mismatch_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+    def test_call_result_arg_destructured_in_callee_caught(self):
+        # A CALL RESULT passed as an argument (``reveal(get())``) and
+        # destructured through the callee's trait-typed parameter. The summary
+        # types the scrutinee from the declared parameter type, so the caller's
+        # sink hard-errors under ``@strict_ifc``.
+        rs = _analyze(_strict(TRAIT_XFN_CALL_ARG_LAUNDER, "main"))
+        self.assertFalse(rs.ok)
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+
+
+class TestDisclosedResidualsPinned(unittest.TestCase):
+    """The disclosed open residual behaves AS DOCUMENTED: the sum-scrutinee
+    D1-cousin is accepted at --check and faults loud on both backends. The
+    trait launder is no longer here: it is CLOSED (see
+    ``TestTraitDowncastLaunderNowCaught``). The same-name-constructor launder is
+    also CLOSED (see ``TestSameNameCtorLaunderNowRejected``);
+    ``RES_DIFF_NAME_CTOR_REJECTED`` stays pinned to confirm the differently-named
+    case rejects as before."""
 
     def test_diff_name_ctor_still_rejected(self):
         # The mechanism boundary: a DIFFERENT constructor-parameter name keeps
@@ -1261,6 +1799,44 @@ class TestDisclosedResidualsPinned(unittest.TestCase):
         if _wasm_unavailable() is None:
             with self.assertRaises(Exception):
                 _run_wasm(RES_SUM_D1_COUSIN)
+
+    def test_generic_return_launder_still_silent(self):
+        # The disclosed cross-function residual, by ROOT CAUSE (not spelling):
+        # a scrutinee whose hop the summary PRE-PASS cannot resolve -- here a
+        # call to a GENERIC callee returning a type PARAMETER
+        # (``idish<T>(x: T) -> T``). The summary reads the declared return name
+        # ``"T"`` (not a trait), so the join does not fire and the secret
+        # crosses SILENTLY. This is the pre-pass's inference ceiling: it runs
+        # before the type-checker's per-expression map exists and cannot
+        # instantiate ``T`` to ``Shape``. Raising the ceiling (single-sourcing
+        # that map) is a separate architectural change. Pinned so a future
+        # tightening is a deliberate, visible change.
+        rs = _analyze(_strict(RES_TRAIT_GENERIC_RETURN_LAUNDER, "main"))
+        self.assertTrue(rs.ok, [e.message for e in rs.errors])
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        self.assertEqual(_run_py(RES_TRAIT_GENERIC_RETURN_LAUNDER), "7\n")
+
+    def test_nested_container_elem_launder_still_silent(self):
+        # The disclosed cross-function residual whose root cause is
+        # REPRESENTATIONAL, not inference-ceiling: a hop whose type is ERASED by
+        # the summary's NAME-ONLY type representation -- a NESTED-container
+        # element (``List<List<Shape>>`` indexed past the first level). The
+        # element-type tables keep only ``args[0].name``, so ``List<List<Shape>>``
+        # collapses to the bare name ``"List"`` and the inner ``<Shape>`` is
+        # erased before the resolver runs; ``xss[0][0]`` resolves to nothing, the
+        # join does not fire and the secret crosses SILENTLY. Closing it needs a
+        # structured-type representation (design item B). The hoisted twin
+        # (``let inner = xss[0]; inner[0]``) and the field- / call-rooted nested
+        # twins share the SAME root cause, so this pin's disclosure covers them.
+        # Pinned so the day B closes it this turns red and forces the disclosure
+        # to stay truthful; the intra seam still catches an in-function sink.
+        rs = _analyze(_strict(RES_TRAIT_NESTED_CONTAINER_ELEM_LAUNDER, "main"))
+        self.assertTrue(rs.ok, [e.message for e in rs.errors])
+        self.assertEqual(len(_flow_errors(rs)), 0,
+                         [e.message for e in rs.errors])
+        self.assertEqual(
+            _run_py(RES_TRAIT_NESTED_CONTAINER_ELEM_LAUNDER), "7\n")
 
 
 # ---- CLOSED: the SAME-NAMED generic-constructor launder now REJECTS -------
@@ -1437,6 +2013,84 @@ class TestConstructorResultArgsSingleSource(unittest.TestCase):
             "_constructor_result_args",
             inspect.getsource(_dispatch),
         )
+
+
+class TestTraitDestructureFieldLabelSingleSource(unittest.TestCase):
+    """Cross-check: the intra-procedural pass (``_ifc``) and the cross-function
+    summary pass (``_ifc_summary``) BOTH route the trait-destructure join
+    through the ONE ``trait_destructure_field_label`` helper, so they cannot
+    drift on the trait case. A unit call reproduces the implementor-join, and
+    ``test_both_passes_agree_on_the_trait_case`` runs every compositional
+    scrutinee spelling through BOTH seams, so a second, drifting join
+    implementation is caught behaviourally rather than by a source grep."""
+
+    def test_helper_joins_over_implementors(self):
+        from capa.analyzer._ifc_tables import trait_destructure_field_label
+        # Two implementors of ``Shape``: one declares ``r`` @secret, the other
+        # public; the join over field ``r`` is @secret, over ``s`` public.
+        index = {"Shape": {"Circle", "Square"}}
+        labels = {
+            "Circle": {"r": "secret", "s": "public"},
+            "Square": {"r": "public", "s": "public"},
+        }
+
+        def labels_of(name):
+            return labels.get(name, {})
+
+        self.assertEqual(
+            trait_destructure_field_label(index, labels_of, "Shape", "r"),
+            "secret",
+        )
+        self.assertEqual(
+            trait_destructure_field_label(index, labels_of, "Shape", "s"),
+            "public",
+        )
+        # A trait with no implementor, or a field no implementor declares, is
+        # PUBLIC (the join's bottom).
+        self.assertEqual(
+            trait_destructure_field_label(index, labels_of, "None", "r"),
+            "public",
+        )
+        self.assertEqual(
+            trait_destructure_field_label(index, labels_of, "Shape", "missing"),
+            "public",
+        )
+
+    def test_both_passes_agree_on_the_trait_case(self):
+        # The two passes agree on the trait launder across EVERY compositional
+        # scrutinee spelling: the intra pass raises the bound field's label to
+        # @secret (a flow WARNING at an in-function sink) and the summary pass
+        # carries the same @secret across a function return (a strict flow ERROR
+        # at the caller's sink). Both programs are driven from the ONE scrutinee
+        # spelling, so this bites if the intra (type-checker-based) resolver and
+        # the summary compositional resolver ever diverge on a shape. This
+        # BEHAVIOURAL cross-check replaces the former source-grep guard, which
+        # passed on any file merely mentioning the helper name and could not see
+        # a second, drifting join implementation.
+        r = _analyze(TRAIT_LET_LAUNDER)               # intra seam, base shape
+        self.assertEqual(len(_flow_warnings(r)), 1,
+                         [w.message for w in r.warnings])
+        rs = _analyze(_strict(TRAIT_XFN_LAUNDER, "main"))  # summary seam, base
+        self.assertEqual(len(_flow_errors(rs)), 1,
+                         [e.message for e in rs.errors])
+        pairs = {
+            name: (_intra_launder(*pieces), _summary_launder(*pieces))
+            for name, pieces in _COMPOSITIONAL_SPELLINGS.items()
+        }
+        pairs["self_method"] = (
+            TRAIT_INTRA_SELF_METHOD_LAUNDER, TRAIT_XFN_SELF_METHOD_LAUNDER,
+        )
+        pairs["trait_receiver_method"] = (
+            TRAIT_INTRA_TRAIT_METHOD_LAUNDER, TRAIT_XFN_TRAIT_METHOD_LAUNDER,
+        )
+        for name, (intra, summary) in pairs.items():
+            with self.subTest(shape=name):
+                ri = _analyze(intra)
+                self.assertEqual(len(_flow_warnings(ri)), 1,
+                                 [w.message for w in ri.warnings])
+                rsum = _analyze(_strict(summary, "main"))
+                self.assertEqual(len(_flow_errors(rsum)), 1,
+                                 [e.message for e in rsum.errors])
 
 
 if __name__ == "__main__":

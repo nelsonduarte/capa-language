@@ -490,7 +490,7 @@ class _ExpressionsMixin:
             self._live_linear = dict(before_live)
             self._push_scope()
             self._bind_pattern(arm.pattern, scrutinee_ty, mutable=False)
-            self._label_pattern_binds(arm.pattern, scrutinee_label)
+            self._label_pattern_binds(arm.pattern, scrutinee_label, scrutinee_ty)
             self._pc_label = arm_pc
             self._container_isolate(before_ct)
             if arm.guard is not None:

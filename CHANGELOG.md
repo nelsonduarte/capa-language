@@ -9,6 +9,48 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
+**Security / soundness (unreleased).**
+
+- *The fifth face of the rigid-destructure IFC class: a trait-typed-scrutinee
+  downcast could launder a `@secret` through a public twin.* The `1.32.0`
+  rigid-destructure advisory
+  ([`docs/advisories/2026-08-22-ifc-rigid-destructure-launder.md`](docs/advisories/2026-08-22-ifc-rigid-destructure-launder.md),
+  GHSA-7pf3-h2cq-52wm) disclosed this as an open residual: a destructure over a
+  trait-typed value (`s: Shape` then `let OtherCircle { r } = s`) resolved to a
+  trait rather than a struct, so the concrete-twin guard did not fire and the
+  bound field kept the twin's public label. It is now CLOSED on `main` for every
+  scrutinee hop the cross-function summary pass's name-only type representation can
+  CARRY. A `StructPat` destructuring a trait-typed scrutinee raises each bound
+  field to the JOIN, over every concrete implementor of the trait, of that
+  implementor's same-named DECLARED field label (a sound upper bound needing no
+  runtime tag). The one join helper runs at both seams: the intra-procedural pass
+  (every `let` / `for` / `match` form) and the cross-function summary pass, whose
+  compositional resolver types a parameter, return, call result, single-level
+  index, field chain, hoisted local, trait-typed-receiver method, and agreeing
+  `if` / `match`-expression scrutinee. Analyzer-only, label-raising only (no new
+  reject, no codegen change): a warning at the default tier, a hard error under
+  `@strict_ifc`. Commit `<commit>`; no new GHSA and no version change (Python-style
+  cadence). Known issues below.
+
+  Known issues (two residuals stay open, each by ROOT CAUSE, each pinned
+  still-silent in
+  [`tests/test_ifc_destructure_pattern_typecheck.py`](tests/test_ifc_destructure_pattern_typecheck.py)):
+  - *Nested-container element erasure.* A hop like `xss[0][0]` where
+    `xss: List<List<Trait>>` (and its hoisted / field-rooted / call-rooted twins):
+    the summary stores element types name-only, so `List<List<Shape>>` collapses to
+    the bare name `"List"` and the inner type is erased before the resolver runs.
+    Pinned by `RES_TRAIT_NESTED_CONTAINER_ELEM_LAUNDER`.
+  - *Non-nameable / inference-ceiling hop.* A call to a generic callee returning a
+    type parameter (`fun idish<T>(x: T) -> T`), a dynamic / unknown receiver, or an
+    untracked / foreign callee: the pre-Phase-2 summary cannot name it at all.
+    Pinned by `RES_TRAIT_GENERIC_RETURN_LAUNDER`.
+
+  Both residuals are Python / `--ir`-only and are still caught intra-procedurally;
+  the Wasm Component Model backend refuses the whole trait-downcast class loud at
+  codegen. Both are scheduled to be closed together by a future design item B (a
+  structured-type resolver that single-sources the type-checker's resolved type
+  map).
+
 ## [1.32.0], 2026-08-22
 
 A security-hardening release that closes a set of soundness gaps found in the

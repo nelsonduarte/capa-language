@@ -191,6 +191,7 @@ from ._ifc_tables import (
     _CT_INDEX_METHODS, _CT_SHORT_CIRCUIT_METHODS,
     _pattern_bound_names, _prefix_compatible,
     INTERNAL_SECRET, _bind, methods_by_name,
+    build_impl_reverse_index, trait_destructure_field_label,
 )
 
 
@@ -208,6 +209,27 @@ class _LambdaCallable:
 
     def __init__(self, body: A.Block) -> None:
         self.body = body
+
+
+class _TraitMethodCallable:
+    """A trait-block method SIGNATURE presented to the summary tables as a
+    callable, so the compositional scrutinee resolver can read its declared
+    return type for a TRAIT-typed receiver (``s.clone()`` where ``s: Shape``,
+    keyed ``("method", TraitName, method)``). A trait signature has NO body,
+    so ``body`` is an empty block: the fixpoint summarises it to the empty
+    summary. That is correct -- a trait method is abstract; the real
+    per-implementor sink / return behaviour is carried by each concrete impl
+    method's OWN summary, keyed by the concrete type, and a dynamic-dispatch
+    call over-approximates across those concrete keys (``methods_by_name``,
+    which a trait signature is deliberately NOT indexed in). Only ``body`` (by
+    ``_analyze_body``) and ``return_type`` (by ``_method_return_type_expr``)
+    are consulted."""
+
+    __slots__ = ("body", "return_type")
+
+    def __init__(self, return_type, body: A.Block) -> None:
+        self.body = body
+        self.return_type = return_type
 
 
 # Absent-marker for the body-scoped for-loop binder seed: distinguishes a
@@ -492,6 +514,11 @@ class _SummaryBuilder:
         # an internal secret source at summary time -- the cross-function
         # analogue of the intra-procedural declared-field-label rule.
         self.struct_field_labels: dict[str, dict[str, str]] = {}
+        # ``trait / capability name -> {implementor type names}``, built once
+        # (memoised) via the SAME ``build_impl_reverse_index`` the intra pass
+        # uses, so the trait-destructure join (``_raise_trait_destructure_taint``)
+        # never hand-rolls a second trait walk.
+        self._ifc_impl_index: dict = None
         # ``struct type -> {field name -> declared type NAME}`` for every
         # struct / typestate field with a NAMED type, built from the SAME
         # ``fld.type_expr.name`` the label walk reads. Lets a deep field-read
@@ -586,33 +613,46 @@ class _SummaryBuilder:
 
     # ---- collection -------------------------------------------------
 
+    def _register_callable(
+        self, key, decl, params, *, is_method, owner=None, by_name=False,
+    ) -> None:
+        """Register ONE callable -- a free function, an impl method, a
+        trait-method signature, or a lambda -- in the shared summary tables
+        under ``key``. The SINGLE per-callable initialisation site: every
+        branch of ``_collect_callables`` / ``_collect_lambda_callables`` routes
+        through here, so the seven effect tables and the four parameter-fact
+        tables can never be seeded for one kind of callable but not another.
+
+        ``by_name`` additionally indexes an impl method in ``methods_by_name``
+        (the by-name over-approximation set a receiver-unknown method call
+        joins over); a trait signature is deliberately NOT indexed there, so
+        its abstract empty summary never dilutes a dynamic-dispatch call's
+        candidate set, which stays the concrete impl keys."""
+        self.callables[key] = ([p.name for p in params], decl, is_method)
+        self.summaries[key] = set()
+        self.sink_caps[key] = {}
+        self.sink_paths[key] = {}
+        self.sink_reaching_pc[key] = False
+        self.ct_sensitive[key] = set()
+        self.field_effects[key] = {}
+        self.return_effects[key] = {}
+        self.secret_source_params[key] = self._secret_source_params(params)
+        self.param_struct_types[key] = self._param_struct_types(
+            params, owner=owner,
+        )
+        self.param_type_names[key] = self._param_type_names(
+            params, owner=owner,
+        )
+        self.param_elem_type_names[key] = self._param_elem_type_names(params)
+        self.immutable_params[key] = self._immutable_param_idxs(params)
+        if by_name:
+            self.methods_by_name.setdefault(key[2], []).append(key)
+
     def _collect_callables(self) -> None:
         for item in self.module.items:
             if isinstance(item, A.FunDecl):
-                key = ("fun", item.name)
-                names = [p.name for p in item.params]
-                self.callables[key] = (names, item, False)
-                self.summaries[key] = set()
-                self.sink_caps[key] = {}
-                self.sink_paths[key] = {}
-                self.sink_reaching_pc[key] = False
-                self.ct_sensitive[key] = set()
-                self.field_effects[key] = {}
-                self.return_effects[key] = {}
-                self.secret_source_params[key] = self._secret_source_params(
-                    item.params,
-                )
-                self.param_struct_types[key] = self._param_struct_types(
-                    item.params,
-                )
-                self.param_type_names[key] = self._param_type_names(
-                    item.params,
-                )
-                self.param_elem_type_names[key] = self._param_elem_type_names(
-                    item.params,
-                )
-                self.immutable_params[key] = self._immutable_param_idxs(
-                    item.params,
+                self._register_callable(
+                    ("fun", item.name), item, item.params, is_method=False,
                 )
             elif isinstance(item, A.ImplBlock):
                 for method in item.methods:
@@ -621,33 +661,32 @@ class _SummaryBuilder:
                     # across states is guaranteed by the analyzer.
                     if key in self.callables:
                         continue
-                    names = [p.name for p in method.params]
-                    self.callables[key] = (names, method, True)
-                    self.summaries[key] = set()
-                    self.sink_caps[key] = {}
-                    self.sink_paths[key] = {}
-                    self.sink_reaching_pc[key] = False
-                    self.ct_sensitive[key] = set()
-                    self.field_effects[key] = {}
-                    self.return_effects[key] = {}
-                    self.secret_source_params[key] = (
-                        self._secret_source_params(method.params)
+                    self._register_callable(
+                        key, method, method.params, is_method=True,
+                        owner=item.type_name, by_name=True,
                     )
-                    self.param_struct_types[key] = self._param_struct_types(
-                        method.params, owner=item.type_name,
+            elif isinstance(item, A.TraitDecl):
+                # A trait-block method signature is registered under the SAME
+                # ``("method", type, name)`` scheme, keyed by the TRAIT name, so
+                # ``_method_return_type_expr`` can read its declared return type
+                # for a trait-typed receiver (RC2: closes the whole
+                # trait-typed-receiver-method scrutinee family, e.g. ``let
+                # OtherCircle { r } = s.clone()`` where ``s: Shape``). The
+                # signature has no body, so it carries an empty one and
+                # summarises to the empty summary; it is NOT added to
+                # ``methods_by_name``, so dynamic dispatch still joins over the
+                # concrete impls.
+                for sig in item.methods:
+                    key = ("method", item.name, sig.name)
+                    if key in self.callables:
+                        continue
+                    self._register_callable(
+                        key,
+                        _TraitMethodCallable(
+                            sig.return_type, A.Block(pos=item.pos, stmts=[]),
+                        ),
+                        sig.params, is_method=True, owner=item.name,
                     )
-                    self.param_type_names[key] = self._param_type_names(
-                        method.params, owner=item.type_name,
-                    )
-                    self.param_elem_type_names[key] = (
-                        self._param_elem_type_names(method.params)
-                    )
-                    self.immutable_params[key] = self._immutable_param_idxs(
-                        method.params,
-                    )
-                    self.methods_by_name.setdefault(
-                        method.name, []
-                    ).append(key)
 
     def _collect_lambda_callables(self) -> None:
         """Register every lambda literal anywhere in the module as a
@@ -685,31 +724,12 @@ class _SummaryBuilder:
         for lam in self._iter_lambdas(self.module):
             key = ("lambda", id(lam))
             self._lambda_nodes[key] = lam
-            names = [p.name for p in lam.params]
             body = lam.body if isinstance(lam.body, A.Block) else A.Block(
                 pos=lam.pos,
                 stmts=[A.ExprStmt(pos=lam.pos, expr=lam.body)],
             )
-            self.callables[key] = (names, _LambdaCallable(body), False)
-            self.summaries[key] = set()
-            self.sink_caps[key] = {}
-            self.sink_paths[key] = {}
-            self.sink_reaching_pc[key] = False
-            self.ct_sensitive[key] = set()
-            self.field_effects[key] = {}
-            self.return_effects[key] = {}
-            self.secret_source_params[key] = self._secret_source_params(
-                lam.params,
-            )
-            self.param_struct_types[key] = self._param_struct_types(
-                lam.params,
-            )
-            self.param_type_names[key] = self._param_type_names(lam.params)
-            self.param_elem_type_names[key] = self._param_elem_type_names(
-                lam.params,
-            )
-            self.immutable_params[key] = self._immutable_param_idxs(
-                lam.params,
+            self._register_callable(
+                key, _LambdaCallable(body), lam.params, is_method=False,
             )
 
     @staticmethod
@@ -1141,6 +1161,20 @@ class _SummaryBuilder:
         self._cur_elem_types = dict(
             self.param_elem_type_names.get(key, {}),
         )
+        # Names in ``_cur_value_types`` / ``_cur_elem_types`` whose recorded
+        # type was re-derived COMPOSITIONALLY from a CALL / METHOD / INDEX
+        # result rather than a struct-literal / copy / field-chain shape (RC1:
+        # ``let s = get()``). Such an entry is visible ONLY to the trait-
+        # destructure scrutinee resolver (``_resolve_static_type`` /
+        # ``_resolve_element_type``, raw reads); every DEEP-READ / capability /
+        # ct reader consults the gated ``_struct_prov_type`` /
+        # ``_struct_prov_elem`` view instead, which HIDES a call-derived entry,
+        # so those readers keep their exact pre-RC1 behaviour and the
+        # ``RESTORE_BITES`` deep-read residual is preserved (a call-result root
+        # stays a whole-value fallback). Written only by ``_seed_call_derived``;
+        # the sole structural pop of these maps (the for-loop binder restore)
+        # discards its binder names from this set too, so it cannot drift.
+        self._cur_call_derived: set[str] = set()
         # The parameter indices of THIS callable whose type is provably a
         # built-in immutable, so ``_writable_targets`` can drop them from a
         # mutation-effect TARGET set (see ``immutable_params``).
@@ -1420,7 +1454,10 @@ class _SummaryBuilder:
     def _walk_stmt(self, stmt: A.Stmt, env: dict, reaching: set) -> None:
         if isinstance(stmt, A.LetStmt):
             src = self._taint_of(stmt.value, env, reaching)
-            self._bind_pattern_taint(stmt.pattern, src, env)
+            self._bind_pattern_taint(
+                stmt.pattern, src, env,
+                self._scrutinee_static_type(stmt.value),
+            )
             # Record a single-ident binding's static struct type so a deep
             # field read rooted at it (``let u = t; return u.f2.f3.v``)
             # resolves its root type. Only a bare ``IdentPat`` denotes one
@@ -1531,7 +1568,10 @@ class _SummaryBuilder:
             )])
         elif isinstance(stmt, A.ForStmt):
             iter_src = self._taint_of(stmt.iter, env, reaching)
-            self._bind_pattern_taint(stmt.pattern, iter_src, env)
+            self._bind_pattern_taint(
+                stmt.pattern, iter_src, env,
+                self._iter_element_struct_type(stmt.iter),
+            )
 
             def _for_body():
                 # The loop variable is scoped to the body; a loop var named
@@ -1558,6 +1598,14 @@ class _SummaryBuilder:
                 saved_elem = {
                     n: self._cur_elem_types.get(n, _ABSENT) for n in bound
                 }
+                # A for-loop binder is seeded from a STRUCT-provenance element
+                # type (``_iter_element_struct_type`` reads the gated view), so
+                # it is never call-derived; drop it from the provenance set on
+                # clear so this map moves in lockstep with the two type maps and
+                # cannot drift (a binder can never shadow an outer call-derived
+                # ``let`` -- the analyzer rejects that shadow).
+                for n in bound:
+                    self._cur_call_derived.discard(n)
                 if isinstance(stmt.pattern, A.IdentPat):
                     elem_ty = self._iter_element_struct_type(stmt.iter)
                     self._cur_value_types.pop(stmt.pattern.name, None)
@@ -1579,6 +1627,7 @@ class _SummaryBuilder:
                     self._record_pattern_value_types(stmt.pattern)
                 self._walk_block(stmt.body, env, reaching)
                 for n in bound:
+                    self._cur_call_derived.discard(n)
                     v = saved_value[n]
                     if v is _ABSENT:
                         self._cur_value_types.pop(n, None)
@@ -1604,7 +1653,20 @@ class _SummaryBuilder:
             self._taint_of(stmt.expr, env, reaching)
         # break / continue carry no value.
 
-    def _bind_pattern_taint(self, pat: A.Pattern, src: set, env: dict) -> None:
+    def _impl_reverse_index(self) -> dict:
+        """``trait / capability name -> {implementor type names}``, built once
+        (memoised) via the shared ``build_impl_reverse_index`` -- the SAME
+        single source the intra-procedural pass uses -- so the trait-destructure
+        join here cannot drift from the intra one."""
+        if self._ifc_impl_index is None:
+            self._ifc_impl_index = build_impl_reverse_index(
+                self.global_scope.symbols.values(),
+            )
+        return self._ifc_impl_index
+
+    def _bind_pattern_taint(
+        self, pat: A.Pattern, src: set, env: dict, scrutinee_tyname=None,
+    ) -> None:
         """Propagate a scrutinee / value's source-param set to every
         name the pattern binds (whole-value granularity, matching
         ``_label_pattern_binds``).
@@ -1617,13 +1679,82 @@ class _SummaryBuilder:
         sinks / returns the bound name is caught across the boundary,
         exactly like one that reads ``param.iban`` directly. Resolved by
         the pattern's STRUCT TYPE NAME (never by bound-name spelling), so
-        a same-named public field of an unrelated struct is not tainted."""
+        a same-named public field of an unrelated struct is not tainted.
+
+        ``scrutinee_tyname`` is the scrutinee's static TYPE name. When it is
+        a TRAIT, ``_raise_trait_destructure_taint`` closes the cross-function
+        trait-downcast launder (the summary mirror of
+        ``_raise_trait_destructure_binds``)."""
         if isinstance(pat, A.IdentPat):
             env[pat.name] = env.get(pat.name, set()) | src
             return
         for name in _pattern_bound_names(pat):
             env[name] = env.get(name, set()) | src
         self._bind_pattern_field_secrets(pat, env)
+        self._raise_trait_destructure_taint(pat, scrutinee_tyname, env)
+
+    def _raise_trait_destructure_taint(
+        self, pat: A.Pattern, scrutinee_tyname, env: dict,
+    ) -> None:
+        """When a ``StructPat`` destructures a TRAIT-typed scrutinee, taint
+        each bound field with ``INTERNAL_SECRET`` iff the JOIN, over every
+        implementor of the trait, of the implementor's same-named declared
+        field label is ``@secret`` (``trait_destructure_field_label``, the
+        SAME single source the intra pass calls, over the SAME struct-filtered
+        implementor labels via ``_struct_decl_field_labels``). The
+        cross-function mirror of ``_raise_trait_destructure_binds``: without it
+        a callee ``reveal(s: Shape) { let OtherCircle{r}=s; return r }`` whose
+        caller sinks the result launders the secret across the boundary.
+
+        ``scrutinee_tyname`` is resolved by ``_scrutinee_static_type``, the
+        COMPOSITIONAL resolver, so this certifies the destructure for every hop
+        the NAME-ONLY type representation can CARRY -- a parameter / ``self`` /
+        copy / field chain / struct-literal root, composed through single-level
+        element reads, named field reads, hoisted call/method/index bindings,
+        named-function return types and (receiver-typed, including
+        trait-receiver) method return types. It does NOT fire on either
+        disclosed residual: a hop whose type is ERASED by the name-only
+        representation (a NESTED-container element like ``List<List<Trait>>``
+        indexed past the first level, whose inner argument the element-type
+        tables collapse to the bare name ``"List"``), or a hop that is not
+        statically NAMEABLE at all (a call to a GENERIC callee returning a type
+        PARAMETER, ``idish<T>(x: T) -> T``, a dynamic / unknown receiver, or an
+        untracked / foreign callee). Both keep the pre-fix behaviour -- a
+        conservative MISS, silent across a boundary on Python / ``--ir`` only,
+        still caught INTRA-procedurally. See ``_scrutinee_static_type`` for the
+        root-cause disclosure of each."""
+        from .. import _labels as L
+        if not isinstance(pat, A.StructPat) or scrutinee_tyname is None:
+            return
+        if not self._is_trait_type(scrutinee_tyname):
+            return
+        index = self._impl_reverse_index()
+        for fname, fpat in pat.fields:
+            label = trait_destructure_field_label(
+                index, self._struct_decl_field_labels,
+                scrutinee_tyname, fname,
+            )
+            if L.normalize(label) != L.SECRET:
+                continue
+            if fpat is None:
+                env[fname] = env.get(fname, set()) | {INTERNAL_SECRET}
+            else:
+                for name in _pattern_bound_names(fpat):
+                    env[name] = env.get(name, set()) | {INTERNAL_SECRET}
+
+    def _struct_decl_field_labels(self, type_name: str) -> dict:
+        """``{field name: declared label}`` for ``type_name`` ONLY when it
+        resolves to a user STRUCT, else an empty map -- the summary mirror of
+        the intra-procedural ``_ifc._struct_decl_field_labels`` restriction, so
+        the trait-destructure join consults the SAME implementor set on both
+        passes (a non-struct implementor contributes nothing on either, and a
+        typestate -- which rejects per-state field syntax -- cannot slip a
+        field label into the join through one pass but not the other)."""
+        from . import SymbolKind
+        sym = self.global_scope.lookup(type_name)
+        if sym is None or sym.kind != SymbolKind.TYPE_STRUCT:
+            return {}
+        return self.struct_field_labels.get(type_name, {})
 
     def _bind_pattern_field_secrets(self, pat: A.Pattern, env: dict) -> None:
         """Taint every name bound to a DECLARED-``@secret`` struct field
@@ -1806,7 +1937,7 @@ class _SummaryBuilder:
         path = self._chain_field_path(e)
         if root is None or not path:
             return False
-        tyname = self._cur_value_types.get(root)
+        tyname = self._struct_prov_type(root)
         if tyname is None:
             return False
         # Walk the declared field types down to the leaf's owning struct.
@@ -1852,15 +1983,22 @@ class _SummaryBuilder:
         ``struct_field_type_names``), and a STRUCT LITERAL (its
         ``type_name``). Anything else (a call, an index, ...) is ``None`` and
         the binding is simply not typed, so ``_field_read_is_secret`` falls
-        back to whole-value at ``()``."""
+        back to whole-value at ``()``.
+
+        Deliberately STRUCT-ONLY: a call result stays ``None`` here so a deep
+        read off a call-result binding keeps the whole-value fallback (the
+        ``RESTORE_BITES`` residual). The trait-destructure SCRUTINEE has its
+        own wider resolver (``_scrutinee_static_type``), which extends this
+        with the call / index / if-match forms whose static type can be a
+        trait, without perturbing this deep-read typing."""
         if isinstance(rhs, A.Ident):
-            return self._cur_value_types.get(rhs.name)
+            return self._struct_prov_type(rhs.name)
         if isinstance(rhs, A.FieldAccess):
             root = self._chain_root_name(rhs)
             path = self._chain_field_path(rhs)
             if root is None or not path:
                 return None
-            tyname = self._cur_value_types.get(root)
+            tyname = self._struct_prov_type(root)
             for hop in path:
                 if tyname is None:
                     return None
@@ -1870,16 +2008,269 @@ class _SummaryBuilder:
             return rhs.type_name
         return None
 
+    def _scrutinee_static_type(self, e: A.Expr):
+        """The static struct / trait TYPE name a DESTRUCTURE SCRUTINEE denotes,
+        for the trait-downcast join (``_raise_trait_destructure_taint``).
+
+        A single COMPOSITIONAL resolver (``_resolve_static_type``) over the
+        tables the summary pass already maintains, NOT a flat list of
+        per-spelling special cases: it types a receiver by RECURSION and reads
+        the next hop's declared type from an existing signature / field table,
+        so a field / index / method chain is typed hop by hop whatever its root
+        is (a call, an index, a method result, ...), not only an ``Ident`` root.
+        It bottoms out at a tracked binding / parameter / const / ``self``
+        (``_cur_value_types``), a named function's declared return type
+        (``self.callables``), a method's declared return type keyed by the
+        recursively-resolved receiver type (``self.callables`` again, never a
+        new return-type map), or a container's declared element type
+        (``_cur_elem_types`` / ``struct_field_elem_type_names`` / a return
+        type's first generic argument). Because every arm is one hop composed
+        onto the SAME recursion, the closed set is "a scrutinee whose every hop
+        the pass can name", not an enumerated list of spellings.
+
+        HONEST SCOPE: this certifies a trait-downcast destructure for every hop
+        the NAME-ONLY type representation this pass carries can express -- a
+        single-level container element, a named struct field, a named function /
+        method return, and a hoisted local of any of those -- composed over any
+        resolvable root. It does NOT close the launder "by construction" for
+        every scrutinee. Two residuals stay disclosed, each by ROOT CAUSE, never
+        by spelling:
+
+        * a hop whose type is ERASED by the name-only representation: a
+          NESTED-container element, ``List<List<Trait>>`` indexed past the first
+          level. The element-type tables (``_param_elem_type_names`` /
+          ``_cur_elem_types``) store only ``args[0].name``, so ``List<List<
+          Shape>>`` collapses to the bare name ``"List"`` and the inner
+          ``<Shape>`` is erased BEFORE this resolver runs; recursion cannot
+          recover an erased type. So ``let OtherCircle { r } = xss[0][0]``
+          launders a ``@secret`` across a boundary SILENTLY on Python / ``--ir``
+          (still caught INTRA-procedurally; Wasm refuses the whole class loud).
+          Closing it needs a STRUCTURED-type representation, scheduled as a
+          separate design item (B); the same ceiling is pinned at
+          ``tests/test_ifc_forloop_destructure_deep_return.py``. Pinned here by
+          ``RES_TRAIT_NESTED_CONTAINER_ELEM_LAUNDER``.
+        * a hop that is not statically NAMEABLE at all: a call to a GENERIC
+          callee whose declared return type is a type PARAMETER (the canonical
+          case, ``idish<T>(x: T) -> T``: the declared return NAME is ``"T"``, not
+          a trait, so the join does not fire), a receiver of dynamic / unknown
+          static type, or an untracked / foreign callee. That is the pre-pass's
+          inherent inference ceiling: this summary runs in Phase 1d, BEFORE the
+          type-checker's per-expression type map exists (``self.types`` is
+          populated in Phase 2 body-checking), so it re-derives types from
+          declared signatures ONLY and cannot instantiate ``T`` to ``Shape``.
+          Pinned by ``RES_TRAIT_GENERIC_RETURN_LAUNDER``.
+
+        On any unresolved OR erased hop the join simply does not fire and the
+        pre-fix behaviour holds -- a conservative MISS, never a wrong-type guess
+        -- so both classes cross a function boundary SILENTLY on Python /
+        ``--ir`` only (Wasm refuses the whole trait-destructure class loud) and
+        are still caught INTRA-procedurally (the in-function sink of the same
+        value). Raising either ceiling is a separate, larger architectural
+        change, not attempted here.
+
+        Kept SEPARATE from ``_static_struct_type`` on purpose: the deep-read
+        typing there is call-BLIND (a call-result binding stays untyped, the
+        pinned ``RESTORE_BITES`` residual). This resolver additionally types a
+        call / index / method result; a hoisted such binding IS recorded for a
+        later scrutinee (``_record_value_type``), but marked CALL-DERIVED so it
+        stays invisible to the deep-read path (``_struct_prov_type``) and the
+        ``RESTORE_BITES`` residual is preserved."""
+        return self._resolve_static_type(e)
+
+    def _resolve_static_type(self, e: A.Expr):
+        """Recursively resolve ``e``'s static struct / trait TYPE name by
+        composing one hop at a time over the tables the summary pass already
+        maintains. Each arm types a strictly smaller sub-expression, so the
+        recursion terminates on the AST structure.
+
+        * ``Ident`` -> its tracked static type (``_cur_value_types``: a
+          parameter, a ``self`` owner, a ``let`` / ``var`` copy / field-chain /
+          struct-literal binding, a destructured binder, a for-loop binder).
+        * ``StructLit`` -> its ``type_name``.
+        * ``FieldAccess`` -> type the RECEIVER through this recursion, then read
+          the field's declared type from ``struct_field_type_names`` -- so a
+          field off a call / index / method result types hop by hop
+          (``get().s``, ``xs[0].s``), not only off an ``Ident`` root.
+        * ``Call`` to a named function -> its DECLARED return type
+          (``_call_return_type_expr``).
+        * ``MethodCall`` -> type the receiver through this recursion, then read
+          the method's DECLARED return type (``_method_return_type_expr``), so
+          ``self.make()`` / ``f.make()`` / ``mk().make()`` type hop by hop.
+        * ``Index`` -> the receiver's element type (``_resolve_element_type``,
+          which handles ``xs[0]`` / ``get()[0]`` / ``bag.items[0]``).
+        * an ``if`` / ``match`` EXPRESSION -> the single type its branches agree
+          on (``_common_scrutinee_type``), each branch resolved by recursion
+          (so a ``match`` arm whose value is itself a call resolves)."""
+        if isinstance(e, A.Ident):
+            return self._cur_value_types.get(e.name)
+        if isinstance(e, A.StructLit):
+            return e.type_name
+        if isinstance(e, A.FieldAccess):
+            recv_ty = self._resolve_static_type(e.receiver)
+            if recv_ty is None:
+                return None
+            return self.struct_field_type_names.get(recv_ty, {}).get(
+                e.field_name,
+            )
+        if isinstance(e, A.Call):
+            te = self._call_return_type_expr(e)
+            return getattr(te, "name", None) if te is not None else None
+        if isinstance(e, A.MethodCall):
+            te = self._method_return_type_expr(e)
+            return getattr(te, "name", None) if te is not None else None
+        if isinstance(e, A.Index):
+            return self._resolve_element_type(e.receiver)
+        if isinstance(e, A.IfExpr):
+            return self._common_scrutinee_type((e.then_expr, e.else_expr))
+        if isinstance(e, A.MatchExpr):
+            if any(isinstance(arm.body, A.Block) for arm in e.arms):
+                return None
+            return self._common_scrutinee_type([arm.body for arm in e.arms])
+        return None
+
+    def _call_return_type_expr(self, e: A.Call):
+        """The declared return TYPE EXPRESSION of a call to a NAMED function
+        (``self.callables[("fun", name)]`` -- the SAME signature table the
+        boundary summary already threads), or ``None`` for a non-``Ident`` /
+        unknown callee. Returns the ``TypeExpr`` (not only its name) so the
+        element-type resolver can read its first generic argument too."""
+        if not isinstance(e.callee, A.Ident):
+            return None
+        entry = self.callables.get(("fun", e.callee.name))
+        return entry[1].return_type if entry is not None else None
+
+    def _method_return_type_expr(self, e: A.MethodCall):
+        """The declared return TYPE EXPRESSION of a method call, resolved by
+        typing the RECEIVER through the compositional recursion and reading the
+        method signature keyed by ``("method", receiver_type, method)`` from
+        ``self.callables`` -- never a new/parallel return-type map. ``None``
+        when the receiver type is unresolved (the inference-ceiling residual) or
+        the resolved type declares no such method (a trait / built-in method the
+        summary does not thread), so the join then does not fire."""
+        recv_ty = self._resolve_static_type(e.receiver)
+        if recv_ty is None:
+            return None
+        entry = self.callables.get(("method", recv_ty, e.method))
+        return entry[1].return_type if entry is not None else None
+
+    def _resolve_element_type(self, recv: A.Expr):
+        """The element struct / trait TYPE name a container-valued expression
+        yields, for an ``Index`` scrutinee (``xs[0]`` / ``get()[0]`` /
+        ``bag.items[0]``). Composed over the same tables:
+
+        * an ``Ident`` container -> ``_cur_elem_types`` (a parameter's element
+          type, or a for-binder's);
+        * a ``Call`` / ``MethodCall`` -> the FIRST generic argument of its
+          declared return type (``List<Shape>`` -> ``Shape``);
+        * a ``FieldAccess`` to a container field -> the receiver's struct type
+          (resolved by recursion) then ``struct_field_elem_type_names``.
+
+        ``None`` when the container's element type cannot be named, so the
+        ``Index`` scrutinee stays untyped and the join does not fire. This is
+        where the NESTED-container residual surfaces: the element-type tables
+        (``_cur_elem_types`` / ``_param_elem_type_names``) store only
+        ``args[0].name``, so a ``List<List<Trait>>`` container yields the bare
+        element NAME ``"List"`` with its inner ``<Trait>`` already erased, and an
+        ``Index`` receiver that is itself an ``Index`` (``xss[0][0]``) resolves
+        to ``None`` -- the second-level element type is unrecoverable from the
+        name-only representation. Closing it needs a structured-type
+        representation (design item B); see ``_scrutinee_static_type``. A hop the
+        pre-pass cannot name at all (a generic / dynamic / foreign result) is the
+        separate inference-ceiling residual disclosed there too."""
+        if isinstance(recv, A.Ident):
+            return self._cur_elem_types.get(recv.name)
+        te = None
+        if isinstance(recv, A.Call):
+            te = self._call_return_type_expr(recv)
+        elif isinstance(recv, A.MethodCall):
+            te = self._method_return_type_expr(recv)
+        if te is not None:
+            args = getattr(te, "args", None)
+            return getattr(args[0], "name", None) if args else None
+        if isinstance(recv, A.FieldAccess):
+            recv_ty = self._resolve_static_type(recv.receiver)
+            if recv_ty is None:
+                return None
+            return self.struct_field_elem_type_names.get(
+                recv_ty, {},
+            ).get(recv.field_name)
+        return None
+
+    def _common_scrutinee_type(self, exprs):
+        """The single static type shared by every expression in ``exprs`` (an
+        ``if`` / ``match`` scrutinee's branch values), or ``None`` when a branch
+        is unresolved (``_resolve_static_type``) or the branches disagree -- so
+        a trait-typed conditional resolves only when every branch statically
+        denotes the same type."""
+        common = None
+        for e in exprs:
+            ty = self._resolve_static_type(e)
+            if ty is None or (common is not None and ty != common):
+                return None
+            common = ty
+        return common
+
+    def _struct_prov_type(self, name):
+        """The STRUCT-provenance value type of ``name`` -- the pre-RC1 view of
+        ``_cur_value_types``, HIDING a call/method/index-derived entry
+        (``_cur_call_derived``). Consulted by every DEEP-READ / capability / ct
+        reader, so each keeps its exact pre-RC1 behaviour: a call-result root
+        stays unresolved, preserving the ``RESTORE_BITES`` deep-read residual.
+        The trait-destructure scrutinee resolver deliberately does NOT use this
+        (it reads ``_cur_value_types`` raw, seeing the call-derived entry)."""
+        if name in self._cur_call_derived:
+            return None
+        return self._cur_value_types.get(name)
+
+    def _struct_prov_elem(self, name):
+        """The STRUCT-provenance element type of ``name`` -- the pre-RC1 view of
+        ``_cur_elem_types``, HIDING a call-derived entry. Consulted by the
+        for-loop deep-read binder seed (``_iter_element_struct_type``) so a
+        ``let``-bound-container-then-iterate residual stays open exactly as
+        before; the ``Index`` scrutinee resolver reads ``_cur_elem_types`` raw."""
+        if name in self._cur_call_derived:
+            return None
+        return self._cur_elem_types.get(name)
+
+    def _seed_call_derived(self, name, value_ty, elem_ty) -> None:
+        """The SINGLE writer for a CALL-derived binding's type (RC1). Records
+        whichever of ``value_ty`` / ``elem_ty`` resolved and marks ``name``
+        call-derived, so the two type maps and the provenance set are always
+        seeded together and cannot drift. A no-op when neither resolved (the
+        name stays absent, the pre-RC1 conservative miss)."""
+        if value_ty is None and elem_ty is None:
+            return
+        if value_ty is not None:
+            self._cur_value_types[name] = value_ty
+        if elem_ty is not None:
+            self._cur_elem_types[name] = elem_ty
+        self._cur_call_derived.add(name)
+
     def _record_value_type(self, name, type_expr, rhs) -> None:
         """Record ``name``'s static struct TYPE in ``_cur_value_types`` from
-        its declared annotation, else from the RHS's static shape. Recording
-        ``None`` (an untyped RHS) leaves the name absent, so a deep read off
-        it takes the whole-value fallback."""
+        its declared annotation, else from the RHS's static shape.
+
+        An annotation or a struct-provenance RHS (a copy / field chain / struct
+        literal, ``_static_struct_type``) records a STRUCT-provenance type: the
+        pre-RC1 behaviour, visible to every reader. When neither resolves, the
+        RHS is a hoisted CALL / METHOD / INDEX result (``let s = get()``): its
+        type is re-derived through the COMPOSITIONAL resolver and recorded
+        CALL-DERIVED (``_seed_call_derived``), visible ONLY to the trait-
+        destructure scrutinee resolver so a later bare-``Ident`` / ``Index``
+        scrutinee off the binding resolves, WITHOUT feeding the deep-read /
+        capability / ct readers (which gate call-derived entries out). Recording
+        nothing leaves the name absent, so a deep read off it takes the
+        whole-value fallback."""
         tyname = getattr(type_expr, "name", None) if type_expr else None
         if tyname is None:
             tyname = self._static_struct_type(rhs)
         if tyname is not None:
             self._cur_value_types[name] = tyname
+            return
+        self._seed_call_derived(
+            name, self._resolve_static_type(rhs),
+            self._resolve_element_type(rhs),
+        )
 
     def _record_pattern_value_types(self, pat) -> None:
         """Seed ``_cur_value_types`` for every name a STRUCT destructuring
@@ -1936,13 +2327,13 @@ class _SummaryBuilder:
                 return self._static_struct_type(iter_expr.elements[0])
             return None
         if isinstance(iter_expr, A.Ident):
-            return self._cur_elem_types.get(iter_expr.name)
+            return self._struct_prov_elem(iter_expr.name)
         if isinstance(iter_expr, A.FieldAccess):
             root = self._chain_root_name(iter_expr)
             path = self._chain_field_path(iter_expr)
             if root is None or not path:
                 return None
-            tyname = self._cur_value_types.get(root)
+            tyname = self._struct_prov_type(root)
             for hop in path[:-1]:
                 if tyname is None:
                     return None
@@ -2116,7 +2507,10 @@ class _SummaryBuilder:
                 # scope: a pattern binding a name equal to a secret const
                 # shadows it within the arm only.
                 arm_env = dict(env)
-                self._bind_pattern_taint(arm.pattern, scrut, arm_env)
+                self._bind_pattern_taint(
+                    arm.pattern, scrut, arm_env,
+                    self._scrutinee_static_type(e.scrutinee),
+                )
                 saved = self._shadowed_consts
                 self._shadowed_consts = set(saved)
                 self._register_shadowing_binds(
@@ -2290,6 +2684,7 @@ class _SummaryBuilder:
         # never reads a previous callable's bindings (captures are not typed
         # here, matching the parameter-only scope of this pass).
         self._cur_value_types = dict(self._cur_param_type_names)
+        self._cur_call_derived = set()
         self._cur_immutable_params = self.immutable_params.get(
             key, frozenset(),
         )
@@ -2965,11 +3360,17 @@ class _SummaryBuilder:
         tyname = self._cur_param_type_names.get(e.receiver.name)
         if tyname is None:
             return ()
+        # A TRAIT-typed receiver is dynamic dispatch: the by-name union over
+        # the concrete impls is the sound result-narrowing set. Checked BEFORE
+        # the exact key so the trait's OWN registered signature (RC2, an
+        # abstract empty-summary ``("method", trait, m)`` entry that exists only
+        # to declare the return TYPE) never short-circuits the union to its
+        # empty return-effect and fails the narrowing open.
+        if self._is_trait_type(tyname):
+            return tuple(by_name)
         exact_key = ("method", tyname, e.method)
         if exact_key in self.return_effects:
             return (exact_key,)
-        if self._is_trait_type(tyname):
-            return tuple(by_name)
         return ()
 
     def _receiver_is_user_method_owner(self, e: A.MethodCall) -> bool:
@@ -3010,7 +3411,7 @@ class _SummaryBuilder:
         method-name collisions the built-in sink capabilities share with
         container / user methods."""
         if isinstance(e.receiver, A.Ident):
-            return self._cur_value_types.get(e.receiver.name)
+            return self._struct_prov_type(e.receiver.name)
         return None
 
     def _ct_operand_byte_scanned(self, operand: A.Expr) -> bool:
@@ -3023,7 +3424,7 @@ class _SummaryBuilder:
         disclosed non-Ident-operand-typing residual, so a later widening is a
         conscious choice, never a silent one."""
         if isinstance(operand, A.Ident):
-            return self._cur_value_types.get(operand.name) in ("String", "List")
+            return self._struct_prov_type(operand.name) in ("String", "List")
         return False
 
     def _is_trait_type(self, type_name: str) -> bool:

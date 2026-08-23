@@ -198,6 +198,66 @@ def _pattern_bound_names(pat: A.Pattern):
 INTERNAL_SECRET = -1
 
 
+def build_impl_reverse_index(symbols) -> dict:
+    """``trait / capability name -> {concrete type names implementing it}``,
+    the reverse of each ``Symbol.implements`` set (populated at
+    ``impl Trait for T``). The ONE authoritative reversed view of the
+    trait->implementor relation, shared by the intra-procedural pass
+    (``_ifc._impl_reverse_index``) and the cross-function summary pass so
+    neither hand-rolls a second trait walk. ``symbols`` is the iterable of
+    populated global-scope ``Symbol`` objects."""
+    index: dict = {}
+    for sym in symbols:
+        for r in getattr(sym, "implements", ()) or ():
+            index.setdefault(r, set()).add(sym.name)
+    return index
+
+
+def trait_destructure_field_label(impl_index, labels_of, trait_name, field):
+    """The IFC label a name bound by destructuring a TRAIT-typed scrutinee
+    must carry for ``field``: the join, over every concrete implementor of
+    ``trait_name``, of that implementor's same-named DECLARED field label
+    (``labels_of(impl)`` yields ``{field name: declared label}`` for a
+    concrete type). The runtime value is one of the trait's implementors,
+    so this join is a sound upper bound on the true runtime field label --
+    no runtime tag is needed. ``PUBLIC`` when the trait has no implementor
+    declaring the field secret.
+
+    The single source both destructure seams call, so the intra-procedural
+    pass and the cross-function summary cannot drift on the JOIN itself (the
+    ``test_ifc_destructure_pattern_typecheck`` cross-check runs every
+    compositional spelling through both seams to guard it). The passes still
+    differ in WHICH scrutinee expression forms each resolves to a trait type
+    before calling this: the intra pass types the scrutinee from the
+    type-checker (every form); the summary pass re-derives it COMPOSITIONALLY in
+    ``_ifc_summary._scrutinee_static_type``, typing a receiver by recursion and
+    reading each next hop's declared type from an existing signature / field
+    table, so it certifies every hop the NAME-ONLY type representation that pass
+    carries can express (a single-level element / named field / hoisted-binding /
+    named function-or-method-return chain off any resolvable root). Two residuals
+    stay disclosed, each by ROOT CAUSE: a hop whose type is ERASED by the
+    name-only representation (a NESTED-container element like ``List<List<Trait>>``
+    indexed past the first level, whose inner argument the element-type tables
+    collapse to the bare name ``"List"``; closing it needs a structured-type
+    representation, design item B), and a hop that is not statically NAMEABLE at
+    all -- the pre-pass's inference ceiling (a call to a GENERIC callee returning
+    a type PARAMETER, ``idish<T>(x: T) -> T``, a dynamic / unknown receiver, or an
+    untracked / foreign callee). Both classes cross a function boundary silently
+    on Python / ``--ir`` only and are still caught intra-procedurally, so the
+    launder is NOT closed "by construction" for every scrutinee.
+
+    SOUNDNESS rests on WHOLE-PROGRAM visibility of every implementor at the
+    analysis that certifies the sink -- true today (the registry ships
+    source and the consumer re-analyzes everything). It would become
+    unsound under any future separate-compilation / trusted-precompiled-
+    library path where an implementor is invisible at certification time."""
+    from .. import _labels as L
+    label = L.PUBLIC
+    for impl_name in impl_index.get(trait_name, ()):
+        label = L.join(label, labels_of(impl_name).get(field))
+    return label
+
+
 def methods_by_name(summaries: dict) -> dict[str, list]:
     """Group method summary keys by method name:
     ``method_name -> [("method", type_name, method_name), ...]``.

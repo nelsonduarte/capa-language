@@ -421,7 +421,9 @@ class _StatementsMixin:
             # @secret label a direct ``e.iban`` read would. This closes
             # the destructuring laundering hole: extracting a declared-
             # secret field by pattern no longer launders it to public.
-            self._label_pattern_binds(s.pattern, self._label_of(s.value))
+            self._label_pattern_binds(
+                s.pattern, self._label_of(s.value), actual,
+            )
         # Roadmap S1: a ``let h = open()`` of a linear-typed value
         # opens a must-consume obligation under the bound name. Only
         # a simple identifier pattern carries it (a destructure of a
@@ -1030,7 +1032,7 @@ class _StatementsMixin:
             snap = self._snapshot_for_dry_run()
             self._push_scope()
             self._bind_pattern(s.pattern, elem_ty, mutable=False, init_expr=s.iter)
-            self._label_pattern_binds(s.pattern, iter_label)
+            self._label_pattern_binds(s.pattern, iter_label, elem_ty)
             for stmt in s.body.stmts:
                 self._check_stmt(stmt)
             self._pop_scope()
@@ -1040,7 +1042,7 @@ class _StatementsMixin:
             self._consumed |= consumed_in_body
             self._push_scope()
             self._bind_pattern(s.pattern, elem_ty, mutable=False, init_expr=s.iter)
-            self._label_pattern_binds(s.pattern, iter_label)
+            self._label_pattern_binds(s.pattern, iter_label, elem_ty)
             for stmt in s.body.stmts:
                 self._check_stmt(stmt)
             self._pop_scope()

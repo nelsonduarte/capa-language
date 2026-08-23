@@ -719,12 +719,15 @@ class _PatternsMixin:
             # constructed value stays rigid and a downstream public-twin
             # destructure reaches this reject with a rigid scrutinee (the nested
             # ``List<T>`` sibling closes with the same parallel walk).
-            # DISCLOSED OPEN RESIDUALS (not closed here):
-            #   - A TRAIT-typed scrutinee (``s: Shape`` then
-            #     ``let Circle { r } = s``): ``ty.name`` resolves to a TRAIT,
-            #     not a struct and not a type variable, so the legitimate
-            #     downcast stays accepted and a public-twin downcast is not
-            #     caught (Python leak). Needs a runtime tag check.
+            # A TRAIT-typed scrutinee (``s: Shape`` then ``let Circle { r } =
+            # s``) is NOT rejected here (``ty.name`` resolves to a TRAIT, not a
+            # struct and not a type variable, so the legitimate downcast stays
+            # accepted), but the public-twin launder it used to allow is now
+            # CLOSED in the IFC seams (``_raise_trait_destructure_binds`` /
+            # ``_raise_trait_destructure_taint``): the bound field is raised to
+            # the join over the trait's implementors' same-named declared field
+            # labels, a sound upper bound needing no runtime tag.
+            # DISCLOSED OPEN RESIDUAL (not closed here):
             #   - A SUM / primitive scrutinee (``let Other { a } = <sum>``):
             #     ``ty`` is not a struct in the table, so the mismatch is not
             #     caught here; it faults LOUD on both backends at runtime (a

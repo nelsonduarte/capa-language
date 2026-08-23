@@ -135,6 +135,85 @@ downcast is not caught (a Python-backend leak). That residual is disclosed in
 source at [`capa/analyzer/_patterns.py:722-731`](../../capa/analyzer/_patterns.py)
 and pinned by a test; it also ships as a disclosed known issue with `1.32.0`.
 
+### Update (post-1.32.0, unreleased on main, commit `<commit>`)
+
+The **trait-typed scrutinee** downcast residual disclosed just above is now
+CLOSED on `main` for every scrutinee hop the cross-function summary pass's
+name-only type representation can CARRY. This is a plain commit on `main` under
+the project's Python-style release cadence: **no new GHSA, no version bump**, and
+none of the `1.32.0` history above (the four faces, GHSA-7pf3-h2cq-52wm, the
+`Fixed in: 1.32.0` facts) is changed. It extends the fix, it does not restate it.
+
+The mechanism is analyzer-only, no codegen change. A `StructPat` destructuring a
+scrutinee whose static type is a TRAIT raises each bound field to the JOIN, over
+every concrete implementor of that trait, of the implementor's same-named DECLARED
+field label (`trait_destructure_field_label` over `build_impl_reverse_index`,
+[`capa/analyzer/_ifc_tables.py`](../../capa/analyzer/_ifc_tables.py)). The runtime
+value must be one of the trait's implementors, so the join is a sound upper bound
+on the true runtime field label and needs no runtime tag. The one helper is called
+from BOTH seams: the intra-procedural pass (`_raise_trait_destructure_binds`,
+[`capa/analyzer/_ifc.py`](../../capa/analyzer/_ifc.py)), which types the scrutinee
+from the type-checker and so covers every `let` / `for` / `match` form, and the
+cross-function summary pass (`_raise_trait_destructure_taint`,
+[`capa/analyzer/_ifc_summary.py`](../../capa/analyzer/_ifc_summary.py)), which
+re-derives the scrutinee's static type COMPOSITIONALLY in `_scrutinee_static_type`
+/ `_resolve_static_type` (typing a receiver by recursion and reading each next
+hop's declared type from an existing signature / field table). The join only
+RAISES labels; it emits no reject and consumes none, so the concrete-twin and
+rigid-`TyVar` rejects of the four faces are untouched. Two supporting changes
+widen the summary resolver: a trait-block method return is registered as a callable
+keyed by the trait name so a trait-typed-receiver method call (`s.clone()` where
+`s: Shape`) types its return (RC2, `_register_callable` / `_TraitMethodCallable`),
+and a hoisted call/method/index result is recorded through a provenance-gated
+recorder (`_cur_call_derived` / `_struct_prov_type` / `_struct_prov_elem`, RC1) so
+a later bare-`Ident` or `Index` scrutinee off it resolves without perturbing the
+deep-read path (the pre-existing `RESTORE_BITES` residual is preserved). As with
+the whole class, the trait join emits a warning at the default tier and a hard
+error under `@strict_ifc`, and its soundness rests on whole-program visibility of
+every implementor at the certifying analysis (true today; unsound only under a
+future separate-compilation / trusted-precompiled-library path).
+
+Closed shapes, each pinned in
+[`tests/test_ifc_destructure_pattern_typecheck.py`](../../tests/test_ifc_destructure_pattern_typecheck.py):
+a public-twin trait downcast in `let` / `for` / `match`; cross-function through a
+parameter, a return, a call result, a single-level index (`xs[0]` of a
+`List<Shape>`), a field chain (`get().s`, `xs[0].s`), a hoisted local
+(`let s = get(); ... s`), a trait-typed-receiver method (`s.clone()`), and an `if`
+/ `match`-EXPRESSION scrutinee whose branches agree on the trait type. A behavioural
+cross-check drives every compositional spelling through both seams so the two
+resolvers cannot drift.
+
+**Two residuals stay open**, each disclosed by ROOT CAUSE (not by spelling) and
+each pinned still-silent:
+
+1. **Nested-container element erasure.** A hop like `xss[0][0]` where
+   `xss: List<List<Trait>>` (and its hoisted, field-rooted, and call-rooted twins)
+   still launders SILENTLY across a function boundary on the Python interpreter and
+   `--ir`. Root cause: the summary stores element types NAME-ONLY
+   (`_param_elem_type_names` / `_cur_elem_types` keep `args[0].name`), so
+   `List<List<Shape>>` collapses to the bare name `"List"` and the inner `<Shape>`
+   is erased before the resolver runs; recursion cannot recover an erased type. This
+   is the same representational ceiling pinned at
+   [`tests/test_ifc_forloop_destructure_deep_return.py`](../../tests/test_ifc_forloop_destructure_deep_return.py).
+   Pinned by `RES_TRAIT_NESTED_CONTAINER_ELEM_LAUNDER`.
+2. **Non-nameable hop (the inference ceiling).** A call to a GENERIC callee whose
+   declared return type is a type PARAMETER (`fun idish<T>(x: T) -> T`), a receiver
+   of dynamic / unknown static type, or an untracked / foreign callee. The
+   pre-Phase-2 summary reads the declared return NAME (`"T"`, not a trait), so the
+   join does not fire and the secret crosses SILENTLY on Python / `--ir`. This is
+   the pre-pass's inherent inference ceiling: it runs before the type-checker's
+   per-expression type map exists and cannot instantiate `T` to a trait. Pinned by
+   `RES_TRAIT_GENERIC_RETURN_LAUNDER`.
+
+Both residuals are **Python / `--ir`-only** and **caught intra-procedurally** (an
+in-function sink of the same value still warns / errors); the Wasm Component Model
+backend **refuses the whole trait-downcast class loud** at codegen (measured: a
+`--wasm` compile of the `List<List<Shape>>` case fails with `FieldAccess on
+receiver of type 'Shape': no struct layout known`). Both are scheduled to be closed
+together by a future **design item B**: a structured-type resolver that
+single-sources the type-checker's resolved type map rather than adding a third
+independent re-derivation. That is a design / research item, not an imminent patch.
+
 ## Remediation
 
 **Upgrade to `1.32.0`.** On affected versions the severe faces were silent at both

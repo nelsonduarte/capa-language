@@ -44,6 +44,7 @@ from ._ifc_tables import (
     _CT_INDEX_METHODS, _CT_SHORT_CIRCUIT_METHODS,
     _pattern_bound_names, _prefix_compatible,
     INTERNAL_SECRET, _bind, methods_by_name,
+    build_impl_reverse_index, trait_destructure_field_label,
 )
 
 
@@ -919,7 +920,9 @@ class _IfcMixin:
             # the literal's recorded map (shared dicts would alias).
             sym.field_labels = _deepcopy_field_map(fmap)
 
-    def _label_pattern_binds(self, pat: A.Pattern, scrutinee_label: str) -> None:
+    def _label_pattern_binds(
+        self, pat: A.Pattern, scrutinee_label: str, scrutinee_ty=None,
+    ) -> None:
         """Propagate a scrutinee's IFC label to every name a pattern
         destructure binds (roadmap S2 source flow). When the matched
         value is ``secret`` -- e.g. the Option from ``env.get(...)`` --
@@ -937,14 +940,62 @@ class _IfcMixin:
         read, so it must preserve the declared-field label exactly as a
         direct ``e.field`` access does -- a public scrutinee struct that
         holds a declared-@secret field still taints only the name bound
-        to THAT field, never its public siblings."""
+        to THAT field, never its public siblings.
+
+        ``scrutinee_ty`` is the scrutinee's STATIC type (RHS type for a
+        ``let``, element type for a ``for``, scrutinee type for a
+        ``match``). When it is a TRAIT, a public-twin destructure over a
+        value whose real implementor declares the field ``@secret`` would
+        otherwise launder the secret into a public binding
+        (``_raise_trait_destructure_binds``)."""
         self._label_pattern_field_secrets(pat)
+        self._raise_trait_destructure_binds(pat, scrutinee_ty)
         if L.normalize(scrutinee_label) != L.SECRET:
             return
         for name in _pattern_bound_names(pat):
             sym = self.scope.lookup_local(name)
             if sym is not None:
                 sym.label = L.join(sym.label, L.SECRET)
+
+    def _raise_trait_destructure_binds(self, pat: A.Pattern, scrutinee_ty) -> None:
+        """When a ``StructPat`` destructures a TRAIT-typed scrutinee, raise
+        each bound field to the JOIN, over every concrete implementor of
+        that trait, of the implementor's same-named declared field label
+        (``trait_destructure_field_label``). The runtime value must be one
+        of the trait's implementors, so the join is a sound upper bound on
+        the true runtime field label -- no runtime tag needed -- closing
+        the trait-downcast launder (a public twin over a value whose real
+        implementor declares the field ``@secret``).
+
+        The trait path is disjoint from the concrete-twin / rigid-TyVar
+        rejects in ``_patterns``: a trait scrutinee is a ``TyName`` whose
+        looked-up kind is a TRAIT (not a struct, not a ``TyVar``), so those
+        rejects do not fire and this rule only RAISES labels, never rejects.
+        The whole-value-secret case is already closed by the scrutinee-label
+        path in the caller; this adds the implementor DECLARED-FIELD join,
+        which the scrutinee's flow label (public here) cannot supply.
+
+        SOUNDNESS rests on whole-program visibility of every implementor at
+        the certifying analysis (see ``trait_destructure_field_label``)."""
+        from . import SymbolKind
+        from ..typesys import TyName
+        if not isinstance(pat, A.StructPat) or not isinstance(scrutinee_ty, TyName):
+            return
+        sym = self.global_scope.lookup(scrutinee_ty.name)
+        if sym is None or sym.kind != SymbolKind.TRAIT:
+            return
+        index = self._impl_reverse_index()
+        for fname, fpat in pat.fields:
+            label = trait_destructure_field_label(
+                index, self._struct_decl_field_labels, scrutinee_ty.name, fname,
+            )
+            if L.normalize(label) != L.SECRET:
+                continue
+            if fpat is None:
+                self._raise_local_secret(fname)
+            else:
+                for name in _pattern_bound_names(fpat):
+                    self._raise_local_secret(name)
 
     def _label_pattern_field_secrets(self, pat: A.Pattern) -> None:
         """Label every name bound to a DECLARED-``@secret`` struct field
@@ -3350,11 +3401,9 @@ class _IfcMixin:
         reverse of each type's ``implements``, used to restrict the IFC-1
         pc-union to a dynamic receiver's real dispatch targets."""
         if self._ifc_impl_index is None:
-            index: dict = {}
-            for sym in self.global_scope.symbols.values():
-                for r in getattr(sym, "implements", ()) or ():
-                    index.setdefault(r, set()).add(sym.name)
-            self._ifc_impl_index = index
+            self._ifc_impl_index = build_impl_reverse_index(
+                self.global_scope.symbols.values(),
+            )
         return self._ifc_impl_index
 
     def _emit_ifc_call_pc(self, callee: str, pos) -> None:
