@@ -29,7 +29,7 @@ breaking changes and the discipline is still being shaped.
   index, field chain, hoisted local, trait-typed-receiver method, and agreeing
   `if` / `match`-expression scrutinee. Analyzer-only, label-raising only (no new
   reject, no codegen change): a warning at the default tier, a hard error under
-  `@strict_ifc`. Commit `<commit>`; no new GHSA and no version change (Python-style
+  `@strict_ifc`. Commit `c6fb7f9`; no new GHSA and no version change (Python-style
   cadence). Known issues below.
 
   Known issues (two residuals stay open, each by ROOT CAUSE, each pinned

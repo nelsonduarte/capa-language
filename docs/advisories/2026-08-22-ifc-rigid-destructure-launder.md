@@ -135,7 +135,7 @@ downcast is not caught (a Python-backend leak). That residual is disclosed in
 source at [`capa/analyzer/_patterns.py:722-731`](../../capa/analyzer/_patterns.py)
 and pinned by a test; it also ships as a disclosed known issue with `1.32.0`.
 
-### Update (post-1.32.0, unreleased on main, commit `<commit>`)
+### Update (post-1.32.0, unreleased on main, commit `c6fb7f9`)
 
 The **trait-typed scrutinee** downcast residual disclosed just above is now
 CLOSED on `main` for every scrutinee hop the cross-function summary pass's
