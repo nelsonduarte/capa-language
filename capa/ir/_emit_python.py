@@ -32,6 +32,12 @@ from ._nodes import (
     StructDecl, SumDecl, ImplBlock, TraitDecl, ConstDecl, ImportDecl,
 )
 from ._lower import UnsupportedInIR
+# PatOr / PatStruct are the two CIR pattern shapes the shared lowerer
+# (``_lower_pattern.py``) builds but ``_nodes`` does not yet carry; the
+# Wasm match emitter already imports them from there, and so does this
+# renderer, so both backends read the one lowering's output rather than
+# rebuilding pattern structure of their own.
+from ._lower_pattern import PatOr, PatStruct
 
 
 # Source-level operators that translate verbatim into Python. The few
@@ -87,21 +93,19 @@ PYTHON_EMITTED_INSTRS = frozenset({
 
 
 #: The CIR pattern kinds ``_format_pattern`` renders. Declared handled-set
-#: for the M1 exhaustiveness net, pinned against
-#: ``ir._nodes.Pattern.__subclasses__()``. ``PatOr`` / ``PatStruct`` are
-#: the deliberate non-members here, but NOT because they never reach this
-#: renderer: the shared lowerer DOES build them
-#: (``_lower_pattern.py`` PatOr / PatStruct), and they DO reach
-#: ``_format_pattern`` on the ``--run --ir`` path, where it raises
-#: ``NotImplementedError`` (below). That is a KNOWN, PRE-EXISTING
-#: unimplemented gap in the CIR Python pattern renderer (audit OBS-1,
-#: "--ir backend crashes on PatStruct/PatOr"); the Wasm backend and the
-#: legacy transpiler handle both correctly. They are excluded from THIS
-#: net because the gap is a separately-tracked pre-existing bug, not
-#: because the dispatcher is silently unhandled. Fixing the crash is out
-#: of M1's scope.
+#: for the M1 exhaustiveness net, pinned against the concrete ``Pattern``
+#: subclasses under ``capa.ir`` (the original five in ``_nodes`` plus
+#: ``PatOr`` / ``PatStruct`` from the shared lowerer ``_lower_pattern``).
+#: The renderer covers the full CIR pattern domain: a match arm carrying
+#: any of these lowers to byte-identical Python under ``--ir`` as the
+#: legacy transpiler emits (audit OBS-1, "--ir backend crashes on
+#: PatStruct/PatOr", is closed). A new pattern kind this backend forgets
+#: fails ``tests/test_node_exhaustiveness.py`` rather than reaching this
+#: emitter's ``NotImplementedError`` only when some program happens to
+#: lower to it; keep this set in lockstep with the branches below.
 PYTHON_EMITTED_PATTERNS = frozenset({
     PatWildcard, PatIdent, PatLiteral, PatVariant, PatTuple,
+    PatOr, PatStruct,
 })
 
 
@@ -920,6 +924,24 @@ class PythonEmitter:
             if len(parts) == 1:
                 return f"({parts[0]},)"
             return f"({', '.join(parts)})"
+        if isinstance(p, PatStruct):
+            # Struct-destructuring in match position. The dataclass
+            # generated for the struct exposes its fields by name, so a
+            # Python class-pattern with keyword sub-patterns
+            # (``Type(field=subpat, ...)``) binds each field. Shorthand
+            # ``{ x }`` already lowered to ``("x", PatIdent("x"))`` in
+            # ``_lower_struct_pattern``, so it renders as ``x=x`` here,
+            # matching the legacy transpiler.
+            parts = [
+                f"{fname}={self._format_pattern(sub)}"
+                for fname, sub in p.fields
+            ]
+            return f"{p.type_name}({', '.join(parts)})"
+        if isinstance(p, PatOr):
+            # Python's match accepts ``a | b | c`` directly; the shared
+            # body runs once for whichever alternative matched.
+            alts = [self._format_pattern(sub) for sub in p.alternatives]
+            return " | ".join(alts)
         raise NotImplementedError(
             f"IR Python emitter: pattern {type(p).__name__} not supported"
         )

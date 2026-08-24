@@ -51,6 +51,35 @@ breaking changes and the discipline is still being shaped.
   structured-type resolver that single-sources the type-checker's resolved type
   map).
 
+**Fixed / test nets (unreleased).**
+
+- *The `--ir` backend no longer crashes on a `PatStruct` / `PatOr` match arm
+  (audit OBS-1, disclosed-open at `1.32.0`).* The CIR Python pattern renderer
+  raised `NotImplementedError` on a struct-destructuring or or-pattern in match
+  position, so `--run --ir` crashed on a legal program the legacy transpiler and
+  the Wasm backend both compile. The renderer now handles both, consuming the same
+  `PatOr` / `PatStruct` nodes the shared lowerer (`_lower_pattern.py`) already
+  builds for the Wasm match emitter rather than reconstructing pattern structure of
+  its own, and emitting output identical to the legacy transpiler. The two shapes
+  move from the exhaustiveness net's exclusion list into its declared handled-set.
+  Backend-crash fix, no security impact; correct programs are unaffected.
+- *The legacy-vs-`--ir` equivalence oracle now covers the whole of `examples/`
+  minus a documented residual.* `TestLegacyIREquivalence` was a hand-curated ~31
+  of 51 programs fenced off by a stale exclusion rationale; a real CIR defect once
+  sailed through the narrow corpus. It now runs every `examples/*.capa` except an
+  honest `_EXCLUDED` set (negative examples the analyzer rejects by design, and
+  network- / filesystem-dependent programs with no deterministic reference), with
+  an inventory guard forcing every example onto one side, mirroring the discipline
+  `tests/test_ir_wasm_parity.py` already uses.
+- *The Wasm capability-soundness harnesses can no longer skip silently where they
+  are required to run.* `TestWasmRuntimeSubsetOfManifest` and
+  `TestWasmAttenuationHonoured` `skipUnless` the Wasm toolchain, so a broken
+  toolchain install in the CI leg that is supposed to run them would go green with
+  no Wasm evidence (the PyYAML silent-skip class). A fail-loud floor
+  (`tests/test_wasm_harness_present.py`, mirroring `test_ifc_harness_present.py`)
+  fails loudly when `CAPA_REQUIRE_WASM=1` but the toolchain is absent, and the
+  `wasi` job sets that variable.
+
 ## [1.32.0], 2026-08-22
 
 A security-hardening release that closes a set of soundness gaps found in the

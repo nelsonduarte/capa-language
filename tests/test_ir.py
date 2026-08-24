@@ -926,60 +926,129 @@ class TestLambda(unittest.TestCase):
 
 
 class TestLegacyIREquivalence(unittest.TestCase):
-    """Phase 4C: for a curated corpus of examples, the IR pipeline
-    (compile_program) and the legacy direct transpiler must produce
-    Python whose execution yields identical observable output. This
-    is the load-bearing test that justifies the IR's existence: if
-    these two paths ever diverge, the IR has a bug.
+    """For the parity-clean corpus of ``examples/``, the IR pipeline
+    (compile_program, the ``--ir`` backend) and the legacy direct
+    transpiler must produce Python whose execution yields identical
+    observable output. This is the load-bearing oracle that justifies
+    the IR's existence: if these two paths ever diverge, the IR has a
+    bug.
 
-    Examples are picked for purity (no network, no env reads beyond
-    what's necessary, no LLM calls) and IR support (they don't hit
-    the still-unsupported constructs: MatchExpr, TuplePat, CharLit,
-    compound assignment, identifier reference to payload-less
-    variants used as values)."""
+    The corpus is the WHOLE of ``examples/`` minus the residual
+    exclusions in ``_EXCLUDED`` below, each of which is out for a
+    genuine reason (a negative example the analyzer rejects by design,
+    or a program whose output depends on the network / filesystem and
+    so has no deterministic reference). ``test_inventory_matches_dir``
+    forces every ``.capa`` under ``examples/`` onto one side or the
+    other, mirroring the discipline
+    ``tests/test_ir_wasm_parity.py`` uses for its Python<->Wasm parity
+    set, so a new example cannot silently fall outside the oracle."""
 
-    # Curated subset: examples whose IR-emitted Python produces the
-    # same observable output as the legacy transpiler's. The subset
-    # excludes programs that use String / Set / Map methods whose
-    # legacy dispatch (e.g. ``s.contains(x)`` -> ``(x in s)``,
-    # ``set.length()`` -> ``len(set)``) has no IR counterpart yet;
-    # the IR currently emits those calls verbatim, which fails on
-    # Python primitives. Closing that gap is a separate Phase 4D
-    # work item; for Phase 4C the goal is to pin equivalence on the
-    # subset where the two paths already agree.
+    # The parity-clean corpus: every example whose ``--ir`` output
+    # runs to the same observable output as the legacy transpiler's.
+    # Keep this in lockstep with ``examples/`` via
+    # ``test_inventory_matches_dir``; a new example is either added
+    # here or documented in ``_EXCLUDED`` with a reason.
     _CORPUS = [
-        "hello.capa",
-        "closures.capa",
-        "generics.capa",
-        "stdlib_list.capa",
-        "stdlib_map_set.capa",
-        "fs_env_attenuation.capa",
-        "user_capabilities.capa",
-        "manifest_demo.capa",
-        "demo_event_stream.capa",
-        "net_attenuation.capa",
-        "documented_demo.capa",
+        "basics.capa",
         "clock_attenuation.capa",
-        "json.capa",
-        "vex_demo.capa",
-        "spdx_license_expr.capa",
-        "spdx_parser.capa",
-        "cyclonedx_parser.capa",
-        "interactive.capa",
-        "provenance_demo.capa",
-        "sbom_diff.capa",
-        "empirical_config.capa",
-        "python_interop.capa",
+        "closures.capa",
+        "cve_eslint_scope.capa",
+        "cve_jinja2_ssti.capa",
+        "cve_lxml_xxe.capa",
+        "cve_node_ipc.capa",
         "cve_pickle.capa",
         "cve_pyyaml.capa",
-        "cve_lxml_xxe.capa",
-        "cve_jinja2_ssti.capa",
         "cve_torchtriton.capa",
         "cve_ua_parser_js.capa",
-        "cve_eslint_scope.capa",
         "cve_xz_utils.capa",
-        "cve_node_ipc.capa",
+        "cyclonedx_parser.capa",
+        "demo_event_stream.capa",
+        "documented_demo.capa",
+        "empirical_config.capa",
+        "fs_env_attenuation.capa",
+        "generics.capa",
+        "grades.capa",
+        "hello.capa",
+        "interactive.capa",
+        "io.capa",
+        "json.capa",
+        "llm_agent_runner.capa",
+        "llm_tool_sandbox.capa",
+        "manifest_demo.capa",
+        "migrate_logfetcher_step3_typed.capa",
+        "net_attenuation.capa",
+        "patterns.capa",
+        "provenance_demo.capa",
+        "python_interop.capa",
+        "quota_check.capa",
+        "sbom_capability_audit.capa",
+        "sbom_diff.capa",
+        "spdx_license_expr.capa",
+        "spdx_parser.capa",
+        "spdx_tag_parser.capa",
+        "stdlib_list.capa",
+        "stdlib_map_set.capa",
+        "stdlib_string.capa",
+        "tasks.capa",
+        "user_capabilities.capa",
+        "vex_demo.capa",
     ]
+
+    # Programs deliberately outside the parity corpus and why,
+    # documented here so a future contributor does not widen the
+    # corpus without confronting the reason (same shape as
+    # ``tests/test_ir_wasm_parity.py``'s ``_EXCLUDED``). Only genuine
+    # reasons live here: a negative example that never compiles, or a
+    # program whose output is not a deterministic function of its
+    # source.
+    _EXCLUDED: dict[str, str] = {
+        "aliasing.capa": (
+            "Negative example: the analyzer rejects it by design (a "
+            "capability passed twice to one call). It never produces a "
+            "runnable program, so there is no output to be at parity "
+            "WITH; the rejection itself is the lesson."
+        ),
+        "cap_violations.capa": (
+            "Negative example: the analyzer rejects it by design (a "
+            "capability placed in a struct field). No program is "
+            "produced, so it cannot be a parity data point."
+        ),
+        "consume.capa": (
+            "Negative example: the analyzer rejects it by design (use "
+            "of a capability after it was consumed). No program is "
+            "produced, so it cannot be a parity data point."
+        ),
+        "errors.capa": (
+            "Negative example: the analyzer rejects it by design (a "
+            "const whose value does not match its declared type). No "
+            "program is produced, so it cannot be a parity data point."
+        ),
+        "llm_anthropic_real.capa": (
+            "Makes a live round-trip to the real Anthropic Messages API "
+            "when ANTHROPIC_API_KEY is set; its output is not a "
+            "deterministic function of the source, so there is no fixed "
+            "reference for a legacy-vs-IR diff."
+        ),
+        "llm_anthropic_agent.capa": (
+            "Same as llm_anthropic_real: a live Anthropic agent loop "
+            "(network + real API auth) when ANTHROPIC_API_KEY is set, so "
+            "its output is non-deterministic and carries no fixed "
+            "reference for a legacy-vs-IR diff."
+        ),
+        "migrate_logfetcher_step1_unsafe.capa": (
+            "Migration-walkthrough step that delegates to the naive "
+            "Python log-fetcher over the Python FFI (py_import / "
+            "py_invoke), which reaches the network and the filesystem. "
+            "Its output depends on host state the oracle does not "
+            "control, so there is no deterministic reference."
+        ),
+        "migrate_logfetcher_step2_mixed.capa": (
+            "Same as step1: the orchestration still delegates to the "
+            "naive Python fetcher over the FFI (network + filesystem), "
+            "so its output is not a deterministic function of the "
+            "source. The fully-typed step3 IS in the corpus."
+        ),
+    }
 
     def _compile_legacy(self, source: str, filename: str) -> str:
         from capa import transpile
@@ -1041,6 +1110,131 @@ class TestLegacyIREquivalence(unittest.TestCase):
                 f"{len(diverged)} example(s) diverged between legacy and IR:\n"
                 f"{details}"
             )
+
+    def _assert_source_matches_legacy(self, src: str) -> None:
+        """Compile an inline program down both paths and assert the
+        ``--ir`` output equals the legacy transpiler's. Used for
+        constructs no ``examples/`` program exercises today."""
+        legacy_out = self._exec_capture(self._compile_legacy(src, "<inline>"))
+        ir_out = self._exec_capture(self._compile_ir(src, "<inline>"))
+        self.assertEqual(legacy_out, ir_out)
+
+    def test_struct_pattern_match_equals_legacy(self):
+        # OBS-1 regression: a struct pattern in match position used to
+        # raise ``NotImplementedError`` in the CIR Python renderer
+        # (``--ir`` crashed). It must now emit output identical to the
+        # legacy transpiler. Covers a literal-field arm, a shorthand
+        # binder arm, a nested struct sub-pattern, and a variant
+        # sub-pattern inside a field.
+        src = (
+            "type Inner {\n"
+            "    v: Int\n"
+            "}\n"
+            "type Outer {\n"
+            "    inner: Inner,\n"
+            "    label: String\n"
+            "}\n"
+            "type Box {\n"
+            "    item: Option<Int>\n"
+            "}\n"
+            "fun describe(o: Outer) -> String\n"
+            "    match o\n"
+            "        Outer { inner: Inner { v: 0 }, label } -> return \"zero:${label}\"\n"
+            "        Outer { inner: Inner { v }, label } -> return \"${v}:${label}\"\n"
+            "fun peek(b: Box) -> String\n"
+            "    match b\n"
+            "        Box { item: Some(n) } -> return \"some ${n}\"\n"
+            "        Box { item: None } -> return \"none\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(describe(Outer { inner: Inner { v: 0 }, label: \"a\" }))\n"
+            "    stdio.println(describe(Outer { inner: Inner { v: 7 }, label: \"b\" }))\n"
+            "    stdio.println(peek(Box { item: Some(9) }))\n"
+            "    stdio.println(peek(Box { item: None }))\n"
+        )
+        self._assert_source_matches_legacy(src)
+
+    def test_struct_pattern_reordered_fields_equals_legacy(self):
+        # Keyword-vs-positional discriminator: the CIR Python renderer
+        # emits struct sub-patterns as keyword class-patterns
+        # (``Rec(b=bb, a=aa)``). A regression to positional emission
+        # (``Rec(bb, aa)``) would still pass an in-declaration-order arm,
+        # because Python binds positional class-patterns by
+        # ``__match_args__`` (= declaration order), but it would silently
+        # mis-bind an arm that lists the fields OUT of declaration order.
+        # ``a`` (Int) and ``b`` (String) have distinguishable types, and
+        # ``"${aa}/${bb}"`` observes both bindings in an order that a
+        # swap would change, so positional emission makes this arm's
+        # ``--ir`` output diverge from legacy.
+        src = (
+            "type Rec {\n"
+            "    a: Int,\n"
+            "    b: String\n"
+            "}\n"
+            "fun show(r: Rec) -> String\n"
+            "    match r\n"
+            "        Rec { b: bb, a: aa } -> return \"${aa}/${bb}\"\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(show(Rec { a: 1, b: \"x\" }))\n"
+        )
+        self._assert_source_matches_legacy(src)
+
+    def test_or_pattern_match_equals_legacy(self):
+        # OBS-1 regression: an or-pattern in match position used to
+        # raise ``NotImplementedError`` in the CIR Python renderer.
+        # Covers a payload-less alternative pair and a binding
+        # alternative pair (both alternatives bind the same name).
+        src = (
+            "type Shape =\n"
+            "    Circle(Int)\n"
+            "    Square(Int)\n"
+            "    Rect(Int)\n"
+            "fun size(s: Shape) -> Int\n"
+            "    match s\n"
+            "        Circle(n) | Square(n) -> return n\n"
+            "        Rect(n) -> return n * 2\n"
+            "fun main(stdio: Stdio)\n"
+            "    stdio.println(\"${size(Circle(3))}\")\n"
+            "    stdio.println(\"${size(Square(5))}\")\n"
+            "    stdio.println(\"${size(Rect(4))}\")\n"
+        )
+        self._assert_source_matches_legacy(src)
+
+    def test_inventory_matches_dir(self):
+        # Soundness check (mirrors
+        # ``test_ir_wasm_parity.test_inventory_matches_examples_dir``):
+        # every ``.capa`` under ``examples/`` is either in the parity
+        # corpus or in the documented-excluded dict. Forces a future
+        # contributor adding an example to decide which side it lives
+        # on, so nothing silently falls outside the legacy-vs-IR
+        # oracle.
+        import os
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        examples_dir = os.path.join(repo_root, "examples")
+        on_disk = {
+            name for name in os.listdir(examples_dir)
+            if name.endswith(".capa")
+        }
+        accounted_for = set(self._CORPUS) | set(self._EXCLUDED)
+        unaccounted = on_disk - accounted_for
+        self.assertFalse(
+            unaccounted,
+            (
+                "examples/ has files not classified by "
+                "TestLegacyIREquivalence: "
+                f"{sorted(unaccounted)}. Either add to _CORPUS (the "
+                "legacy-vs-IR parity oracle) or add to _EXCLUDED with a "
+                "one-line rationale."
+            ),
+        )
+        stale = accounted_for - on_disk
+        self.assertFalse(
+            stale,
+            (
+                "TestLegacyIREquivalence names files no longer under "
+                f"examples/: {sorted(stale)}. Prune them from _CORPUS / "
+                "_EXCLUDED."
+            ),
+        )
 
 
 class TestCompleteProgramEmission(unittest.TestCase):

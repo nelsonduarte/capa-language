@@ -92,7 +92,6 @@ from collections import namedtuple
 
 from capa import capa_ast as A
 from capa.ir import _nodes as I
-from capa.ir._lower_pattern import PatOr, PatStruct
 
 from capa.analyzer._expressions import (
     CHECKED_EXPR_KINDS, _ExpressionsMixin as _AnalyzerExprMixin,
@@ -235,18 +234,11 @@ _COVERED = [
         fn=PythonEmitter._format_pattern,
         base=I.Pattern, package="capa.ir",
         handled=PYTHON_EMITTED_PATTERNS,
-        excluded=frozenset({
-            # PatOr / PatStruct: NOT because they never reach this
-            # renderer. The shared lowerer builds them and they DO reach
-            # _format_pattern under --run --ir, where it raises
-            # NotImplementedError. This is a known, pre-existing
-            # unimplemented gap in the CIR Python pattern renderer (audit
-            # OBS-1, "--ir backend crashes on PatStruct/PatOr"); the Wasm
-            # backend and the legacy transpiler handle both correctly.
-            # Excluded here because the crash is a separately-tracked
-            # pre-existing bug, out of M1's scope, not a silent miss.
-            PatOr, PatStruct,
-        }),
+        # The renderer now covers the full CIR pattern domain, including
+        # PatOr / PatStruct from the shared lowerer (audit OBS-1, "--ir
+        # backend crashes on PatStruct/PatOr", is closed); nothing is
+        # excluded.
+        excluded=frozenset(),
     ),
     Dispatcher(
         label="ir._emit_wasm._dispatch._emit_instr (CIR Instr)",

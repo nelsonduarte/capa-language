@@ -28,12 +28,13 @@ from ._nodes import (
 
 
 # Two CIR pattern shapes that the core ``_nodes`` set does not carry
-# yet (the Python IR emitter only understands the original five). They
-# live here rather than in ``_nodes`` because only the Wasm match
-# emitter consumes them; the Wasm emitter imports them from this module
-# (no import cycle: lowering never imports the emitter). If a later
-# phase teaches the Python IR emitter about them they should graduate
-# into ``_nodes``.
+# yet. They live here rather than in ``_nodes`` because this lowerer is
+# their single producer; both backend emitters consume them by importing
+# from this module (the Wasm match emitter and the Python IR emitter's
+# ``_format_pattern``), so neither reconstructs pattern structure of its
+# own (no import cycle: lowering never imports an emitter). If a later
+# phase moves other pattern shapes out of ``_nodes`` these should
+# graduate alongside them.
 @dataclass
 class PatOr(Pattern):
     """``A | B | ... -> body``. Matches if ANY alternative matches;
