@@ -175,12 +175,27 @@ class DepEdge:
     ``target_dir`` is the resolved package directory when the dependency
     is analyzable, else ``None``. ``resolved`` is the analyzability
     verdict; ``reason`` explains a ``False`` verdict (why the dependency
-    composes as TOP)."""
+    composes as TOP).
+
+    The SOURCE fields (``source_kind`` / ``git_url`` / ``pin`` /
+    ``pin_kind`` / ``path``) RETAIN the declaring ``Dependency``'s
+    identity so a downstream consumer (the SBOM dependency-identity
+    record) can name and package-URL the dependency without re-parsing
+    the manifest. They describe the DECLARATION, not the resolution: a
+    git edge carries its URL + pin even when it never vendored (an
+    unresolved TOP node is still a real declared dependency to list)."""
 
     name: str
     target_dir: Optional[Path]
     resolved: bool
     reason: Optional[str]
+    # Declared source identity, retained from the ``Dependency`` this edge
+    # was built from. ``source_kind`` is "git" or "path".
+    source_kind: str = "git"
+    git_url: Optional[str] = None
+    pin: Optional[str] = None
+    pin_kind: Optional[str] = None
+    path: Optional[str] = None
 
 
 @dataclass
@@ -331,22 +346,59 @@ def _classify_dependency(
     return cand, True, None
 
 
+def _dep_edge(pkg_dir: Path, dep: Any) -> DepEdge:
+    """Build a :class:`DepEdge` from a declared ``Dependency``, resolving
+    its analyzability and RETAINING its source identity (source kind, git
+    URL + pin, or path) so a downstream SBOM consumer never re-parses the
+    manifest."""
+    target, resolved, reason = _classify_dependency(pkg_dir, dep)
+    if dep.is_path:
+        return DepEdge(
+            dep.name, target, resolved, reason,
+            source_kind="path", path=dep.path,
+        )
+    pin = dep.tag if dep.tag is not None else dep.rev
+    pin_kind = "tag" if dep.tag is not None else ("rev" if dep.rev else None)
+    return DepEdge(
+        dep.name, target, resolved, reason,
+        source_kind="git", git_url=dep.git, pin=pin, pin_kind=pin_kind,
+    )
+
+
 def build_package_dag(
     root_dir: Path,
-) -> tuple[dict[Path, PackageNode], PackageNode]:
+) -> tuple[dict[Path, PackageNode], PackageNode, dict[str, str]]:
     """Build the product's package DAG rooted at ``root_dir`` (a
     directory holding ``capa.toml``).
 
     Reads the root ``capa.toml`` and RECURSIVELY each resolvable
     dependency's own ``capa.toml`` under ``vendor/<name>``. Only declared
     ``[dependencies]`` become edges (dev-dependencies are excluded from
-    the product). Returns the node map (keyed by resolved manifest dir)
-    and the root node. Cycles are handled by memoising on the resolved
-    directory."""
-    from ..pkg import read_manifest, warn_dependency_floor
+    the product). Returns the node map (keyed by resolved manifest dir),
+    the root node, and the ``{name: commit}`` map from the root
+    ``capa.lock`` (the resolved full SHA per top-level dependency; empty
+    when the lock is absent or unreadable). Cycles are handled by
+    memoising on the resolved directory.
+
+    The root ``capa.lock`` is read exactly ONCE here, in the resolve
+    layer, so no consumer re-reads it. A missing or broken lock degrades
+    to an empty commit map rather than crashing: the lock only enriches
+    the SBOM with a resolved SHA, and its absence must never fail the
+    build."""
+    from ..pkg import read_manifest, read_lock, warn_dependency_floor
+    from ..pkg import LOCK_FILENAME
 
     root_dir = root_dir.resolve()
     nodes: dict[Path, PackageNode] = {}
+
+    lock_commits: dict[str, str] = {}
+    try:
+        for locked in read_lock(root_dir / LOCK_FILENAME):
+            lock_commits[locked.name] = locked.commit
+    except Exception:
+        # A missing lock returns [] (no exception); an unreadable / invalid
+        # one must not crash the SBOM (it only enriches deps with a SHA).
+        lock_commits = {}
 
     def visit(pkg_dir: Path) -> PackageNode:
         pkg_dir = pkg_dir.resolve()
@@ -375,14 +427,259 @@ def build_package_dag(
         # Register BEFORE recursing so a dependency cycle terminates.
         nodes[pkg_dir] = node
         for dep in manifest.dependencies:
-            target, resolved, reason = _classify_dependency(pkg_dir, dep)
-            node.dep_edges.append(DepEdge(dep.name, target, resolved, reason))
-            if resolved and target is not None:
-                visit(target)
+            edge = _dep_edge(pkg_dir, dep)
+            node.dep_edges.append(edge)
+            if edge.resolved and edge.target_dir is not None:
+                visit(edge.target_dir)
         return node
 
     root = visit(root_dir)
-    return nodes, root
+    return nodes, root, lock_commits
+
+
+# ---------------------------------------------------------------------------
+# Dependency-identity records for external SBOM consumers.
+#
+# The single source of truth for "what are this product's real declared
+# dependencies, and how is each one named as a package-URL". A CycloneDX
+# (and future SPDX-3) emitter is a pure CONSUMER of these records: it never
+# re-parses capa.toml / capa.lock and never assembles a purl of its own.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DependencyIdentity:
+    """One resolved (or declared-but-unresolved) capa.toml dependency, as
+    an SBOM consumer needs to name it.
+
+    Married from a :class:`DepEdge` (the declaration: source kind, git
+    URL + pin, path) and, when the dependency vendored, its target
+    :class:`PackageNode` (the resolved ``[package].version``) plus the
+    root ``capa.lock`` commit (top-level deps only). ``purl`` is the ONE
+    package-URL for this dependency, built exactly once by
+    :func:`_construct_purl`; ``None`` for a path dependency (no fabricated
+    registry / file identity). ``bom_ref`` is the stable CycloneDX /
+    SPDX identifier a consumer keys the component on."""
+
+    name: str
+    version: Optional[str]
+    source_kind: str
+    git_url: Optional[str] = None
+    pin: Optional[str] = None
+    pin_kind: Optional[str] = None
+    commit: Optional[str] = None
+    rel_path: Optional[str] = None
+    resolved: bool = False
+    purl: Optional[str] = None
+
+    @property
+    def bom_ref(self) -> str:
+        """The stable component identifier. The purl when there is one
+        (globally unique by construction), else a deterministic
+        ``capa:dep:<name>@<version-or-unknown>`` fallback (a path dep, or
+        a git dep with no version)."""
+        if self.purl:
+            return self.purl
+        return f"capa:dep:{self.name}@{self.version or 'unknown'}"
+
+
+@dataclass(frozen=True)
+class DependencyGraph:
+    """The declared-dependency edge relation, ready for the CycloneDX
+    ``dependencies`` graph. ``root_children`` are the bom-refs of the
+    root program's direct (top-level) dependencies; ``child_edges`` maps
+    a dependency's own bom-ref to its declared sub-dependency bom-refs.
+    Both are sorted + de-duplicated for a byte-reproducible artifact."""
+
+    root_children: tuple[str, ...] = ()
+    child_edges: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+
+def _construct_purl(
+    *,
+    name: str,
+    version: Optional[str],
+    source_kind: str,
+    git_url: Optional[str],
+    pin: Optional[str],
+    commit: Optional[str],
+) -> Optional[str]:
+    """Build the ONE package-URL for a dependency, or ``None``.
+
+    This is the SOLE purl producer in Capa: no SBOM emitter ever
+    assembles a ``pkg:`` string of its own. The grammar is the uniform
+    ``pkg:generic`` + ``vcs_url`` rule, verified against the purl-spec
+    (ECMA-427) and round-tripped through the vendored ``packageurl``
+    reference lib (the round-trip lives in the tests; the core stays
+    dependency-free, so the string is assembled here with stdlib
+    ``urllib.parse.quote`` rather than importing the lib at runtime):
+
+    - GIT dep ->
+      ``pkg:generic/<name>[@<version>]?vcs_url=git+<url>@<revision>``.
+      The ``vcs_url`` value follows the pip / SPDX form
+      ``git+<transport>://<host>/<path>@<revision>``, FULLY
+      percent-encoded (``+`` -> ``%2B``, ``@`` -> ``%40``, ``/`` ->
+      ``%2F``, ``:`` kept). The revision is the resolved commit SHA when
+      known, else the declared pin (tag / rev). When the version is
+      unknown (an unresolved dep) the ``@<version>`` is omitted (a purl
+      version is optional) but the ``vcs_url`` qualifier is kept, so the
+      dependency is still fully identified.
+
+    - PATH dep -> ``None``. A path dependency has no registry / VCS
+      identity to package-URL; the component carries its name + version +
+      a ``capa:source_kind=path`` property + its root-relative path
+      instead. We never fabricate a ``pkg:generic`` / file purl for it."""
+    import urllib.parse
+
+    if source_kind != "git" or not git_url:
+        return None
+    revision = commit or pin
+    vcs = f"git+{git_url}@{revision}" if revision else f"git+{git_url}"
+    out = f"pkg:generic/{urllib.parse.quote(name, safe='')}"
+    if version:
+        out += f"@{urllib.parse.quote(version, safe='')}"
+    return out + "?vcs_url=" + urllib.parse.quote(vcs, safe=":")
+
+
+def _identity_for_edge(
+    edge: DepEdge,
+    nodes: dict[Path, PackageNode],
+    root_dir: Path,
+    commit: Optional[str],
+) -> DependencyIdentity:
+    """Marry a :class:`DepEdge` with its resolved :class:`PackageNode`
+    (version + rel_path) and the lock ``commit`` into one identity, and
+    build its single purl. ``commit`` is passed in (resolved by SOURCE from
+    the root lock: any edge sharing a locked ``(git_url, pin)`` inherits its
+    SHA) rather than looked up here, so the lock scoping lives at the one
+    caller that knows the DAG shape."""
+    version: Optional[str] = None
+    rel_path: Optional[str] = None
+    if edge.resolved and edge.target_dir is not None:
+        target = nodes.get(edge.target_dir.resolve())
+        if target is not None:
+            version = target.version
+            rel_path = _rel_display(target.manifest_dir, root_dir)
+    purl = _construct_purl(
+        name=edge.name,
+        version=version,
+        source_kind=edge.source_kind,
+        git_url=edge.git_url,
+        pin=edge.pin,
+        commit=commit,
+    )
+    return DependencyIdentity(
+        name=edge.name,
+        version=version,
+        source_kind=edge.source_kind,
+        git_url=edge.git_url,
+        pin=edge.pin,
+        pin_kind=edge.pin_kind,
+        commit=commit,
+        rel_path=rel_path,
+        resolved=edge.resolved,
+        purl=purl,
+    )
+
+
+def resolve_dependency_identities(
+    root_dir: Path,
+) -> tuple[list[DependencyIdentity], DependencyGraph]:
+    """Resolve every declared capa.toml dependency of the product at
+    ``root_dir`` into a deduplicated, deterministically-ordered list of
+    :class:`DependencyIdentity` records, plus the declared-edge relation
+    for the CycloneDX ``dependencies`` graph.
+
+    Runs the SAME :func:`build_package_dag` walk the composed SBOM uses
+    (never a second walk) and consumes its edges, nodes, and lock-commit
+    map. The identities are keyed off EDGES (the complete declared set),
+    not just resolved nodes, so a declared-but-unresolved dependency
+    (never vendored) is still listed: it has a name + git URL + pin ->
+    purl, only its version is unknown.
+
+    The commit SHA from ``capa.lock`` is applied by SOURCE, not by name: a
+    dependency declared at the same git URL + pin resolves to the SAME
+    commit wherever it appears in the tree, so the root lock is lifted into
+    a ``(git_url, pin) -> commit`` map and applied to EVERY edge that shares
+    that source (not just the root's direct edges). This is what makes a
+    lock-resolved DIAMOND collapse: the direct edge and the transitive edge
+    of the same package now carry the same resolved SHA, hence the same
+    purl, so they de-duplicate to ONE component that carries the commit. A
+    dependency whose source is NOT in the lock (a transitive dep at a URL +
+    pin the root never locked) still carries its declared pin. Records are
+    de-duplicated by ``purl`` (or ``(name, version)`` when there is no purl)
+    and sorted by ``(name, version)`` for a byte-reproducible artifact; a
+    diamond dependency reached by several edges is listed once
+    (first-visit-wins, and every edge that shares a locked source carries
+    the resolved commit)."""
+    nodes, root, lock_commits = build_package_dag(root_dir)
+
+    # Lift the root ``capa.lock`` (keyed by top-level dependency NAME) into a
+    # ``(git_url, pin) -> commit`` map. The lock records the resolved SHA per
+    # top-level dependency, but a dependency declared at the same git URL +
+    # pin resolves to the same commit ANYWHERE in the tree, so keying on the
+    # source (not the name) lets a transitive edge of a locked package inherit
+    # the SHA. This both enriches that edge and makes a lock-resolved diamond
+    # collapse to one component.
+    lock_by_source: dict[tuple[Optional[str], Optional[str]], str] = {}
+    for edge in root.dep_edges:
+        if edge.source_kind == "git" and edge.git_url:
+            commit = lock_commits.get(edge.name)
+            if commit:
+                lock_by_source[(edge.git_url, edge.pin)] = commit
+
+    # Pass 1: turn every declared edge into a (parent_dir, identity) pair,
+    # in a deterministic global order (parent package by (rel_path, name),
+    # then edge by name). The identity's bom-ref REPRESENTS the resolved
+    # target dir so a dependency-to-dependency edge can name its parent;
+    # first-visit-wins for a dir reached by several edges.
+    ordered_nodes = sorted(nodes.values(), key=lambda n: (n.rel_path, n.name))
+    edge_identities: list[tuple[Path, DepEdge, DependencyIdentity]] = []
+    ref_by_dir: dict[Path, str] = {}
+    identities: dict[tuple, DependencyIdentity] = {}
+    for node in ordered_nodes:
+        for edge in sorted(node.dep_edges, key=lambda e: e.name):
+            # The commit is applied by SOURCE (git_url + pin), so a lock-
+            # resolved package inherits its SHA on every edge that shares
+            # that source -- the root's direct edge AND a deeper transitive
+            # one -- which is what deduplicates a lock-resolved diamond. A
+            # source the lock never recorded carries no commit (its pin).
+            commit = (
+                lock_by_source.get((edge.git_url, edge.pin))
+                if edge.source_kind == "git" else None
+            )
+            identity = _identity_for_edge(edge, nodes, root.manifest_dir, commit)
+            key = identity.purl or (identity.name, identity.version)
+            identities.setdefault(key, identity)
+            edge_identities.append((node.manifest_dir, edge, identity))
+            if edge.resolved and edge.target_dir is not None:
+                ref_by_dir.setdefault(edge.target_dir.resolve(), identity.bom_ref)
+
+    # Pass 2: build the graph relation. The root program's direct edges are
+    # ``root_children`` (the emitter attaches them to the program bom-ref);
+    # every other edge is keyed on the representative bom-ref of its parent
+    # package. Robust to node ordering: ``ref_by_dir`` is fully populated.
+    root_children: list[str] = []
+    child_edges: dict[str, list[str]] = {}
+    for parent_dir, _edge, identity in edge_identities:
+        if parent_dir == root.manifest_dir:
+            root_children.append(identity.bom_ref)
+        else:
+            parent_ref = ref_by_dir.get(parent_dir)
+            if parent_ref is not None:
+                child_edges.setdefault(parent_ref, []).append(identity.bom_ref)
+
+    ordered = sorted(
+        identities.values(), key=lambda i: (i.name, i.version or ""),
+    )
+    graph = DependencyGraph(
+        root_children=tuple(sorted(set(root_children))),
+        child_edges=tuple(
+            (parent, tuple(sorted(set(kids))))
+            for parent, kids in sorted(child_edges.items())
+        ),
+    )
+    return ordered, graph
 
 
 # ---------------------------------------------------------------------------
@@ -1172,7 +1469,7 @@ def build_composed_sbom(
             f"missing evidence rather than trust a stale artifact)."
         )
 
-    nodes, root = build_package_dag(root_dir)
+    nodes, root, _lock_commits = build_package_dag(root_dir)
     _attribute(module, manifest, nodes, root.manifest_dir)
 
     composed_by_dir: dict[Path, Authority] = {

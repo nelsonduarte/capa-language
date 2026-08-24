@@ -604,7 +604,7 @@ class ComposeDagTests(unittest.TestCase):
         )
         err = io.StringIO()
         with mock.patch.object(sys, "stderr", err):
-            nodes, node = build_package_dag(root)
+            nodes, node, _lock = build_package_dag(root)
         self.assertEqual(node.name, "root")
         text = err.getvalue()
         self.assertIn("'dep'", text)

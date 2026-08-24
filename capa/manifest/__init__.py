@@ -53,8 +53,10 @@ The package is split internally:
   ``evaluate_policies`` produces a
   conformance report (fail-closed on authority-unknown) wrapped in the
   S1 content-integrity envelope, driving the ``--check-policies`` gate.
-- :mod:`._cyclonedx` - CycloneDX 1.5 SBOM wrapper around the
-  internal manifest (``build_cyclonedx``).
+- :mod:`._cyclonedx` - CycloneDX 1.6 SBOM wrapper around the
+  internal manifest (``build_cyclonedx``); also renders one component
+  per resolved capa.toml dependency from the resolve-layer
+  ``DependencyIdentity`` records.
 - :mod:`._spdx` - SPDX 2.3 SBOM wrapper around the internal
   manifest (``build_spdx``); the Linux Foundation companion to
   the OWASP-flavoured CycloneDX output.
@@ -69,7 +71,9 @@ from ._canonical import (
 )
 from ._compose import (
     COMPOSED_SCHEMA_VERSION, CeilingViolation, ComposeError,
+    DependencyGraph, DependencyIdentity,
     build_composed_sbom, build_package_dag, find_package_root,
+    resolve_dependency_identities,
 )
 from ._cyclonedx import CYCLONEDX_SPEC_VERSION, build_cyclonedx
 from ._diff import DIFF_SCHEMA_VERSION, DiffError, build_capability_diff
@@ -118,6 +122,9 @@ __all__ = [
     "build_composed_sbom",
     "build_package_dag",
     "find_package_root",
+    "resolve_dependency_identities",
+    "DependencyGraph",
+    "DependencyIdentity",
     "CYCLONEDX_SPEC_VERSION",
     "SPDX_SPEC_VERSION",
     "CAPA_BUILD_TYPE",

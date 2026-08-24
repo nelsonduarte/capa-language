@@ -437,7 +437,7 @@ class TestPackageDag(_TmpTree):
         _write(root, "vendor/mid/capa.toml",
                '[package]\nname = "mid"\nversion = "0.1.0"\n')
         _write(root, "vendor/mid/m.capa", "pub fun g()\n    return\n")
-        nodes, node_root = build_package_dag(root)
+        nodes, node_root, _lock = build_package_dag(root)
         names = sorted(n.name for n in nodes.values())
         self.assertEqual(names, ["mid", "prod"])
         self.assertEqual(node_root.name, "prod")
