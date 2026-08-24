@@ -507,14 +507,31 @@ def _construct_purl(
     """Build the ONE package-URL for a dependency, or ``None``.
 
     This is the SOLE purl producer in Capa: no SBOM emitter ever
-    assembles a ``pkg:`` string of its own. The grammar is the uniform
-    ``pkg:generic`` + ``vcs_url`` rule, verified against the purl-spec
-    (ECMA-427) and round-tripped through the vendored ``packageurl``
-    reference lib (the round-trip lives in the tests; the core stays
-    dependency-free, so the string is assembled here with stdlib
-    ``urllib.parse.quote`` rather than importing the lib at runtime):
+    assembles a ``pkg:`` string of its own. Every purl is verified
+    against the purl-spec (ECMA-427) and round-tripped through the
+    vendored ``packageurl`` reference lib (the round-trip lives in the
+    tests; the core stays dependency-free, so the string is assembled
+    here with stdlib ``urllib.parse.quote`` rather than importing the lib
+    at runtime):
 
-    - GIT dep ->
+    - GITHUB git dep -> the native ``pkg:github/<owner>/<repo>@<revision>``
+      form. GitHub is the one host with a first-class purl type, so a
+      github-hosted dependency gets the identity every SBOM consumer
+      already understands rather than an opaque ``vcs_url`` qualifier. The
+      host detection REUSES the sole github parser
+      (:func:`capa.pkg._install._parse_github_owner_repo`, whose anchor is
+      exact: ``github.example.com`` / ``mygithub.io`` /
+      ``github.com.evil.com`` all fall through) so no second github regex
+      exists in the codebase; owner + repo are lower-cased (GitHub treats
+      them case-insensitively, and the purl-spec canonicalises the
+      ``github`` namespace + name to lowercase). The revision is the
+      resolved commit SHA when known, else the declared pin (tag / rev);
+      when neither is known the ``@<revision>`` is omitted. A github URL
+      the parser does NOT match (an ``ssh://`` transport, a dotted repo
+      name) falls through to the ``pkg:generic`` rule below, which stays
+      sound.
+
+    - NON-GITHUB git dep ->
       ``pkg:generic/<name>[@<version>]?vcs_url=git+<url>@<revision>``.
       The ``vcs_url`` value follows the pip / SPDX form
       ``git+<transport>://<host>/<path>@<revision>``, FULLY
@@ -531,9 +548,21 @@ def _construct_purl(
       instead. We never fabricate a ``pkg:generic`` / file purl for it."""
     import urllib.parse
 
+    from ..pkg._install import _parse_github_owner_repo
+
     if source_kind != "git" or not git_url:
         return None
     revision = commit or pin
+    github = _parse_github_owner_repo(git_url)
+    if github is not None:
+        owner, repo = github
+        out = (
+            f"pkg:github/{urllib.parse.quote(owner.lower(), safe='')}"
+            f"/{urllib.parse.quote(repo.lower(), safe='')}"
+        )
+        if revision:
+            out += f"@{urllib.parse.quote(revision, safe='')}"
+        return out
     vcs = f"git+{git_url}@{revision}" if revision else f"git+{git_url}"
     out = f"pkg:generic/{urllib.parse.quote(name, safe='')}"
     if version:

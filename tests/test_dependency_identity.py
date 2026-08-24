@@ -43,50 +43,66 @@ def _write(base: Path, rel: str, text: str) -> None:
 
 
 # The worked example from the design, matched byte-for-byte: a github dep
-# acme/widget v1.2.3 resolved to a full commit SHA.
+# acme/widget v1.2.3 resolved to a full commit SHA. A github-hosted git dep
+# gets the native ``pkg:github/<owner>/<repo>@<revision>`` purl (revision =
+# commit when known, the ref/pin is NOT the declared package version).
 _WORKED_URL = "https://github.com/acme/widget.git"
 _WORKED_COMMIT = "ef1c0ffee1234567890abcdef1234567890abcd"
-_WORKED_PURL = (
-    "pkg:generic/widget@1.2.3?vcs_url=git%2Bhttps:%2F%2Fgithub.com%2F"
-    "acme%2Fwidget.git%40ef1c0ffee1234567890abcdef1234567890abcd"
-)
+_WORKED_PURL = "pkg:github/acme/widget@ef1c0ffee1234567890abcdef1234567890abcd"
+
+# A NON-github git host keeps the opaque ``pkg:generic`` + ``vcs_url`` form,
+# so the pkg:generic branch never loses coverage as the corpus goes github.
+_GENERIC_URL = "https://git.example.org/acme/widget.git"
 
 
 class TestConstructPurl(unittest.TestCase):
     """The ONE purl producer, unit-tested over every branch."""
 
-    def test_git_dep_with_commit_matches_worked_example(self):
+    def test_github_git_dep_with_commit_matches_worked_example(self):
         purl = _construct_purl(
             name="widget", version="1.2.3", source_kind="git",
             git_url=_WORKED_URL, pin="v1.2.3", commit=_WORKED_COMMIT,
         )
+        # The commit is preferred over the pin as the revision.
         self.assertEqual(purl, _WORKED_PURL)
 
-    def test_git_dep_falls_back_to_pin_when_no_commit(self):
+    def test_github_git_dep_falls_back_to_pin_when_no_commit(self):
         purl = _construct_purl(
             name="widget", version="1.2.3", source_kind="git",
             git_url=_WORKED_URL, pin="v1.2.3", commit=None,
         )
-        self.assertEqual(
-            purl,
-            "pkg:generic/widget@1.2.3?vcs_url=git%2Bhttps:%2F%2Fgithub.com%2F"
-            "acme%2Fwidget.git%40v1.2.3",
-        )
+        self.assertEqual(purl, "pkg:github/acme/widget@v1.2.3")
 
-    def test_git_dep_without_version_omits_version_segment(self):
+    def test_github_git_dep_without_revision_omits_ref(self):
         purl = _construct_purl(
-            name="missing", version=None, source_kind="git",
-            git_url="https://github.com/acme/missing.git", pin="abc123",
-            commit=None,
+            name="widget", version="1.2.3", source_kind="git",
+            git_url=_WORKED_URL, pin=None, commit=None,
+        )
+        self.assertEqual(purl, "pkg:github/acme/widget")
+
+    def test_github_lowercases_owner_and_repo(self):
+        # GitHub owner/repo are case-insensitive and the purl-spec
+        # canonicalises the github namespace + name to lowercase.
+        purl = _construct_purl(
+            name="widget", version="1.2.3", source_kind="git",
+            git_url="https://github.com/Acme/Widget.git", pin="v1.2.3",
+            commit=_WORKED_COMMIT,
+        )
+        self.assertEqual(purl, _WORKED_PURL)
+
+    def test_non_github_git_dep_keeps_generic_vcs_url(self):
+        # A non-github host has no first-class purl type, so it stays on the
+        # ``pkg:generic`` + ``vcs_url`` grammar (declared version retained).
+        purl = _construct_purl(
+            name="widget", version="1.2.3", source_kind="git",
+            git_url=_GENERIC_URL, pin="v1.2.3", commit=None,
         )
         self.assertEqual(
             purl,
-            "pkg:generic/missing?vcs_url=git%2Bhttps:%2F%2Fgithub.com%2F"
-            "acme%2Fmissing.git%40abc123",
+            "pkg:generic/widget@1.2.3?vcs_url=git%2Bhttps:%2F%2F"
+            "git.example.org%2Facme%2Fwidget.git%40v1.2.3",
         )
-        # The version segment (``@<version>``) must be absent, but the
-        # vcs_url qualifier must remain.
-        self.assertNotIn("missing@", purl)
+        self.assertTrue(purl.startswith("pkg:generic/"))
         self.assertIn("vcs_url=", purl)
 
     def test_path_dep_has_no_purl(self):
@@ -178,7 +194,7 @@ class TestResolveDependencyIdentities(_Project):
         widget = next(i for i in ids if i.name == "widget")
         self.assertIsNone(widget.commit)
         # The purl still identifies the dep, falling back to the pin.
-        self.assertIn("%40v1.2.3", widget.purl)
+        self.assertEqual(widget.purl, "pkg:github/acme/widget@v1.2.3")
 
     def test_broken_lock_degrades_to_no_commit(self):
         root = self._fixture(with_lock=True)
@@ -289,8 +305,8 @@ class TestResolveDependencyIdentities(_Project):
         widget = next(i for i in ids if i.name == "widget")
         self.assertEqual(widget.commit, _WORKED_COMMIT)
         # The surviving component must carry the resolved SHA, not the tag.
-        self.assertIn(f"%40{_WORKED_COMMIT}", widget.purl)
-        self.assertNotIn("%40v1.2.3", widget.purl)
+        self.assertIn(f"@{_WORKED_COMMIT}", widget.purl)
+        self.assertNotIn("@v1.2.3", widget.purl)
 
     def test_distinct_source_diamond_is_not_over_collapsed(self):
         # Two same-NAMED widgets at DIFFERENT git URLs are genuinely distinct
@@ -333,6 +349,26 @@ class TestResolveDependencyIdentities(_Project):
         )
         purls = {w.purl for w in widgets}
         self.assertEqual(len(purls), 2, "distinct widgets must keep distinct purls")
+
+    def test_non_github_git_dep_yields_generic_purl_end_to_end(self):
+        # A NON-github git host must keep the ``pkg:generic`` + ``vcs_url``
+        # form through the whole resolve walk (not just _construct_purl), so
+        # the generic branch never loses coverage as the corpus goes github.
+        root = self.tmp / "proj"
+        _write(root, "capa.toml", (
+            '[package]\nname = "app"\nversion = "0.1.0"\n\n'
+            '[dependencies.widget]\n'
+            f'git = "{_GENERIC_URL}"\ntag = "v1.2.3"\n'
+        ))
+        _write(root, "main.capa", "pub fun main()\n    return\n")
+        _write(root, "vendor/widget/capa.toml",
+               '[package]\nname = "widget"\nversion = "1.2.3"\n')
+        _write(root, "vendor/widget/w.capa", "pub fun w()\n    return\n")
+        ids, _ = resolve_dependency_identities(root)
+        widget = next(i for i in ids if i.name == "widget")
+        self.assertTrue(widget.purl.startswith("pkg:generic/widget@1.2.3"))
+        self.assertIn("vcs_url=", widget.purl)
+        self.assertIn("git.example.org", widget.purl)
 
 
 class TestComposeByteIdentity(_Project):

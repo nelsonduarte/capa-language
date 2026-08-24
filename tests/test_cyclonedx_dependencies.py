@@ -126,10 +126,12 @@ class TestDependencyComponents(_EmitterFixture):
         doc, _, _ = self._emit(self._project())
         widget = next(c for c in _dep_components(doc) if c["name"] == "widget")
         self.assertEqual(widget["version"], "1.2.3")
+        # A github-hosted git dep gets the native pkg:github purl (revision =
+        # resolved commit); the declared version travels in the component's
+        # ``version`` field, not the purl.
         self.assertEqual(
             widget["purl"],
-            "pkg:generic/widget@1.2.3?vcs_url=git%2Bhttps:%2F%2Fgithub.com%2F"
-            "acme%2Fwidget.git%40ef1c0ffee1234567890abcdef1234567890abcd",
+            "pkg:github/acme/widget@ef1c0ffee1234567890abcdef1234567890abcd",
         )
         props = {p["name"]: p["value"] for p in widget["properties"]}
         self.assertEqual(props["capa:source_kind"], "git")
@@ -329,9 +331,19 @@ class TestPurlRoundTrip(_EmitterFixture):
             n_purls += 1
             parsed = PackageURL.from_string(c["purl"])
             record = by_ref[c["bom-ref"]]
-            self.assertEqual(parsed.name, record.name)
-            self.assertEqual(parsed.version, record.version)
-            self.assertIn("vcs_url", parsed.qualifiers or {})
+            if parsed.type == "github":
+                # name = repo, namespace = owner, version = revision (the
+                # resolved commit or the declared pin), NOT the package
+                # version. The fixture's github deps are acme/<name>.
+                self.assertEqual(parsed.name, record.name)
+                self.assertEqual(parsed.namespace, "acme")
+                self.assertEqual(
+                    parsed.version, record.commit or record.pin,
+                )
+            else:
+                self.assertEqual(parsed.name, record.name)
+                self.assertEqual(parsed.version, record.version)
+                self.assertIn("vcs_url", parsed.qualifiers or {})
         self.assertGreater(n_purls, 0, "fixture must exercise real purls")
 
 
