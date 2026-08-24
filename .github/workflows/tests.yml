@@ -21,6 +21,16 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.10", "3.12", "3.14"]
+    env:
+      # The ubuntu leg runs the POSIX-only symlink-TOCTOU security guards
+      # (tests/test_fs_toctou.py and test_db_toctou.py TestSymlinkSwap),
+      # which skip where symlinks are unavailable. Setting this on that leg
+      # makes tests/test_posix_harness_present.py fail LOUDLY if the guards
+      # cannot run there, instead of letting the symlink-swap denial go
+      # unverified with a green board. It is gated to ubuntu so the Windows
+      # and macOS legs, where symlinks may be unavailable, are not forced to
+      # fail; the guards skip honestly there.
+      CAPA_REQUIRE_POSIX: ${{ startsWith(matrix.os, 'ubuntu') && '1' || '' }}
 
     steps:
       - name: Check out the repository

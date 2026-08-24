@@ -28,6 +28,7 @@ from unittest import mock
 
 from capa.runtime import Fs, Ok, Err
 from capa.runtime import _fs_guard
+from tests._posix_probe import symlinks_available
 
 
 def _handle_paths_supported() -> bool:
@@ -36,12 +37,6 @@ def _handle_paths_supported() -> bool:
     pre-check-only behaviour elsewhere)."""
     with tempfile.NamedTemporaryFile() as tf:
         return _fs_guard.fd_true_path(tf.fileno()) is not None
-
-
-def _symlinks_available() -> bool:
-    # Same convention as test_attenuation: Windows symlinks need
-    # admin rights in most configurations, so skip there.
-    return hasattr(os, "symlink") and not sys.platform.startswith("win")
 
 
 class TestFdTruePath(unittest.TestCase):
@@ -71,7 +66,7 @@ class TestFdTruePath(unittest.TestCase):
             )
 
     def test_resolves_symlink_to_target(self):
-        if not _symlinks_available():
+        if not symlinks_available():
             self.skipTest("symlinks not reliably available")
         with tempfile.TemporaryDirectory() as td:
             target = os.path.join(td, "real.txt")
@@ -186,7 +181,7 @@ class TestSymlinkSwap(unittest.TestCase):
     """Symlink-shaped variants of the race (POSIX-only)."""
 
     def setUp(self):
-        if not _symlinks_available():
+        if not symlinks_available():
             self.skipTest("symlinks not reliably available")
         self.inside = tempfile.mkdtemp(prefix="capa-inside-")
         self.outside = tempfile.mkdtemp(prefix="capa-outside-")

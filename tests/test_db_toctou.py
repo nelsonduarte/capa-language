@@ -19,13 +19,13 @@ same POSIX skip guard used in ``test_fs_toctou``.
 
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from unittest import mock
 
 from capa.runtime import Db, Ok, Err
 from capa.runtime import _fs_guard
+from tests._posix_probe import symlinks_available
 
 
 def _handle_paths_supported() -> bool:
@@ -33,12 +33,6 @@ def _handle_paths_supported() -> bool:
     fd; the guard degrades to the pre-open check alone elsewhere."""
     with tempfile.NamedTemporaryFile() as tf:
         return _fs_guard.fd_true_path(tf.fileno()) is not None
-
-
-def _symlinks_available() -> bool:
-    # Same convention as test_fs_toctou: Windows symlinks need admin
-    # rights in most configurations, so skip there.
-    return hasattr(os, "symlink") and not sys.platform.startswith("win")
 
 
 class TestLegitimateDbStillWorks(unittest.TestCase):
@@ -147,7 +141,7 @@ class TestSymlinkSwap(unittest.TestCase):
     """Symlink-shaped variants of the race (POSIX-only)."""
 
     def setUp(self):
-        if not _symlinks_available():
+        if not symlinks_available():
             self.skipTest("symlinks not reliably available")
         self.inside = tempfile.mkdtemp(prefix="capa-db-inside-")
         self.outside = tempfile.mkdtemp(prefix="capa-db-outside-")

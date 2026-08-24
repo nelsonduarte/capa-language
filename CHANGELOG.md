@@ -79,6 +79,24 @@ breaking changes and the discipline is still being shaped.
   silent-skip class). A fail-closed guard (`tests/test_supply_chain_lock_hashes.py`)
   derives the installed locks from `tests.yml` itself, then fails if any lock install
   omits `--require-hashes` or if any requirement in an installed lock carries no hash.
+- *The POSIX-only symlink SECURITY guards can no longer skip silently where they
+  are required to run (audit F4).* The `TestSymlinkSwap` classes in
+  `tests/test_fs_toctou.py` and `tests/test_db_toctou.py` and
+  `TestFsPathCanonicalisation` in `tests/test_attenuation.py` gate on a
+  symlink-availability predicate, so on a non-symlink platform they skip and the
+  symlink-swap / path-confinement denials go unverified; if the ubuntu CI leg that
+  runs them were dropped or mis-configured the property would vanish behind a green
+  board (the PyYAML silent-skip class). The predicate is now single-sourced in
+  `tests/_posix_probe.py` (`symlinks_available`), collapsing three hand-copied
+  definitions into one that all three guard modules import. A fail-loud floor
+  (`tests/test_posix_harness_present.py`, mirroring `test_wasm_harness_present.py`)
+  consults that one predicate and fails loudly, naming every guard module, when
+  `CAPA_REQUIRE_POSIX=1` but the predicate is False; it also fails if any guard
+  module re-copies the predicate instead of importing the single source. The `test`
+  job sets that variable on its ubuntu leg. The GPG-signature skips are left
+  uncovered by design: they are scaffold-only (an ephemeral-GNUPGHOME path-mangling
+  limit under MSYS) while the production `gpg --verify` path and the fail-closed
+  signature tests still run wherever `gpg` is present.
 - *The Wasm capability-soundness harnesses can no longer skip silently where they
   are required to run.* `TestWasmRuntimeSubsetOfManifest` and
   `TestWasmAttenuationHonoured` `skipUnless` the Wasm toolchain, so a broken

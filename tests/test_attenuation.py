@@ -13,7 +13,6 @@ program (declarations, attenuation in the program body) live in
 """
 
 import os
-import sys
 import tempfile
 import time
 import unittest
@@ -21,6 +20,7 @@ from unittest import mock
 
 from capa.runtime import Fs, Env, Net, Clock, Random, Ok, Err, None_
 from capa.runtime._capabilities import Db, Proc
+from tests._posix_probe import symlinks_available
 
 
 # =============================================================
@@ -212,7 +212,7 @@ class TestFsPathCanonicalisation(unittest.TestCase):
     def test_symlink_pointing_outside_is_denied(self):
         # POSIX-only: Windows symlinks need admin rights in most
         # configurations, so skip there.
-        if not hasattr(os, "symlink") or sys.platform.startswith("win"):
+        if not symlinks_available():
             self.skipTest("symlinks not reliably available")
         with tempfile.TemporaryDirectory() as base:
             target_dir = tempfile.mkdtemp(prefix="capa-outside-")
@@ -234,7 +234,7 @@ class TestFsPathCanonicalisation(unittest.TestCase):
                 os.rmdir(target_dir)
 
     def test_symlink_inside_prefix_is_allowed(self):
-        if not hasattr(os, "symlink") or sys.platform.startswith("win"):
+        if not symlinks_available():
             self.skipTest("symlinks not reliably available")
         with tempfile.TemporaryDirectory() as base:
             real = os.path.join(base, "real.txt")
