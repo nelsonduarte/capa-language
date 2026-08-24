@@ -32,6 +32,8 @@ from ._nodes import (
     StructDecl, SumDecl, ImplBlock, TraitDecl, ConstDecl, ImportDecl,
 )
 from ._lower import UnsupportedInIR
+from ._free_vars import analyze_lambda
+from .._py_ident import _safe_ident
 # PatOr / PatStruct are the two CIR pattern shapes the shared lowerer
 # (``_lower_pattern.py``) builds but ``_nodes`` does not yet carry; the
 # Wasm match emitter already imports them from there, and so does this
@@ -126,6 +128,15 @@ class PythonEmitter:
         # _capa_substring`` line in ``emit()`` so the emitted
         # module is self-contained.
         self._needs_bounds = False
+        # Names bound in the scope enclosing the lambda currently
+        # being emitted: the enclosing function's params + flat
+        # locals, plus the params of every lambda on the way down.
+        # ``_emit_make_lambda`` consults it to decide whether a bare
+        # ``Call`` callee inside a lambda body is a higher-order
+        # function captured from that scope (so it must be rebound as
+        # a default arg, by value) versus a top-level function (which
+        # stays a free reference). Set per function / impl method.
+        self._enclosing_names: set[str] = set()
 
     # ----- public ------------------------------------------------
 
@@ -223,7 +234,7 @@ class PythonEmitter:
             # ``object`` rather than the source type. Python's dataclass
             # does nothing meaningful with the annotation at runtime,
             # so ``object`` keeps emission target-agnostic.
-            self._write(f"{f.name}: object")
+            self._write(f"{_safe_ident(f.name)}: object")
         self._indent -= 1
 
     def _emit_sum(self, t: SumDecl) -> None:
@@ -300,8 +311,8 @@ class PythonEmitter:
             self._write("pass")
         else:
             for m in t.methods:
-                params = ", ".join(p.name for p in m.params)
-                self._write(f"def {m.name}({params}):")
+                params = ", ".join(_safe_ident(p.name) for p in m.params)
+                self._write(f"def {_safe_ident(m.name)}({params}):")
                 self._indent += 1
                 self._write("raise NotImplementedError")
                 self._indent -= 1
@@ -329,9 +340,10 @@ class PythonEmitter:
             # name with an underscore to avoid colliding with the
             # method name in the class namespace; we mirror that.
             mangled = f"_{impl.type_name}_{m.name}"
-            params = ", ".join(p.name for p in m.params)
+            params = ", ".join(_safe_ident(p.name) for p in m.params)
             self._write(f"def {mangled}({params}):")
             self._indent += 1
+            self._enclosing_names = self._scope_names(m)
             if not m.body:
                 self._write("pass")
             else:
@@ -339,15 +351,16 @@ class PythonEmitter:
                     self._emit_instr(instr)
             self._indent -= 1
             for at in attach_targets:
-                self._write(f"{at}.{m.name} = {mangled}")
+                self._write(f"{at}.{_safe_ident(m.name)} = {mangled}")
             self._lines.append("")
 
     # ----- function-level ---------------------------------------
 
     def _emit_function(self, fn: Function) -> None:
-        params = ", ".join(p.name for p in fn.params)
-        self._write(f"def {fn.name}({params}):")
+        params = ", ".join(_safe_ident(p.name) for p in fn.params)
+        self._write(f"def {_safe_ident(fn.name)}({params}):")
         self._indent += 1
+        self._enclosing_names = self._scope_names(fn)
         if not fn.body:
             self._write("pass")
         else:
@@ -355,26 +368,37 @@ class PythonEmitter:
                 self._emit_instr(instr)
         self._indent -= 1
 
+    @staticmethod
+    def _scope_names(fn: Function) -> set[str]:
+        """Names bound by a function-like body owner: its params plus
+        the lowerer's flat ``locals`` map (which already covers every
+        local introduced anywhere under it, including inside lambda
+        bodies). Used as the enclosing scope for a lambda's
+        captured-callee decision."""
+        names = {p.name for p in fn.params}
+        names |= set(getattr(fn, "locals", {}) or {})
+        return names
+
     # ----- per-instruction --------------------------------------
 
     def _emit_instr(self, instr: Instr) -> None:
         if isinstance(instr, AssignConst):
-            self._write(f"{instr.dst} = {self._format_value(instr.src)}")
+            self._write(f"{_safe_ident(instr.dst)} = {self._format_value(instr.src)}")
             return
         if isinstance(instr, Reassign):
-            self._write(f"{instr.dst} = {self._format_value(instr.src)}")
+            self._write(f"{_safe_ident(instr.dst)} = {self._format_value(instr.src)}")
             return
         if isinstance(instr, BinOp):
             rhs = self._format_binop(instr.op, instr.left, instr.right)
-            self._write(f"{instr.dst} = {rhs}")
+            self._write(f"{_safe_ident(instr.dst)} = {rhs}")
             return
         if isinstance(instr, UnaryOp):
             rhs = self._format_unary(instr.op, instr.operand)
-            self._write(f"{instr.dst} = {rhs}")
+            self._write(f"{_safe_ident(instr.dst)} = {rhs}")
             return
         if isinstance(instr, Call):
             args = ", ".join(self._format_value(a) for a in instr.args)
-            rhs = f"{instr.callee_name}({args})"
+            rhs = f"{_safe_ident(instr.callee_name)}({args})"
             self._write(self._with_optional_dst(instr.dst, rhs))
             return
         if isinstance(instr, MethodCall):
@@ -384,7 +408,7 @@ class PythonEmitter:
                 instr.receiver.ty or "", instr.method, recv, args,
             )
             if rhs is None:
-                rhs = f"{recv}.{instr.method}({', '.join(args)})"
+                rhs = f"{recv}.{_safe_ident(instr.method)}({', '.join(args)})"
             self._write(self._with_optional_dst(instr.dst, rhs))
             return
         if isinstance(instr, If):
@@ -440,10 +464,10 @@ class PythonEmitter:
             return
         if isinstance(instr, MakeStruct):
             args = ", ".join(
-                f"{name}={self._format_value(v)}"
+                f"{_safe_ident(name)}={self._format_value(v)}"
                 for name, v in instr.fields
             )
-            self._write(f"{instr.dst} = {instr.type_name}({args})")
+            self._write(f"{_safe_ident(instr.dst)} = {instr.type_name}({args})")
             return
         if isinstance(instr, MakeList):
             # Capa's ``List<T>`` is backed by ``CapaList`` (a subclass
@@ -455,10 +479,10 @@ class PythonEmitter:
             # ``CapaList([...])`` keeps the IR and legacy paths
             # behaviourally equivalent.
             elems = ", ".join(self._format_value(v) for v in instr.elements)
-            self._write(f"{instr.dst} = CapaList([{elems}])")
+            self._write(f"{_safe_ident(instr.dst)} = CapaList([{elems}])")
             return
         if isinstance(instr, MakeMap):
-            self._write(f"{instr.dst} = {{}}")
+            self._write(f"{_safe_ident(instr.dst)} = {{}}")
             return
         if isinstance(instr, MakeRange):
             # ``CapaRange`` is the runtime wrapper that mirrors the
@@ -470,31 +494,31 @@ class PythonEmitter:
             start = self._format_value(instr.start)
             end = self._format_value(instr.end)
             stop = f"({end}) + 1" if instr.inclusive else end
-            self._write(f"{instr.dst} = CapaRange({start}, {stop})")
+            self._write(f"{_safe_ident(instr.dst)} = CapaRange({start}, {stop})")
             return
         if isinstance(instr, MakeSet):
             # CapaSet is insertion-ordered (dict-backed); a raw Python
             # ``set`` iterates in hash order and would diverge from the
             # Wasm backend's linear element array.
-            self._write(f"{instr.dst} = CapaSet()")
+            self._write(f"{_safe_ident(instr.dst)} = CapaSet()")
             return
         if isinstance(instr, MakeTuple):
             elems = ", ".join(self._format_value(v) for v in instr.elements)
             if len(instr.elements) == 1:
                 # Single-element tuple in Python needs the trailing
                 # comma to distinguish from a parenthesised value.
-                self._write(f"{instr.dst} = ({elems},)")
+                self._write(f"{_safe_ident(instr.dst)} = ({elems},)")
             else:
-                self._write(f"{instr.dst} = ({elems})")
+                self._write(f"{_safe_ident(instr.dst)} = ({elems})")
             return
         if isinstance(instr, FieldAccess):
             recv = self._format_value(instr.receiver)
-            self._write(f"{instr.dst} = {recv}.{instr.field}")
+            self._write(f"{_safe_ident(instr.dst)} = {recv}.{_safe_ident(instr.field)}")
             return
         if isinstance(instr, FieldStore):
             recv = self._format_value(instr.receiver)
             val = self._format_value(instr.src)
-            self._write(f"{recv}.{instr.field} = {val}")
+            self._write(f"{recv}.{_safe_ident(instr.field)} = {val}")
             return
         if isinstance(instr, Index):
             recv = self._format_value(instr.receiver)
@@ -510,9 +534,9 @@ class PythonEmitter:
             recv_head = (instr.receiver.ty or "").split("<", 1)[0]
             if recv_head == "List":
                 self._needs_bounds = True
-                self._write(f"{instr.dst} = _capa_list_get({recv}, {idx})")
+                self._write(f"{_safe_ident(instr.dst)} = _capa_list_get({recv}, {idx})")
                 return
-            self._write(f"{instr.dst} = {recv}[{idx}]")
+            self._write(f"{_safe_ident(instr.dst)} = {recv}[{idx}]")
             return
         if isinstance(instr, FormatStr):
             # Build a Python f-string. Literal parts are inserted
@@ -536,11 +560,11 @@ class PythonEmitter:
             body = "".join(buf)
             # Use the same string-literal repr the legacy transpiler
             # uses for consistency; escape backslashes and quotes.
-            self._write(f"{instr.dst} = f{repr(body)}")
+            self._write(f"{_safe_ident(instr.dst)} = f{repr(body)}")
             return
         if isinstance(instr, For):
             self._write(
-                f"for {instr.name} in {self._format_value(instr.iter)}:"
+                f"for {_safe_ident(instr.name)} in {self._format_value(instr.iter)}:"
             )
             self._indent += 1
             if not instr.body:
@@ -561,33 +585,18 @@ class PythonEmitter:
             # import *``; IR-only tests load the symbols explicitly
             # into their exec namespace.
             src = self._format_value(instr.src)
-            self._write(f"{instr.dst} = {src}")
+            dst = _safe_ident(instr.dst)
+            self._write(f"{dst} = {src}")
             self._write(
-                f"if isinstance({instr.dst}, Err) or {instr.dst} is None_:"
+                f"if isinstance({dst}, Err) or {dst} is None_:"
             )
             self._indent += 1
-            self._write(f"return {instr.dst}")
+            self._write(f"return {dst}")
             self._indent -= 1
-            self._write(f"{instr.dst} = {instr.dst}.value")
+            self._write(f"{dst} = {dst}.value")
             return
         if isinstance(instr, MakeLambda):
-            # Emit a nested ``def`` whose name is the lambda's dst.
-            # Python's closures capture surrounding locals by reference,
-            # so no explicit capture wiring is needed here. Note we do
-            # not use a Python ``lambda`` expression even for
-            # expression-body source lambdas: the ANF lowering has
-            # already split the body into statement-level instructions,
-            # which a Python lambda (single expression only) cannot
-            # host.
-            params = ", ".join(p.name for p in instr.params)
-            self._write(f"def {instr.dst}({params}):")
-            self._indent += 1
-            if not instr.body:
-                self._write("pass")
-            else:
-                for sub in instr.body:
-                    self._emit_instr(sub)
-            self._indent -= 1
+            self._emit_make_lambda(instr)
             return
         if isinstance(instr, Match):
             self._write(f"match {self._format_value(instr.scrutinee)}:")
@@ -619,11 +628,55 @@ class PythonEmitter:
             f"is not yet implemented"
         )
 
+    def _emit_make_lambda(self, instr: MakeLambda) -> None:
+        # Emit a nested ``def`` whose name is the lambda's dst. We do
+        # not use a Python ``lambda`` expression even for
+        # expression-body source lambdas: the ANF lowering has already
+        # split the body into statement-level instructions, which a
+        # Python ``lambda`` (single expression only) cannot host.
+        #
+        # Every captured name is rebound as a default argument
+        # (``def _lam(x, i=i): ...``) so it binds by VALUE at
+        # def-execution time. Without this, Python's late-binding
+        # closure semantics read a captured loop variable at CALL time:
+        # ``for i in 0..N: fs.push(fun () => i)`` would make every
+        # closure return the loop's final value (``4 4 4 ...``) where
+        # the Wasm backend captures each iteration's ``i`` at
+        # MakeLambda time (``0 1 2 ...``). Default args bind at
+        # def-execution time, matching Wasm; reference-typed captures
+        # (lists / maps / strings) still share the same object, which
+        # is also what Wasm does (it captures the pointer, not a copy).
+        # The capture set comes from the shared ``analyze_lambda`` so
+        # this backend and the Wasm closure emitter agree on it.
+        free = analyze_lambda(
+            instr,
+            callee_is_capture=lambda n: n in self._enclosing_names,
+        ).free
+        own = [_safe_ident(p.name) for p in instr.params]
+        caps = [f"{_safe_ident(n)}={_safe_ident(n)}" for n in sorted(free)]
+        params = ", ".join(own + caps)
+        self._write(f"def {_safe_ident(instr.dst)}({params}):")
+        self._indent += 1
+        # A nested lambda sees this lambda's params as part of the
+        # enclosing scope for its own captured-callee decision. Restore
+        # on the way back out so sibling lambdas do not inherit them.
+        prev_enclosing = self._enclosing_names
+        self._enclosing_names = prev_enclosing | {p.name for p in instr.params}
+        try:
+            if not instr.body:
+                self._write("pass")
+            else:
+                for sub in instr.body:
+                    self._emit_instr(sub)
+        finally:
+            self._enclosing_names = prev_enclosing
+        self._indent -= 1
+
     # ----- value rendering --------------------------------------
 
     def _format_value(self, v: Value) -> str:
         if v.kind in ("local", "param", "global"):
-            return v.name or ""
+            return _safe_ident(v.name or "")
         if v.kind == "variant_ctor":
             # Payload-less sum-type variant used as a value. The
             # ``None`` variant is a singleton (no per-instance state),
@@ -726,7 +779,7 @@ class PythonEmitter:
 
         for ins in setup:
             if isinstance(ins, FieldAccess):
-                expr = f"{render(ins.receiver)}.{ins.field}"
+                expr = f"{render(ins.receiver)}.{_safe_ident(ins.field)}"
             elif isinstance(ins, Index):
                 expr = f"{render(ins.receiver)}[{render(ins.index)}]"
             elif isinstance(ins, UnaryOp):
@@ -897,7 +950,7 @@ class PythonEmitter:
         if isinstance(p, PatWildcard):
             return "_"
         if isinstance(p, PatIdent):
-            return p.name
+            return _safe_ident(p.name)
         if isinstance(p, PatLiteral):
             if p.kind == "bool":
                 return "True" if p.value else "False"
@@ -933,7 +986,7 @@ class PythonEmitter:
             # ``_lower_struct_pattern``, so it renders as ``x=x`` here,
             # matching the legacy transpiler.
             parts = [
-                f"{fname}={self._format_pattern(sub)}"
+                f"{_safe_ident(fname)}={self._format_pattern(sub)}"
                 for fname, sub in p.fields
             ]
             return f"{p.type_name}({', '.join(parts)})"
@@ -949,7 +1002,7 @@ class PythonEmitter:
     def _with_optional_dst(self, dst, rhs: str) -> str:
         if dst is None:
             return rhs
-        return f"{dst} = {rhs}"
+        return f"{_safe_ident(dst)} = {rhs}"
 
     # ----- line buffer ------------------------------------------
 
