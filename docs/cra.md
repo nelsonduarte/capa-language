@@ -85,7 +85,7 @@ both.
 | **Annex I Part I (2)(k)** | "be designed, developed and produced to reduce the impact of an incident using appropriate exploitation mitigation mechanisms and techniques" | Direct, structurally: capability attenuation ([`fs_env_attenuation.capa`](../examples/fs_env_attenuation.capa)) bounds the blast radius of any compromised dependency at compile time. Under the Wasm Component Model build this holds at *interface granularity* for a compiler-produced component: the component runs in the Wasm sandbox and imports only the WIT interfaces for its declared capabilities, so a compromised dependency cannot reach an interface absent from the world. Intra-artifact attenuation (restriction state that must travel with a capability across a function boundary) and the core-module path are enforced by the trusted Capa emitter rather than the runtime boundary, and the executed `.wasm` / `.cwasm` is part of the trusted computing base (see [`trust-model.md`](trust-model.md)). |
 | **Annex I Part I (2)(l)** | "provide security related information by recording and monitoring relevant internal activity" | Partial at compile time: Capa's opt-in runtime trace (`capa/runtime/_trace.py`) records capability invocations. Direct under the Wasm CM build: every capability call is a WIT import the host implements, so the host can transparently log every authority crossing without instrumenting the guest. |
 | **Annex I Part I (2)(m)** | "provide the possibility for users to securely and easily remove on a permanent basis all data and settings" | Out of scope for the language layer. |
-| **Annex I Part II (1)** | "identify and document vulnerabilities and components contained in the product ... including by drawing up a software bill of materials in a commonly used and machine-readable format covering at the very least the top-level dependencies" | **Primary fit**: `capa --cyclonedx` emits a CycloneDX 1.6 SBOM with the capability manifest embedded as standard `properties[]` entries. For a `capa.toml` project it enumerates the top-level dependencies the stated minimum asks for: one `library` component per resolved dependency, each with its name, version, and (for a git dependency) a real `purl`, plus a CycloneDX `dependencies` graph edge from the program to each one. That meets the "at the very least the top-level dependencies" floor for the resolved set, and a same-source transitive dependency locked by `capa.lock` is covered too (its diamond collapses to one component carrying the resolved commit SHA). The genuine contribution is the capability layer on top: not just *what* is in the box but *what each of the program's own functions can do*. Residuals stay honest: a transitive dependency at a source the root lock does not cover carries its declared pin rather than a SHA, a path dependency gets no purl, and the SPDX output does not yet carry dependency purls. |
+| **Annex I Part II (1)** | "identify and document vulnerabilities and components contained in the product ... including by drawing up a software bill of materials in a commonly used and machine-readable format covering at the very least the top-level dependencies" | **Primary fit**: `capa --cyclonedx` emits a CycloneDX 1.6 SBOM with the capability manifest embedded as standard `properties[]` entries. For a `capa.toml` project it enumerates the top-level dependencies the stated minimum asks for: one `library` component per resolved dependency, each with its name, version, and (for a git dependency) a real `purl`, plus a CycloneDX `dependencies` graph edge from the program to each one. That meets the "at the very least the top-level dependencies" floor for the resolved set, and a same-source transitive dependency locked by `capa.lock` is covered too (its diamond collapses to one component carrying the resolved commit SHA). The genuine contribution is the capability layer on top: not just *what* is in the box but *what each of the program's own functions can do*. The SPDX 2.3 output carries the same dependency set symmetrically: one `Package` per resolved dependency with its `purl` as an `externalRefs` entry (`referenceType` `purl`) plus a `DEPENDS_ON` relationship graph, from the same single dependency-identity source as the CycloneDX components. Residuals stay honest and apply to both formats: a transitive dependency at a source the root lock does not cover carries its declared pin rather than a SHA, and a path dependency gets no purl. |
 | **Annex I Part II (2)** | "address and remediate vulnerabilities without delay" | Out of scope (organisational). |
 | **Annex I Part II (3)** | "apply effective and regular tests and reviews of the security of the product" | Partial: the property-based test suite (`tests/test_properties.py`) and the six CVE case studies demonstrate ongoing review of the discipline. Per-product test obligations remain the manufacturer's. |
 | **Annex I Part II (4)** | "once a security update has been made available, share and publicly disclose information about fixed vulnerabilities" | Out of scope (organisational). |
@@ -116,25 +116,35 @@ Capa emits CycloneDX 1.6 and SPDX 2.3. BSI TR-03183-2 v2.1.0
 (2025-08-20) asks for CycloneDX >= 1.6 or SPDX >= 3.0.1: the
 CycloneDX output now meets that guideline's CycloneDX floor,
 while the SPDX output stays a major version below the
-SPDX >= 3.0.1 line and carries no dependency purls. BSI
+SPDX >= 3.0.1 line. Both formats carry the dependency purls: the
+SPDX 2.3 side emits each resolved dependency as a `Package` with
+its `purl` as an `externalRefs` entry plus a `DEPENDS_ON`
+relationship graph, symmetric with the CycloneDX dependency
+components and keyed off the same dependency-identity source. BSI
 TR-03183-2 is a German national technical guideline, not EU law
 and not a CRA mandate; it is cited here only as a widely
 referenced SBOM baseline.
 
-For a `capa.toml` project the CycloneDX output resolves each
-declared dependency into a `library` component and names it as
-precisely as the lock allows:
+For a `capa.toml` project both the CycloneDX and the SPDX
+output resolve each declared dependency into a component and
+name it as precisely as the lock allows, using one shared purl
+producer, so the two formats carry identical purls:
 
-- A **git dependency** carries a
+- A **git dependency hosted on github.com** carries the native
+  `pkg:github/<owner>/<repo>@<rev>` purl (owner and repo
+  lower-cased, the form every SBOM consumer already
+  understands). The revision `<rev>` is the `capa.lock` commit
+  SHA when the dependency is resolved, including a same-source
+  transitive dependency under the lock, whose diamond collapses
+  to a single component carrying that SHA.
+- A **git dependency on any other host** (GitLab, a self-hosted
+  server, or a github URL the parser does not match) carries a
   `pkg:generic/<name>@<version>?vcs_url=git+<url>@<rev>` purl
-  (percent-encoded). The revision `<rev>` is the `capa.lock`
-  commit SHA when the dependency is resolved, including a
-  same-source transitive dependency under the lock, whose
-  diamond collapses to a single component carrying that SHA.
+  (percent-encoded), with the same `<rev>` rule.
 - An **unresolved dependency**, or a transitive dependency at a
   source the root lock does not cover, carries its declared pin
-  (tag or rev) in the `vcs_url` instead of a SHA; an unresolved
-  dependency also omits the version.
+  (tag or rev) instead of a SHA; an unresolved dependency also
+  omits the version.
 - A **path dependency** gets no purl: it is named by its name,
   version, a `capa:source_kind=path` property, and its
   root-relative path, because it has no registry or VCS identity
