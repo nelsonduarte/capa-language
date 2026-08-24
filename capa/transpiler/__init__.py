@@ -184,22 +184,12 @@ _UNARY_MAP = {
 }
 
 
-# Reserved Python identifiers (relevant subset to avoid collisions
-# with Capa names when we emit Python).
-_PY_KEYWORDS = {
-    "False", "None", "True", "and", "as", "assert", "async", "await",
-    "break", "class", "continue", "def", "del", "elif", "else", "except",
-    "finally", "for", "from", "global", "if", "import", "in", "is",
-    "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
-    "while", "with", "yield",
-}
-
-
-def _safe_ident(name: str) -> str:
-    """Suffix names that collide with Python keywords."""
-    if name in _PY_KEYWORDS:
-        return name + "_"
-    return name
+# Reserved Python identifiers + the keyword-suffixing rule live in the
+# neutral ``capa._py_ident`` module so the CIR->Python emitter shares
+# the single source rather than hand-copying the table. Re-exported here
+# because the transpiler's submodules import them via ``from . import
+# _safe_ident``.
+from .._py_ident import _PY_KEYWORDS, _safe_ident  # noqa: F401
 
 
 class Transpiler(

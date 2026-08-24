@@ -30,9 +30,9 @@ from typing import Optional
 from .._nodes import (
     Call, Function, Instr, MakeLambda, MethodCall, Module, Value,
     If, While, For, Match, FormatStr,
-    Pattern, PatIdent, PatVariant,
 )
 from .._capa_types import BUILTIN_CAPS, HANDLE_BEARING_CAPS
+from .._free_vars import analyze_lambda
 from .._walk import walk_instrs
 from ._layout import (
     WasmEmissionError,
@@ -470,175 +470,23 @@ class _ClosureEmissionMixin:
         outer lambda's lifted name for nested cases, the
         top-level function's name otherwise."""
         # ------- free-variable analysis -------
-        own_params: set[str] = {p.name for p in instr.params}
-        defined_in_body: set[str] = set()
-
-        def collect_defs(instrs: list[Instr]) -> None:
-            for i in instrs:
-                dst = getattr(i, "dst", None)
-                if dst:
-                    defined_in_body.add(dst)
-                if isinstance(i, For):
-                    defined_in_body.add(i.name)
-                    collect_defs(i.body)
-                elif isinstance(i, If):
-                    collect_defs(i.then_body)
-                    collect_defs(i.else_body)
-                elif isinstance(i, While):
-                    collect_defs(i.cond_setup)
-                    collect_defs(i.body)
-                elif isinstance(i, Match):
-                    for arm in i.arms:
-                        # A guard's ANF prelude introduces its own
-                        # temporaries (a ``Some(n) if n > 5`` guard
-                        # lowers to a Bool BinOp into ``_ir_tN``).
-                        # They are defined in this lambda body just
-                        # like body temps, so they must enter
-                        # ``defined_in_body`` -- otherwise the lifted
-                        # function's locals sweep falls back to the
-                        # default i64 shape and a Bool guard result
-                        # (i32) trips the Wasm validator (i32 vs i64).
-                        if getattr(arm, "guard_setup", None):
-                            collect_defs(arm.guard_setup)
-                        collect_defs(arm.body)
-                        # Pattern-bound names also count as defined.
-                        self._collect_pattern_names(arm.pattern, defined_in_body)
-
-        collect_defs(instr.body)
-
-        # Free-variable set for this lambda. Direct references in
-        # the body contribute, AND references inside any nested
-        # MakeLambda body that the nested lambda itself cannot
-        # satisfy (i.e. not in the nested's own params or
-        # body-defined locals). This is the standard
-        # ``free_vars(outer) = free_vars(direct) ∪
-        #   (free_vars(nested) - nested.params - nested.locals)``
-        # rule -- a nested closure's unbound names must be
-        # supplied by some enclosing scope, and if the outer is
-        # that enclosing scope, the outer must capture them too
-        # (and then pass them through into the nested's env at
-        # MakeLambda emit time).
-        referenced: set[str] = set()
-
-        def free_vars(
-            body_instrs: list[Instr],
-            shadow_params: set[str],
-            shadow_locals: set[str],
-        ) -> set[str]:
-            out: set[str] = set()
-
-            def collect(v: Value) -> None:
-                if v.kind in ("local", "param") and v.name:
-                    if v.name in shadow_params or v.name in shadow_locals:
-                        return
-                    out.add(v.name)
-
-            def collect_callee(callee: Optional[str]) -> None:
-                # A ``Call``'s callee is a bare name, not a Value, so
-                # ``_values_of`` never yields it. When that name is a
-                # higher-order function CAPTURED from an enclosing
-                # scope -- ``compose(f, g) => fun(x) => g(f(x))`` where
-                # ``f`` / ``g`` appear only as call targets, never as
-                # plain values -- the free-variable set would miss it
-                # and the lifted body would emit ``call $f`` for a
-                # static function that does not exist. Add the callee
-                # iff it is not shadowed by the lambda's own params /
-                # locals and resolves to a Fun type somewhere in the
-                # enclosing scope (a top-level function or builtin
-                # resolves to Unknown and is correctly left alone).
-                if not callee:
-                    return
-                if callee in shadow_params or callee in shadow_locals:
-                    return
-                cap_ty = self._resolve_capture_type(
-                    callee, parent_fn, outer_scope,
-                )
-                if cap_ty.startswith("Fun"):
-                    out.add(callee)
-
-            def walk(instrs: list[Instr]) -> None:
-                for i in instrs:
-                    if isinstance(i, MakeLambda):
-                        # Compute the nested lambda's own
-                        # shadowed set and propagate only the
-                        # unsatisfied free variables upward.
-                        inner_params = {p.name for p in i.params}
-                        inner_defs: set[str] = set()
-                        # Mirror ``collect_defs`` for the nested
-                        # body so its locally-bound names shadow
-                        # any outer reference.
-                        def nested_defs(ins: list[Instr]) -> None:
-                            for ii in ins:
-                                dst = getattr(ii, "dst", None)
-                                if dst:
-                                    inner_defs.add(dst)
-                                if isinstance(ii, For):
-                                    inner_defs.add(ii.name)
-                                    nested_defs(ii.body)
-                                elif isinstance(ii, If):
-                                    nested_defs(ii.then_body)
-                                    nested_defs(ii.else_body)
-                                elif isinstance(ii, While):
-                                    nested_defs(ii.cond_setup)
-                                    nested_defs(ii.body)
-                                elif isinstance(ii, Match):
-                                    for arm in ii.arms:
-                                        if getattr(arm, "guard_setup", None):
-                                            nested_defs(arm.guard_setup)
-                                        nested_defs(arm.body)
-                                        self._collect_pattern_names(
-                                            arm.pattern, inner_defs,
-                                        )
-                        nested_defs(i.body)
-                        nested_free = free_vars(
-                            i.body, inner_params, inner_defs,
-                        )
-                        for n in nested_free:
-                            if (n not in shadow_params
-                                    and n not in shadow_locals):
-                                out.add(n)
-                        # Skip the standard value walk for
-                        # MakeLambda; its dst is not a reference.
-                        continue
-                    collect_callee(getattr(i, "callee_name", None))
-                    for v in self._values_of(i):
-                        collect(v)
-                    if isinstance(i, If):
-                        collect(i.cond)
-                        walk(i.then_body)
-                        walk(i.else_body)
-                    elif isinstance(i, While):
-                        walk(i.cond_setup)
-                        collect(i.cond)
-                        walk(i.body)
-                    elif isinstance(i, For):
-                        collect(i.iter)
-                        walk(i.body)
-                    elif isinstance(i, Match):
-                        collect(i.scrutinee)
-                        for arm in i.arms:
-                            # A guard (and its ANF prelude) can read
-                            # captured names that the arm body never
-                            # touches -- ``Some(n) if n > threshold``
-                            # references the enclosing ``threshold``
-                            # only inside the guard. Symmetric to
-                            # ``collect_defs`` above, both must be
-                            # walked or the capture is dropped from the
-                            # env layout and the lifted body emits a
-                            # ``local.get`` for a name that was never
-                            # allocated (unknown local at Wasm validate
-                            # time).
-                            if getattr(arm, "guard_setup", None):
-                                walk(arm.guard_setup)
-                            if getattr(arm, "guard", None) is not None:
-                                collect(arm.guard)
-                            walk(arm.body)
-
-            walk(body_instrs)
-            return out
-
-        referenced = free_vars(instr.body, own_params, defined_in_body)
-        captures_names = referenced  # shadows already subtracted
+        # Shared with the Python emitter via ``analyze_lambda`` so the
+        # two closure backends never disagree about what a lambda
+        # captures. The one Wasm-specific decision -- whether a bare
+        # ``Call`` callee is a higher-order function captured from an
+        # enclosing scope (``compose(f, g) => fun(x) => g(f(x))``) --
+        # is threaded in as the callback: a callee resolves to a
+        # capture iff its enclosing-scope type is a ``Fun`` (a
+        # top-level function or builtin resolves to Unknown and is
+        # correctly left alone).
+        vars_ = analyze_lambda(
+            instr,
+            callee_is_capture=lambda callee: self._resolve_capture_type(
+                callee, parent_fn, outer_scope,
+            ).startswith("Fun"),
+        )
+        defined_in_body = vars_.defined
+        captures_names = vars_.free  # shadows already subtracted
 
         # ------- env layout -------
         env_layout: dict[str, tuple[int, str]] = {}
@@ -765,16 +613,6 @@ class _ClosureEmissionMixin:
         # the right entry) and the top-level function name otherwise.
         key_parent = parent_scope_name or parent_fn.name
         self._lambda_by_dst[(key_parent, instr.dst)] = fn_idx
-
-    def _collect_pattern_names(self, pat: Pattern, out: set[str]) -> None:
-        if isinstance(pat, PatIdent):
-            out.add(pat.name)
-            return
-        if isinstance(pat, PatVariant):
-            for sub in pat.payloads:
-                self._collect_pattern_names(sub, out)
-            return
-        # PatWildcard / PatLiteral introduce no names.
 
     @staticmethod
     def _params_lookup(fn: Function, name: str) -> Optional[str]:

@@ -39,6 +39,7 @@ from .._nodes import (
     PatIdent, PatLiteral, PatTuple, PatVariant,
 )
 from .._lower_pattern import PatStruct, PatOr
+from .._free_vars import values_of
 from .._capa_types import BUILTIN_CAPS
 from .._cap_discovery import classify_cap_method
 from .._python_only_caps import find_rejection
@@ -630,27 +631,9 @@ class _DiscoveryMixin:
         """Return every Value-typed slot on ``instr`` so the
         discovery pass can intern string literals reachable from
         anywhere in the function body, not just the few sites the
-        previous pass enumerated by hand."""
-        out: list[Value] = []
-        for attr in (
-            "src", "value", "left", "right",
-            "operand", "receiver", "iter", "cond", "index",
-        ):
-            v = getattr(instr, attr, None)
-            if isinstance(v, Value):
-                out.append(v)
-        for v in getattr(instr, "args", []) or []:
-            if isinstance(v, Value):
-                out.append(v)
-        for fname_v in getattr(instr, "fields", []) or []:
-            if isinstance(fname_v, tuple) and len(fname_v) == 2:
-                v = fname_v[1]
-                if isinstance(v, Value):
-                    out.append(v)
-        for v in getattr(instr, "elements", []) or []:
-            if isinstance(v, Value):
-                out.append(v)
-        for part in getattr(instr, "parts", []) or []:
-            if isinstance(part, Value):
-                out.append(part)
-        return out
+        previous pass enumerated by hand.
+
+        Delegates to the shared ``_free_vars.values_of`` so the string-
+        interning walk and the free-variable walk enumerate an
+        instruction's value operands from one source."""
+        return values_of(instr)
