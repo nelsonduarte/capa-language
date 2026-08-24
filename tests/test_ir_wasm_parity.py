@@ -1072,6 +1072,37 @@ def _run_cir(src: str) -> str:
     return ""  # output already captured by caller's redirect
 
 
+def _run_cir_via_cli_fallback(src: str) -> str:
+    """Run a program the way the CLI's ``--ir`` flag does end to end:
+    drive the CIR pipeline, and on :class:`UnsupportedInIR` drop back
+    to the legacy transpiler exactly as ``capa --run --ir`` does, then
+    exec + capture stdout.
+
+    The plain :func:`_run_cir` raises on any construct the CIR does not
+    yet lower, which is a documented fallback rather than a divergence.
+    Mirroring the CLI's fallback lets the legacy-vs-``--ir`` oracle
+    below cover the *whole* parity corpus from the one ``_PARITY_PROGRAMS``
+    source without a second "CIR-unsupported" exclusion list: a program
+    the CIR cannot lower runs the legacy path and is byte-identical by
+    construction, while one it CAN lower is really exercised. A genuine
+    CIR miscompile still surfaces -- as wrong stdout, or as an emit-time
+    error (e.g. a Python ``SyntaxError``) that is not ``UnsupportedInIR``
+    and so is never swallowed here."""
+    from capa.ir import compile_program, UnsupportedInIR
+    module, result = _parse_and_analyze(src)
+    try:
+        code = compile_program(
+            module, types=result.types, bindings=result.bindings,
+        )
+    except UnsupportedInIR:
+        code = transpile(
+            module, types=result.types, bindings=result.bindings,
+        )
+    ns: dict = {"__name__": "__main__"}
+    exec(compile(code, "<cir-oracle>", "exec"), ns)
+    return ""  # output already captured by caller's redirect
+
+
 def _run_wasm_component(src: str) -> str:
     """Compile to .wasm, wrap via ``wasm-tools component new``, and
     run under ``WasmComponentHost``; capture stdout. Targets the
@@ -1089,6 +1120,88 @@ def _run_wasm_component(src: str) -> str:
     host = WasmComponentHost()
     host.run_main(component_blob)
     return ""  # output already captured by caller's redirect
+
+
+class TestPythonCirParity(unittest.TestCase):
+    """Legacy-transpiler-vs-``--ir`` output oracle over the full
+    ``examples/wasm/`` parity corpus.
+
+    The byte-diff oracle in ``tests/test_ir.py`` compares the two
+    Python paths only over the ~50 programs in ``examples/``; this
+    class extends it to every program in ``_PARITY_PROGRAMS`` (the
+    139-program construct-rich set the Wasm parity class already
+    curates), reusing that one list and the ``_EXCLUDED`` /
+    ``test_inventory_matches_examples_dir`` discipline rather than
+    inventing a second corpus or exclusion mechanism. The excluded
+    programs are non-deterministic (clock / stdin / ambient env /
+    live socket) for the same honest reasons they are excluded from
+    the Wasm parity run, so they stay out here too.
+
+    Unlike :class:`TestPythonWasmParity` this needs no wasm-tools:
+    both sides are pure Python, so it runs everywhere and its failure
+    means the CIR Python emitter (the ``--ir`` backend) has drifted
+    from the legacy transpiler. Programs the CIR cannot yet lower fall
+    back to the legacy path (byte-identical by construction); the
+    diagnostic below reports how many were exercised natively so the
+    coverage is not silently overstated.
+    """
+
+    def _assert_cir_parity(self, filename: str) -> None:
+        path = _EXAMPLES / filename
+        src = path.read_text(encoding="utf-8")
+        legacy_out = _capture_stdout(lambda: _run_python(src))
+        cir_out = _capture_stdout(
+            lambda: _run_cir_via_cli_fallback(src)
+        )
+        self.assertEqual(
+            legacy_out, cir_out,
+            msg=(
+                f"legacy/--ir output divergence for {filename}.\n"
+                f"--- legacy ---\n{legacy_out}\n"
+                f"--- --ir ---\n{cir_out}"
+            ),
+        )
+
+    def test_legacy_vs_ir_over_parity_corpus(self):
+        for filename in _PARITY_PROGRAMS:
+            with self.subTest(program=filename):
+                self._assert_cir_parity(filename)
+
+    def test_native_cir_coverage_of_parity_corpus(self):
+        # Diagnostic, not a strict gate: how many parity programs the
+        # CIR pipeline lowers natively (vs falling back to the legacy
+        # transpiler on UnsupportedInIR). Keeps the "count now covered"
+        # honest -- a regression that pushed programs back onto the
+        # fallback path would show up as a drop here even though
+        # test_legacy_vs_ir_over_parity_corpus would still be green
+        # (fallback is byte-identical). The witness programs the two
+        # --ir bug fixes closed must both be lowered natively.
+        from capa.ir import compile_program, UnsupportedInIR
+        native = 0
+        for filename in _PARITY_PROGRAMS:
+            src = (_EXAMPLES / filename).read_text(encoding="utf-8")
+            module, result = _parse_and_analyze(src)
+            try:
+                compile_program(
+                    module, types=result.types, bindings=result.bindings,
+                )
+                native += 1
+            except UnsupportedInIR:
+                pass
+        # The two programs whose --ir defects this oracle was extended
+        # to catch (a silent loop-capture miscompile; a Python-keyword
+        # SyntaxError) must lower natively, or the oracle would not
+        # actually exercise the fixed paths.
+        for witness in (
+            "closure_loop_capture.capa",
+            "generic_impl_methods_advanced.capa",
+        ):
+            src = (_EXAMPLES / witness).read_text(encoding="utf-8")
+            module, result = _parse_and_analyze(src)
+            compile_program(
+                module, types=result.types, bindings=result.bindings,
+            )  # raises if it ever regresses to a fallback / crash
+        self.assertGreater(native, 0)
 
 
 @unittest.skipUnless(
