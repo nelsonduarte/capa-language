@@ -2086,6 +2086,21 @@ def _main_dispatch() -> int:
             return 0
         if args.spdx:
             import json
+            from capa.manifest import (
+                find_package_root, resolve_dependency_identities,
+            )
+            # Symmetric with --cyclonedx: when the input belongs to a
+            # capa.toml project, render each resolved dependency as an SPDX
+            # Package (name + version + purl externalRef) from the SAME
+            # resolve walk. No project root (a bare .capa file) -> no
+            # dependency packages, so the output is exactly as before.
+            _dep_components = None
+            _dep_graph = None
+            _spdx_root = find_package_root(Path(filename))
+            if _spdx_root is not None:
+                _dep_components, _dep_graph = resolve_dependency_identities(
+                    _spdx_root,
+                )
             sbom = build_spdx(
                 module, filename=filename, source=source,
                 sources=linked.sources if linked is not None else None,
@@ -2093,6 +2108,8 @@ def _main_dispatch() -> int:
                 bindings=result.bindings,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
+                dependency_components=_dep_components,
+                dependency_graph=_dep_graph,
             )
             emit_artifact(json.dumps(sbom, indent=2))
             return 0

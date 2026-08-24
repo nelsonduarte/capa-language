@@ -59,7 +59,10 @@ The package is split internally:
   ``DependencyIdentity`` records.
 - :mod:`._spdx` - SPDX 2.3 SBOM wrapper around the internal
   manifest (``build_spdx``); the Linux Foundation companion to
-  the OWASP-flavoured CycloneDX output.
+  the OWASP-flavoured CycloneDX output. Also renders one SPDX Package
+  per resolved capa.toml dependency (with its purl as an externalRef)
+  from the SAME resolve-layer ``DependencyIdentity`` records the
+  CycloneDX side consumes.
 """
 
 from __future__ import annotations

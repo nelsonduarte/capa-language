@@ -23,6 +23,13 @@ allows; departing where SPDX schema is stricter):
   closest faithful encoding.
 - Capability membership and intra-module calls become explicit
   ``relationships[]`` entries (``DEPENDS_ON``).
+- Each resolved capa.toml dependency becomes its own SPDX ``Package``
+  carrying the dependency's ``purl`` as an ``externalRefs[]`` entry, and
+  the declared-edge relation becomes ``DEPENDS_ON`` relationships. The
+  records are RESOLVED upstream (:func:`resolve_dependency_identities` in
+  the compose layer) and consumed here verbatim: this emitter never parses
+  capa.toml / capa.lock and never assembles a purl of its own -- the exact
+  mirror of the CycloneDX dependency side, from the ONE source.
 
 SPDX IDs must match ``SPDXRef-[a-zA-Z0-9.-]+``. Function names
 like ``Foo::bar`` are sanitised by replacing non-conforming
@@ -32,6 +39,7 @@ readability.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import uuid
@@ -41,6 +49,7 @@ from typing import Any, Optional
 from .. import capa_ast as A
 
 from ..typesys import CAPABILITY_NAMES as _BUILTIN_CAPABILITY_NAMES
+from ._compose import ComposeError
 from ._funrec import _identifier_seed, build_manifest, display_filename
 from ._strings import _cap_sbom_value
 
@@ -107,6 +116,8 @@ def build_spdx(
     bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
     operator_declared_grants: Optional[dict[str, Any]] = None,
+    dependency_components: Optional[list[Any]] = None,
+    dependency_graph: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Build an SPDX 2.3 document with embedded Capa capability metadata.
 
@@ -117,6 +128,18 @@ def build_spdx(
     .capa text) is given, the source's sha256, so two unrelated
     projects that share a root basename get distinct namespaces.
     The CLI always passes ``source``.
+
+    ``dependency_components`` are the product's resolved capa.toml
+    dependencies as ``DependencyIdentity`` records (from
+    :func:`resolve_dependency_identities`); each becomes an SPDX
+    ``Package`` carrying its name, version, and (for a git dep) its purl
+    as an ``externalRefs[]`` entry. ``dependency_graph`` is the matching
+    declared-edge relation, rendered as ``DEPENDS_ON`` relationships. Both
+    default to empty (a bare .capa file with no project root), leaving the
+    program's own package / file / relationship subtree byte-identical to
+    today. This emitter is a pure CONSUMER of those records: it never reads
+    capa.toml / capa.lock and never assembles a purl -- the exact mirror of
+    the CycloneDX dependency side, keyed off the SAME single source.
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -398,6 +421,67 @@ def build_spdx(
                 })
                 seen_targets.add(target_id)
 
+    # ----- Real capa.toml dependency packages (resolved upstream) -----
+    # One APPENDED SPDX Package per resolved (or declared-but-unresolved)
+    # capa.toml dependency, carrying its name + version + purl externalRef.
+    # The records and the edge relation are built by the compose layer's
+    # ``resolve_dependency_identities`` and consumed verbatim here (the
+    # mirror of the CycloneDX side), so the dependency-identity knowledge
+    # and the single purl producer live in exactly one place. The program's
+    # own package / file / relationship subtree above is untouched -- deps
+    # are strictly appended.
+    dep_id_by_ref: dict[str, str] = {}
+    for record in dependency_components or []:
+        pkg = _dependency_package(record, timestamp)
+        packages.append(pkg)
+        # A record's bom_ref is globally unique (the purl, or a deterministic
+        # ``capa:dep`` fallback), so this table is the edge -> SPDXID
+        # translation the relationship graph reads below.
+        dep_id_by_ref[record.bom_ref] = pkg["SPDXID"]
+
+    # FAIL-CLOSED uniqueness guard. Every SPDXID in the document must be
+    # distinct: SPDX relationships resolve by SPDXID, so a collision would
+    # silently merge two elements. The Dep IDs carry a bom_ref hash suffix
+    # that should make this never fire, but the guard is the non-negotiable
+    # backstop (the codebase's fail-loud idiom, mirroring ``_function_files``
+    # in _compose.py). We raise ``ComposeError`` rather than emit a
+    # silently-wrong document.
+    seen_ids: set[str] = set()
+    for pkg in packages:
+        sid = pkg["SPDXID"]
+        if sid in seen_ids:
+            raise ComposeError(
+                f"duplicate SPDXID {sid!r} in the SPDX document; cannot "
+                f"emit an unambiguous SBOM"
+            )
+        seen_ids.add(sid)
+
+    # Mirror the CycloneDX dependencies graph as SPDX DEPENDS_ON edges,
+    # translating each bom_ref through the table above: the program
+    # DEPENDS_ON each top-level dependency, and each parent dependency
+    # DEPENDS_ON its declared sub-dependencies.
+    if dependency_graph is not None:
+        for child_ref in dependency_graph.root_children:
+            child_id = dep_id_by_ref.get(child_ref)
+            if child_id is not None:
+                relationships.append({
+                    "spdxElementId": program_id,
+                    "relationshipType": "DEPENDS_ON",
+                    "relatedSpdxElement": child_id,
+                })
+        for parent_ref, child_refs in dependency_graph.child_edges:
+            parent_id = dep_id_by_ref.get(parent_ref)
+            if parent_id is None:
+                continue
+            for child_ref in child_refs:
+                child_id = dep_id_by_ref.get(child_ref)
+                if child_id is not None:
+                    relationships.append({
+                        "spdxElementId": parent_id,
+                        "relationshipType": "DEPENDS_ON",
+                        "relatedSpdxElement": child_id,
+                    })
+
     return {
         "spdxVersion": SPDX_SPEC_VERSION,
         "dataLicense": SPDX_DATA_LICENSE,
@@ -411,6 +495,58 @@ def build_spdx(
         "packages": packages,
         "relationships": relationships,
     }
+
+
+def _dependency_package(record: Any, timestamp: str) -> dict[str, Any]:
+    """Render one resolved capa.toml ``DependencyIdentity`` as an SPDX
+    ``Package``.
+
+    A pure projection of the upstream record: ``name``, ``version`` and
+    ``purl`` are read VERBATIM (never re-derived here), so this emitter
+    holds no dependency-identity knowledge of its own and assembles no
+    purl. ``versionInfo`` is emitted only when the record has a version (an
+    unresolved dep has none); the purl travels as a single ``externalRefs``
+    entry only when present (a path dep has no purl).
+
+    The SPDXID is ``SPDXRef-Dep-<name>-<version-or-'none'>-<8 hex of the
+    bom_ref sha256>``. The ``Dep`` prefix keeps it distinct from the Fn /
+    Cap / Builtin / Package IDs; the bom_ref hash suffix makes two
+    distinct-source deps that happen to share a name AND version (a
+    distinct-source diamond) deterministically distinct. Sanitisation of
+    the name / version parts reuses the shared ``_spdx_id`` helper rather
+    than a second hand-rolled sanitiser."""
+    digest = hashlib.sha256(record.bom_ref.encode("utf-8")).hexdigest()[:8]
+    dep_id = _spdx_id("Dep", record.name, record.version or "none", digest)
+
+    annots: list[dict[str, str]] = [
+        _annot(timestamp, "kind", "dependency"),
+        _annot(timestamp, "source_kind", record.source_kind),
+        _annot(timestamp, "resolved", str(record.resolved).lower()),
+    ]
+    if record.pin:
+        annots.append(_annot(timestamp, "pin", record.pin))
+    if record.commit:
+        annots.append(_annot(timestamp, "commit", record.commit))
+    if record.rel_path:
+        annots.append(_annot(timestamp, "rel_path", record.rel_path))
+
+    package: dict[str, Any] = {
+        "SPDXID": dep_id,
+        "name": record.name,
+        "downloadLocation": "NOASSERTION",
+        "filesAnalyzed": False,
+        **_SPDX_NOASSERT_LICENSE_FIELDS,
+        "annotations": annots,
+    }
+    if record.version:
+        package["versionInfo"] = record.version
+    if record.purl:
+        package["externalRefs"] = [{
+            "referenceCategory": "PACKAGE-MANAGER",
+            "referenceType": "purl",
+            "referenceLocator": record.purl,
+        }]
+    return package
 
 
 def _flat_param(p: dict[str, Any]) -> str:
