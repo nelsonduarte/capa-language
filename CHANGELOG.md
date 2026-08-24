@@ -71,6 +71,14 @@ breaking changes and the discipline is still being shaped.
   network- / filesystem-dependent programs with no deterministic reference), with
   an inventory guard forcing every example onto one side, mirroring the discipline
   `tests/test_ir_wasm_parity.py` already uses.
+- *The hash-pinned CI dependency install can no longer erode silently (audit F3).*
+  The dev / CI dependencies install from two uv-generated lockfiles under
+  `pip install --require-hashes`, but nothing pinned that: dropping the flag from an
+  install step, or a lockfile entry regenerated without a `--hash=`, would leave the
+  supply-chain guarantee gone while the lock still looked pinned (the PyYAML
+  silent-skip class). A fail-closed guard (`tests/test_supply_chain_lock_hashes.py`)
+  derives the installed locks from `tests.yml` itself, then fails if any lock install
+  omits `--require-hashes` or if any requirement in an installed lock carries no hash.
 - *The Wasm capability-soundness harnesses can no longer skip silently where they
   are required to run.* `TestWasmRuntimeSubsetOfManifest` and
   `TestWasmAttenuationHonoured` `skipUnless` the Wasm toolchain, so a broken
