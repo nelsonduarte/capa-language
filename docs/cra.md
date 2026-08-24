@@ -14,8 +14,11 @@ so the technical claims are reviewable against the artefact.
 > elements placed on the EU market must be *secure by design*,
 > ship *transparent dependency information*, and have
 > *vulnerability-handling processes* in place. The regulation
-> entered into force on 10 December 2024 with most obligations
-> applying from 11 December 2027.
+> entered into force on 10 December 2024. Its obligations phase
+> in: Chapter IV (notification of conformity-assessment bodies)
+> applies from 11 June 2026, the Article 14 vulnerability and
+> incident reporting obligations from 11 September 2026, and the
+> remaining obligations from 11 December 2027.
 
 [cra-text]: https://eur-lex.europa.eu/eli/reg/2024/2847/oj
 
@@ -43,6 +46,14 @@ responsibility regardless of language choice. Capa makes the
 technical side cheaper; it does not displace the
 organisational side.
 
+No CRA harmonised standard has yet been published in the
+Official Journal: the 41 standards under standardisation
+request M/606 (accepted by CEN, CENELEC, and ETSI in April
+2025) are still in development, and no SBOM-format implementing
+act exists. There is therefore no presumption of conformity to
+invoke and nothing here can honestly be called "CRA-compliant".
+This document uses "maps to" and "aligns with" deliberately.
+
 ---
 
 ## CRA requirements that Capa addresses
@@ -63,7 +74,7 @@ both.
 |---|---|---|
 | **Annex I Part I (2)(a)** | "be made available on the market without known exploitable vulnerabilities" | Direct (class-level): Capa's structural capability discipline rules out a *class* of vulnerabilities (ambient-authority abuse), demonstrated by the six CVE case studies in [`docs/`](.). The Wasm Component Model build adds a second layer at *interface granularity* for a compiler-produced component: the component imports only the WIT interfaces for the capabilities the program declares, so a capability whose interface is absent from the world is not reachable. This confinement is enforced by the trusted Capa emitter, not at the runtime boundary. Intra-artifact attenuation (a restricted capability passed across a function boundary) and the core-module path rely on the emitter too, and a third-party-supplied `.wasm` / `.cwasm` artifact is itself part of the trusted computing base (see [`trust-model.md`](trust-model.md)). For known-CVE detection at dependency level, the CycloneDX SBOM Capa emits is consumable by Dependency-Track / OSV-Scanner. |
 | **Annex I Part I (2)(b)** | "be made available on the market with a secure-by-default configuration" | Direct: Capa programs cannot exercise authority they did not declare. The default for any function is *zero capabilities*; widening is explicit. Secure-by-default is the only configuration available. |
-| **Annex I Part I (2)(c)** | "ensure that vulnerabilities can be addressed through security updates" | Indirect: the CycloneDX SBOM includes versions and a stable component identity scheme (`pkg:` PURLs), so update tracking ties back to the same identity used at audit time. |
+| **Annex I Part I (2)(c)** | "ensure that vulnerabilities can be addressed through security updates" | Indirect: the CycloneDX SBOM inventories the program's own functions and capabilities as components with deterministic `capa:` bom-refs, so a capability-level diff between two builds ties back to the same stable identity used at audit time. The current output carries no PURLs and no per-component versions; the only version field is the Capa compiler's own (`capa_version`). Enumerating third-party dependencies with their versions is not yet emitted. |
 | **Annex I Part I (2)(d)** | "ensure protection from unauthorised access ... appropriate authentication, identity management or access management systems" | Direct, at the source level: capabilities are unforgeable handles; access management is the type system. Cross-process authentication is below Capa's layer. |
 | **Annex I Part I (2)(e)** | "protect the confidentiality of stored, transmitted or otherwise processed data ... encrypting relevant data at rest or in transit" | Partial, at the data-flow level: Capa does not provide crypto primitives (the *encryption* half stays the user's), but information-flow control directly governs *where* confidential data may go. Mark data `@secret` and the analyzer tracks its flow to a public sink (a log, a network call, a file write). This is tiered: by default a secret reaching a sink without passing through an audited `declassify` is a *warning* (best-effort, the build still proceeds); under `@strict_ifc()` the same flow is a hard compile-time error (fail-closed). Either way, every audited `declassify` disclosure is recorded in the SBOM as `declassification_sites` and enumerated for the auditor. The analyzer itself is not machine-verified: the model-vs-implementation gap is argued informally and cross-checked by a differential harness against a machine-checked Agda noninterference proof of the core calculus, not closed by proof. See the IFC subsection below. |
 | **Annex I Part I (2)(f)** | "protect the integrity of stored, transmitted or otherwise processed data ... programs, configuration against any manipulation" | Direct: every function's authority ceiling (`transitively_reachable_capabilities`) is derivable from its signature (Manifest Completeness Theorem, an upper bound, see [`docs/semantics.md`](semantics.md)). A capability reachable only through a container-typed parameter is charged to that ceiling and to its SBOM dependency edges, though it does not appear in the narrower per-function `declared_capabilities` (`capa:declared_capability`) view; diff the reachable view for a complete picture. Manipulation of a dependency that adds `Fs`/`Net`/`Env` access is statically visible in the SBOM diff. |
@@ -74,7 +85,7 @@ both.
 | **Annex I Part I (2)(k)** | "be designed, developed and produced to reduce the impact of an incident using appropriate exploitation mitigation mechanisms and techniques" | Direct, structurally: capability attenuation ([`fs_env_attenuation.capa`](../examples/fs_env_attenuation.capa)) bounds the blast radius of any compromised dependency at compile time. Under the Wasm Component Model build this holds at *interface granularity* for a compiler-produced component: the component runs in the Wasm sandbox and imports only the WIT interfaces for its declared capabilities, so a compromised dependency cannot reach an interface absent from the world. Intra-artifact attenuation (restriction state that must travel with a capability across a function boundary) and the core-module path are enforced by the trusted Capa emitter rather than the runtime boundary, and the executed `.wasm` / `.cwasm` is part of the trusted computing base (see [`trust-model.md`](trust-model.md)). |
 | **Annex I Part I (2)(l)** | "provide security related information by recording and monitoring relevant internal activity" | Partial at compile time: Capa's opt-in runtime trace (`capa/runtime/_trace.py`) records capability invocations. Direct under the Wasm CM build: every capability call is a WIT import the host implements, so the host can transparently log every authority crossing without instrumenting the guest. |
 | **Annex I Part I (2)(m)** | "provide the possibility for users to securely and easily remove on a permanent basis all data and settings" | Out of scope for the language layer. |
-| **Annex I Part II (1)** | "identify and document vulnerabilities and components contained in the product ... including by drawing up a software bill of materials in a commonly used and machine-readable format covering at the very least the top-level dependencies" | **Direct, primary fit**: `capa --cyclonedx` emits a CycloneDX 1.5 SBOM with the capability manifest embedded as standard `properties[]` entries. This is a strict superset of the CRA minimum: not just *what* is included but *what each component can do*. |
+| **Annex I Part II (1)** | "identify and document vulnerabilities and components contained in the product ... including by drawing up a software bill of materials in a commonly used and machine-readable format covering at the very least the top-level dependencies" | **Partial, primary fit**: `capa --cyclonedx` emits a CycloneDX 1.5 SBOM with the capability manifest embedded as standard `properties[]` entries. The genuine contribution is the capability layer: not just *what* is in the box but *what each of the program's own functions can do*. It does not by itself meet the stated minimum, though: the components are the program's own functions and capabilities, so the SBOM does not currently enumerate third-party dependencies with versions ("at the very least the top-level dependencies"). Pair it with a dependency-resolving SBOM tool to cover that axis. |
 | **Annex I Part II (2)** | "address and remediate vulnerabilities without delay" | Out of scope (organisational). |
 | **Annex I Part II (3)** | "apply effective and regular tests and reviews of the security of the product" | Partial: the property-based test suite (`tests/test_properties.py`) and the six CVE case studies demonstrate ongoing review of the discipline. Per-product test obligations remain the manufacturer's. |
 | **Annex I Part II (4)** | "once a security update has been made available, share and publicly disclose information about fixed vulnerabilities" | Out of scope (organisational). |
@@ -84,12 +95,12 @@ both.
 
 ## The novel contribution: capability-aware SBOMs
 
-The CRA's Annex I Part II (1) is satisfied by any
-machine-readable SBOM. CycloneDX, SPDX, and SWID are the
-common formats; all three list components and versions.
-[NTIA's minimum elements][ntia], a common baseline that
-EU-side SBOM guidance (ENISA and BSI TR-03183-2) builds on and
-goes beyond, require:
+The CRA's Annex I Part II (1) asks for a commonly-used,
+machine-readable SBOM covering at least the top-level
+dependencies. CycloneDX, SPDX, and SWID are the common formats;
+all three list components and versions. [NTIA's minimum
+elements][ntia], a common baseline that later SBOM guidance
+(ENISA and BSI TR-03183-2) builds on and extends, require:
 
 - supplier name
 - component name
@@ -100,6 +111,13 @@ goes beyond, require:
 - timestamp
 
 [ntia]: https://www.ntia.gov/files/ntia/publications/sbom_minimum_elements_report.pdf
+
+Capa emits CycloneDX 1.5 and SPDX 2.3. BSI TR-03183-2 v2.1.0
+(2025-08-20) now asks for CycloneDX >= 1.6 or SPDX >= 3.0.1, so
+Capa is currently a format version behind that guideline. BSI
+TR-03183-2 is a German national technical guideline, not EU law
+and not a CRA mandate; it is cited here only as a widely
+referenced SBOM baseline.
 
 These tell you *what is in the box*. They do not tell you
 *what the box can do*. Two versions of a library with
@@ -231,7 +249,13 @@ To start from a working skeleton rather than wiring this up by
 hand, the [`capa_cra_template`](https://github.com/nelsonduarte/capa_cra_template)
 repository is a CRA-ready starter project: a capability-bounded
 program plus CI/release workflows that emit the SBOM, VEX, and
-SLSA L2 provenance on every build. To turn those artefacts into a
+build provenance on every build. The language's own
+`capa --provenance` emits an unsigned SLSA Build L1 attestation
+([`capa/manifest/_provenance.py`](../capa/manifest/_provenance.py));
+the template's release pipeline adds a signed SLSA
+build-provenance attestation (Build L2) through its Sigstore
+step, so the L2 property is a property of the signing CI, not of
+the compiler. To turn those artefacts into a
 regulator-readable Markdown audit pack plus a JSON attestation,
 [`capa_governance_pack`](https://github.com/nelsonduarte/capa_governance_pack)
 consumes the SBOM + policy + VEX and produces both.
