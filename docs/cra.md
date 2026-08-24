@@ -74,7 +74,7 @@ both.
 |---|---|---|
 | **Annex I Part I (2)(a)** | "be made available on the market without known exploitable vulnerabilities" | Direct (class-level): Capa's structural capability discipline rules out a *class* of vulnerabilities (ambient-authority abuse), demonstrated by the six CVE case studies in [`docs/`](.). The Wasm Component Model build adds a second layer at *interface granularity* for a compiler-produced component: the component imports only the WIT interfaces for the capabilities the program declares, so a capability whose interface is absent from the world is not reachable. This confinement is enforced by the trusted Capa emitter, not at the runtime boundary. Intra-artifact attenuation (a restricted capability passed across a function boundary) and the core-module path rely on the emitter too, and a third-party-supplied `.wasm` / `.cwasm` artifact is itself part of the trusted computing base (see [`trust-model.md`](trust-model.md)). For known-CVE detection at dependency level, the CycloneDX SBOM Capa emits is consumable by Dependency-Track / OSV-Scanner. |
 | **Annex I Part I (2)(b)** | "be made available on the market with a secure-by-default configuration" | Direct: Capa programs cannot exercise authority they did not declare. The default for any function is *zero capabilities*; widening is explicit. Secure-by-default is the only configuration available. |
-| **Annex I Part I (2)(c)** | "ensure that vulnerabilities can be addressed through security updates" | Indirect: the CycloneDX SBOM inventories the program's own functions and capabilities as components with deterministic `capa:` bom-refs, so a capability-level diff between two builds ties back to the same stable identity used at audit time. The current output carries no PURLs and no per-component versions; the only version field is the Capa compiler's own (`capa_version`). Enumerating third-party dependencies with their versions is not yet emitted. |
+| **Annex I Part I (2)(c)** | "ensure that vulnerabilities can be addressed through security updates" | Indirect: the CycloneDX SBOM inventories the program's own functions and capabilities as components with deterministic `capa:` bom-refs, so a capability-level diff between two builds ties back to the same stable identity used at audit time. When the input belongs to a `capa.toml` project the SBOM additionally lists one `library` component per resolved dependency, each with its name, version, and (for a git dependency) a real `purl`, so a security update that moves a dependency to a new pinned commit surfaces as a changed purl in the same document. Residuals: a path dependency has no purl, a transitive dependency at a source the root `capa.lock` does not cover carries its declared pin rather than a resolved commit SHA, and the host Python interpreter is not itself a component. |
 | **Annex I Part I (2)(d)** | "ensure protection from unauthorised access ... appropriate authentication, identity management or access management systems" | Direct, at the source level: capabilities are unforgeable handles; access management is the type system. Cross-process authentication is below Capa's layer. |
 | **Annex I Part I (2)(e)** | "protect the confidentiality of stored, transmitted or otherwise processed data ... encrypting relevant data at rest or in transit" | Partial, at the data-flow level: Capa does not provide crypto primitives (the *encryption* half stays the user's), but information-flow control directly governs *where* confidential data may go. Mark data `@secret` and the analyzer tracks its flow to a public sink (a log, a network call, a file write). This is tiered: by default a secret reaching a sink without passing through an audited `declassify` is a *warning* (best-effort, the build still proceeds); under `@strict_ifc()` the same flow is a hard compile-time error (fail-closed). Either way, every audited `declassify` disclosure is recorded in the SBOM as `declassification_sites` and enumerated for the auditor. The analyzer itself is not machine-verified: the model-vs-implementation gap is argued informally and cross-checked by a differential harness against a machine-checked Agda noninterference proof of the core calculus, not closed by proof. See the IFC subsection below. |
 | **Annex I Part I (2)(f)** | "protect the integrity of stored, transmitted or otherwise processed data ... programs, configuration against any manipulation" | Direct: every function's authority ceiling (`transitively_reachable_capabilities`) is derivable from its signature (Manifest Completeness Theorem, an upper bound, see [`docs/semantics.md`](semantics.md)). A capability reachable only through a container-typed parameter is charged to that ceiling and to its SBOM dependency edges, though it does not appear in the narrower per-function `declared_capabilities` (`capa:declared_capability`) view; diff the reachable view for a complete picture. Manipulation of a dependency that adds `Fs`/`Net`/`Env` access is statically visible in the SBOM diff. |
@@ -85,7 +85,7 @@ both.
 | **Annex I Part I (2)(k)** | "be designed, developed and produced to reduce the impact of an incident using appropriate exploitation mitigation mechanisms and techniques" | Direct, structurally: capability attenuation ([`fs_env_attenuation.capa`](../examples/fs_env_attenuation.capa)) bounds the blast radius of any compromised dependency at compile time. Under the Wasm Component Model build this holds at *interface granularity* for a compiler-produced component: the component runs in the Wasm sandbox and imports only the WIT interfaces for its declared capabilities, so a compromised dependency cannot reach an interface absent from the world. Intra-artifact attenuation (restriction state that must travel with a capability across a function boundary) and the core-module path are enforced by the trusted Capa emitter rather than the runtime boundary, and the executed `.wasm` / `.cwasm` is part of the trusted computing base (see [`trust-model.md`](trust-model.md)). |
 | **Annex I Part I (2)(l)** | "provide security related information by recording and monitoring relevant internal activity" | Partial at compile time: Capa's opt-in runtime trace (`capa/runtime/_trace.py`) records capability invocations. Direct under the Wasm CM build: every capability call is a WIT import the host implements, so the host can transparently log every authority crossing without instrumenting the guest. |
 | **Annex I Part I (2)(m)** | "provide the possibility for users to securely and easily remove on a permanent basis all data and settings" | Out of scope for the language layer. |
-| **Annex I Part II (1)** | "identify and document vulnerabilities and components contained in the product ... including by drawing up a software bill of materials in a commonly used and machine-readable format covering at the very least the top-level dependencies" | **Partial, primary fit**: `capa --cyclonedx` emits a CycloneDX 1.5 SBOM with the capability manifest embedded as standard `properties[]` entries. The genuine contribution is the capability layer: not just *what* is in the box but *what each of the program's own functions can do*. It does not by itself meet the stated minimum, though: the components are the program's own functions and capabilities, so the SBOM does not currently enumerate third-party dependencies with versions ("at the very least the top-level dependencies"). Pair it with a dependency-resolving SBOM tool to cover that axis. |
+| **Annex I Part II (1)** | "identify and document vulnerabilities and components contained in the product ... including by drawing up a software bill of materials in a commonly used and machine-readable format covering at the very least the top-level dependencies" | **Primary fit**: `capa --cyclonedx` emits a CycloneDX 1.6 SBOM with the capability manifest embedded as standard `properties[]` entries. For a `capa.toml` project it enumerates the top-level dependencies the stated minimum asks for: one `library` component per resolved dependency, each with its name, version, and (for a git dependency) a real `purl`, plus a CycloneDX `dependencies` graph edge from the program to each one. That meets the "at the very least the top-level dependencies" floor for the resolved set, and a same-source transitive dependency locked by `capa.lock` is covered too (its diamond collapses to one component carrying the resolved commit SHA). The genuine contribution is the capability layer on top: not just *what* is in the box but *what each of the program's own functions can do*. Residuals stay honest: a transitive dependency at a source the root lock does not cover carries its declared pin rather than a SHA, a path dependency gets no purl, and the SPDX output does not yet carry dependency purls. |
 | **Annex I Part II (2)** | "address and remediate vulnerabilities without delay" | Out of scope (organisational). |
 | **Annex I Part II (3)** | "apply effective and regular tests and reviews of the security of the product" | Partial: the property-based test suite (`tests/test_properties.py`) and the six CVE case studies demonstrate ongoing review of the discipline. Per-product test obligations remain the manufacturer's. |
 | **Annex I Part II (4)** | "once a security update has been made available, share and publicly disclose information about fixed vulnerabilities" | Out of scope (organisational). |
@@ -112,12 +112,33 @@ elements][ntia], a common baseline that later SBOM guidance
 
 [ntia]: https://www.ntia.gov/files/ntia/publications/sbom_minimum_elements_report.pdf
 
-Capa emits CycloneDX 1.5 and SPDX 2.3. BSI TR-03183-2 v2.1.0
-(2025-08-20) now asks for CycloneDX >= 1.6 or SPDX >= 3.0.1, so
-Capa is currently a format version behind that guideline. BSI
+Capa emits CycloneDX 1.6 and SPDX 2.3. BSI TR-03183-2 v2.1.0
+(2025-08-20) asks for CycloneDX >= 1.6 or SPDX >= 3.0.1: the
+CycloneDX output now meets that guideline's CycloneDX floor,
+while the SPDX output stays a major version below the
+SPDX >= 3.0.1 line and carries no dependency purls. BSI
 TR-03183-2 is a German national technical guideline, not EU law
 and not a CRA mandate; it is cited here only as a widely
 referenced SBOM baseline.
+
+For a `capa.toml` project the CycloneDX output resolves each
+declared dependency into a `library` component and names it as
+precisely as the lock allows:
+
+- A **git dependency** carries a
+  `pkg:generic/<name>@<version>?vcs_url=git+<url>@<rev>` purl
+  (percent-encoded). The revision `<rev>` is the `capa.lock`
+  commit SHA when the dependency is resolved, including a
+  same-source transitive dependency under the lock, whose
+  diamond collapses to a single component carrying that SHA.
+- An **unresolved dependency**, or a transitive dependency at a
+  source the root lock does not cover, carries its declared pin
+  (tag or rev) in the `vcs_url` instead of a SHA; an unresolved
+  dependency also omits the version.
+- A **path dependency** gets no purl: it is named by its name,
+  version, a `capa:source_kind=path` property, and its
+  root-relative path, because it has no registry or VCS identity
+  to fabricate.
 
 These tell you *what is in the box*. They do not tell you
 *what the box can do*. Two versions of a library with
@@ -334,6 +355,6 @@ broader landscape of supply-chain defences.
 - [European Commission CRA factsheet (Nov 2024)](https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act)
 - [ENISA's CRA Q&A][enisa-faq]
 - [NTIA SBOM minimum elements][ntia]
-- [CycloneDX 1.5 specification](https://cyclonedx.org/docs/1.5/json/)
+- [CycloneDX 1.6 specification](https://cyclonedx.org/docs/1.6/json/)
 
 [enisa-faq]: https://www.enisa.europa.eu/topics/cyber-resilience-act

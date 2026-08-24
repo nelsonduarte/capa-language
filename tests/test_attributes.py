@@ -309,7 +309,7 @@ class TestManifest(unittest.TestCase):
 
 
 # =============================================================
-# CycloneDX 1.5 wrapper
+# CycloneDX 1.6 wrapper
 # =============================================================
 
 class TestIneligibilityProofs(unittest.TestCase):
@@ -646,7 +646,7 @@ class TestCycloneDX(unittest.TestCase):
             '    stdio.println("hi")\n'
         )
         self.assertEqual(sbom["bomFormat"], "CycloneDX")
-        self.assertEqual(sbom["specVersion"], "1.5")
+        self.assertEqual(sbom["specVersion"], "1.6")
         self.assertEqual(sbom["version"], 1)
         self.assertTrue(sbom["serialNumber"].startswith("urn:uuid:"))
         self.assertEqual(sbom["metadata"]["timestamp"], "2026-05-12T00:00:00Z")

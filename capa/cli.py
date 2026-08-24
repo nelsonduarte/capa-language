@@ -1236,9 +1236,10 @@ def _main_dispatch() -> int:
         "--cyclonedx",
         action="store_true",
         help=(
-            "emit a CycloneDX 1.5 SBOM with the capability manifest "
-            "embedded as standard properties[] entries (consumable by "
-            "Dependency-Track, OSV-Scanner, syft, etc.). Set "
+            "emit a CycloneDX 1.6 SBOM with the capability manifest "
+            "embedded as standard properties[] entries, plus one component "
+            "per resolved capa.toml dependency (name + version + purl); "
+            "consumable by Dependency-Track, OSV-Scanner, syft, etc. Set "
             "SOURCE_DATE_EPOCH (Unix UTC seconds) to pin the build "
             "timestamp and make this and the other SBOM/attestation "
             "artefacts byte-reproducible."
@@ -2057,6 +2058,20 @@ def _main_dispatch() -> int:
                 return 2
         if args.cyclonedx:
             import json
+            from capa.manifest import (
+                find_package_root, resolve_dependency_identities,
+            )
+            # When the input belongs to a capa.toml project, list each
+            # resolved dependency as a real component (name + version +
+            # purl). No project root (a bare .capa file) -> no dependency
+            # components, so the output is exactly as before.
+            _dep_components = None
+            _dep_graph = None
+            _cdx_root = find_package_root(Path(filename))
+            if _cdx_root is not None:
+                _dep_components, _dep_graph = resolve_dependency_identities(
+                    _cdx_root,
+                )
             sbom = build_cyclonedx(
                 module, filename=filename, source=source,
                 sources=linked.sources if linked is not None else None,
@@ -2064,6 +2079,8 @@ def _main_dispatch() -> int:
                 bindings=result.bindings,
                 expr_labels=result.expr_labels,
                 operator_declared_grants=_operator_grants,
+                dependency_components=_dep_components,
+                dependency_graph=_dep_graph,
             )
             emit_artifact(json.dumps(sbom, indent=2))
             return 0

@@ -1,8 +1,15 @@
-"""CycloneDX 1.5 SBOM wrapper around the Capa manifest.
+"""CycloneDX 1.6 SBOM wrapper around the Capa manifest.
 
 Wraps the internal capability manifest in a valid CycloneDX SBOM so
 that Capa programs can be ingested by existing SBOM tooling
 (Dependency-Track, OSV-Scanner, syft, etc.).
+
+When the input belongs to a ``capa.toml`` project, each resolved
+capa.toml dependency is emitted as an ADDED ``library`` component
+carrying its name, version, and a real ``purl`` (for git deps). The
+records are RESOLVED upstream (:func:`resolve_dependency_identities`
+in the compose layer) and consumed here verbatim: this emitter never
+parses capa.toml / capa.lock and never assembles a purl of its own.
 
 Mapping decisions (v1):
 
@@ -38,10 +45,11 @@ from ._strings import _cap_sbom_value
 from ._vex import build_vex_entries
 
 
-# Target CycloneDX specification. 1.5 is widely supported by SBOM
-# tooling (Dependency-Track, OSV-Scanner, sbom-utility); 1.6 is
-# newer but adoption is less universal. Bump when 1.6 is everywhere.
-CYCLONEDX_SPEC_VERSION = "1.5"
+# Target CycloneDX specification. 1.6 adds no required fields over 1.5
+# and keeps the object-form ``metadata.tools`` and every field Capa
+# emits valid; the bump only widens what consumers accept (e.g. the
+# richer component identity a real dependency purl carries).
+CYCLONEDX_SPEC_VERSION = "1.6"
 
 # Strict CycloneDX validators (``cyclonedx-cli validate --strict``,
 # OWASP Dependency-Track in compliance mode) expect every component
@@ -74,8 +82,10 @@ def build_cyclonedx(
     bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
     operator_declared_grants: Optional[dict[str, Any]] = None,
+    dependency_components: Optional[list[Any]] = None,
+    dependency_graph: Optional[Any] = None,
 ) -> dict[str, Any]:
-    """Build a CycloneDX 1.5 SBOM with embedded Capa capability metadata.
+    """Build a CycloneDX 1.6 SBOM with embedded Capa capability metadata.
 
     ``timestamp`` and ``serial_number`` are exposed as parameters for
     deterministic test output; production callers should leave them
@@ -84,6 +94,17 @@ def build_cyclonedx(
     text) is given, the source's sha256, so two unrelated projects
     that share a root basename get distinct serial numbers. The CLI
     always passes ``source``.
+
+    ``dependency_components`` are the product's resolved capa.toml
+    dependencies as ``DependencyIdentity`` records (from
+    :func:`resolve_dependency_identities`); each becomes an ADDED
+    ``library`` component with its name, version, and real purl.
+    ``dependency_graph`` is the matching declared-edge relation, used to
+    populate the CycloneDX ``dependencies`` graph. Both default to empty
+    (a bare .capa file with no project root), leaving the program's own
+    function / capability components exactly as before. This emitter is a
+    pure CONSUMER of those records: it never reads capa.toml / capa.lock
+    and never assembles a purl.
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -409,6 +430,25 @@ def build_cyclonedx(
                 "dependsOn": deps_for_this_fn,
             })
 
+    # ----- Real capa.toml dependency components (resolved upstream) -----
+    # One ADDED library component per resolved (or declared-but-unresolved)
+    # capa.toml dependency, carrying its name + version + real purl. The
+    # records and the edge relation are built by the compose layer's
+    # ``resolve_dependency_identities``; this emitter only renders them, so
+    # the dependency-identity knowledge (and the single purl producer) lives
+    # in exactly one place. The program's own function / capability
+    # components above are untouched.
+    for record in dependency_components or []:
+        components.append(_dependency_component(record))
+    if dependency_graph is not None:
+        program_depends_on.extend(dependency_graph.root_children)
+        for parent_ref, child_refs in dependency_graph.child_edges:
+            if child_refs:
+                dependencies.append({
+                    "ref": parent_ref,
+                    "dependsOn": list(child_refs),
+                })
+
     if program_depends_on:
         dependencies.insert(0, {
             "ref": program_bom_ref,
@@ -438,6 +478,41 @@ def build_cyclonedx(
     if vulnerabilities:
         document["vulnerabilities"] = vulnerabilities
     return document
+
+
+def _dependency_component(record: Any) -> dict[str, Any]:
+    """Render one resolved capa.toml ``DependencyIdentity`` as a CycloneDX
+    ``library`` component.
+
+    A pure projection of the upstream record: the ``bom-ref``, ``version``
+    and ``purl`` are read verbatim (never re-derived here), so this
+    emitter holds no dependency-identity knowledge of its own. ``version``
+    and ``purl`` are emitted only when present (an unresolved dep has no
+    version; a path dep has no purl)."""
+    props: list[dict[str, str]] = [
+        {"name": "capa:kind", "value": "dependency"},
+        {"name": "capa:source_kind", "value": record.source_kind},
+        {"name": "capa:resolved", "value": str(record.resolved).lower()},
+    ]
+    if record.pin:
+        props.append({"name": "capa:pin", "value": record.pin})
+    if record.commit:
+        props.append({"name": "capa:commit", "value": record.commit})
+    if record.rel_path:
+        props.append({"name": "capa:rel_path", "value": record.rel_path})
+    component: dict[str, Any] = {
+        "bom-ref": record.bom_ref,
+        "type": "library",
+        "name": record.name,
+        "scope": "required",
+        **_CDX_COMPONENT_COMPLIANCE_FIELDS,
+        "properties": props,
+    }
+    if record.version:
+        component["version"] = record.version
+    if record.purl:
+        component["purl"] = record.purl
+    return component
 
 
 def _flat_param(p: dict[str, Any]) -> str:
