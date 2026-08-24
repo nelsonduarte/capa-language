@@ -137,6 +137,47 @@ def _unify_ty(
     return True
 
 
+def _sanitise_type_token(ty: str) -> str:
+    """Turn a concrete Capa type string into a WAT-safe identifier
+    token for a mangled name: ``List<Int>`` => ``List_Int``,
+    ``(T, U)`` => ``Tup_T_U``, ``Socket[Connected]`` =>
+    ``Socket_St_Connected``. Stays readable in WAT dumps + stack
+    traces.
+
+    A WAT ``$name`` identifier cannot contain ``( ) [ ] ,`` or a
+    space; those are the only punctuation a concrete type string
+    carries (angle brackets for generics, parens for tuples/``Fun``,
+    square brackets for a typestate qualifier, commas + spaces
+    between args). ``->`` in a ``Fun`` type reduces to ``-``, which
+    *is* a legal WAT identifier char, so it needs no handling.
+
+    Each delimiter maps to a *distinct* token so that DELIMITER-vs-
+    DELIMITER shapes stay apart: the typestate ``[`` becomes ``_St_``,
+    kept separate from the generic ``<`` (``_``), so ``Socket[Con]``,
+    ``Socket<Con>`` and ``Socket[Listening]`` all yield different
+    tokens. This is NOT injective in general, though: a source
+    identifier that literally contains one of the output tokens
+    aliases the delimiter shape it mimics, e.g. a literal
+    ``Socket_St_Connected`` collides with ``Socket[Connected]`` (and
+    likewise ``List_Int`` with ``List<Int>``, ``Tup_Int_Bool`` with
+    ``(Int, Bool)``). That collision class is pre-existing and shared
+    by every mapping here; closing it would need a reversible/escaped
+    encoding (possible future hardening, not done here). The single
+    source of this chain -- shared by ``_mangle`` and ``_mangle_type``
+    -- keeps the function and type manglers from drifting apart."""
+    return (
+        ty.replace("<", "_")
+          .replace(">", "")
+          .replace("[", "_St_")
+          .replace("]", "")
+          .replace(", ", "_")
+          .replace(",", "_")
+          .replace(" ", "")
+          .replace("(", "Tup_")
+          .replace(")", "")
+    )
+
+
 def _mangle(name: str, subst: dict[str, str], type_params: list[str]) -> str:
     """Mangled name for a specialised function. Stable shape so
     repeated calls with the same substitution dedupe. Uses the
@@ -146,18 +187,7 @@ def _mangle(name: str, subst: dict[str, str], type_params: list[str]) -> str:
     parts = [name]
     for tp in type_params:
         c = subst.get(tp, tp)
-        # Sanitise: ``List<Int>`` => ``List_Int``, ``(T, U)`` =>
-        # ``Tup_T_U``. Stays readable in WAT dumps + stack traces.
-        sanitised = (
-            c.replace("<", "_")
-             .replace(">", "")
-             .replace(", ", "_")
-             .replace(",", "_")
-             .replace(" ", "")
-             .replace("(", "Tup_")
-             .replace(")", "")
-        )
-        parts.append(sanitised)
+        parts.append(_sanitise_type_token(c))
     return "__".join(parts)
 
 
@@ -241,15 +271,7 @@ def _mangle_type(name: str, args: list[str]) -> str:
     Stable so the same instantiation dedupes to one clone."""
     parts = [name]
     for a in args:
-        parts.append(
-            a.replace("<", "_")
-             .replace(">", "")
-             .replace(", ", "_")
-             .replace(",", "_")
-             .replace(" ", "")
-             .replace("(", "Tup_")
-             .replace(")", "")
-        )
+        parts.append(_sanitise_type_token(a))
     return "__".join(parts)
 
 

@@ -73,6 +73,40 @@ def _has_wasmtime_py() -> bool:
         return False
 
 
+# A generic function monomorphised at a *qualified typestate*: the
+# type parameter ``T`` of ``passthrough`` is inferred from the
+# ``Socket[Connected]``-typed local it is applied to (a return-
+# annotation binding), so its mangled type string carries the ``[``
+# / ``]`` a bare-value argument would have stripped. Before the
+# ``_sanitise_type_token`` fix this emitted the WAT-invalid identifier
+# ``$passthrough__Socket[Connected]``, which ``wasm-tools parse``
+# rejects; the Python/legacy backend, which never monomorphises,
+# always ran it fine.
+_QUALIFIED_TYPESTATE_GENERIC_SRC = (
+    "typestate Socket { fd: Int }\n"
+    "    Created\n"
+    "    Connected\n"
+    "\n"
+    "fun passthrough<T>(consume x: T) -> T\n"
+    "    return x\n"
+    "\n"
+    "fun connect(consume s: Socket[Created]) -> Socket[Connected]\n"
+    "    return become(s, Connected)\n"
+    "\n"
+    "fun relay(consume s: Socket[Created]) -> Socket[Connected]\n"
+    "    let c = connect(s)\n"
+    "    return passthrough(c)\n"
+    "\n"
+    "fun discard(consume s: Socket[Connected])\n"
+    "    return\n"
+    "\n"
+    "fun main(_stdio: Stdio)\n"
+    "    let s0 = Socket[Created] { fd: 7 }\n"
+    "    let s1 = relay(s0)\n"
+    "    discard(s1)\n"
+)
+
+
 class TestWasmEmissionShape(unittest.TestCase):
     """Pin the textual WAT shape for canonical CIR fragments. These
     tests never shell out, so they run on any machine."""
@@ -394,6 +428,87 @@ class TestWasmAssembles(unittest.TestCase):
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
         self.assertTrue(blob.startswith(b"\x00asm"))
+
+    def test_qualified_typestate_generic_assembles(self):
+        # Regression: a generic specialised at ``Socket[Connected]``
+        # used to mangle to ``$passthrough__Socket[Connected]``, whose
+        # ``[`` / ``]`` are not legal WAT identifier chars, so
+        # ``wasm-tools parse`` failed. The bracket now sanitises to
+        # ``_St_``.
+        _, types, ast_mod = _parse_lower(_QUALIFIED_TYPESTATE_GENERIC_SRC)
+        wat = compile_wat(ast_mod, types=types)
+        self.assertIn("$passthrough__Socket_St_Connected", wat)
+        self.assertNotIn("passthrough__Socket[Connected]", wat)
+        # The load-bearing check: it assembles.
+        blob = compile_wasm(ast_mod, types=types)
+        self.assertTrue(blob.startswith(b"\x00asm"))
+        self.assertGreater(len(blob), 8)
+
+
+class TestTypeTokenSanitiser(unittest.TestCase):
+    """Unit coverage for the single ``_sanitise_type_token`` chain that
+    ``_mangle`` and ``_mangle_type`` share, focused on the typestate
+    ``[`` / ``]`` handling and its dedup-injectivity."""
+
+    def test_single_shared_sanitiser_chain(self):
+        # The fix collapsed two byte-identical sanitiser chains into one
+        # helper. Both manglers must route through it, and the source
+        # file must carry exactly one such chain.
+        import inspect
+        from capa.ir._monomorphise import _typestr
+
+        src = inspect.getsource(_typestr)
+        self.assertEqual(src.count('.replace("<", "_")'), 1)
+        self.assertIn(
+            "_sanitise_type_token",
+            inspect.getsource(_typestr._mangle),
+        )
+        self.assertIn(
+            "_sanitise_type_token",
+            inspect.getsource(_typestr._mangle_type),
+        )
+
+    def test_bracketed_typestates_stay_injective(self):
+        from capa.ir._monomorphise._typestr import (
+            _mangle_type, _sanitise_type_token,
+        )
+
+        # Distinct typestates of the same base must not merge.
+        self.assertNotEqual(
+            _sanitise_type_token("Socket[Connected]"),
+            _sanitise_type_token("Socket[Listening]"),
+        )
+        # A bracketed name must not alias its angle-bracket generic
+        # twin nor the same letters run together unbracketed.
+        self.assertNotEqual(
+            _sanitise_type_token("Socket[Connected]"),
+            _sanitise_type_token("Socket<Connected>"),
+        )
+        self.assertNotEqual(
+            _sanitise_type_token("Socket[Connected]"),
+            _sanitise_type_token("SocketConnected"),
+        )
+        # Same, one level up through the generic-type mangler.
+        self.assertNotEqual(
+            _mangle_type("Box", ["Socket[Connected]"]),
+            _mangle_type("Box", ["Socket[Listening]"]),
+        )
+        # The sanitised token is a legal WAT identifier body.
+        token = _sanitise_type_token("Socket[Connected]")
+        self.assertNotIn("[", token)
+        self.assertNotIn("]", token)
+
+    def test_python_backend_never_mangles_the_typestate_generic(self):
+        # The fix is Wasm-mangling only: the Python/legacy backend does
+        # not monomorphise, so it never touches ``_sanitise_type_token``
+        # and its output for the repro is unaffected. Proof: the emitted
+        # Python carries no mangled ``passthrough__`` name at all.
+        from capa.ir import compile as compile_python
+
+        _, types, ast_mod = _parse_lower(_QUALIFIED_TYPESTATE_GENERIC_SRC)
+        py_src = compile_python(ast_mod, types=types)
+        self.assertNotIn("passthrough__", py_src)
+        self.assertNotIn("Socket_St_", py_src)
 
 
 @unittest.skipUnless(
