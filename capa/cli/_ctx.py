@@ -42,3 +42,26 @@ class DispatchCtx:
     operator_grants: dict | None
     gated_roots: set[Path]
     _file_root: Path | None
+
+
+@dataclass
+class ExecCtx:
+    """Core slice the Wasm/component execution path reads (``run_execute``).
+
+    A smaller, different surface than :class:`DispatchCtx`: it adds
+    ``program_args`` (the tail after ``--`` forwarded to the guest) and
+    omits the post-analysis emitter fields the execute path never touches.
+    Both are populated directly from the same ``_main_dispatch`` locals, so
+    neither is derived from the other. ``result`` may be None for a bare
+    ``--transpile`` / ``--output`` (no analysis ran); every read of it in the
+    execute path is guarded by ``args.run`` / ``args.wasm``, which force the
+    analysis, so it is never None where it is used.
+    """
+
+    module: Any
+    source: str
+    filename: str
+    result: Any
+    args: Any
+    use_color: bool
+    program_args: list[str]
