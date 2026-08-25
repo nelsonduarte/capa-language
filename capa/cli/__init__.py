@@ -18,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import capa
 from capa import (
     Lexer, LexerError, Parser, TokenKind, analyze, ast_dump, transpile,
 )
@@ -3093,7 +3094,7 @@ def _wrap_as_component(
             wit_dir = td_path / "wit"
             wit_dir.mkdir()
             (wit_dir / "program.wit").write_text(wit_text, encoding="utf-8")
-            vendored = _Path(__file__).resolve().parent / "wasi_wit" / "deps"
+            vendored = _Path(capa.__file__).resolve().parent / "wasi_wit" / "deps"
             shutil.copytree(vendored, wit_dir / "deps")
             wit_arg = str(wit_dir)
         else:
