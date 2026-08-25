@@ -51,6 +51,22 @@ breaking changes and the discipline is still being shaped.
   structured-type resolver that single-sources the type-checker's resolved type
   map).
 
+**Added (unreleased).**
+
+- *The CycloneDX and SPDX SBOMs now carry the resolved `capa.toml`
+  dependencies.* `capa --cyclonedx` (CycloneDX 1.6) and `capa --spdx`
+  (SPDX 2.3) emit one component per resolved dependency, each with its name,
+  version, and a single package-URL built by the one purl producer
+  ([`capa/manifest/_compose.py`](capa/manifest/_compose.py)): a native
+  `pkg:github/<owner>/<repo>@<revision>` purl for a github-hosted git
+  dependency (owner / repo lower-cased, revision the resolved commit SHA when
+  the lock knows it), a `pkg:generic/<name>?vcs_url=git+<url>@<revision>` purl
+  for a non-github git dependency, and no purl for a path dependency (which has
+  no registry / VCS identity and instead carries its name, version,
+  root-relative path, and a `capa:source_kind=path` property). The SPDX output
+  additionally renders the dependency graph as `DEPENDS_ON` relationships.
+  Commits `92b95c2`, `e682610`, `420a366`, `2440597`.
+
 **Fixed / test nets (unreleased).**
 
 - *The `--ir` backend no longer crashes on a `PatStruct` / `PatOr` match arm
@@ -63,6 +79,20 @@ breaking changes and the discipline is still being shaped.
   its own, and emitting output identical to the legacy transpiler. The two shapes
   move from the exhaustiveness net's exclusion list into its declared handled-set.
   Backend-crash fix, no security impact; correct programs are unaffected.
+- *The Wasm type-name mangler no longer emits invalid WAT for a generic
+  monomorphised at a qualified typestate (disclosed-open at `1.32.0`).* A generic
+  specialised at a bracketed typestate (for example `Socket[Connected]`, inferred
+  through a return annotation) mangled to `$passthrough__Socket[Connected]`, whose
+  `[` / `]` are not legal WAT identifier characters, so `wasm-tools parse` rejected
+  the module (fail-loud at emission, never a silent miscompile). The function and
+  type manglers now share one `_sanitise_type_token`
+  ([`capa/ir/_monomorphise/_typestr.py`](capa/ir/_monomorphise/_typestr.py)) that
+  maps the typestate `[` to a distinct `_St_` token (kept apart from the generic
+  `<`, so `Socket[Connected]`, `Socket<Connected>` and `Socket[Listening]` stay
+  distinct) and drops `]`; the repro now assembles as
+  `$passthrough__Socket_St_Connected`. The Python / legacy backend never
+  monomorphises and was unaffected. Wasm codegen only; correct programs are
+  unchanged. Commit `17d83a8`.
 - *The legacy-vs-`--ir` equivalence oracle now covers the whole of `examples/`
   minus a documented residual.* `TestLegacyIREquivalence` was a hand-curated ~31
   of 51 programs fenced off by a stale exclusion rationale; a real CIR defect once
@@ -71,6 +101,13 @@ breaking changes and the discipline is still being shaped.
   network- / filesystem-dependent programs with no deterministic reference), with
   an inventory guard forcing every example onto one side, mirroring the discipline
   `tests/test_ir_wasm_parity.py` already uses.
+- *Two `--ir` CIR-Python emitter miscompiles the widened oracle surfaced are
+  fixed.* A closure free-variable capture and a Python-keyword identifier
+  collision each lowered `--ir` output that diverged from the legacy transpiler on
+  the newly-covered corpus. The closure free-var walk and the Python-keyword table
+  are single-sourced so the emitter cannot drift from the analyzer, and both shapes
+  now emit output identical to the legacy backend. Backend fix, no security impact.
+  Commits `8e74e8d`, `84c2844`.
 - *The hash-pinned CI dependency install can no longer erode silently (audit F3).*
   The dev / CI dependencies install from two uv-generated lockfiles under
   `pip install --require-hashes`, but nothing pinned that: dropping the flag from an
@@ -247,20 +284,33 @@ fixed here.
   resolves to a trait, not a struct or a type variable, so a public-twin downcast
   is not caught and leaks on the Python backend. Disclosed in source at
   [`capa/analyzer/_patterns.py`](capa/analyzer/_patterns.py) lines 722-731; needs a
-  runtime tag check. Related to finding IFC-3 above.
+  runtime tag check. Related to finding IFC-3 above. (Largely closed post-1.32.0 by
+  the fifth-face fix, commit `c6fb7f9`: the direct destructure shown here is now
+  flagged for every scrutinee hop the summary pass can carry; two root-cause
+  residuals remain open, tracked under [Unreleased].)
 - *`--ir` backend crash on `PatStruct` / `PatOr` patterns.* The CIR Python pattern
   renderer raises `NotImplementedError` on `PatStruct` / `PatOr` via `--run --ir`
   (audit OBS-1); the Wasm backend and the legacy transpiler handle both correctly.
   Disclosed in source at [`capa/ir/_emit_python.py`](capa/ir/_emit_python.py) lines
-  89-102.
+  89-102. (Fixed post-1.32.0; see [Unreleased].)
 - *Typestate name-mangling on the Wasm backend.* The Wasm name-mangler leaves `[`
   and `]` unescaped, so a generic monomorphised at a qualified typestate via a
   return annotation emits invalid WAT that fails `wasm-tools` parse. It is
-  fail-loud (an emission error), not a silent miscompile.
+  fail-loud (an emission error), not a silent miscompile. (Fixed post-1.32.0,
+  commit `17d83a8`; see [Unreleased].)
 - *`_apply_mapping` recursion on a cyclic type mapping.* A cyclic transient type
   mapping drives
   [`capa/analyzer/_typing.py`](capa/analyzer/_typing.py) `_apply_mapping` (around
-  line 182) into a `RecursionError` rather than a diagnostic.
+  line 182) into a `RecursionError`. (Status at HEAD `7affa33`: no known
+  reproducer. The one plausible dereference route, a `?`-prefixed method param
+  bound to a rigid receiver type param, is prevented upstream by the
+  rigid-fresh-name skip in
+  [`capa/analyzer/_dispatch.py`](capa/analyzer/_dispatch.py) (around lines
+  969-980), and any `RecursionError` that did leak from the analyzer is converted
+  to a clean diagnostic by `capa --check` / `--run`
+  ([`capa/cli.py`](capa/cli.py) around line 1760). The structural cycle guard
+  inside `_apply_mapping` itself is still absent, so this stays listed rather than
+  marked fixed.)
 
 ## [1.31.0], 2026-08-11
 
