@@ -23,11 +23,8 @@ from capa import (
     Lexer, LexerError, Parser, TokenKind, analyze, ast_dump, transpile,
 )
 from capa.manifest import (
-    build_manifest, build_cyclonedx, build_spdx,
-    build_vex_document, build_provenance,
     resolve_build_timestamp, SourceDateEpochError,
 )
-from capa._artifact_io import emit_artifact
 from capa.pkg import (
     BrokenRootManifestError, CapaFloorError, VendorVerificationError,
     enforce_root_floor,
@@ -38,6 +35,12 @@ from capa.cli._grants import (
     _parse_allow_host_spec, _normalize_allow_hosts, _operator_grants_from_args,
 )
 from capa.cli._ctx import DispatchCtx
+from capa.cli._floor import _enforce_floor_for_file_root
+from capa.cli._emitters import (
+    emit_manifest, emit_manifest_digest, emit_compose_sbom,
+    emit_check_capabilities, emit_policies, emit_cyclonedx, emit_spdx,
+    emit_vex, emit_provenance, emit_doc, emit_wit,
+)
 from capa.cli._parser import (
     build_parser, _compiler_owned_args, _floor_check_exempt, _WASM32_MAX_PAGES,
 )
@@ -47,7 +50,6 @@ from capa.cli.subcommands import (
     _dispatch_migrate, _dispatch_build, _dispatch_run_aot, _dispatch_test,
     _dispatch_capability_diff,
 )
-from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
 from capa.loader_paths import resolve_loader_paths
 from capa._debug import _rewrite_traceback
@@ -86,47 +88,6 @@ def main() -> int:
         # the full remediation menu; print it verbatim.
         print(str(e), file=sys.stderr)
         return 1
-
-
-def _enforce_floor_for_file_root(
-    root_dir: Path, gated_roots: set[Path],
-) -> None:
-    """Enforce the root floor for the project root a FILE resolves to.
-
-    Two jobs, and they are the same check for different reasons.
-
-    The first is correctness of scope. ``--compose-sbom``,
-    ``--check-capabilities``, ``--check-policies`` and
-    ``--conformance-report`` resolve their project root by walking up
-    from the FILE they were given, not from the cwd. When the file lives
-    outside the cwd's project tree those two roots differ, and the gate
-    in ``_main_dispatch`` will have enforced the wrong one (or none).
-    Since these are precisely the commands that emit composed SBOMs and
-    ceiling verdicts for a whole project, the floor has to hold for the
-    root they actually act on.
-
-    The second is DEPTH. Every file-based invocation re-checks here, not
-    just the four artefact-emitting ones, so the floor does not rest on
-    a single predicate. It used to have a second layer inside
-    ``_capa_search_paths`` (in :mod:`capa.loader_paths`); that one was
-    scoped to ``Path.cwd()``, so it
-    saw nothing from a subdirectory, and it never ran for a command that
-    does not resolve modules (``--parse``). This seam is scoped to the
-    root the command actually acts on and runs for every file, which is
-    why it replaces that one rather than reinstating it. It is what kept
-    the four artefact commands refusing while the ``--`` bypass was open.
-
-    ``gated_roots`` is every root already enforced during this
-    invocation, starting with the cwd gate's. Recording them keeps the
-    ``CAPA_IGNORE_CAPA_FLOOR`` warning printing exactly ONCE per root in
-    the ordinary case where all of them are the same directory. Every
-    entry comes from ``find_package_root``, which resolves before
-    walking, so plain set membership is the right comparison.
-    """
-    if root_dir in gated_roots:
-        return
-    gated_roots.add(root_dir)
-    enforce_root_floor(root_dir)
 
 
 def _main_dispatch() -> int:
@@ -537,326 +498,37 @@ def _main_dispatch() -> int:
         # filename)) recomputations. Distinct from the cwd root the floor
         # gate resolved at the top of this function.
         ctx = DispatchCtx(
-            module=module, source=source, filename=filename,
-            result=result, args=args, use_color=use_color,
+            module=module, source=source, sources=sources_map,
+            filename=filename, result=result, args=args, use_color=use_color,
             operator_grants=_operator_grants, gated_roots=_gated_roots,
             _file_root=find_package_root(Path(filename)),
         )
         if args.manifest:
-            import json
-            manifest = build_manifest(
-                module, filename=filename,
-                bindings=result.bindings,
-                expr_labels=result.expr_labels,
-                operator_declared_grants=_operator_grants,
-                unaudited_secret_sinks=result.unaudited_secret_sinks,
-            )
-            emit_artifact(json.dumps(manifest, indent=2))
-            return 0
+            return emit_manifest(ctx)
         if args.manifest_digest:
-            from capa.manifest import canonical_json, canonical_manifest
-            manifest = build_manifest(
-                module, filename=filename,
-                bindings=result.bindings,
-                expr_labels=result.expr_labels,
-                operator_declared_grants=_operator_grants,
-                unaudited_secret_sinks=result.unaudited_secret_sinks,
-            )
-            # Emit the canonical bytes verbatim (key-sorted, fixed
-            # separators): what is printed is exactly what the digest in
-            # the content_integrity envelope is taken over, minus the
-            # envelope itself. Content-addressable and byte-reproducible.
-            emit_artifact(canonical_json(canonical_manifest(manifest)))
-            return 0
+            return emit_manifest_digest(ctx)
         if args.compose_sbom:
-            from capa.manifest import (
-                build_composed_sbom, canonical_json, canonical_manifest,
-                ComposeError,
-            )
-            root_dir = ctx._file_root
-            if root_dir is None:
-                msg = (
-                    "capa: --compose-sbom requires a capa.toml project root "
-                    f"(none found at or above {filename}). Composing a "
-                    "product SBOM needs the package + dependency declarations."
-                )
-                if use_color:
-                    print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
-                else:
-                    print(msg, file=sys.stderr)
-                return 1
-            _enforce_floor_for_file_root(root_dir, _gated_roots)
-            manifest = build_manifest(
-                module, filename=filename,
-                bindings=result.bindings,
-                expr_labels=result.expr_labels,
-                operator_declared_grants=_operator_grants,
-                unaudited_secret_sinks=result.unaudited_secret_sinks,
-            )
-            # Feature #4 (F2a): claim the Wasm-sandbox enforcement posture
-            # only when the product targets the Wasm backend (--wasm),
-            # under which the runtime host-enforces each foreign child's
-            # declared capability SET, so a foreign-component call composes
-            # as a BOUNDED node instead of authority-unknown TOP. Without
-            # --wasm the composed SBOM is backend-agnostic and a foreign
-            # call stays TOP (honest: nothing enforces the bound there).
-            _enforcement = "wasm-sandbox" if args.wasm else "none"
-            try:
-                composed = build_composed_sbom(
-                    module, manifest, root_dir,
-                    enforcement=_enforcement,
-                )
-            except ComposeError as e:
-                msg = f"capa: --compose-sbom: {e}"
-                if use_color:
-                    print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
-                else:
-                    print(msg, file=sys.stderr)
-                return 1
-            # Canonical, content-addressable bytes: the composed SBOM is
-            # wrapped with the same S1 content_integrity envelope as
-            # --manifest-digest, so the product artifact is itself
-            # hashable and byte-reproducible across runs / machines.
-            emit_artifact(canonical_json(canonical_manifest(composed)))
-            return 0
+            return emit_compose_sbom(ctx)
         if args.check_capabilities:
-            from capa.manifest import (
-                build_composed_sbom, ComposeError,
-            )
-
-            def _err(text: str) -> None:
-                if use_color:
-                    print(f"{C.RED}{text}{C.RESET}", file=sys.stderr)
-                else:
-                    print(text, file=sys.stderr)
-
-            root_dir = ctx._file_root
-            if root_dir is None:
-                _err(
-                    "capa: --check-capabilities requires a capa.toml project "
-                    f"root (none found at or above {filename})."
-                )
-                return 1
-            _enforce_floor_for_file_root(root_dir, _gated_roots)
-            manifest = build_manifest(
-                module, filename=filename,
-                bindings=result.bindings,
-                expr_labels=result.expr_labels,
-                operator_declared_grants=_operator_grants,
-                unaudited_secret_sinks=result.unaudited_secret_sinks,
-            )
-            # Thread the same enforcement posture the composed SBOM /
-            # policy gates use: under --wasm the sandbox host-enforces each
-            # foreign boundary's declared cap SET, so a foreign-calling
-            # package's ceiling is checked against a BOUNDED authority
-            # rather than failing closed at authority-unknown TOP. Without
-            # --wasm it stays TOP (honest: nothing enforces the bound).
-            _enforcement = "wasm-sandbox" if args.wasm else "none"
-            try:
-                composed = build_composed_sbom(
-                    module, manifest, root_dir, enforcement=_enforcement,
-                )
-            except ComposeError as e:
-                _err(f"capa: --check-capabilities: {e}")
-                return 1
-            ceilings = composed["capability_ceilings"]
-            if not ceilings["checked"]:
-                print(
-                    "capa: --check-capabilities: no package declares a "
-                    "[capabilities] ceiling; nothing to verify.",
-                    file=sys.stderr,
-                )
-                return 0
-            if ceilings["pass"]:
-                print(
-                    "capa: --check-capabilities: OK - every declared "
-                    "capability ceiling holds.",
-                    file=sys.stderr,
-                )
-                return 0
-            _err(
-                "capa: --check-capabilities: FAILED - "
-                f"{len(ceilings['violations'])} ceiling violation(s):"
-            )
-            for v in ceilings["violations"]:
-                _err(f"  - {v['detail']}")
-            return 1
+            return emit_check_capabilities(ctx)
         if args.conformance_report or args.check_policies:
-            from capa.manifest import (
-                build_composed_sbom, canonical_json, canonical_manifest,
-                evaluate_policies, find_policy_file,
-                read_policy_file, ComposeError, PolicyError,
-            )
-
-            flag = (
-                "--conformance-report" if args.conformance_report
-                else "--check-policies"
-            )
-
-            def _perr(text: str) -> None:
-                if use_color:
-                    print(f"{C.RED}{text}{C.RESET}", file=sys.stderr)
-                else:
-                    print(text, file=sys.stderr)
-
-            root_dir = ctx._file_root
-            if root_dir is None:
-                _perr(
-                    f"capa: {flag} requires a capa.toml project root "
-                    f"(none found at or above {filename})."
-                )
-                return 1
-            _enforce_floor_for_file_root(root_dir, _gated_roots)
-            policy_path = find_policy_file(root_dir)
-            manifest = build_manifest(
-                module, filename=filename,
-                bindings=result.bindings,
-                expr_labels=result.expr_labels,
-                operator_declared_grants=_operator_grants,
-                unaudited_secret_sinks=result.unaudited_secret_sinks,
-            )
-            _enforcement = "wasm-sandbox" if args.wasm else "none"
-            try:
-                composed = build_composed_sbom(
-                    module, manifest, root_dir, enforcement=_enforcement,
-                )
-            except ComposeError as e:
-                _perr(f"capa: {flag}: {e}")
-                return 1
-            try:
-                policies = (
-                    read_policy_file(policy_path)
-                    if policy_path is not None else []
-                )
-            except PolicyError as e:
-                _perr(f"capa: {flag}: {e}")
-                return 1
-            report = evaluate_policies(composed, policies)
-
-            if args.conformance_report:
-                # Canonical, content-addressable evidence: the report is
-                # wrapped with the same S1 content_integrity envelope as
-                # --compose-sbom, so the conformance evidence is itself
-                # hashable, signABLE, and byte-reproducible.
-                emit_artifact(canonical_json(canonical_manifest(report)))
-                return 0
-
-            # --check-policies: the CI gate.
-            if not policies:
-                print(
-                    "capa: --check-policies: no capa-policy.toml policies "
-                    "found; nothing to verify.",
-                    file=sys.stderr,
-                )
-                return 0
-            if report["pass"]:
-                print(
-                    "capa: --check-policies: OK - every declared compliance "
-                    "policy holds.",
-                    file=sys.stderr,
-                )
-                return 0
-            failed = [r for r in report["results"] if not r["pass"]]
-            n_viol = sum(len(r["violations"]) for r in failed)
-            _perr(
-                f"capa: --check-policies: FAILED - {len(failed)} policy(ies), "
-                f"{n_viol} violation(s):"
-            )
-            for r in failed:
-                _perr(f"  policy {r['policy']!r} (kind {r['kind']}):")
-                for v in r["violations"]:
-                    _perr(f"    - [{v['verdict']}] {v['detail']}")
-            return 1
+            return emit_policies(ctx)
         if args.cyclonedx or args.spdx or args.vex or args.provenance:
-            # Each invocation emits exactly one artefact (every branch
-            # below returns), so the instant is derived deterministically
-            # from SOURCE_DATE_EPOCH: four separate invocations (one per
-            # artefact) with the same value share the same timestamp, and
-            # within CycloneDX-with-VEX the one instant feeds both
-            # metadata.timestamp and the per-vulnerability firstIssued.
-            # When SOURCE_DATE_EPOCH is set, this makes the output
-            # byte-reproducible across runs and machines; when it is
-            # unset, ``None`` lets the emitters fall back to wall-clock
-            # time. An invalid value is a hard error rather than a silent
-            # wall-clock fallback.
             try:
                 build_ts = resolve_build_timestamp()
             except SourceDateEpochError as e:
                 print(f"capa: {e}", file=sys.stderr)
                 return 2
-        if args.cyclonedx:
-            import json
-            from capa.manifest import resolve_dependency_identities
-            # When the input belongs to a capa.toml project, list each
-            # resolved dependency as a real component (name + version +
-            # purl). No project root (a bare .capa file) -> no dependency
-            # components, so the output is exactly as before.
-            _dep_components = None
-            _dep_graph = None
-            _cdx_root = ctx._file_root
-            if _cdx_root is not None:
-                _dep_components, _dep_graph = resolve_dependency_identities(
-                    _cdx_root,
-                )
-            sbom = build_cyclonedx(
-                module, filename=filename, source=source,
-                sources=linked.sources if linked is not None else None,
-                timestamp=build_ts,
-                bindings=result.bindings,
-                expr_labels=result.expr_labels,
-                operator_declared_grants=_operator_grants,
-                dependency_components=_dep_components,
-                dependency_graph=_dep_graph,
-            )
-            emit_artifact(json.dumps(sbom, indent=2))
-            return 0
-        if args.spdx:
-            import json
-            from capa.manifest import resolve_dependency_identities
-            # Symmetric with --cyclonedx: when the input belongs to a
-            # capa.toml project, render each resolved dependency as an SPDX
-            # Package (name + version + purl externalRef) from the SAME
-            # resolve walk. No project root (a bare .capa file) -> no
-            # dependency packages, so the output is exactly as before.
-            _dep_components = None
-            _dep_graph = None
-            _spdx_root = ctx._file_root
-            if _spdx_root is not None:
-                _dep_components, _dep_graph = resolve_dependency_identities(
-                    _spdx_root,
-                )
-            sbom = build_spdx(
-                module, filename=filename, source=source,
-                sources=linked.sources if linked is not None else None,
-                timestamp=build_ts,
-                bindings=result.bindings,
-                expr_labels=result.expr_labels,
-                operator_declared_grants=_operator_grants,
-                dependency_components=_dep_components,
-                dependency_graph=_dep_graph,
-            )
-            emit_artifact(json.dumps(sbom, indent=2))
-            return 0
-        if args.vex:
-            import json
-            doc = build_vex_document(
-                module, filename=filename, timestamp=build_ts,
-            )
-            emit_artifact(json.dumps(doc, indent=2))
-            return 0
-        if args.provenance:
-            import json
-            doc = build_provenance(
-                source, filename=filename,
-                started_on=build_ts, finished_on=build_ts,
-                sources=linked.sources if linked is not None else None,
-            )
-            emit_artifact(json.dumps(doc, indent=2))
-            return 0
+            if args.cyclonedx:
+                return emit_cyclonedx(ctx, build_ts)
+            if args.spdx:
+                return emit_spdx(ctx, build_ts)
+            if args.vex:
+                return emit_vex(ctx, build_ts)
+            if args.provenance:
+                return emit_provenance(ctx, build_ts)
         if args.doc:
-            html = build_doc_html(module, filename=filename)
-            print(html)
-            return 0
+            return emit_doc(ctx)
         if args.check and not args.run:
             n_items = len(module.items)
             n_typed = len(result.types)
@@ -871,13 +543,7 @@ def _main_dispatch() -> int:
                 print(msg)
             return 0
         if args.wit:
-            from capa.ir import compile_wit
-            try:
-                print(compile_wit(module, types=result.types))
-                return 0
-            except Exception as e:
-                print(f"capa: --wit: {e}", file=sys.stderr)
-                return 1
+            return emit_wit(ctx)
 
     # Feature #4 (F2a): a program that actually INVOKES a typed foreign
     # component. --check / --manifest / the SBOM emitters work fully and

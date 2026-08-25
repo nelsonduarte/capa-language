@@ -26,12 +26,15 @@ class DispatchCtx:
 
     ``module`` / ``result`` / ``args`` are the analysed AST, the analysis
     result, and the parsed CLI namespace (annotated ``Any`` so this leaf
-    imports no ``capa`` types). ``gated_roots`` is the live set the floor
-    gate mutates, so the branches share one enforcement record.
+    imports no ``capa`` types). ``source`` is the root file's raw text and
+    ``sources`` the multi-file source map (or None). ``gated_roots`` is the
+    live set the floor gate mutates, so the branches share one enforcement
+    record.
     """
 
     module: Any
     source: str
+    sources: Any
     filename: str
     result: Any
     args: Any
