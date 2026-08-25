@@ -34,6 +34,7 @@ from capa.pkg import (
     BrokenRootManifestError, CapaFloorError, VendorVerificationError,
     enforce_root_floor,
 )
+from capa.cli._diagnostics import C, color_for, _recursion_diagnostic
 from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
 from capa.init_project import init_project
@@ -68,35 +69,6 @@ _COMMANDS_EPILOG = (
 # rejects, so the CLI refuses it rather than writing an invalid
 # artifact (audit slice 30 P2-b).
 _WASM32_MAX_PAGES = 65536
-
-
-# ANSI colors for terminal highlighting
-class C:
-    RESET = "\033[0m"
-    DIM = "\033[2m"
-    BOLD = "\033[1m"
-    BLUE = "\033[94m"
-    CYAN = "\033[96m"
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    MAGENTA = "\033[95m"
-    RED = "\033[91m"
-    GRAY = "\033[90m"
-
-
-def color_for(kind: TokenKind) -> str:
-    name = kind.name
-    if name.startswith("KW_"):
-        return C.MAGENTA
-    if name in ("INDENT", "DEDENT", "NEWLINE", "EOF"):
-        return C.GRAY
-    if name in ("INT_LIT", "FLOAT_LIT"):
-        return C.CYAN
-    if name in ("STRING_LIT", "CHAR_LIT"):
-        return C.GREEN
-    if name == "IDENT":
-        return C.BLUE
-    return C.YELLOW
 
 
 def _wasm_tooling_available() -> bool:
@@ -1765,15 +1737,9 @@ def _main_dispatch() -> int:
                 module_privates=privates_map,
             )
         except RecursionError:
-            msg = (
-                f"{filename}: error: expression too deep or complex to "
-                "analyze; simplify or split it"
+            return _recursion_diagnostic(
+                filename, "analyze", use_color=use_color
             )
-            if use_color:
-                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
-            else:
-                print(msg, file=sys.stderr)
-            return 1
         # Non-fatal warnings (information-flow secret->sink under the
         # warn-then-enforce roll-out, roadmap S2.4; the dead-Unsafe
         # migrate nudge) print regardless of whether the program
@@ -2848,15 +2814,9 @@ def _main_dispatch() -> int:
         try:
             print(ast_dump(module))
         except RecursionError:
-            msg = (
-                f"{filename}: error: expression too deep or complex to "
-                "dump; simplify or split it"
+            return _recursion_diagnostic(
+                filename, "dump", use_color=use_color
             )
-            if use_color:
-                print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
-            else:
-                print(msg, file=sys.stderr)
-            return 1
         return 0
 
     for tok in tokens:

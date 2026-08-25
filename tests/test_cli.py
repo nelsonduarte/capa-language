@@ -823,6 +823,40 @@ class TestCliInProcess(unittest.TestCase):
         # Catch-all: an operator-like kind falls through to YELLOW.
         self.assertEqual(color_for(TokenKind.PLUS), C.YELLOW)
 
+    # --- recursion diagnostic (single-source converter) -----------
+
+    def test_recursion_diagnostic_messages_verbatim(self):
+        # The analyze path (``capa --check``) and the AST-dump path
+        # (``capa --parse``) both converge on one converter,
+        # ``_recursion_diagnostic``, which only varies the verb. Pin
+        # both exact wordings so collapsing the two converters into one
+        # cannot silently drift either message.
+        from capa.cli import C, _recursion_diagnostic
+
+        for action, verb in (("analyze", "analyze"), ("dump", "dump")):
+            expected = (
+                f"src.capa: error: expression too deep or complex to "
+                f"{verb}; simplify or split it"
+            )
+            err = io.StringIO()
+            with mock.patch.object(sys, "stderr", err):
+                rc = _recursion_diagnostic(
+                    "src.capa", action, use_color=False
+                )
+            self.assertEqual(rc, 1)
+            self.assertEqual(err.getvalue(), expected + "\n")
+
+            # The coloured branch wraps the same message in RED/RESET.
+            err_c = io.StringIO()
+            with mock.patch.object(sys, "stderr", err_c):
+                rc_c = _recursion_diagnostic(
+                    "src.capa", action, use_color=True
+                )
+            self.assertEqual(rc_c, 1)
+            self.assertEqual(
+                err_c.getvalue(), f"{C.RED}{expected}{C.RESET}\n"
+            )
+
     def test_default_token_dump_colored_branch(self):
         # Pretend the captured stdout is a TTY so the
         # ``use_color`` branch in the token-dump loop runs.
