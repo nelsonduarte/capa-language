@@ -280,7 +280,7 @@ def run_execute(ctx: ExecCtx) -> int | None:
             msg = (
                 "capa: --wasi requires --component (the WASI mode "
                 "rewrites the Component Model world; the bare core "
-                "ctx.module / core host has no WASI provider)"
+                "module / core host has no WASI provider)"
             )
             if ctx.use_color:
                 print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)
@@ -435,7 +435,7 @@ def run_execute(ctx: ExecCtx) -> int | None:
                         wasi=wasi_mode,
                     )
                 Path(ctx.args.output).write_bytes(blob)
-                kind = "component" if ctx.args.component else "core ctx.module"
+                kind = "component" if ctx.args.component else "core module"
                 print(
                     f"capa: --wasm: wrote {kind} ({len(blob)} bytes) to {ctx.args.output}",
                     file=sys.stderr,

@@ -525,6 +525,45 @@ class TestWasiFlagGuards(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("--wasi requires --component", err)
 
+    def test_wasi_without_component_message_pins_core_module(self):
+        # Pin the FULL rejection wording (regression guard: the
+        # ``ctx`` field rename once corrupted the ``core module`` literal
+        # in this message to ``core ctx.module``). The prefix check above
+        # would not have caught that.
+        code, err = self._run_cli(["--wasm", "--wasi", "--run"])
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "the bare core module / core host has no WASI provider", err
+        )
+
+
+@unittest.skipUnless(_has_wasm_tools(), "wasm-tools not installed")
+class TestWasmOutputCoreModuleMessage(unittest.TestCase):
+    """``--wasm --output`` without ``--component`` writes a core module and
+    reports it as ``core module``. Regression guard: the ``ctx`` field
+    rename once corrupted the ``core module`` literal to ``core ctx.module``
+    on this everyday success path (exit 0), which no other test sampled."""
+
+    def test_output_core_module_message(self):
+        import tempfile
+        from pathlib import Path
+        from capa.cli import main
+
+        hello = Path(__file__).parent.parent / "examples" / "wasm" / "hello.capa"
+        err, out = io.StringIO(), io.StringIO()
+        old_err, old_out, old_argv = sys.stderr, sys.stdout, sys.argv
+        sys.stderr, sys.stdout = err, out
+        with tempfile.TemporaryDirectory() as d:
+            out_path = Path(d) / "core.wasm"
+            sys.argv = ["capa", "--wasm", "--output", str(out_path), str(hello)]
+            try:
+                code = main()
+            finally:
+                sys.stderr, sys.stdout, sys.argv = old_err, old_out, old_argv
+        self.assertEqual(code, 0, err.getvalue())
+        # The success message is on stderr; it must read "core module".
+        self.assertIn("wrote core module (", err.getvalue())
+
 
 class TestWasiPreopenFlagGuards(unittest.TestCase):
     """``--preopen`` (layer b1) guards: it requires --wasi (or an SBOM
