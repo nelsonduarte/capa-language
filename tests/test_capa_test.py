@@ -302,7 +302,7 @@ class TestCapaTestEndToEnd(_TempProjectMixin, unittest.TestCase):
         root = self._project()
         _write(root / "tests" / "test_a.capa", _PASSING)
         with mock.patch(
-            "capa.cli._wasm_tooling_available", return_value=False,
+            "capa.cli.subcommands._wasm_tooling_available", return_value=False,
         ):
             rc, _out, err = _run_main(["test", "--wasm"], cwd=root)
         self.assertEqual(rc, 2)

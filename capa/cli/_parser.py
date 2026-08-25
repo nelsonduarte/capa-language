@@ -14,6 +14,15 @@ import argparse
 from capa import __version__ as _CAPA_VERSION
 
 
+# wasm32 caps linear memory at 65536 pages of 64 KiB = 4 GiB. A
+# ``--wasm-memory-cap`` above this produces a module that wasm-tools
+# rejects, so the CLI refuses it rather than writing an invalid
+# artifact (audit slice 30 P2-b). The bound for the --wasm-memory-cap
+# argument built here, shared by both validators (the build subcommand
+# and the --wasm path in _main_dispatch).
+_WASM32_MAX_PAGES = 65536
+
+
 # Subcommands that must run even when the root manifest's declared
 # compiler floor is violated, and the reason each one is here. This is
 # not a convenience list; every entry is a case where hard-erroring
