@@ -492,6 +492,11 @@ class Lowerer(
             body=self._instrs,
             locals=dict(self._locals),
             type_params=list(fn.type_params),
+            # Carry the source ``@export`` marker to the CIR so the WIT
+            # generator can advertise this function in the component's
+            # ``world`` (single source: the analyzer already validated
+            # placement; the WIT layer validates the exportable shape).
+            is_export=any(a.name == "export" for a in fn.attributes),
         )
 
     # ------------------------------------------------------------

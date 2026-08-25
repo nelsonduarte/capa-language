@@ -257,7 +257,15 @@ class Attribute(Node):
     Attributes are static metadata, surfaced in machine-readable form
     by the ``--manifest`` output for CRA-style auditing. v1 attributes
     are limited to a fixed set of names (``security``, ``deprecated``,
-    ``audited``) and their arguments must be string literals.
+    ``audited``, plus the arg-less markers ``strict_ifc`` /
+    ``constant_time`` / ``export``) and their arguments must be string
+    literals.
+
+    ``@export`` marks a top-level function for the Wasm Component
+    Model export surface: the generated WIT ``world`` advertises it
+    alongside ``main`` so a Component-Model host can call it. It is an
+    ABI-surface axis, ORTHOGONAL to ``pub`` (module visibility): a
+    function may be ``@export`` without being ``pub`` and vice versa.
     """
     name: str
     args: list[tuple[str, str]] = field(default_factory=list)

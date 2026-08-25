@@ -54,6 +54,14 @@ class _ItemsMixin:
         # analyzer rejects any control-flow decision or index that
         # depends on a @secret value (CWE-208 timing leaks).
         "constant_time": set(),
+        # Embeddable-component increment: mark this top-level function
+        # for the Wasm Component Model export surface. The WIT world
+        # advertises it alongside ``main`` (see
+        # ``capa.ir._emit_wit._component_export_lines``). Arg-less; an
+        # ABI-surface axis orthogonal to ``pub``. Only valid on a
+        # top-level function (not an impl method) and not on ``main``
+        # (which is exported unconditionally); both are rejected below.
+        "export": set(),
     }
 
     def _check_item(self, item: A.Item) -> None:
@@ -117,6 +125,26 @@ class _ItemsMixin:
                 )
                 continue
             seen_names.add(attr.name)
+            # ``@export`` is only exportable on a top-level function; it
+            # is a hard error to mark something that cannot become a
+            # component export. An impl method is not a module-level
+            # export target (the WIT world only advertises top-level
+            # functions), and ``main`` is exported unconditionally, so
+            # ``@export main`` would emit a duplicate world export.
+            # Fail loud here rather than silently dropping the marker.
+            if attr.name == "export":
+                if self.self_type is not None:
+                    self._err(
+                        "@export is only valid on a top-level function, "
+                        "not an impl method",
+                        attr.pos,
+                    )
+                elif fn.name == "main":
+                    self._err(
+                        "main is exported automatically; remove the "
+                        "redundant @export",
+                        attr.pos,
+                    )
             seen_keys: set[str] = set()
             for key, _value in attr.args:
                 if key not in allowed_keys:

@@ -2383,6 +2383,7 @@ def _main_dispatch() -> int:
         from capa.ir import compile_wat, compile_wasm, compile_wit
         from capa.ir import (
             MainReturnTypeUnsupported, check_main_return_type,
+            ComponentExportUnsupported, check_component_exports,
         )
         # Experimental WASI mode is only meaningful for the component
         # path (it rewrites the WIT world + the component imports);
@@ -2495,7 +2496,13 @@ def _main_dispatch() -> int:
         if args.component:
             try:
                 check_main_return_type(module, types=result.types)
-            except MainReturnTypeUnsupported as e:
+                # Same early gate for ``@export`` functions: an
+                # unsupported name / signature surfaces here as the clean
+                # Capa diagnostic instead of dying later in the component
+                # wrap step (mirrors the ``main`` return check above).
+                check_component_exports(module, types=result.types)
+            except (MainReturnTypeUnsupported,
+                    ComponentExportUnsupported) as e:
                 msg = f"capa: --wasm: {e}"
                 if use_color:
                     print(f"{C.RED}{msg}{C.RESET}", file=sys.stderr)

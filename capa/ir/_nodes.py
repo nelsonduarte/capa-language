@@ -541,6 +541,13 @@ class Function:
     body: list[Instr]
     locals: dict[str, str] = field(default_factory=dict)
     type_params: list[str] = field(default_factory=list)
+    # ``@export``: marks this top-level function for the Wasm Component
+    # Model export surface. The WIT generator advertises it in the
+    # ``world`` alongside ``main`` (see
+    # ``capa.ir._emit_wit._component_export_lines``). Set by the lowerer
+    # from the source ``@export`` attribute; ignored by the Python
+    # backend.
+    is_export: bool = False
 
 
 @dataclass

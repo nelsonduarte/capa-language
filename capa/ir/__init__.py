@@ -39,6 +39,7 @@ from ._emit_wasm import WasmEmitter, WasmEmissionError
 from ._emit_wit import (
     emit_wit, collect_used_capabilities, UnsupportedCapabilityMethod,
     MainReturnTypeUnsupported, validate_main_return_type as _validate_main_ret,
+    ComponentExportUnsupported, validate_component_exports as _validate_exports,
 )
 from ._env_ceiling import (
     EnvCeiling, compute_env_ceiling, compute_env_ceiling_from_cir,
@@ -67,6 +68,8 @@ __all__ = [
     "UnsupportedCapabilityMethod",
     "MainReturnTypeUnsupported",
     "check_main_return_type",
+    "ComponentExportUnsupported",
+    "check_component_exports",
     "lower",
     "emit_python",
     "emit_wat",
@@ -356,6 +359,21 @@ def check_main_return_type(
     for). Same policy the WIT generator applies via
     ``main_result_clause``."""
     _validate_main_ret(lower(module, types=types))
+
+
+def check_component_exports(
+    module: A.Module, types: dict | None = None,
+) -> None:
+    """Lower ``module`` and raise ``ComponentExportUnsupported`` iff any
+    ``@export`` function has a name or signature the component backend
+    cannot lift into its WIT world export (a non-scalar param/return, or
+    a name that is not a valid WIT identifier).
+
+    The CLI runs this on the ``--component`` path BEFORE ``compile_wasm``
+    so an unsupported ``@export`` surfaces as the clean Capa diagnostic
+    up front, mirroring ``check_main_return_type``. Same policy the WIT
+    generator applies via ``_component_export_lines``."""
+    _validate_exports(lower(module, types=types))
 
 
 def compile_wit(

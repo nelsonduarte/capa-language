@@ -26,6 +26,7 @@ capa-stdlib.wit?
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from ._cap_binding import main_handle_cap_types, wit_cap_slot_name
@@ -600,6 +601,136 @@ def validate_main_return_type(module: Module) -> None:
     main_result_clause(module)
 
 
+# ----------------------------------------------------------------
+# ``@export``: additional component-export functions (embeddable-
+# component increment). A source ``@export`` on a top-level function
+# marks it for the ``world``'s export surface alongside ``main`` so a
+# Component Model host can call it. This increment is SCALAR-FIRST:
+# only scalar params/returns (Int / Float / Bool) and a Unit/absent
+# return are supported; String and every composite are the deferred
+# canonical-ABI return-path leg and are refused fail-loud.
+# ----------------------------------------------------------------
+
+# A WIT export name is a lower kebab-case identifier. The world export
+# name must byte-match the core module's ``(export "<name>")`` (the
+# core emitter writes ``fn.name`` verbatim), and WIT identifiers admit
+# no underscore / uppercase, so a function name that is not already a
+# valid WIT identifier cannot be a component export in this increment.
+_WIT_EXPORT_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z][a-z0-9]*)*$")
+
+# The scalar Capa types an ``@export`` param or return may use. Reuses
+# ``main``'s liftable-scalar policy (``_MAIN_RESULT_WIT``) as the single
+# source, so ``main`` and the ``@export`` surface accept exactly the
+# same scalar set; a Unit/absent return additionally lifts to no result
+# clause (handled by ``_is_unit_return``). The WIT TEXT itself comes
+# from ``capa_type_to_wit`` (the one type -> WIT map), never a second
+# table.
+_EXPORT_SCALARS = frozenset(_MAIN_RESULT_WIT)
+
+
+class ComponentExportUnsupported(Exception):
+    """Raised when an ``@export`` function cannot be lifted into the
+    component's WIT world export in this increment. Mirrors
+    ``MainReturnTypeUnsupported``: a clean, actionable Capa diagnostic
+    instead of the cryptic ``wasm-tools component new`` mismatch, and
+    NEVER a silently dropped export or an invalid component.
+
+    Two shapes are refused:
+
+    - a non-scalar param or return type (``String`` or any composite:
+      record / list / tuple / variant / ``Option`` / ``Result`` /
+      ``Map``). This increment supports only scalar params/returns
+      (``Int`` -> ``s64``, ``Float`` -> ``f64``, ``Bool`` -> ``bool``)
+      and a Unit/absent return (no result clause); String + aggregate
+      crossing is the deferred canonical-ABI return-path leg.
+    - a function name that is not a valid WIT identifier. The world
+      export name must byte-match the core module's
+      ``(export "<name>")`` and WIT identifiers are lower kebab-case,
+      so a name with an underscore or uppercase (``add_two``,
+      ``addTwo``) cannot be a component export until the core emitter
+      mangles export names (out of scope for this increment)."""
+
+
+def _export_param_wit(fn_name: str, ty: str) -> str:
+    """WIT text for an ``@export`` scalar PARAM type, or raise
+    ``ComponentExportUnsupported`` for a String / composite / capability
+    param (anything outside the liftable scalar set)."""
+    ty = ty.strip()
+    if ty not in _EXPORT_SCALARS:
+        raise ComponentExportUnsupported(
+            f"@export {fn_name!r}: parameter type {ty!r} is not yet "
+            f"supported by the component backend; this increment supports "
+            f"only scalar params (Int / Float / Bool)"
+        )
+    return capa_type_to_wit(ty)
+
+
+def _export_return_clause(fn_name: str, rty: str) -> str:
+    """WIT result clause (``" -> <wit>"`` or ``""`` for Unit) for an
+    ``@export`` scalar RETURN type, or raise
+    ``ComponentExportUnsupported`` for a String / composite return.
+    Reuses ``_is_unit_return`` so an explicit ``-> ()`` export is
+    treated as Unit exactly like ``main``."""
+    rty = rty.strip()
+    if _is_unit_return(rty):
+        return ""
+    if rty not in _EXPORT_SCALARS:
+        raise ComponentExportUnsupported(
+            f"@export {fn_name!r}: return type {rty!r} is not yet supported "
+            f"by the component backend; this increment supports only a "
+            f"scalar return (Int / Float / Bool) or Unit"
+        )
+    return f" -> {capa_type_to_wit(rty)}"
+
+
+def _component_export_lines(module: Module) -> list[str]:
+    """WIT ``export`` lines for every ``@export``-marked top-level
+    function, in declaration order, appended to the ``world`` after
+    ``export main``. Each line byte-matches the core module's
+    ``(export "<name>")``: the export name is the verbatim function
+    name (validated to be a WIT identifier), scalar params lift to
+    ``s64`` / ``f64`` / ``bool`` and a scalar/Unit return to the
+    matching result clause. Raises ``ComponentExportUnsupported`` for a
+    deferred name / type shape rather than emitting an invalid
+    component."""
+    lines: list[str] = []
+    for fn in module.functions:
+        if not getattr(fn, "is_export", False) or fn.name == "main":
+            # ``main`` is exported unconditionally by the world block;
+            # the analyzer already rejects ``@export main``.
+            continue
+        if not _WIT_EXPORT_NAME_RE.match(fn.name):
+            raise ComponentExportUnsupported(
+                f"@export {fn.name!r}: the function name is not a valid WIT "
+                f"identifier, so it cannot be a component export name (the "
+                f"WIT export must byte-match the core "
+                f"(export \"{fn.name}\")). Rename it to lower kebab-case "
+                f"(letters, digits, single dashes; no underscore or "
+                f"uppercase) for this increment."
+            )
+        params = ", ".join(
+            f"{p.name.replace('_', '-').lower()}: "
+            f"{_export_param_wit(fn.name, p.ty)}"
+            for p in fn.params
+        )
+        clause = _export_return_clause(fn.name, fn.return_type)
+        lines.append(f"  export {fn.name}: func({params}){clause};")
+    return lines
+
+
+def validate_component_exports(module: Module) -> None:
+    """Raise ``ComponentExportUnsupported`` iff any ``@export`` function
+    has a name or signature the component backend cannot lift into its
+    WIT world export. The early gate the CLI runs on the ``--component``
+    path BEFORE ``compile_wasm`` (same role ``validate_main_return_type``
+    plays for ``main``), so an unsupported ``@export`` surfaces as the
+    clean Capa diagnostic instead of dying later in the wrap step. The
+    WIT generator applies the identical policy via
+    ``_component_export_lines``; this entry point just drives it without
+    keeping the emitted lines."""
+    _component_export_lines(module)
+
+
 class UnsupportedCapabilityMethod(Exception):
     """Raised when a CIR ``MethodCall`` exercises a capability method
     that does not yet have a WIT signature in this generator. The
@@ -922,6 +1053,11 @@ def emit_wit(
         lines.append(f"  export main: func({sig}){result_clause};")
     else:
         lines.append(f"  export main: func(){result_clause};")
+    # ``@export``-marked functions become additional world exports
+    # alongside ``main`` (embeddable-component increment). Each byte-
+    # matches the core module's ``(export "<name>")``; a deferred name /
+    # type shape raises ``ComponentExportUnsupported`` here.
+    lines.extend(_component_export_lines(module))
     lines.append("}")
     lines.append("")
 
@@ -1139,6 +1275,9 @@ def _emit_wit_wasi(
         lines.append(f"  export main: func({sig}){result_clause};")
     else:
         lines.append(f"  export main: func(){result_clause};")
+    # ``@export`` world exports, same as the default path (single
+    # source: ``_component_export_lines``).
+    lines.extend(_component_export_lines(module))
     lines.append("}")
     lines.append("")
 
