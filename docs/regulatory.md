@@ -10,11 +10,11 @@ The five frameworks:
 - **NIST SSDF** (SP 800-218), the US federal baseline for secure software development cited by Executive Order 14028.
 - **OWASP SCVS**, the vendor-neutral Software Component Verification Standard, with three levels.
 
-For an article-by-article CRA deep dive, see [`docs/cra.md`](cra.md).
+For an article-by-article CRA deep dive, see [`docs/cra.md`](cra.md). For NIS2 and DORA, see [`docs/nis2-dora.md`](nis2-dora.md), which is stricter than this table's shorthand about what a compiler can be to those two entity regimes.
 
 ## Limits of the language's reach
 
-Most of what these frameworks demand is organisational. Vulnerability disclosure processes, incident notification timelines, supplier due diligence, internal audit, conformity assessment. None of that is in Capa's reach. What Capa contributes is a narrow slice of the technical artefacts the organisational layer consumes. Where appropriate this document marks a fit as **direct** (the artefact satisfies the clause on its own), **indirect** (Capa enables it but the organisation still has work to do), **partial** (Capa contributes without closing the requirement), or **out of scope** (organisational, language cannot help).
+Most of what these frameworks demand is organisational. Vulnerability disclosure processes, incident notification timelines, supplier due diligence, internal audit, conformity assessment. None of that is in Capa's reach. What Capa contributes is a narrow slice of the technical artefacts the organisational layer consumes. Where appropriate this document marks a fit as **direct** (the artefact satisfies the clause on its own), **indirect** (Capa enables it but the organisation still has work to do), **partial** (Capa contributes without closing the requirement), or **out of scope** (organisational, language cannot help). These strength words apply to the CRA, NIST SSDF, and OWASP SCVS columns. They do not apply to NIS2 or DORA: those are **entity regimes**, so a compiler can never *satisfy* an obligation the regulation places on an operator. The NIS2 and DORA columns therefore read only **evidence toward** a named article, following the stricter deep dive in [`docs/nis2-dora.md`](nis2-dora.md).
 
 A few frameworks are sometimes confused with this set but are not covered here. ISO 27001, SOC 2, PCI DSS, and HIPAA are management and audit standards; Capa contributes evidence to them but does not deliver compliance. US Executive Order 14028 is subsumed in practice by NIST SSDF, the technical baseline EO 14028 cites. The AI Act and GDPR are tangential to supply-chain governance. SWID (ISO/IEC 19770-2) is a dying SBOM format; CycloneDX and SPDX cover the live ecosystem. The wider DORA articles on business continuity, recovery objectives, and board oversight are not technical.
 
@@ -25,8 +25,8 @@ The rows below list what Capa emits today.
 | Capa artefact | Flag | What it carries |
 |---|---|---|
 | Capability manifest | `--manifest` | Per-function declared capabilities, attributes, signatures, user-defined cap declarations |
-| CycloneDX 1.5 SBOM | `--cyclonedx` | The manifest wrapped in CycloneDX with per-function `properties[]` and an optional `vulnerabilities[]` array |
-| SPDX 2.3 SBOM | `--spdx` | Same metadata, SPDX `annotations[]` shape, Linux Foundation alignment |
+| CycloneDX 1.6 SBOM | `--cyclonedx` | The manifest wrapped in CycloneDX with per-function `properties[]`, one `library` component per resolved `capa.toml` dependency (a real purl for git deps, `pkg:github` for github-hosted ones) with a `dependencies[]` graph, and an optional `vulnerabilities[]` array |
+| SPDX 2.3 SBOM | `--spdx` | Same metadata and the same per-dependency components from one source, each carrying its purl as an `externalRefs[]` entry with `DEPENDS_ON` relationships; SPDX `annotations[]` shape, Linux Foundation alignment |
 | CycloneDX VEX | `--vex` | Per-function exploitability claims from `@vex(cve, status, justification, detail)` attributes |
 | SLSA L1 provenance | `--provenance` | in-toto Statement v1 plus SLSA Provenance v1.0 predicate, source SHA-256 |
 | Audit pipeline | `examples/sbom_capability_audit.capa` | SBOM vs policy diff, structural |
@@ -37,13 +37,13 @@ And how each maps across the five frameworks:
 
 | Capa output | CRA Annex I | NIS2 Art. 21 | DORA Chapters II-V | NIST SSDF | OWASP SCVS |
 |---|---|---|---|---|---|
-| Manifest | I-II(1) direct | 21(2)(d) indirect | Art. 8 indirect | PS.1 indirect | Domain 1 partial |
-| CycloneDX SBOM | I-II(1) **direct** | 21(2)(d) **direct** | Art. 8 **direct** | PS.3 **direct** | Domain 2 **direct** |
-| SPDX SBOM | I-II(1) **direct** | 21(2)(d) **direct** | Art. 8 **direct** | PS.3 **direct** | Domain 2 **direct** |
-| CycloneDX VEX | I-II(2) partial | Art. 23 indirect | Arts. 17-19 partial | RV.1, RV.2 **direct** | Domain 5 **direct** |
-| SLSA L1 provenance | I-I(2)(f) indirect | 21(2)(d) indirect | Art. 28-30 partial | PS.2 partial, PS.3 partial | Domain 6 **direct** |
-| Audit pipeline | I-II(1) indirect | 21(2)(d) **direct** | Arts. 28-30 **direct** | PO.5 indirect | Domain 1 partial |
-| SBOM diff tool | I-II(2) indirect | 21(2)(d) partial | Arts. 17-19 partial | RV.1 partial | Domain 2 partial |
+| Manifest | I-II(1) direct | evidence toward 21(2)(d) | evidence toward Art. 30(2)(a) | PS.1 indirect | Domain 1 partial |
+| CycloneDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3 **direct** | Domain 2 **direct** |
+| SPDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3 **direct** | Domain 2 **direct** |
+| CycloneDX VEX | I-II(2) partial | evidence toward 21(2)(e) | n/a | RV.1, RV.2 **direct** | Domain 5 **direct** |
+| SLSA L1 provenance | I-I(2)(f) indirect | evidence toward 21(3) | evidence toward Art. 28 | PS.2 partial, PS.3 partial | Domain 6 **direct** |
+| Audit pipeline | I-II(1) indirect | evidence toward 21(2)(d) | evidence toward Arts. 28-30 | PO.5 indirect | Domain 1 partial |
+| SBOM diff tool | I-II(2) indirect | evidence toward 21(2)(d) | evidence toward Art. 29 | RV.1 partial | Domain 2 partial |
 | Machine-checked soundness | I-I(2)(b) indirect | n/a | n/a | PW.4 indirect | n/a |
 
 ## Reproducible SBOMs: rebuild and diff byte-for-byte
@@ -78,7 +78,7 @@ NIS2 entered into force on 16 January 2023 and Member States had to transpose it
 
 Three articles are relevant. Article 21 requires cybersecurity risk-management measures, with subsection (2)(d) explicit on supply-chain security, including the security-related aspects of the relationships between an entity and its direct suppliers or service providers. Article 21(2)(e) covers security in network and information systems acquisition, development, and maintenance, including vulnerability handling and disclosure. Article 23 covers incident reporting on a 24-hour early warning, 72-hour notification, and one-month final-report cadence.
 
-Article 21(2)(d) is the heart of the NIS2 supply-chain ask, and it is the operator-side mirror of CRA Annex I Part II (1). An entity governed by NIS2 has to assess the security of its direct suppliers. The CycloneDX or SPDX SBOM a Capa-using supplier ships gives that operator a per-function authority surface; the SBOM diff tool gives the operator a way to detect supplier widening across releases; the audit pipeline gives them a structural verifier that the supplier's declarations match an internal policy.
+Article 21(2)(d) is the heart of the NIS2 supply-chain ask, and it is the operator-side mirror of CRA Annex I Part II (1). An entity governed by NIS2 has to assess the security of its direct suppliers. The CycloneDX or SPDX SBOM a Capa-using supplier ships gives that operator a per-function authority surface; the SBOM diff tool gives the operator a way to detect supplier widening across releases; the audit pipeline gives them a structural verifier that the supplier's declarations match an internal policy. This is input to the entity's own supplier assessment, not the assessment itself; the article-by-article treatment lives in [`docs/nis2-dora.md`](nis2-dora.md).
 
 Article 23 incident reporting, Article 24 on European cybersecurity certification schemes, Article 26 on cross-border cooperation, and the board-level accountability under Article 20 all sit outside what a compiler can affect.
 
@@ -86,9 +86,9 @@ Article 23 incident reporting, Article 24 on European cybersecurity certificatio
 
 DORA entered into force on 16 January 2023 and has applied since 17 January 2025. It binds financial entities (banks, insurance, investment firms, crypto-asset service providers, and others) plus critical ICT third-party providers. Only the cybersecurity articles are in scope for a programming-language mapping; the business-continuity bulk of DORA is not.
 
-The relevant articles are 5 and 6 on ICT risk management governance and framework, Article 8 on identification of ICT-supported business functions and information and ICT assets (the operator-side parallel to CRA's SBOM clause), Articles 9 through 15 on ICT risk management policies and detection and response, Articles 17 through 23 on ICT-related incident management, and Articles 28 through 30 on management of ICT third-party risk including the contractual content of supplier arrangements.
+The relevant articles are 5 and 6 on ICT risk management governance and framework, Article 8 on identification of ICT-supported business functions and information and ICT assets, Articles 9 through 15 on ICT risk management policies and detection and response, Articles 17 through 23 on ICT-related incident management, and Articles 28 through 30 on management of ICT third-party risk including the contractual content of supplier arrangements.
 
-Article 8 is served directly by CycloneDX or SPDX SBOMs; per-function metadata gives finer-grained inventory than the financial sector is used to. Articles 28 through 30 (third-party risk) are served by the audit pipeline and the SBOM diff tool, allowing a financial entity to verify a supplier's declared authority surface and detect widenings across releases. The provenance attestation supports Article 28's due-diligence-on-provider requirement.
+The SBOM is supporting evidence toward the Register of Information under Article 28(3) and the concentration-risk assessment under Article 29: its per-dependency components (purls plus the dependency graph) are a technical input a financial entity reconciles against its own register, not the register itself, which is of contracts and the entity's to keep. Per-function metadata gives finer-grained inventory than the financial sector is used to. Articles 28 through 30 (third-party risk) are supported by the audit pipeline and the SBOM diff tool, letting a financial entity verify a supplier's declared authority surface and detect widenings across releases. The provenance attestation supports Article 28's due-diligence-on-provider requirement, and Article 28(1)(a) keeps the financial entity fully responsible throughout. The article-by-article treatment lives in [`docs/nis2-dora.md`](nis2-dora.md).
 
 What stays out of reach: business continuity (which is the bulk of DORA), digital operational resilience testing under Articles 24 through 27 (TLPT in particular), the financial-sector-specific contractual content of Article 30, and the critical-ICT-third-party regime in Articles 31 through 44.
 
@@ -120,7 +120,7 @@ The six domains are inventory, SBOM, build environment, package management, comp
 | Domain | What Capa provides |
 |---|---|
 | 1. Inventory | Per-function inventory finer than SCVS asks for; the manifest is the canonical list |
-| 2. SBOM | CycloneDX 1.5 and SPDX 2.3 satisfy L1 through L3 |
+| 2. SBOM | CycloneDX 1.6 and SPDX 2.3 satisfy L1 through L3 |
 | 3. Build Environment | Artefacts are byte-reproducible under `SOURCE_DATE_EPOCH` (rebuild and diff); the build environment itself is out of scope |
 | 4. Package Management | `capa.toml` + `capa install` + `capa.lock` with a signed registry index; lockfile SHA pinning and GPG-verified tags |
 | 5. Component Analysis | VEX entries feed component-analysis tooling at function granularity |
@@ -151,7 +151,7 @@ Capa is a one-person project at 1.0. It is suitable for proofs of concept and pe
 - [Regulation (EU) 2022/2554 (DORA)](https://eur-lex.europa.eu/eli/reg/2022/2554/oj)
 - [NIST SP 800-218 (SSDF) v1.1](https://csrc.nist.gov/Projects/ssdf)
 - [OWASP SCVS](https://owasp.org/www-project-software-component-verification-standard/)
-- [CycloneDX 1.5 specification](https://cyclonedx.org/docs/1.5/json/)
+- [CycloneDX 1.6 specification](https://cyclonedx.org/docs/1.6/json/)
 - [SPDX 2.3 specification](https://spdx.github.io/spdx-spec/v2.3/)
 - [SLSA v1.0 specification](https://slsa.dev/spec/v1.0/)
 - [in-toto Statement v1](https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md)
