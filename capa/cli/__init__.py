@@ -37,6 +37,7 @@ from capa.cli._grants import (
     _parse_preopen_spec, _classify_internal_ip, _AllowHostSpecError,
     _parse_allow_host_spec, _normalize_allow_hosts, _operator_grants_from_args,
 )
+from capa.cli._ctx import DispatchCtx
 from capa.cli._parser import (
     build_parser, _compiler_owned_args, _floor_check_exempt, _WASM32_MAX_PAGES,
 )
@@ -530,6 +531,17 @@ def _main_dispatch() -> int:
             else:
                 print(msg, file=sys.stderr)
             return 1
+        # Bundle the post-analysis state the emitter/run branches share.
+        # ``_file_root`` (the file's project root) is resolved a single
+        # time here, replacing the per-branch find_package_root(Path(
+        # filename)) recomputations. Distinct from the cwd root the floor
+        # gate resolved at the top of this function.
+        ctx = DispatchCtx(
+            module=module, source=source, filename=filename,
+            result=result, args=args, use_color=use_color,
+            operator_grants=_operator_grants, gated_roots=_gated_roots,
+            _file_root=find_package_root(Path(filename)),
+        )
         if args.manifest:
             import json
             manifest = build_manifest(
@@ -559,9 +571,9 @@ def _main_dispatch() -> int:
         if args.compose_sbom:
             from capa.manifest import (
                 build_composed_sbom, canonical_json, canonical_manifest,
-                find_package_root, ComposeError,
+                ComposeError,
             )
-            root_dir = find_package_root(Path(filename))
+            root_dir = ctx._file_root
             if root_dir is None:
                 msg = (
                     "capa: --compose-sbom requires a capa.toml project root "
@@ -609,7 +621,7 @@ def _main_dispatch() -> int:
             return 0
         if args.check_capabilities:
             from capa.manifest import (
-                build_composed_sbom, find_package_root, ComposeError,
+                build_composed_sbom, ComposeError,
             )
 
             def _err(text: str) -> None:
@@ -618,7 +630,7 @@ def _main_dispatch() -> int:
                 else:
                     print(text, file=sys.stderr)
 
-            root_dir = find_package_root(Path(filename))
+            root_dir = ctx._file_root
             if root_dir is None:
                 _err(
                     "capa: --check-capabilities requires a capa.toml project "
@@ -672,7 +684,7 @@ def _main_dispatch() -> int:
         if args.conformance_report or args.check_policies:
             from capa.manifest import (
                 build_composed_sbom, canonical_json, canonical_manifest,
-                evaluate_policies, find_package_root, find_policy_file,
+                evaluate_policies, find_policy_file,
                 read_policy_file, ComposeError, PolicyError,
             )
 
@@ -687,7 +699,7 @@ def _main_dispatch() -> int:
                 else:
                     print(text, file=sys.stderr)
 
-            root_dir = find_package_root(Path(filename))
+            root_dir = ctx._file_root
             if root_dir is None:
                 _perr(
                     f"capa: {flag} requires a capa.toml project root "
@@ -774,16 +786,14 @@ def _main_dispatch() -> int:
                 return 2
         if args.cyclonedx:
             import json
-            from capa.manifest import (
-                find_package_root, resolve_dependency_identities,
-            )
+            from capa.manifest import resolve_dependency_identities
             # When the input belongs to a capa.toml project, list each
             # resolved dependency as a real component (name + version +
             # purl). No project root (a bare .capa file) -> no dependency
             # components, so the output is exactly as before.
             _dep_components = None
             _dep_graph = None
-            _cdx_root = find_package_root(Path(filename))
+            _cdx_root = ctx._file_root
             if _cdx_root is not None:
                 _dep_components, _dep_graph = resolve_dependency_identities(
                     _cdx_root,
@@ -802,9 +812,7 @@ def _main_dispatch() -> int:
             return 0
         if args.spdx:
             import json
-            from capa.manifest import (
-                find_package_root, resolve_dependency_identities,
-            )
+            from capa.manifest import resolve_dependency_identities
             # Symmetric with --cyclonedx: when the input belongs to a
             # capa.toml project, render each resolved dependency as an SPDX
             # Package (name + version + purl externalRef) from the SAME
@@ -812,7 +820,7 @@ def _main_dispatch() -> int:
             # dependency packages, so the output is exactly as before.
             _dep_components = None
             _dep_graph = None
-            _spdx_root = find_package_root(Path(filename))
+            _spdx_root = ctx._file_root
             if _spdx_root is not None:
                 _dep_components, _dep_graph = resolve_dependency_identities(
                     _spdx_root,
