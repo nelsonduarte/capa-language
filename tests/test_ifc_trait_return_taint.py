@@ -291,5 +291,48 @@ class TestTraitReturnGuards(unittest.TestCase):
         _assert_clean_both_tiers(self, src)
 
 
+class TestKnownOverTaintResidual(unittest.TestCase):
+    """Pins the known precision residual the leak fix exposes, so tightening
+    it later is a deliberate test-updating change rather than a silent
+    shift."""
+
+    # KNOWN sound over-approximation: the trait-return taint uses a by-name
+    # union (methods_by_name) across ALL types, not scoped to the trait's
+    # real implementors, so a same-named @secret method on an UNRELATED type
+    # over-taints a trait call (warn at default, hard error under
+    # @strict_ifc). Sound (never misses a leak), opt-in (strict only).
+    # Tracked for impl-scoping via build_impl_reverse_index; when that lands
+    # this flips to clean and this test is updated deliberately.
+    def test_unrelated_same_named_secret_method_over_taints(self):
+        # Reader's only implementor (PubDoc) returns a PUBLIC field, so a
+        # correctly impl-scoped analysis would label r.fetch() public. The
+        # unrelated Vault.fetch (a NON-implementor, inherent impl) returns a
+        # @secret field, and the coarse by-name union pulls it in.
+        src = (
+            "trait Reader\n"
+            "    fun fetch(self) -> String\n"
+            "type PubDoc { body: String }\n"
+            "impl Reader for PubDoc\n"
+            "    fun fetch(self) -> String\n"
+            "        return self.body\n"
+            "type Vault { key: @secret String }\n"
+            "impl Vault\n"
+            "    fun fetch(self) -> String\n"
+            "        return self.key\n"
+            "fun leak(r: Reader, stdio: Stdio)\n"
+            "    stdio.println(r.fetch())\n"
+        )
+        # Default tier: the sound over-approximation warns (does not error).
+        r = _analyze(src)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        self.assertGreaterEqual(len(_ifc_warns(r)), 1,
+                                [w.message for w in r.warnings])
+        # Strict tier: it is a hard error (rc1).
+        rs = _analyze(_strict(src))
+        self.assertFalse(rs.ok, "expected a strict hard error")
+        self.assertGreaterEqual(len(_ifc_errors(rs)), 1,
+                                [e.message for e in rs.errors])
+
+
 if __name__ == "__main__":
     unittest.main()

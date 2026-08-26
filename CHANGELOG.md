@@ -11,6 +11,43 @@ breaking changes and the discipline is still being shaped.
 
 **Security / soundness (unreleased).**
 
+- *A trait-dispatch method-call return that carried a `@secret` was labelled
+  public and reached a public sink with no warning at any tier, defeating
+  `@strict_ifc` on all three backends (finding IFC-1).* A method call on a
+  TRAIT-typed (dynamic-dispatch) receiver whose implementor returned a
+  `@secret`-derived value came out `@public`, so the secret flowed to a public
+  sink silently. The root was an intra-vs-summary DRIFT: the trait-first
+  effect-key ordering (a trait receiver takes the by-name union over every impl
+  method of this name BEFORE the trait's own bodiless empty exact-key entry, so
+  that empty entry cannot shadow the union) was applied correctly once in the
+  cross-function summary and open-coded wrong in the two intra resolvers, whose
+  empty trait exact key shadowed the implementor union and failed the label
+  open. Fixed by single-sourcing that ordering into one shared
+  `result_effect_keys` in [`capa/analyzer/_ifc_tables.py`](capa/analyzer/_ifc_tables.py),
+  which all three consumers (both intra resolvers in
+  [`capa/analyzer/_ifc.py`](capa/analyzer/_ifc.py) and the summary's
+  `_result_candidate_keys` in
+  [`capa/analyzer/_ifc_summary.py`](capa/analyzer/_ifc_summary.py)) delegate to,
+  so no site can let the empty trait key shadow the union again. One label fix
+  closes the whole class (direct sink, struct field-store and read-back,
+  interpolated return, secret pc raise / implicit flow, downstream
+  cross-function flow, secret-param echo), a warning at the default tier and a
+  hard error under `@strict_ifc`. Manifest / analyzer-only: the Python
+  interpreter and the Wasm Component Model backend emit byte-identical runtime
+  output and no golden moved. Pinned by
+  [`tests/test_ifc_trait_return_taint.py`](tests/test_ifc_trait_return_taint.py)
+  (seven leaking shapes RED-before / GREEN-after, four false-positive guards).
+  No version change and no GHSA (Python-style cadence; a security-fix advisory
+  batches at the next stable release).
+
+  Known precision residual: the trait-return taint uses a sound by-name union
+  over methods of that name; a same-named method on an unrelated type can
+  over-taint a trait call under `@strict_ifc` (never a missed leak). Impl-scoping
+  (scope to the trait's real implementors via `build_impl_reverse_index`) is
+  tracked as a precision follow-up. The current over-approximation is pinned by
+  `TestKnownOverTaintResidual` in the same test file, so the tightening will be a
+  deliberate test-updating change.
+
 - *A signed-SBOM `provably_excluded_capabilities` field could falsely certify a
   user capability EXCLUDED when the function obtained it as a body-local (audit
   H-F1).* The per-function `transitively_reachable_capabilities` roll-up unioned
