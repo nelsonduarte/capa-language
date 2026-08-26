@@ -38,7 +38,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from capa import analyze
+from capa import Lexer, Parser, analyze
 from capa.loader import ModuleLoader
 from capa.manifest import build_composed_sbom, build_manifest
 from capa.pkg import ManifestError, read_manifest
@@ -620,6 +620,178 @@ class TestCheckCapabilitiesCli(_TmpTree):
         self.assertNotEqual(rc, 0)
         self.assertIn("broken capa.toml", err)
         self.assertIn("Notifer", err)
+
+
+# A user capability exercised through a value MINTED in a function body:
+# constructed inline (``let b = Bomb {}``) or returned by a factory whose
+# static return type names the cap-bearing type (``let b = make_bomb()``).
+# The signature never names ``Danger`` or ``Bomb``, so a signature-only
+# exclusion walk falsely provably-excluded ``Danger`` while the body ran
+# ``b.boom()`` (H-F1). ``make_bomb`` and both triggers carry an EMPTY
+# signature so the only route to the authority is through the body.
+DANGER_SRC = (
+    "pub capability Danger\n"
+    "    fun boom(self) -> Unit\n"
+    "\n"
+    "pub type Bomb {}\n"
+    "\n"
+    "impl Danger for Bomb\n"
+    "    fun boom(self) -> Unit\n"
+    "        return\n"
+    "\n"
+    "pub fun make_bomb() -> Bomb\n"
+    "    return Bomb {}\n"
+    "\n"
+    "pub fun trigger_inline() -> Unit\n"
+    "    let b = Bomb {}\n"
+    "    b.boom()\n"
+    "    return\n"
+    "\n"
+    "pub fun trigger_factory() -> Unit\n"
+    "    let b = make_bomb()\n"
+    "    b.boom()\n"
+    "    return\n"
+    "\n"
+    "pub fun trigger_and_exclude() -> Unit\n"
+    "    let b = Bomb {}\n"
+    "    b.boom()\n"
+    "    return\n"
+)
+
+# The library half of ``DANGER_SRC`` alone: the capability, the cap-bearing
+# type, its impl and the factory, with none of the trigger functions. Used
+# as a separate dependency so the consumer's own triggers do not clash.
+DANGER_LIB_SRC = (
+    "pub capability Danger\n"
+    "    fun boom(self) -> Unit\n"
+    "\n"
+    "pub type Bomb {}\n"
+    "\n"
+    "impl Danger for Bomb\n"
+    "    fun boom(self) -> Unit\n"
+    "        return\n"
+    "\n"
+    "pub fun make_bomb() -> Bomb\n"
+    "    return Bomb {}\n"
+)
+
+
+def _records_of(source: str, filename: str = "danger.capa") -> dict:
+    """Build a manifest and return its function records keyed by
+    ``(name, container)``. Parsed, not analysed, exactly like the
+    other manifest-builder tests: the point is to inspect the exclusion
+    surface for programs whose whole shape is the thing under test."""
+    tokens = Lexer(source).lex()
+    module = Parser(tokens, source=source).parse_module()
+    manifest = build_manifest(module, filename=filename)
+    return {(r["name"], r["container"]): r for r in manifest["functions"]}
+
+
+class TestBodyMintedUserCapability(_TmpTree):
+    """H-F1: a user capability obtained as a body LOCAL (constructed inline
+    or returned by a factory) is REAL, live authority the function runs.
+
+    The fix SURFACES it into ``transitively_reachable_capabilities`` through
+    the same reachability map the signature walk uses, so it drops out of
+    ``provably_excluded_capabilities`` -- it does NOT void the list the way a
+    ``Fun`` or ``Unsafe`` in the signature does (approach a, not b). The
+    discriminator below pins that choice: an unrelated cap the body never
+    obtains STAYS provably-excluded."""
+
+    def test_inline_construction_surfaces_the_capability(self):
+        recs = _records_of(DANGER_SRC)
+        r = recs[("trigger_inline", None)]
+        self.assertNotIn("Danger", r["provably_excluded_capabilities"])
+        self.assertIn("Danger", r["transitively_reachable_capabilities"])
+
+    def test_factory_return_type_surfaces_the_capability(self):
+        recs = _records_of(DANGER_SRC)
+        r = recs[("trigger_factory", None)]
+        self.assertNotIn("Danger", r["provably_excluded_capabilities"])
+        self.assertIn("Danger", r["transitively_reachable_capabilities"])
+
+    def test_unrelated_cap_stays_excluded_the_discriminator(self):
+        # Approach (a): surfacing the minted cap must not blank the list.
+        # A Net/Fs/Db-free function that mints a Bomb still provably-excludes
+        # Net. Under approach (b) (void the list) this assertion fails.
+        recs = _records_of(DANGER_SRC)
+        r = recs[("trigger_and_exclude", None)]
+        self.assertNotIn("Danger", r["provably_excluded_capabilities"])
+        self.assertIn("Net", r["provably_excluded_capabilities"])
+
+    def test_used_caps_are_disjoint_from_provably_excluded(self):
+        # General invariant: for EVERY function record, a user cap reachable
+        # through a method it actually CALLS may never be provably-excluded.
+        # This closes the blind spot the signature-only walk left open.
+        tokens = Lexer(DANGER_SRC).lex()
+        module = Parser(tokens, source=DANGER_SRC).parse_module()
+        manifest = build_manifest(module, filename="danger.capa")
+        # method name -> user caps declaring a method of that name.
+        method_caps: dict[str, set[str]] = {}
+        for uc in manifest["user_defined_capabilities"]:
+            for m in uc["methods"]:
+                method_caps.setdefault(m, set()).add(uc["name"])
+        for r in manifest["functions"]:
+            excluded = set(r["provably_excluded_capabilities"])
+            used: set[str] = set()
+            for call in r["calls"]:
+                if call["kind"] != "method":
+                    continue
+                method = call["callee"].rsplit(".", 1)[-1]
+                used |= method_caps.get(method, set())
+            self.assertEqual(
+                used & excluded, set(),
+                f"{r['name']}: {used & excluded} both used and "
+                f"provably-excluded",
+            )
+
+    def _cross_module_records(self) -> dict:
+        # Danger/Bomb/impl/make_bomb live in a dependency; the consumer's
+        # function obtains the value as a local without naming the type.
+        root = self.tmp / "app"
+        _write(root, "capa.toml", (
+            '[package]\nname = "app"\nversion = "0.1.0"\n\n'
+            '[dependencies.dangerdep]\n'
+            'git = "https://github.com/example/dangerdep"\ntag = "v1"\n'
+        ))
+        _write(root, "main.capa", (
+            "import dangerdep.api\n\n"
+            "pub fun trigger_inline() -> Unit\n"
+            "    let b = Bomb {}\n"
+            "    b.boom()\n"
+            "    return\n"
+            "\n"
+            "pub fun trigger_factory() -> Unit\n"
+            "    let b = make_bomb()\n"
+            "    b.boom()\n"
+            "    return\n"
+        ))
+        _write(root, "vendor/dangerdep/capa.toml",
+               '[package]\nname = "dangerdep"\nversion = "0.1.0"\n')
+        _write(root, "vendor/dangerdep/api.capa", DANGER_LIB_SRC)
+        root = root.resolve()
+        search = [root]
+        for vendor in root.rglob("vendor"):
+            if vendor.is_dir():
+                search.append(vendor)
+        filename = str(root / "main.capa")
+        source = (root / "main.capa").read_text(encoding="utf-8")
+        loader = ModuleLoader(search_paths=search)
+        linked = loader.load_root(source, filename)
+        manifest = build_manifest(linked.module, filename=filename)
+        return {(r["name"], r["container"]): r for r in manifest["functions"]}
+
+    def test_cross_module_inline_construction_surfaces_the_capability(self):
+        recs = self._cross_module_records()
+        r = recs[("trigger_inline", None)]
+        self.assertNotIn("Danger", r["provably_excluded_capabilities"])
+        self.assertIn("Danger", r["transitively_reachable_capabilities"])
+
+    def test_cross_module_factory_surfaces_the_capability(self):
+        recs = self._cross_module_records()
+        r = recs[("trigger_factory", None)]
+        self.assertNotIn("Danger", r["provably_excluded_capabilities"])
+        self.assertIn("Danger", r["transitively_reachable_capabilities"])
 
 
 if __name__ == "__main__":

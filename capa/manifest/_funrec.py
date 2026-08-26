@@ -25,7 +25,11 @@ from ..typesys import CAPABILITY_NAMES
 
 from ._calls import _collect_calls, _collect_declassifications
 from ._flow import _build_attenuation_map
-from ._reachability import caps_reachable_via_sig, compute_reachability
+from ._reachability import (
+    caps_reachable_via_body,
+    caps_reachable_via_sig,
+    compute_reachability,
+)
 from ._strings import _contains_fun_type, _root_type_name, _ty_text
 
 
@@ -825,6 +829,19 @@ def _fun_record(
     #    intent of ``provably_excluded`` (downstream SBOM /
     #    regulatory tooling consumes it as a hard claim) by
     #    refusing to make the claim when it can't be honored.
+    #
+    # A THIRD case is NOT a voiding case: a cap-bearing value MINTED in
+    # the body -- constructed inline (``let b = Bomb {}``) or returned by
+    # a factory whose type names it (``let b = make_bomb()``) -- names a
+    # real, precisely-nameable user-cap the body then exercises. It is
+    # SURFACED into ``transitively_reachable`` (see the H-F1 block at the
+    # ``caps_reachable_via_body`` call below), so it drops out of the
+    # exclusion list without blanking it. Do NOT "fix" this to the
+    # voiding shape of the two cases above: the audit-slice-21 precedent
+    # is to EXTEND the reachability walk that surfaces the cap, not to
+    # discard the whole claim. Only a minted value whose OWN type is
+    # authority-unprovable (a Fun-bearing struct) voids, via the same
+    # ``unprovable`` test the signature walk applies.
     has_fun_in_sig = any(
         _contains_fun_type(p.type_expr) for p in fn.params if p.type_expr
     ) or _contains_fun_type(fn.return_type)
@@ -906,7 +923,27 @@ def _fun_record(
         fn, container=container, reachable=reachable, unprovable=unprovable,
         skip_fun_params=verified_borrow_params,
     )
-    extra_caps_demangled = {_demangle(c)[0] for c in extra_caps | ceil_extra}
+    # 4. H-F1 closure (2026-08-26): a cap-bearing value MINTED in the body,
+    #    invisible to the signature walk above. ``fun trigger()`` with an
+    #    empty signature doing ``let b = Bomb {}; b.boom()`` (or
+    #    ``let b = make_bomb()`` for a factory whose return type names
+    #    ``Bomb``) exercises the user-cap the value implements; pre-fix the
+    #    manifest claimed it provably-excluded that cap while the call sat in
+    #    its own ``calls`` array. Resolved through the SAME ``reachable`` map
+    #    the signature walk uses, so there is one type->caps source. It is
+    #    SURFACED into ``transitively_reachable`` (approach a) rather than
+    #    voiding the list like the two cases above: the minted authority is
+    #    live, precisely-nameable, and every OTHER cap the body never obtains
+    #    stays provably-excluded (a false-exclude fix, not a blanket void).
+    #    ``body_unprovable`` follows the same rule as ``sig_unprovable``:
+    #    only a minted value whose OWN type is authority-unprovable (a
+    #    Fun-bearing struct) voids the list.
+    body_extra, body_unprovable = caps_reachable_via_body(
+        fn, reachable=reachable, unprovable=unprovable, top_funs=top_funs,
+    )
+    extra_caps_demangled = {
+        _demangle(c)[0] for c in extra_caps | ceil_extra | body_extra
+    }
     if "Unsafe" in extra_caps_demangled:
         # Unsafe reachable via an impl is the same regulatory risk
         # as Unsafe in the signature: the escape hatch is in play.
@@ -925,7 +962,7 @@ def _fun_record(
     # ceiling check can require a DECLARING package's own authority to be
     # provable from its types before it trusts the ceiling claim.
     authority_provable_from_types = not (
-        has_unsafe or has_fun_in_sig or sig_unprovable
+        has_unsafe or has_fun_in_sig or sig_unprovable or body_unprovable
     )
     # The ceiling-only signal (schema 3). Same disjunction as the strict
     # flag, but a verified invoke-only ``borrow`` inlet does NOT count as a
@@ -936,6 +973,7 @@ def _fun_record(
     # flag) or the product roll-up.
     ceiling_authority_provable = not (
         has_unsafe or has_fun_in_sig_ceiling or sig_unprovable_ceiling
+        or body_unprovable
     )
     if not authority_provable_from_types:
         provably_excluded_caps: list[str] = []

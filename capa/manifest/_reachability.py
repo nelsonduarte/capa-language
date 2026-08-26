@@ -945,3 +945,61 @@ def caps_reachable_via_sig(
             sig_unprovable = True
 
     return extra, sig_unprovable
+
+
+def caps_reachable_via_body(
+    fn: A.FunDecl,
+    *,
+    reachable: dict[str, set[str]],
+    unprovable: set[str],
+    top_funs: dict[str, A.FunDecl],
+) -> tuple[set[str], bool]:
+    """Return ``(body_extra, body_unprovable)`` for one function.
+
+    Authority a function MINTS in its own body, invisible to the
+    signature-only walk of :func:`caps_reachable_via_sig`. Two shapes
+    introduce a value of a cap-bearing type from nothing:
+
+    - a struct/enum literal construction ``Bomb {}`` (:class:`A.StructLit`);
+    - a call whose static return type names such a type
+      (``make_bomb() -> Bomb``), resolved through the callee's declared
+      return type in ``top_funs``.
+
+    Both are resolved through the SAME per-type reachability map the
+    signature walk uses (``reachable`` / ``unprovable`` via
+    :func:`_caps_via_type` / :func:`_type_mentions_any`), so there is one
+    type->caps source, not a parallel table. Return-type resolution covers
+    factory chains for free because ``reachable[T]`` is already the
+    transitive closure when read. The charge is on OBTAINING the value
+    (over-approximate, sound), so no dataflow is needed.
+
+    Pre-fix H-F1: ``fun trigger()`` with an empty signature doing
+    ``let b = Bomb {}; b.boom()`` exercised ``Danger`` through ``b`` while
+    the manifest claimed ``Danger`` was provably excluded, because the
+    exclusion subtraction only saw the (empty) signature. This surfaces the
+    minted authority into ``transitively_reachable`` so it drops out of
+    the exclusion list -- it does NOT void the list the way a signature
+    ``Fun``/``Unsafe`` does (approach a)."""
+    extra: set[str] = set()
+    body_unprovable = False
+    if fn.body is None:
+        return extra, body_unprovable
+
+    def _charge(t: Optional[A.TypeExpr]) -> None:
+        nonlocal body_unprovable
+        cs, hf = _caps_via_type(t, reachable)
+        extra.update(cs)
+        if hf or _type_mentions_any(t, unprovable):
+            body_unprovable = True
+
+    for node in A.walk(fn.body):
+        if isinstance(node, A.StructLit):
+            _charge(A.TypeName(
+                pos=node.pos, name=node.type_name, args=node.type_args,
+            ))
+        elif isinstance(node, A.Call) and isinstance(node.callee, A.Ident):
+            decl = top_funs.get(node.callee.name)
+            if decl is not None:
+                _charge(decl.return_type)
+
+    return extra, body_unprovable
