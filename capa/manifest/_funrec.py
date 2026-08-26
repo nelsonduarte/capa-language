@@ -842,6 +842,16 @@ def _fun_record(
     # discard the whole claim. Only a minted value whose OWN type is
     # authority-unprovable (a Fun-bearing struct) voids, via the same
     # ``unprovable`` test the signature walk applies.
+    #
+    # The minting value may also arrive through an INHERENT (non-trait)
+    # impl method that returns a cap-bearing type: ``impl Factory { fun
+    # produce(self) -> Bomb }`` obtained as ``f: Factory`` or as a
+    # body-local factory. That authority is surfaced the SAME way, but at
+    # the source: ``compute_reachability`` now folds inherent-impl method
+    # signatures into ``reachable[Factory]`` at the struct fixpoint (like
+    # the trait-impl fold), so both the signature walk (the ``Factory``
+    # param) and the body walk (``let f = make_factory()``) read the cap
+    # from the one map. It is surfaced, never voided, for the same reason.
     has_fun_in_sig = any(
         _contains_fun_type(p.type_expr) for p in fn.params if p.type_expr
     ) or _contains_fun_type(fn.return_type)

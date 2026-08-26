@@ -794,5 +794,117 @@ class TestBodyMintedUserCapability(_TmpTree):
         self.assertIn("Danger", r["transitively_reachable_capabilities"])
 
 
+# The residual of the SAME class: authority obtained through an INHERENT
+# (non-trait) impl method whose declared return type names a cap-bearing
+# type. ``impl Factory { fun produce(self) -> Bomb }`` lets a holder of a
+# ``Factory`` mint a ``Bomb`` and run ``Danger`` through it. Pre-fix
+# ``compute_reachability`` folded impl-method signatures into ``reachable[]``
+# only for TRAIT impls, so ``reachable[Factory]`` was empty and both the
+# ``f: Factory`` param and a body-local factory falsely provably-excluded
+# ``Danger``. SEAM A folds inherent impls at the same struct fixpoint, which
+# repairs the sig side (the param) and the body side (the free-fn factory
+# walk already resolves ``make_factory() -> Factory`` through
+# ``reachable[Factory]``) from one source.
+FACTORY_SRC = (
+    "pub capability Danger\n"
+    "    fun boom(self) -> Unit\n"
+    "\n"
+    "pub type Bomb {}\n"
+    "\n"
+    "impl Danger for Bomb\n"
+    "    fun boom(self) -> Unit\n"
+    "        return\n"
+    "\n"
+    "pub type Factory {}\n"
+    "\n"
+    "impl Factory\n"
+    "    fun produce(self) -> Bomb\n"
+    "        return Bomb {}\n"
+    "\n"
+    "pub fun make_factory() -> Factory\n"
+    "    return Factory {}\n"
+    "\n"
+    "pub fun trigger_method(f: Factory) -> Unit\n"
+    "    let b = f.produce()\n"
+    "    b.boom()\n"
+    "    return\n"
+    "\n"
+    "pub fun trigger_local_method() -> Unit\n"
+    "    let fac = make_factory()\n"
+    "    fac.produce().boom()\n"
+    "    return\n"
+    "\n"
+    "pub fun holds(f: Factory) -> Unit\n"
+    "    return\n"
+)
+
+
+class TestInherentImplMethodFactory(_TmpTree):
+    """H-F1 method-factory residual: a cap minted through an inherent-impl
+    method that returns a cap-bearing type is REAL, live authority.
+
+    SEAM A folds inherent-impl method signatures into ``reachable[]`` at the
+    struct fixpoint, exactly mirroring the trait-impl fold, so a value of the
+    struct type charges the caps its inherent methods can hand out. This
+    restores the inherent-vs-trait symmetry and, because ``reachable[]`` is
+    the one source both the signature walk and the body walk consume, closes
+    the ``f: Factory`` param case and the body-local factory case together."""
+
+    def test_inherent_method_param_surfaces_the_capability(self):
+        # The exact residual: a Factory PARAM whose inherent method returns
+        # the cap-bearing Bomb. The signature walk reads reachable[Factory].
+        recs = _records_of(FACTORY_SRC)
+        r = recs[("trigger_method", None)]
+        self.assertNotIn("Danger", r["provably_excluded_capabilities"])
+        self.assertIn("Danger", r["transitively_reachable_capabilities"])
+
+    def test_local_receiver_method_factory_surfaces_the_capability(self):
+        # The body-side path: a local Factory obtained from make_factory(),
+        # whose inherent produce() mints the Bomb. Resolved through the same
+        # reachable[Factory] the SEAM A fold now populates.
+        recs = _records_of(FACTORY_SRC)
+        r = recs[("trigger_local_method", None)]
+        self.assertNotIn("Danger", r["provably_excluded_capabilities"])
+        self.assertIn("Danger", r["transitively_reachable_capabilities"])
+
+    def test_pure_holder_is_over_approximated_the_discriminator(self):
+        # SEAM A is a SOURCE-level over-approximation: holding a Factory
+        # charges the authority its inherent methods can mint, even for a
+        # function that never calls produce(). This mirrors the existing
+        # struct-field and trait-impl folds. It is intentional and sound
+        # (widening transitively_reachable only shrinks provably_excluded);
+        # do NOT "tighten" it back into a per-call dataflow check, which
+        # would reopen the false-exclude hole this fix closes.
+        recs = _records_of(FACTORY_SRC)
+        r = recs[("holds", None)]
+        self.assertIn("Danger", r["transitively_reachable_capabilities"])
+        self.assertNotIn("Danger", r["provably_excluded_capabilities"])
+
+    def test_used_caps_are_disjoint_from_provably_excluded(self):
+        # The disjointness invariant, now exercising the method-call shape:
+        # trigger_method / trigger_local_method both CALL boom (a Danger
+        # method) and must not provably-exclude Danger.
+        tokens = Lexer(FACTORY_SRC).lex()
+        module = Parser(tokens, source=FACTORY_SRC).parse_module()
+        manifest = build_manifest(module, filename="factory.capa")
+        method_caps: dict[str, set[str]] = {}
+        for uc in manifest["user_defined_capabilities"]:
+            for m in uc["methods"]:
+                method_caps.setdefault(m, set()).add(uc["name"])
+        for r in manifest["functions"]:
+            excluded = set(r["provably_excluded_capabilities"])
+            used: set[str] = set()
+            for call in r["calls"]:
+                if call["kind"] != "method":
+                    continue
+                method = call["callee"].rsplit(".", 1)[-1]
+                used |= method_caps.get(method, set())
+            self.assertEqual(
+                used & excluded, set(),
+                f"{r['name']}: {used & excluded} both used and "
+                f"provably-excluded",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

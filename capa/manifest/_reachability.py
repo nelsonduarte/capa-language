@@ -567,9 +567,23 @@ def compute_reachability(
                     fb_changed = True
                     break
     impls_by_trait: dict[str, list[A.ImplBlock]] = {}
+    # Inherent (non-trait) impl methods indexed by the struct they are on.
+    # H-F1 method-factory residual (2026-08-26): an inherent method whose
+    # return type names a cap-bearing type (``impl Factory { fun produce(
+    # self) -> Bomb }``) lets a holder of the struct mint that value and
+    # exercise its authority. Pre-fix these were folded into ``reachable[]``
+    # NOWHERE (only trait impls were, via ``impls_by_trait`` below), so a
+    # ``f: Factory`` param and a body-local factory both falsely
+    # provably-excluded the cap. Folded into the struct fixpoint with the
+    # SAME ``_method_sig_caps`` helper the trait path uses.
+    inherent_methods_by_type: dict[str, list[A.FunDecl]] = {}
     for item in module.items:
         if isinstance(item, A.ImplBlock) and item.trait_name is not None:
             impls_by_trait.setdefault(item.trait_name, []).append(item)
+        elif isinstance(item, A.ImplBlock) and item.trait_name is None:
+            inherent_methods_by_type.setdefault(
+                item.type_name, [],
+            ).extend(item.methods)
 
     reachable: dict[str, set[str]] = {}
     # Seed a reachable entry for every user-cap, every cap-bearing
@@ -659,6 +673,18 @@ def compute_reachability(
                 if hf:
                     unprovable.add(sname)
                 if _type_mentions_any(fld.type_expr, unprovable):
+                    unprovable.add(sname)
+            # The caps an INHERENT (non-trait) impl method can hand out are
+            # exercisable by any holder of the struct: ``impl Factory { fun
+            # produce(self) -> Bomb }`` lets a holder mint a Bomb and run its
+            # authority. Charged with the SAME signature walk the trait path
+            # uses (``_method_sig_caps``: non-self params + return type), so
+            # the inherent-vs-trait treatment is symmetric and single-sourced
+            # (H-F1 method-factory residual).
+            for m in inherent_methods_by_type.get(sname, ()):
+                cs, u = _method_sig_caps(m, reachable, unprovable)
+                new_caps |= cs
+                if u:
                     unprovable.add(sname)
             if (
                 new_caps != reachable[sname]
