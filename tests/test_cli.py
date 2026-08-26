@@ -430,7 +430,7 @@ class TestCliInProcess(unittest.TestCase):
             td_path = Path(td)
             p = _write_capa(td_path, "hello.capa", _HELLO)
             with mock.patch(
-                "capa.cli._wasm_tooling_available", return_value=False,
+                "capa.cli._execute._wasm_tooling_available", return_value=False,
             ):
                 rc, out, err = _run_main(
                     ["--run", "--prefer-wasm", str(p)], cwd=td_path,
