@@ -426,17 +426,32 @@ class TestCliInProcess(unittest.TestCase):
         # Force the toolchain probe to report False so we exercise
         # the "skip the Wasm path entirely" branch even on a machine
         # with wasm-tools installed.
+        #
+        # rc 0 + "Hi" alone cannot tell "fallback taken" from "real
+        # Wasm path taken" on a machine with wasm-tools. The
+        # path-observable signal is ``compile_wasm``: it is the FIRST
+        # call inside the prefer-wasm block, so if the tooling-missing
+        # gate is honoured the block is skipped and ``compile_wasm`` is
+        # never reached. Spying on it (returning None keeps the block
+        # inert if it ever does run) lets us assert the Wasm path was
+        # NOT entered, which is exactly what a gate mutation that
+        # ignores tooling-missing would violate.
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             p = _write_capa(td_path, "hello.capa", _HELLO)
             with mock.patch(
                 "capa.cli._execute._wasm_tooling_available", return_value=False,
-            ):
+            ), mock.patch(
+                "capa.ir.compile_wasm", return_value=None,
+            ) as spy_compile_wasm:
                 rc, out, err = _run_main(
                     ["--run", "--prefer-wasm", str(p)], cwd=td_path,
                 )
             self.assertEqual(rc, 0, err)
             self.assertIn("Hi", out)
+            # The Python fallback ran; the Wasm compile boundary was
+            # never crossed.
+            spy_compile_wasm.assert_not_called()
 
     # --- SBOM / artefact emitters -----------------------------------
 
@@ -969,6 +984,42 @@ class TestCliInProcess(unittest.TestCase):
                     builtins.exec = real_exec
             self.assertEqual(rc, 1)
             self.assertIn("user-message", err)
+
+    def test_run_python_returns_int_systemexit_code(self):
+        # Direct unit test for ``run_python``'s SystemExit(int) branch
+        # (the transpiled program calling ``exit(7)``). Driving this
+        # through ``main()`` and patching ``builtins.exec`` globally does
+        # NOT reach the branch: an earlier exec in the dispatch pipeline
+        # raises first and ``_run_main``'s own ``except SystemExit``
+        # catches it, so a ``return e.code`` -> ``return 0`` mutation
+        # inside ``run_python`` stays green. Here we call ``run_python``
+        # directly and shadow ONLY its ``exec`` name (a module-level
+        # global that wins name resolution over the builtin), so the one
+        # call that raises SystemExit(7) is the transpiled program's, and
+        # the returned exit code is asserted to be that int.
+        import types
+        from capa import Lexer, Parser, analyze
+        from capa.cli._ctx import ExecCtx
+        from capa.cli._run_python import run_python
+
+        src, fname = _HELLO, "prog.capa"
+        tokens = Lexer(src, filename=fname).lex()
+        module = Parser(tokens, source=src, filename=fname).parse_module()
+        result = analyze(module, source=src, filename=fname)
+        args = types.SimpleNamespace(
+            run=True, transpile=False, ir=False, parse=False,
+            no_layout=False, file=fname,
+        )
+        ctx = ExecCtx(
+            module=module, source=src, filename=fname, result=result,
+            args=args, use_color=False, program_args=[],
+        )
+        with mock.patch(
+            "capa.cli._run_python.exec", create=True,
+            side_effect=SystemExit(7),
+        ):
+            rc = run_python(ctx, None, tokens)
+        self.assertEqual(rc, 7)
 
     # --- install: missing pkg subsystem ----------------------------
 

@@ -49,6 +49,11 @@ desktop.ini
 debug_out.bin
 /tmp/
 
+# WASI Fs demo output: wasi_fs_write.capa writes note.txt into a scratch
+# data/ dir next to the example (cwd-relative), regenerated on each run.
+# data/ holds no tracked files, so only the generated artefact is ignored.
+examples/wasm/data/note.txt
+
 # Benchmark scratch (transpiled .py written next to each .capa
 # by benchmarks/runner.py; regenerated on every run).
 benchmarks/*.bench.py
