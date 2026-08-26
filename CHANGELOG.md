@@ -11,6 +11,66 @@ breaking changes and the discipline is still being shaped.
 
 **Security / soundness (unreleased).**
 
+- *A signed-SBOM `provably_excluded_capabilities` field could falsely certify a
+  user capability EXCLUDED when the function obtained it as a body-local (audit
+  H-F1).* The per-function `transitively_reachable_capabilities` roll-up unioned
+  only `caps_reachable_via_sig` (the function's parameter, return, and `self`
+  container types), so a value MINTED inside the body was invisible to the
+  exclusion subtraction. `fun trigger()` with an empty signature doing
+  `let b = Bomb {}; b.boom()` (or `let b = make_bomb()` for a factory whose
+  declared return type names the cap-bearing `Bomb`) exercised the `Danger`
+  capability `Bomb` implements while the manifest listed `Danger` as provably
+  excluded. Two commits close it, both charging the minted authority through the
+  SAME per-type `reachable[]` / `unprovable` map the signature walk already uses
+  (one type-to-caps source, no parallel table):
+  - `29f130c` adds `caps_reachable_via_body` in
+    [`capa/manifest/_reachability.py`](capa/manifest/_reachability.py), which
+    walks the body for the two shapes that introduce a cap-bearing value from
+    nothing (a `StructLit` construction, and a free-function `Call` whose callee's
+    declared return type names a cap-bearing type), and unions the result into
+    `transitively_reachable` in
+    [`capa/manifest/_funrec.py`](capa/manifest/_funrec.py). This closes the
+    free-function factory shape.
+  - `52cda33` (SEAM A) folds INHERENT-impl (non-trait) method signatures into
+    `reachable[ConcreteStruct]` at `compute_reachability`'s struct fixpoint, via
+    the same `_method_sig_caps` helper the trait-impl path uses, so an
+    `impl Factory { fun produce(self) -> Bomb }` charges the caps its inherent
+    methods can hand out to any holder of a `Factory`. This restores the
+    inherent-vs-trait symmetry and closes the inherent-instance-method factory
+    shape for both a `f: Factory` parameter and a body-local receiver, from one
+    source.
+
+  The minted authority is SURFACED (precisely named) into
+  `transitively_reachable_capabilities` so it drops out of
+  `provably_excluded_capabilities`; it is NOT voided the way a `Fun` or `Unsafe`
+  in the signature blanks the whole list. Every other capability the body never
+  obtains stays provably excluded (a false-exclude fix, not a blanket void). The
+  change is manifest-only: the Python interpreter and the Wasm Component Model
+  backend emit byte-identical runtime output and no golden moved. Pinned by
+  [`tests/test_manifest_ceiling_user_caps.py`](tests/test_manifest_ceiling_user_caps.py)
+  classes `TestBodyMintedUserCapability` (6 tests, free-function factory
+  including cross-module) and `TestInherentImplMethodFactory` (4 tests,
+  inherent-impl method factory), each carrying a
+  `test_used_caps_are_disjoint_from_provably_excluded` guard. No version change and
+  no GHSA (Python-style cadence; a security-fix advisory batches at the next stable
+  release). Commits `29f130c`, `52cda33`.
+
+  Honest scope: H-F1 (the signed-SBOM false-exclusion of a body-obtained user
+  capability) is closed for every call form the language actually SUPPORTS, the
+  free-function factory and the inherent-instance-method factory. A SEPARATE
+  typechecker hole, tracked and scheduled as the next item, still ACCEPTS the
+  unsupported `TypeName.method()` associated-call surface (`Factory.create()`,
+  even `Factory.nonexistent()`, which passes `--check` and then fails at runtime).
+  While that hole stands, that one unsupported-but-accepted form can still exhibit
+  the false-exclude; rejecting it removes the last observable false-exclude of this
+  class by construction. See Known issues below.
+
+  Known issue (one residual stays open by ROOT CAUSE): the `TypeName.method()`
+  associated-call surface is accepted by the typechecker although the language
+  does not support it, so a body that mints a cap-bearing value through that
+  form is not yet charged. It is tracked for the next fix, which removes the last
+  observable false-exclude of this class.
+
 - *The fifth face of the rigid-destructure IFC class: a trait-typed-scrutinee
   downcast could launder a `@secret` through a public twin.* The `1.32.0`
   rigid-destructure advisory

@@ -134,6 +134,43 @@ por-função**, não só por auditoria manual. A Lacuna 5 (gerador
 nível-tipo completo: genéricos, sum types com payloads, closures
 cap-capturantes) fica como alargamento contínuo, não pré-requisito.
 
+## Adenda (2026-08-26): a forma de manifesto da invariante, fixada para valores cunhados no corpo (H-F1)
+
+A correção da auditoria H-F1 acrescenta uma âncora estática à forma de
+manifesto da invariante `usado(f) ∩ provably_excluded(f) = ∅` (linhas 56
+e 81), complementar aos testes de runtime da Lacuna A. Antes, o roll-up
+`transitively_reachable_capabilities` unia apenas
+`caps_reachable_via_sig` (tipos dos parâmetros, do retorno e do `self`),
+pelo que um valor de tipo cap-bearing CUNHADO no corpo, construído inline
+(`let b = Bomb {}`) ou devolvido por uma fábrica cujo tipo de retorno
+declarado o nomeia (`let b = make_bomb()`), escapava à subtração da
+exclusão e a capability por ele exercida aparecia falsamente em
+`provably_excluded_capabilities`.
+
+Isto passa agora a estar fixado, ao nível do manifesto e por exemplo
+(testes de caracterização, NÃO os geradores property/fuzz da Lacuna A),
+em
+[`tests/test_manifest_ceiling_user_caps.py`](../../tests/test_manifest_ceiling_user_caps.py):
+
+- `TestBodyMintedUserCapability` (6 testes) sobre a fábrica de função
+  livre (`DANGER_SRC`), incluindo o par cruzando módulos, e
+- `TestInherentImplMethodFactory` (4 testes) sobre a fábrica por método
+  de `impl` inerente (`FACTORY_SRC`).
+
+Cada classe traz um método
+`test_used_caps_are_disjoint_from_provably_excluded` que, para TODO
+registo de função do manifesto do programa, afirma exatamente
+`usado ∩ provably_excluded = ∅`: uma user-cap alcançável por um método
+que a função de facto CHAMA nunca é excluída-por-prova. As restantes
+asserções afirmam apenas o que verificam: a cap cunhada é SUPERFICIADA
+em `transitively_reachable_capabilities` (não anula a lista, ao contrário
+de um `Fun`/`Unsafe` na assinatura), e uma cap que o corpo nunca obtém
+mantém-se excluída (o discriminador). O âmbito da adenda é a classe de
+valores cunhados no corpo para as formas de chamada que a linguagem
+SUPORTA (fábrica de função livre e fábrica por método inerente); a
+superfície de chamada associada `TypeName.method()`, aceite pelo
+typechecker embora não suportada, é um resíduo rastreado à parte.
+
 ## Não-objetivos
 
 - Não construir do zero, estender `test_properties.py` e
