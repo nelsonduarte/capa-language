@@ -6911,6 +6911,68 @@ class TestMethodWithoutSelfNotCallable(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
 
+class TestStaticCallOnUserTypeRejected(unittest.TestCase):
+    """``TypeName.method()`` on a user-defined type is not a supported
+    call surface: Capa has no static-method call syntax. The bare-Ident
+    receiver names a TYPE_STRUCT / TYPE_SUM symbol (a type, not a value),
+    so it must be rejected at ``--check`` time rather than typing the
+    receiver to ``TyUnknown`` and crashing with an ``AttributeError`` at
+    runtime. The reject fires on the symbol KIND, so it precedes method
+    name lookup: even a genuinely absent method is rejected here."""
+
+    MSG = "Capa has no static-method call syntax"
+
+    def test_static_call_on_struct_type_is_rejected(self):
+        errs = errors_of(
+            "type Bomb { n: Int }\n"
+            "type Factory { seed: Int }\n"
+            "impl Factory\n"
+            "    fun create() -> Bomb\n"
+            "        return Bomb { n: 0 }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let b = Factory.create()\n"
+            "    stdio.println(\"${b.n}\")\n"
+        )
+        self.assertTrue(any(self.MSG in e for e in errs), errs)
+
+    def test_static_call_absent_method_rejected_before_lookup(self):
+        # The method does not exist. The kind-based reject fires before
+        # name lookup, closing the crash-at-runtime facet: this used to
+        # pass ``--check`` and then raise ``AttributeError`` at runtime.
+        errs = errors_of(
+            "type Factory { seed: Int }\n"
+            "impl Factory\n"
+            "    fun create() -> Factory\n"
+            "        return Factory { seed: 0 }\n"
+            "fun main(stdio: Stdio)\n"
+            "    let f = Factory.nonexistent()\n"
+            "    stdio.println(\"done\")\n"
+        )
+        self.assertTrue(any(self.MSG in e for e in errs), errs)
+
+    def test_static_call_on_sum_type_is_rejected(self):
+        errs = errors_of(
+            "type Color =\n"
+            "    Red\n"
+            "    Blue\n"
+            "fun main(stdio: Stdio)\n"
+            "    let c = Color.foo()\n"
+            "    stdio.println(\"done\")\n"
+        )
+        self.assertTrue(any(self.MSG in e for e in errs), errs)
+
+    def test_capability_attenuator_still_accepted(self):
+        # Regression: ``Net.restrict_to`` is a CAPABILITY receiver, not
+        # a TYPE_STRUCT / TYPE_SUM, so the kind-based reject must not
+        # fire. The gate is load-bearing.
+        r = check(
+            "fun main(net: Net)\n"
+            "    let n = Net.restrict_to(\"example.com\")\n"
+            "    let _ = net.allows(\"example.com\")\n"
+        )
+        self.assertTrue(r.ok, r.errors)
+
+
 class TestUnreachableMatchArm(unittest.TestCase):
     """An arm written after a guardless catch-all (``_`` or a bare
     binding ident) is unreachable by construction: the catch-all

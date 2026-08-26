@@ -682,6 +682,37 @@ class _DispatchMixin:
                 self.bindings[id(e.receiver)] = recv_sym
                 return self._check_foreign_call(e, recv_sym)
 
+            # ``TypeName.method()`` on a user-defined type is not a
+            # supported call surface: Capa has no static-method call
+            # syntax. The bare Ident names the type symbol (a type, not
+            # a value), so ``_check_expr(e.receiver)`` would type it to
+            # ``TyUnknown`` and bypass every dispatch check, letting even
+            # a genuinely absent method pass ``--check`` and crash with
+            # ``AttributeError`` at runtime. Reject on the symbol KIND so
+            # the check precedes method name lookup. Discriminating on
+            # kind (not on the resulting ``TyUnknown``) is what keeps the
+            # capability attenuators (``Net.restrict_to``, kind
+            # CAPABILITY) and the EXTERN_COMPONENT namespaces working.
+            # The ``pos != BUILTIN_POS`` gate excludes the built-in
+            # container constructors (``Map.new`` / ``List.new``), which
+            # are TYPE_STRUCT at the sentinel position and out of scope.
+            from ..builtins import BUILTIN_POS as _BPOS
+            if (
+                recv_sym is not None
+                and recv_sym.kind in (
+                    SymbolKind.TYPE_STRUCT, SymbolKind.TYPE_SUM,
+                )
+                and recv_sym.pos != _BPOS
+            ):
+                self._err(
+                    f"type {recv_sym.name!r} has no static method "
+                    f"{e.method!r}; Capa has no static-method call syntax "
+                    f"(call a method on a value of the type, not on the "
+                    f"type name)",
+                    e.pos,
+                )
+                return TyUnknown
+
         # Receiver + args first so their types populate
         # ``self.types`` for the FieldAccess-aware aliasing check.
         recv_ty = self._check_expr(e.receiver)
