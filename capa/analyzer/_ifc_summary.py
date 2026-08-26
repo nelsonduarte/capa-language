@@ -190,7 +190,7 @@ from ._ifc_tables import (
     _VARIABLE_TIME_OPS, _SHORT_CIRCUIT_COMPARE_OPS,
     _CT_INDEX_METHODS, _CT_SHORT_CIRCUIT_METHODS,
     _pattern_bound_names, _prefix_compatible,
-    INTERNAL_SECRET, _bind, methods_by_name,
+    INTERNAL_SECRET, _bind, methods_by_name, result_effect_keys,
     build_impl_reverse_index, trait_destructure_field_label,
 )
 
@@ -3354,24 +3354,25 @@ class _SummaryBuilder:
         Any other receiver (a built-in container modelled as a struct such
         as ``List``, a non-parameter local, an unresolved chain) yields
         ``()`` so the conservative join governs -- so a same-named user
-        method cannot under-taint a built-in receiver's result."""
+        method cannot under-taint a built-in receiver's result.
+
+        The trait-first ordering itself (a TRAIT-typed receiver takes the
+        by-name union BEFORE the exact key, so the trait's OWN abstract
+        empty-summary ``("method", trait, m)`` signature -- RC2, registered
+        only to declare the return TYPE -- never short-circuits the union to
+        its empty return-effect and fails the narrowing open) lives in the
+        single shared ``result_effect_keys`` the two intra resolvers delegate
+        to as well, so no site can drift on it. ``by_name`` is this pass's
+        precomputed trait-EXCLUDED grouping; the fallback is ``()``."""
         if not isinstance(e.receiver, A.Ident):
             return ()
         tyname = self._cur_param_type_names.get(e.receiver.name)
         if tyname is None:
             return ()
-        # A TRAIT-typed receiver is dynamic dispatch: the by-name union over
-        # the concrete impls is the sound result-narrowing set. Checked BEFORE
-        # the exact key so the trait's OWN registered signature (RC2, an
-        # abstract empty-summary ``("method", trait, m)`` entry that exists only
-        # to declare the return TYPE) never short-circuits the union to its
-        # empty return-effect and fails the narrowing open.
-        if self._is_trait_type(tyname):
-            return tuple(by_name)
-        exact_key = ("method", tyname, e.method)
-        if exact_key in self.return_effects:
-            return (exact_key,)
-        return ()
+        return result_effect_keys(
+            tyname, e.method, self.return_effects,
+            self._is_trait_type(tyname), by_name, (),
+        )
 
     def _receiver_is_user_method_owner(self, e: A.MethodCall) -> bool:
         """True when the method-call receiver PROVABLY resolves to a

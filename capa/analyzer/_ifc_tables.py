@@ -277,6 +277,43 @@ def methods_by_name(summaries: dict) -> dict[str, list]:
     return out
 
 
+def result_effect_keys(recv_name, method, effects, is_trait, by_name, fallback):
+    """The return-effect keys whose effect narrows a method call's RESULT
+    label for a receiver whose static type is ``recv_name``, in the
+    TRAIT-FIRST ordering:
+
+    * a TRAIT-typed (dynamic-dispatch) receiver takes ``by_name`` -- the
+      union over every concrete impl method of this name -- checked FIRST,
+      BEFORE the exact key, so the trait's OWN bodiless empty exact-key
+      entry (``("method", trait, method)``, registered only to declare the
+      abstract return type) can never shadow the union and fail the
+      narrowing open;
+    * a concrete receiver uses its EXACT impl-method key when one exists;
+    * otherwise the caller's ``fallback`` governs.
+
+    The ONE ordering site the trait-first rule lives in. Both intra
+    resolvers (``_ifc._method_call_returns_secret`` /
+    ``_method_call_return_label``) and the cross-function summary
+    (``_ifc_summary._result_candidate_keys``) delegate here, so no consumer
+    can drift back into letting the empty trait key shadow the implementor
+    union -- exactly the divergence this closes (the summary already had
+    the trait-first order right; the two intra sites open-coded it wrong).
+
+    Pure. Each caller supplies the parts that genuinely differ between them:
+    ``by_name`` (the intra pass groups it from the live return-effect table,
+    which harmlessly includes the empty trait key; the summary supplies its
+    precomputed trait-EXCLUDED grouping) and ``fallback`` (the by-name union
+    for the return-secret check, ``()`` -> the conservative whole-value join
+    for the result-label check and the summary), along with the already
+    resolved ``is_trait``."""
+    if is_trait:
+        return tuple(by_name)
+    exact_key = ("method", recv_name, method)
+    if exact_key in effects:
+        return (exact_key,)
+    return tuple(fallback)
+
+
 def _bind(args: list, arg_names: list, param_names: list[str]) -> dict:
     """Return ``{param_index: arg_index}`` resolving positional and
     named arguments against ``param_names``. Mirrors the analyzer's

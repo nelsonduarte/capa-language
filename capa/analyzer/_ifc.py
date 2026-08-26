@@ -43,7 +43,7 @@ from ._ifc_tables import (
     _VARIABLE_TIME_OPS, _SHORT_CIRCUIT_COMPARE_OPS,
     _CT_INDEX_METHODS, _CT_SHORT_CIRCUIT_METHODS,
     _pattern_bound_names, _prefix_compatible,
-    INTERNAL_SECRET, _bind, methods_by_name,
+    INTERNAL_SECRET, _bind, methods_by_name, result_effect_keys,
     build_impl_reverse_index, trait_destructure_field_label,
 )
 
@@ -3077,15 +3077,21 @@ class _IfcMixin:
     def _method_call_returns_secret(self, e: A.MethodCall, recv_ty) -> bool:
         """Method-call form of the return-secret check. Parameter index 0
         is ``self`` (the receiver); explicit parameters follow. Uses the
-        same by-name over-approximation as the summary (a dynamic-dispatch
-        receiver matches every impl method of this name), so a secret
-        return is never missed across the boundary."""
+        same trait-first by-name over-approximation as the summary (a
+        TRAIT-typed dynamic-dispatch receiver matches every impl method of
+        this name, its OWN empty bodiless entry never shadowing that union),
+        so a secret return is never missed across the boundary."""
         recv_name = getattr(recv_ty, "name", None)
         if recv_name is None:
             return False
-        exact_key = ("method", recv_name, e.method)
-        keys = ([exact_key] if exact_key in self._ifc_return_effects
-                else methods_by_name(self._ifc_return_effects).get(e.method, ()))
+        # The by-name union is BOTH the trait-dispatch candidate set and this
+        # check's non-trait fallback (an unresolved / receiver-type-unknown
+        # call still over-approximates over every impl of the name).
+        by_name = methods_by_name(self._ifc_return_effects).get(e.method, ())
+        keys = result_effect_keys(
+            recv_name, e.method, self._ifc_return_effects,
+            self._is_trait_type(recv_name), by_name, by_name,
+        )
         # Full-order arg list: receiver is index 0, explicit args follow.
         # ``self`` (param 0) maps to the receiver; explicit param i+1 maps
         # to explicit argument i (positional; the common case). The
@@ -3139,21 +3145,19 @@ class _IfcMixin:
         recv_name = getattr(recv_ty, "name", None)
         keys: tuple = ()
         if recv_name is not None:
-            exact_key = ("method", recv_name, e.method)
-            if exact_key in self._ifc_return_effects:
-                # Resolved to a concrete user method: use its effect.
-                keys = (exact_key,)
-            elif self._is_trait_type(recv_name):
-                # A trait-typed (dynamic-dispatch) receiver: by-name union
-                # over every impl method of this name, the sound
-                # over-approximation. A concrete type WITHOUT an exact key
-                # (a built-in container / a struct with no such impl
-                # method) falls through to the conservative join below.
-                keys = tuple(
-                    methods_by_name(self._ifc_return_effects).get(
-                        e.method, (),
-                    )
-                )
+            # Trait-first ordering (shared with the summary): a trait-typed
+            # (dynamic-dispatch) receiver takes the by-name union over every
+            # impl method of this name BEFORE its own empty bodiless exact
+            # key; a concrete type uses its exact user-method key; anything
+            # else (a built-in container / a struct with no such impl method)
+            # yields ``()`` and falls through to the conservative join below.
+            by_name = methods_by_name(self._ifc_return_effects).get(
+                e.method, (),
+            )
+            keys = result_effect_keys(
+                recv_name, e.method, self._ifc_return_effects,
+                self._is_trait_type(recv_name), by_name, (),
+            )
         # When the receiver is a BUILT-IN / non-user type (List, Map, Set,
         # String, a capability, ...), a same-named user method must NOT
         # narrow its result: the conservative whole-value join governs, so
