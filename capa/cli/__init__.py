@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from capa import (
-    Lexer, LexerError, Parser, TokenKind, analyze, ast_dump, transpile,
+    Lexer, LexerError, Parser, analyze,
 )
 from capa.manifest import (
     resolve_build_timestamp, SourceDateEpochError,
@@ -41,6 +41,7 @@ from capa.cli._emitters import (
     emit_vex, emit_provenance, emit_doc, emit_wit,
 )
 from capa.cli._execute import run_execute, _wrap_as_component
+from capa.cli._run_python import run_python
 from capa.cli._parser import (
     build_parser, _compiler_owned_args, _floor_check_exempt,
 )
@@ -52,7 +53,6 @@ from capa.cli.subcommands import (
 )
 from capa.formatter import format_source, is_formatted
 from capa.loader_paths import resolve_loader_paths
-from capa._debug import _rewrite_traceback
 
 
 def main() -> int:
@@ -287,12 +287,6 @@ def _main_dispatch() -> int:
         return 2
 
     use_color = sys.stdout.isatty() and not args.no_color
-    layout_kinds = {
-        TokenKind.NEWLINE,
-        TokenKind.INDENT,
-        TokenKind.DEDENT,
-        TokenKind.EOF,
-    }
 
     # --fmt and --fmt-check operate on the raw source text, before
     # lexing, so they work on files with syntax errors as well.
@@ -561,143 +555,17 @@ def _main_dispatch() -> int:
     if rc is not None:
         return rc
 
-    if args.transpile or args.run:
-        # If we haven't yet run analyze (in --transpile mode without --check),
-        # we run it now silently to obtain types for the
-        # type-aware dispatch in the transpiler.
-        if result is None:
-            result = analyze(module, source=source, filename=filename)
-        code = None
-        # Statement-level source map (python_line -> Capa Pos), filled
-        # by the legacy transpiler. Stays empty on the --ir path, in
-        # which case _rewrite_traceback falls back to the plain
-        # Python traceback.
-        line_map: dict = {}
-        if args.ir:
-            # Opt-in CIR pipeline. UnsupportedInIR drops back to the
-            # legacy transpiler so an --ir invocation still produces
-            # runnable Python on programs the CIR doesn't yet cover;
-            # the user-visible behaviour is identical, only the path
-            # differs. A one-line stderr breadcrumb makes the fallback
-            # visible to anyone debugging the IR's coverage.
-            from capa.ir import compile_program, UnsupportedInIR
-            try:
-                code = compile_program(
-                    module, filename=filename,
-                    types=result.types if result is not None else None,
-                    bindings=result.bindings if result is not None else None,
-                )
-            except UnsupportedInIR as e:
-                msg = f"capa: --ir: falling back to legacy transpiler ({e})"
-                if use_color:
-                    print(f"{C.YELLOW}{msg}{C.RESET}", file=sys.stderr)
-                else:
-                    print(msg, file=sys.stderr)
-        if code is None:
-            code = transpile(
-                module, filename=filename,
-                types=result.types if result is not None else None,
-                bindings=result.bindings if result is not None else None,
-                out_line_map=line_map,
-            )
-
-    if args.transpile and not args.run:
-        print(code)
-        return 0
-
-    if args.run:
-        # Execute the transpiled Python in the current interpreter.
-        #
-        # The ``capa.runtime`` package is already importable here (we
-        # are running inside the ``capa`` package), so the transpiled
-        # code's ``from capa.runtime import ...`` resolves directly.
-        # We give it a ``__name__ = "__main__"`` so the conventional
-        # entry-point guard works; ``SystemExit`` is intercepted so
-        # the exit code propagates back to the OS naturally; any
-        # other exception prints a traceback and returns 1.
-        #
-        # Historical note: a ``subprocess.run([sys.executable, ...])``
-        # used to be invoked here. That does not survive PyInstaller
-        # bundling: the bundled binary is not a generic Python
-        # interpreter able to run an arbitrary ``.py`` file. In-process
-        # exec works in both plain-Python and frozen-binary modes,
-        # is faster (no fork), and avoids the temp-file dance.
-        import traceback
-        run_globals = {
-            "__name__": "__main__",
-            "__file__": "<transpiled>",
-        }
-        # Override sys.argv for the duration of the run so the
-        # program's ``env.args()`` returns the user-visible arguments.
-        # argv[0] is the .capa filename (or ``<transpiled>`` for
-        # --stdin); argv[1:] is everything after ``--`` on the
-        # Capa command line.
-        saved_argv = sys.argv
-        sys.argv = [args.file or "<transpiled>", *program_args]
-        try:
-            exec(compile(code, "<transpiled>", "exec"), run_globals)
-            return 0
-        except SystemExit as e:
-            if e.code is None:
-                return 0
-            if isinstance(e.code, int):
-                return e.code
-            sys.stderr.write(str(e.code) + "\n")
-            return 1
-        except BaseException:
-            traceback.print_exc(file=sys.stderr)
-            # Resolve per-file source text so each Capa frame can show
-            # its source line and caret. The root file is always
-            # available; the linker's sources map (when present) covers
-            # imported modules in a multi-file program.
-            sources = {filename: source}
-            if linked is not None:
-                sources.update(linked.sources)
-            summary = _rewrite_traceback(
-                sys.exc_info(), line_map,
-                sources=sources, default_source=source,
-            )
-            if summary:
-                print(summary, file=sys.stderr)
-            return 1
-        finally:
-            sys.argv = saved_argv
-
-    if args.parse:
-        # Belt-and-braces (see the analyze call above): the parser
-        # caps nesting and flat-chain length so the dumped AST is
-        # never deep enough to overflow ``ast_dump``'s recursive walk;
-        # convert any leaked RecursionError into a clean error rather
-        # than a raw stack trace under ``capa --parse``.
-        try:
-            print(ast_dump(module))
-        except RecursionError:
-            return _recursion_diagnostic(
-                filename, "dump", use_color=use_color
-            )
-        return 0
-
-    for tok in tokens:
-        if args.no_layout and tok.kind in layout_kinds:
-            continue
-        pos = f"{tok.start.line:>4}:{tok.start.col:<3}"
-        kind_name = tok.kind.name
-        text_repr = repr(tok.text) if tok.text else ""
-        value_repr = ""
-        if tok.value is not None and tok.value != tok.text:
-            value_repr = f"  → {tok.value!r}"
-        if use_color:
-            col = color_for(tok.kind)
-            print(
-                f"{C.GRAY}{pos}{C.RESET}  "
-                f"{col}{kind_name:<14}{C.RESET}  "
-                f"{C.DIM}{text_repr}{C.RESET}"
-                f"{value_repr}"
-            )
-        else:
-            print(f"{pos}  {kind_name:<14}  {text_repr}{value_repr}")
-
-    return 0
+    # Default backend: the legacy transpiler -> in-process exec, plus
+    # --transpile (Python), --ir, --parse (AST dump) and the bare token
+    # dump. ``exec_ctx`` is reused as-is. ``run_python`` only lazily
+    # analyses when ``ctx.result`` is None, which happens solely for a
+    # bare --transpile (no check/run/wasm): in that case none of the
+    # result-mutating branches inside ``run_execute`` (all gated on
+    # run / wasm / output) run, so ``ctx.result`` reaching here is exactly
+    # the local ``result``. ``linked`` and ``tokens`` are the two locals
+    # the Wasm path never needs (the multi-file traceback source map and
+    # the lexed token stream for the dump).
+    return run_python(exec_ctx, linked, tokens)
 
 
 def _run_watch_loop(filename: str, program_args: list[str]) -> int:
