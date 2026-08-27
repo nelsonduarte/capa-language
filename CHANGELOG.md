@@ -11,6 +11,56 @@ breaking changes and the discipline is still being shaped.
 
 **Security / soundness (unreleased).**
 
+- *A `consume` linear / typestate PARAMETER re-used inside the receiving body
+  slipped `--check` (rc0) and executed a real double-consume / double-free on
+  all three backends (audit LIN-1).* At function entry the parameter loop did
+  `if p.consuming: continue`, so a `consume` parameter was seeded into NO
+  tracker (neither `_live_linear` nor `_borrowed_linear`). Sitting in limbo, its
+  first discharge never poisoned it, so a double-consume, a use-after-consume
+  field read, a double-free (sink twice), a forward-then-reuse, a
+  pack-after-consume, or a typestate double-`become` on the parameter passed the
+  flow check and then ran the discharge twice, identically on the legacy,
+  `--ir`, and `--wasm` backends (a real double-spend). This is the consume
+  analog of the already-closed borrowed B-F1 / B-F2 hole, whose let-bound and
+  field-place twins were already caught, which pinned the gap to the parameter
+  seeding. The fix REMOVES the divergence rather than adding a mechanism: a bare
+  `consume` linear / typestate parameter is OWNED, so it is seeded into the SAME
+  `_live_linear` owned tracker as a let-bound value (the same gate as
+  `_linear_bind`) in [`capa/analyzer/_items.py`](capa/analyzer/_items.py), and
+  its re-use is then poisoned and caught by the ONE existing use-after-consume
+  check, with no parallel poison list. The parameter is DROP EXEMPT via a new
+  `_drop_exempt_linear` set (declared in
+  [`capa/analyzer/__init__.py`](capa/analyzer/__init__.py), honoured by the
+  reassign-drop and scope-exit leak checks in
+  [`capa/analyzer/_linear.py`](capa/analyzer/_linear.py)): dropping a consume
+  parameter WITHOUT re-consuming is the documented terminal-owner semantics
+  (`discard` / `adopt`, and the `typestate_door` / `typestate_methods` /
+  `typestate_socket` examples), which stays legal, while use-after-consume
+  tracking stays on. Analyzer-only: a rejected program never reaches codegen, no
+  backend path and no golden moved, and the Python interpreter and the Wasm
+  Component Model backend stay byte-identical on accepted programs. Pinned by
+  [`tests/test_analyzer.py`](tests/test_analyzer.py)
+  `TestLinearConsumeParamReuse` (the six-member class rejected with the existing
+  `linear value 'h' was consumed earlier and cannot be used again` diagnostic,
+  plus boundary negatives keeping the terminal drop, the single valid consume,
+  aliasing, and the borrowed-param rejection intact) and
+  `TestLinearConsumeParamDoubleFreeRuntime` (with the analyzer verdict bypassed,
+  the base double-spends `PAID 100` twice identically on legacy / `--ir` /
+  `--wasm`, proving the new rejection is load-bearing). No version change and no
+  GHSA (Python-style cadence; a security-fix advisory batches at the next stable
+  release). Commit `a54095a`.
+
+  Honest scope: LIN-1 closes the consume-PARAMETER re-use double-consume (a
+  bare `consume` linear / typestate parameter re-used within the receiving
+  body). It does NOT close every linear double-free. A SEPARATE, still-open hole
+  remains: a linear value PACKED INTO A STRUCT FIELD and then re-used
+  (`let b = Box { h: h }` followed by `release(h)`) still passes `--check` (rc0)
+  and double-frees, because the struct literal does not MOVE or poison the
+  linear field value. It affects BOTH consume parameters and let-bound linear
+  values and is a distinct class (must-consume carrier / struct-literal
+  move-tracking), tracked for its own comprehensive fix. It is unrelated to the
+  LIN-1 member above where a value is packed AFTER a consume, which IS caught.
+
 - *A trait-dispatch method-call return that carried a `@secret` was labelled
   public and reached a public sink with no warning at any tier, defeating
   `@strict_ifc` on all three backends (finding IFC-1).* A method call on a
