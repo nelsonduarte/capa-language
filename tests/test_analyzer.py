@@ -10968,5 +10968,219 @@ class TestContainerOfLinearSeal(unittest.TestCase):
         )
 
 
+class TestLinearCarrierObligation(unittest.TestCase):
+    """Carrier obligation: a struct (or nested struct) that TRANSITIVELY
+    OWNS a linear/typestate field is itself a must-consume CARRIER. It must
+    be consumed / transitioned / returned, OR its linear field(s) must be
+    consumed / moved out, else it leaks -- exactly as a bare linear value
+    does. Closes the struct-literal move-tracking double-free: a linear
+    value packed into a field and then re-used double-frees.
+
+    Discharge is PER-FIELD: consuming or moving out the carrier's linear
+    field(s) satisfies it (the whole value need not itself reach a
+    consume). A ``consume``-param carrier is DROP-EXEMPT transitively.
+
+    Analyzer-only; accepted shapes lower unchanged. Both facets
+    (``linear type`` and ``typestate``) are exercised."""
+
+    _BASE = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+        "type Box { h: Handle }\n"
+        "fun make_box() -> Box\n"
+        "    return Box { h: open() }\n"
+        "fun sink(consume b: Box) -> Unit\n"
+        "    return ()\n"
+    )
+    # A carrier W with a single linear field plus a scalar, for the
+    # partial-field-consume-across-branches (Connection C) tests.
+    _W = (
+        "type W { c: Handle, tag: Int }\n"
+        "fun mkw() -> W\n"
+        "    return W { c: open(), tag: 0 }\n"
+    )
+    # Typestate facet: a non-linear carrier of a typestate field.
+    _TS = (
+        "typestate Claim\n    Draft\n    Settled\n"
+        "fun mk() -> Claim[Draft]\n"
+        "    return Claim[Draft] {}\n"
+        "fun archive(consume c: Claim[Settled]) -> Unit\n"
+        "    return ()\n"
+        "type Rec { claim: Claim[Settled], tag: Int }\n"
+        "fun mkrec() -> Rec\n"
+        "    return Rec { claim: become(mk(), Settled), tag: 0 }\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    def _rejects(self, body: str) -> None:
+        self.assertTrue(self._errs(body), "expected a rejection, got none")
+
+    def _compiles(self, body: str) -> None:
+        errs = self._errs(body)
+        self.assertEqual(errs, [], errs)
+
+    # ---- core struct-pack double-free (both orders) ----
+
+    def test_pack_then_reuse_source_rejected(self):
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let h = open()\n"
+            "    let b = Box { h: h }\n    close(h)\n    close(b.h)\n"
+        )
+
+    def test_pack_then_reuse_field_first_rejected(self):
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let h = open()\n"
+            "    let b = Box { h: h }\n    close(b.h)\n    close(h)\n"
+        )
+
+    # ---- E1 binding-level arming from a factory call ----
+
+    def test_factory_carrier_dropped_rejected(self):
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+        )
+
+    def test_factory_carrier_anonymous_drop_rejected(self):
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let _ = make_box()\n"
+        )
+
+    def test_factory_carrier_bare_stmt_rejected(self):
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    make_box()\n"
+        )
+
+    def test_nested_carrier_dropped_rejected(self):
+        self._rejects(
+            self._BASE + "type Inner { h: Handle }\n"
+            "type Outer { inner: Inner, tag: Int }\n"
+            "fun make_outer() -> Outer\n"
+            "    return Outer { inner: Inner { h: open() }, tag: 0 }\n"
+            "fun main(_s: Stdio)\n    let o = make_outer()\n"
+        )
+
+    # ---- Connection C: partial field-consume across branches ----
+
+    def test_partial_field_consume_across_branches_rejected(self):
+        self._rejects(
+            self._BASE + self._W
+            + "fun main(s: Stdio, flag: Bool)\n    let w = mkw()\n"
+            "    if flag\n        close(w.c)\n    else\n        s.println(\"x\")\n"
+        )
+
+    def test_field_consume_on_all_paths_ok(self):
+        self._compiles(
+            self._BASE + self._W
+            + "fun main(s: Stdio, flag: Bool)\n    let w = mkw()\n"
+            "    if flag\n        close(w.c)\n    else\n        close(w.c)\n"
+        )
+
+    def test_partial_field_consume_match_rejected(self):
+        self._rejects(
+            self._BASE + self._W
+            + "fun main(s: Stdio, flag: Bool)\n    let w = mkw()\n"
+            "    match flag\n"
+            "        true -> close(w.c)\n"
+            "        false -> s.println(\"x\")\n"
+        )
+
+    # ---- E2: reassign drops the old carrier ----
+
+    def test_reassign_drops_old_carrier_rejected(self):
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    var b = make_box()\n"
+            "    b = make_box()\n    close(b.h)\n"
+        )
+
+    # ---- variant payload BAR (declaration) ----
+
+    def test_variant_bare_linear_payload_rejected(self):
+        self._rejects(
+            "linear type Handle { id: Int }\n"
+            "type Wrap =\n    A(Handle)\n    B(Int)\n"
+        )
+
+    def test_variant_bare_typestate_payload_rejected(self):
+        self._rejects(
+            "typestate Claim\n    Draft\n    Settled\n"
+            "type Wrap =\n    A(Claim[Draft])\n    B(Int)\n"
+        )
+
+    # ---- STAY ACCEPTED ----
+
+    def test_return_carrier_literal_ok(self):
+        self._compiles(
+            self._BASE + "fun wrap(consume h: Handle) -> Box\n"
+            "    return Box { h: h }\n"
+        )
+
+    def test_carrier_consumed_once_ok(self):
+        self._compiles(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    sink(b)\n"
+        )
+
+    def test_carrier_passthrough_ok(self):
+        self._compiles(
+            self._BASE + "fun passthrough(consume b: Box) -> Box\n"
+            "    return b\n"
+        )
+
+    def test_borrowed_carrier_forwarded_ok(self):
+        self._compiles(
+            self._BASE + "fun peek(b: Box) -> Int\n    return b.h.id\n"
+            "fun use2(b: Box) -> Int\n    return peek(b)\n"
+        )
+
+    def test_consume_carrier_param_dropped_ok(self):
+        # Adopting the whole carrier + its contents is legal (drop-exempt
+        # transitively), consistent with ``adopt(consume h)``.
+        self._compiles(
+            self._BASE + "fun adopt_box(consume b: Box) -> Unit\n"
+            "    return ()\n"
+        )
+
+    def test_field_consumed_then_carrier_dropped_ok(self):
+        self._compiles(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    close(b.h)\n"
+        )
+
+    def test_typestate_carrier_field_moved_out_ok(self):
+        self._compiles(
+            self._TS + "fun main(_s: Stdio)\n    let rec = mkrec()\n"
+            "    let settled = rec.claim\n    archive(settled)\n"
+            "    let n = rec.tag\n"
+        )
+
+    def test_arm_local_carrier_field_moved_out_ok(self):
+        # A carrier bound AND fully field-moved-out inside a single match arm
+        # (the capa_claimdesk ``let result = settle(...); let settled =
+        # result.claim; settled.archive()`` shape). Moving out its last
+        # linear field discharges the whole carrier, so it must not linger
+        # into the arm merge (where the sibling arm would wrongly intersect
+        # the field-move away and report a false leak).
+        self._compiles(
+            self._BASE + "fun main(s: Stdio, flag: Bool)\n"
+            "    match flag\n"
+            "        true ->\n"
+            "            let b = make_box()\n"
+            "            let inner = b.h\n"
+            "            close(inner)\n"
+            "        false ->\n"
+            "            s.println(\"x\")\n"
+        )
+
+    def test_typestate_carrier_dropped_rejected(self):
+        self._rejects(
+            self._TS + "fun main(_s: Stdio)\n    let rec = mkrec()\n"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

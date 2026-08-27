@@ -273,6 +273,21 @@ class _DeclarationsMixin:
                             pty, v.pos,
                             f"payload of variant {v.name!r}",
                         )
+                        # A BARE linear/typestate value in a variant payload
+                        # is barred at the declaration: a sum variant carries
+                        # no per-variant must-consume obligation, so packing
+                        # a single-owner value into one would leak it (the
+                        # same reason ``Option<Handle>`` is already rejected).
+                        if self._ty_is_linear(pty):
+                            self._err(
+                                f"a linear/typestate value cannot be a "
+                                f"payload of variant {v.name!r}; a sum variant "
+                                f"carries no must-consume obligation, so a "
+                                f"single-owner value packed into it would "
+                                f"leak -- keep it in a bare binding / field / "
+                                f"parameter instead",
+                                v.pos,
+                            )
                         payload_tys.append(pty)
                     vsym.variant_payload_tys = payload_tys
                 self._pop_type_params()

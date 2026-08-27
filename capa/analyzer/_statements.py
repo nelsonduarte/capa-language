@@ -811,6 +811,14 @@ class _StatementsMixin:
         # the function/loop exit checks on that path, not here).
         before_live = dict(self._live_linear)
         branch_live: list[dict] = []
+        # Connection C: per-FIELD discharge is INTERSECTION-merged (a field
+        # counts as moved-at-scope-exit only if moved on ALL reachable
+        # paths), the opposite lattice to ``_consumed`` above. Each branch
+        # starts from the pre-if snapshot; the merge intersects the
+        # non-diverging branches, so a field consumed in one branch but not
+        # another stays outstanding.
+        before_field_moved = set(self._linear_field_moved)
+        branch_field_moved: list[set[str]] = []
         # Branch-scoped container-mutation taint: each branch starts from the
         # pre-if snapshot in isolation, and every non-diverging branch's
         # additions are unioned back after the if, so a push in one branch is
@@ -832,17 +840,20 @@ class _StatementsMixin:
 
         self._consumed = set(before)
         self._live_linear = dict(before_live)
+        self._linear_field_moved = set(before_field_moved)
         self._pc_label = acc_pc
         self._container_isolate(before_ct)
         self._check_block(s.then_block)
         if not _block_diverges(s.then_block):
             branch_results.append(self._consumed)
             branch_live.append(dict(self._live_linear))
+            branch_field_moved.append(set(self._linear_field_moved))
             branch_ct.append(self._container_taint)
 
         for cond, blk in s.elif_arms:
             self._consumed = set(before)
             self._live_linear = dict(before_live)
+            self._linear_field_moved = set(before_field_moved)
             self._pc_label = saved_pc
             cty = self._check_expr(cond)
             if not compatible(TyBool, cty):
@@ -858,23 +869,27 @@ class _StatementsMixin:
             if not _block_diverges(blk):
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
+                branch_field_moved.append(set(self._linear_field_moved))
                 branch_ct.append(self._container_taint)
 
         if s.else_block is not None:
             self._consumed = set(before)
             self._live_linear = dict(before_live)
+            self._linear_field_moved = set(before_field_moved)
             self._pc_label = acc_pc
             self._container_isolate(before_ct)
             self._check_block(s.else_block)
             if not _block_diverges(s.else_block):
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
+                branch_field_moved.append(set(self._linear_field_moved))
                 branch_ct.append(self._container_taint)
         else:
             # No else: the all-conditions-false path falls
             # through and consumes nothing additional.
             branch_results.append(before)
             branch_live.append(dict(before_live))
+            branch_field_moved.append(set(before_field_moved))
 
         if branch_results:
             merged: set[str] = set()
@@ -886,12 +901,16 @@ class _StatementsMixin:
             for live in branch_live:
                 merged_live.update(live)
             self._live_linear = merged_live
+            # Intersection of per-field moves: a field is discharged past
+            # the if only if moved on every reachable branch.
+            self._linear_field_moved = set.intersection(*branch_field_moved)
         else:
             # Every branch diverges; the code after this if is
             # unreachable. Keep state at the pre-if snapshot so any
             # further (unreachable) analysis sees no spurious change.
             self._consumed = before
             self._live_linear = before_live
+            self._linear_field_moved = before_field_moved
 
         # Restore the pc-label: the implicit-flow raise scoped only to
         # the branch bodies (roadmap S2.implicit).

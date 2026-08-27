@@ -354,8 +354,10 @@ class _ItemsMixin:
         # inside the body (``let h = open()``).
         prev_live_linear = self._live_linear
         self._live_linear = {}
-        prev_live_linear_ty = self._live_linear_ty
-        self._live_linear_ty = {}
+        # Per-field discharge accounting (Connection C), reset per function
+        # alongside the live map.
+        prev_field_moved = self._linear_field_moved
+        self._linear_field_moved = set()
         # B-F1: seed the borrowed-linear set. A non-``consume`` parameter
         # of a linear / typestate type is borrowed -- the caller keeps the
         # obligation, so the callee may read and forward it but must not
@@ -386,20 +388,21 @@ class _ItemsMixin:
                 # ``discard`` / ``adopt`` receive and drop it), so the
                 # scope-exit leak check skips it. Only a BARE linear/
                 # typestate value is tracked here (the same gate as
-                # ``_linear_bind``); a carrier struct's linear fields are
-                # place-tracked instead.
-                if self._ty_is_linear(p_ty):
-                    self._live_linear[p.name] = p.pos
-                    self._live_linear_ty[p.name] = p_ty
+                # ``_linear_bind``); a carrier struct is seeded too and is
+                # exempt transitively (adopting the whole carrier + its
+                # linear fields is legal, like ``adopt(consume h)``).
+                if self._owned_obligation(p_ty):
+                    self._live_linear[p.name] = (p.pos, p_ty)
                     self._drop_exempt_linear.add(p.name)
                 continue
-            # A non-``consume`` parameter is borrowed when it is itself a
-            # linear/typestate value OR a struct that transitively OWNS a
-            # linear/typestate field (a `Session` / `Settlement` carrier):
-            # the caller keeps the obligation on that field, so the callee
-            # may read it but must not consume, move, or alias-then-consume
-            # it (else it double-frees the caller's field).
-            if self._ty_is_linear(p_ty) or self._type_carries_linear(p_ty):
+            # A non-``consume`` parameter is borrowed when it carries a
+            # must-consume obligation -- itself a linear/typestate value OR a
+            # struct that transitively OWNS a linear/typestate field (a
+            # `Session` / `Settlement` carrier): the caller keeps the
+            # obligation, so the callee may read it but must not consume,
+            # move, or alias-then-consume it (else it double-frees the
+            # caller's field).
+            if self._owned_obligation(p_ty):
                 self._borrowed_linear.add(p.name)
         # Fresh TyVar substitution universe for the function.
         prev_subs = self._ty_subs
@@ -502,10 +505,7 @@ class _ItemsMixin:
             # only now that the whole body has been analysed. Reject the
             # read-out here, since the use-gate could not see it at production
             # time (the element variable was still open).
-            if (
-                self._ty_is_linear(resolved_elem)
-                or self._type_carries_linear(resolved_elem)
-            ):
+            if self._owned_obligation(resolved_elem):
                 self._err(
                     "a linear/typestate value cannot be read out of a "
                     "container: this local resolves to a container of "
@@ -539,7 +539,7 @@ class _ItemsMixin:
         # restore the enclosing function's live set.
         self._linear_check_dropped(set(self._live_linear))
         self._live_linear = prev_live_linear
-        self._live_linear_ty = prev_live_linear_ty
+        self._linear_field_moved = prev_field_moved
         self._borrowed_linear = prev_borrowed_linear
         self._drop_exempt_linear = prev_drop_exempt_linear
 

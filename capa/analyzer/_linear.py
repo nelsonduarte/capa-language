@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .._owned_obligation import carries_linear, owned_obligation
 from ..tokens import Pos
 from ..typesys import Ty, TyName, TyTuple
 
@@ -48,6 +49,17 @@ class _LinearMixin:
         """True if ``ty`` names a ``linear type`` struct or a typestate."""
         return isinstance(ty, TyName) and ty.name in self._linear_types
 
+    def _owned_obligation(self, ty: Optional[Ty]) -> bool:
+        """True iff a value of type ``ty`` carries a must-consume
+        obligation: it is itself linear/typestate, OR a CARRIER struct that
+        transitively owns a linear/typestate field. THE single predicate the
+        obligation seams gate on (``_linear_bind``, the consume-param /
+        borrowed-param seeding, the anonymous-drop and reassign-drop checks);
+        the manifest builder gates its ``is_linear`` / ``consumes`` /
+        ``produces_linear`` on the exact same shared helper."""
+        root = ty.name if isinstance(ty, TyName) else None
+        return owned_obligation(root, self._linear_types, self._symbol_field_roots)
+
     # ---- place / move-path helpers -------------------------------
 
     def _struct_fields_of(self, ty: Optional[Ty]) -> Optional[dict]:
@@ -65,24 +77,16 @@ class _LinearMixin:
             return None
         return sym.struct_fields
 
-    def _type_carries_linear(self, ty: Optional[Ty], _depth: int = 0) -> bool:
+    def _type_carries_linear(self, ty: Optional[Ty]) -> bool:
         """True iff ``ty`` transitively reaches a linear/typestate type
         through struct fields (never through a container element or a
-        ``Fun`` signature), bounded by ``_LINEAR_PATH_MAX_DEPTH``. Mirrors
-        ``_contains_any_capability`` but for the linear/typestate predicate.
-        Used by the HOLE-2 alias-move rule: a NON-linear struct that owns a
-        linear/typestate field is still move-on-alias."""
-        if _depth >= self._LINEAR_PATH_MAX_DEPTH:
-            return False
-        fields = self._struct_fields_of(ty)
-        if fields is None:
-            return False
-        for fty in fields.values():
-            if self._ty_is_linear(fty):
-                return True
-            if self._type_carries_linear(fty, _depth + 1):
-                return True
-        return False
+        ``Fun`` signature). Delegates to the shared ``carries_linear`` walk
+        (the same one the manifest uses) so the carrier classification lives
+        in exactly one place; the analyzer supplies its Symbol-based
+        field-root lookup. Used by the HOLE-2 alias-move rule: a NON-linear
+        struct that owns a linear/typestate field is still move-on-alias."""
+        root = ty.name if isinstance(ty, TyName) else None
+        return carries_linear(root, self._linear_types, self._symbol_field_roots)
 
     # ---- container-of-linear invariant (mirror of the cap discipline) ----
 
@@ -99,7 +103,7 @@ class _LinearMixin:
         check in ``_mark_consumed_args``."""
         if ty is None:
             return False
-        if self._ty_is_linear(ty) or self._type_carries_linear(ty):
+        if self._owned_obligation(ty):
             return True
         if _depth >= self._LINEAR_PATH_MAX_DEPTH:
             return False
@@ -234,7 +238,7 @@ class _LinearMixin:
         from .. import capa_ast as _A
         if not isinstance(e, (_A.IfExpr, _A.MatchExpr)):
             return
-        if not (self._ty_is_linear(ty) or self._type_carries_linear(ty)):
+        if not self._owned_obligation(ty):
             return
         if id(e) in self._linear_conditional_reported:
             return
@@ -352,29 +356,39 @@ class _LinearMixin:
             return path.split(".", 1)[0]
         return path
 
-    def _prefix_consumed(self, place: str) -> bool:
-        """True iff ``place`` or a ``.``-split prefix of it is in
-        ``_consumed``. Component-wise, never a raw ``startswith``: the
-        prefixes of ``s.conn.fd`` are exactly ``s``, ``s.conn``,
-        ``s.conn.fd``, so a consumed ``s`` covers ``s.conn`` but a consumed
-        ``session`` never covers ``s``."""
+    @staticmethod
+    def _has_component_prefix(place: str, names: set[str]) -> bool:
+        """True iff ``place`` or a ``.``-split prefix of it is in ``names``.
+        Component-wise, never a raw ``startswith``: the prefixes of
+        ``s.conn.fd`` are exactly ``s``, ``s.conn``, ``s.conn.fd``, so an
+        entry ``s`` covers ``s.conn`` but an entry ``session`` never covers
+        ``s``. The one prefix walk behind ``_prefix_consumed`` /
+        ``_prefix_borrowed`` / ``_field_discharged``."""
         parts = place.split(".")
         for i in range(1, len(parts) + 1):
-            if ".".join(parts[:i]) in self._consumed:
+            if ".".join(parts[:i]) in names:
                 return True
         return False
 
+    def _prefix_consumed(self, place: str) -> bool:
+        """True iff ``place`` or a ``.``-split prefix of it is in
+        ``_consumed`` (the UNION-merged use-after-consume set)."""
+        return self._has_component_prefix(place, self._consumed)
+
     def _prefix_borrowed(self, place: str) -> bool:
         """True iff ``place`` or a ``.``-split prefix of it is in
-        ``_borrowed_linear``. Component-wise, never a raw ``startswith``:
-        the prefixes of ``s.conn.fd`` are exactly ``s``, ``s.conn``,
-        ``s.conn.fd``, so a borrowed ``s`` marks ``s.conn`` borrowed but a
-        borrowed ``s`` never marks ``session`` or ``s2`` borrowed."""
-        parts = place.split(".")
-        for i in range(1, len(parts) + 1):
-            if ".".join(parts[:i]) in self._borrowed_linear:
-                return True
-        return False
+        ``_borrowed_linear``."""
+        return self._has_component_prefix(place, self._borrowed_linear)
+
+    def _field_discharged(self, place: str) -> bool:
+        """True iff the linear FIELD ``place`` (or a prefix of it) was moved
+        out on the current merged path -- i.e. it is in the
+        INTERSECTION-merged ``_linear_field_moved``. This is what the
+        scope-exit per-field accounting reads, NOT ``_prefix_consumed``: a
+        field consumed on only SOME branches is in ``_consumed`` (union) but
+        must NOT count as discharged at scope exit, or a conditional-field-
+        consume would leak silently."""
+        return self._has_component_prefix(place, self._linear_field_moved)
 
     def _subpath_consumed(self, base: str) -> Optional[str]:
         """The first consumed path that has ``base`` as a strict ``.``-split
@@ -390,9 +404,12 @@ class _LinearMixin:
     # ---- obligation bookkeeping ----------------------------------
 
     def _linear_bind(self, name: str, ty: Optional[Ty], pos: Pos) -> None:
-        """Record a new outstanding linear obligation for ``name`` when
-        ``ty`` is linear. Called when a ``let`` / ``var`` binds the
-        result of an expression that produces a linear value.
+        """Record a new outstanding must-consume obligation for ``name``
+        when ``ty`` carries one -- a bare ``linear type`` / typestate value
+        OR a CARRIER struct that transitively owns a linear/typestate field
+        (E1, the load-bearing seam: this arms a carrier from a FACTORY CALL
+        ``let b = make_box()`` at the binding, not only at the pack site).
+        Called when a ``let`` / ``var`` binds the result of an expression.
 
         Re-binding a name clears any earlier use-after-consume poison on
         it (``_consumed`` / ``_linear_names``): a fresh ``let h = ...``
@@ -407,9 +424,8 @@ class _LinearMixin:
         new name is borrowed too."""
         if name in self._borrowed_linear:
             return
-        if self._ty_is_linear(ty):
-            self._live_linear[name] = pos
-            self._live_linear_ty[name] = ty
+        if self._owned_obligation(ty):
+            self._live_linear[name] = (pos, ty)
             self._consumed.discard(name)
             self._linear_names.discard(name)
 
@@ -459,11 +475,9 @@ class _LinearMixin:
                     pos,
                 )
             self._live_linear.pop(name, None)
-            self._live_linear_ty.pop(name, None)
             return
         had = name in self._live_linear
         self._live_linear.pop(name, None)
-        self._live_linear_ty.pop(name, None)
         if had:
             self._consumed.add(name)
             self._linear_names.add(name)
@@ -498,6 +512,26 @@ class _LinearMixin:
             return
         self._consumed.add(place)
         self._linear_names.add(place)
+        # Per-field discharge accounting (Connection C). The single field-
+        # move seam, so this is the one place a moved field is recorded for
+        # the scope-exit per-field check. Merged by INTERSECTION at branch
+        # points (see ``_check_if`` / ``_check_match_expr``), unlike the
+        # union-merged ``_consumed`` above, so a field consumed on only some
+        # branches is NOT counted as discharged at scope exit.
+        self._linear_field_moved.add(place)
+        # Moving out a carrier's LAST outstanding linear field discharges the
+        # whole carrier obligation (the blessed per-field-discharge
+        # semantic): drop it from the live set so it is not re-reported at
+        # scope exit and does not linger past the arm / block it was bound
+        # in (where a later branch-merge intersection would wrongly wipe this
+        # move). A bare linear leaf has no linear sub-fields, so it is never
+        # auto-discharged here -- it stays live until consumed as a whole.
+        root = place.split(".", 1)[0]
+        live = self._live_linear.get(root)
+        if live is not None:
+            subs = self._linear_field_paths(root, live[1])
+            if subs and all(self._field_discharged(s) for s in subs):
+                self._live_linear.pop(root, None)
 
     def _linear_transfer_if_alias(self, value: "A.Expr", target: str) -> None:
         """When a ``let``/``var`` RHS is a bare identifier naming a still-
@@ -600,8 +634,8 @@ class _LinearMixin:
         # obligation of its own (``_linear_bind`` arms it non-exempt).
         was_drop_exempt = name in self._drop_exempt_linear
         self._drop_exempt_linear.discard(name)
-        old_pos = self._live_linear.get(name)
-        if old_pos is not None:
+        old = self._live_linear.get(name)
+        if old is not None:
             if not was_drop_exempt:
                 self._err(
                     f"linear value {name!r} is dropped without being "
@@ -612,7 +646,6 @@ class _LinearMixin:
                     pos,
                 )
             del self._live_linear[name]
-            self._live_linear_ty.pop(name, None)
         self._linear_bind(name, ty, pos)
 
     # ---- anonymous drop (``let _ = ...`` / bare expr stmt) -------
@@ -633,13 +666,16 @@ class _LinearMixin:
         If the dropped expression is a bare identifier naming a still
         live linear binding (``let _ = h``), discharge that binding too:
         the value has moved into the anonymous slot and is reported once
-        here, not again at function exit."""
-        if not self._ty_is_linear(ty):
+        here, not again at function exit.
+
+        Gated on ``_owned_obligation`` (D), so dropping a CARRIER-returning
+        call as a bare statement / ``let _ = make_box()`` -- which leaks the
+        struct's linear field -- is caught, not just a bare linear value."""
+        if not self._owned_obligation(ty):
             return
         from .. import capa_ast as _A
         if isinstance(expr, _A.Ident):
             self._live_linear.pop(expr.name, None)
-            self._live_linear_ty.pop(expr.name, None)
         self._err(
             "linear value is dropped without being consumed; a "
             "`linear type` / typestate value must be passed to a "
@@ -698,21 +734,26 @@ class _LinearMixin:
           whole.
         - all consumed (fully moved out): satisfied, no report."""
         for name in names:
-            pos = self._live_linear.get(name)
-            if pos is None:
+            live = self._live_linear.get(name)
+            if live is None:
                 continue
+            pos, ty = live
             # LIN-1: a ``consume`` parameter is DROP EXEMPT. It was seeded
             # into ``_live_linear`` only to poison a re-consume / use-after-
             # consume (caught by the single use-after-consume check above);
             # dropping it without re-consuming is the terminal-owner
-            # semantics (``discard`` / ``adopt``), not a leak. Clear it so it
-            # is not re-checked up the scope chain.
+            # semantics (``discard`` / ``adopt``), not a leak. A CARRIER
+            # ``consume`` param is exempt transitively (adopting the whole
+            # carrier + its contents is legal). Clear it so it is not
+            # re-checked up the scope chain.
             if name in self._drop_exempt_linear:
                 del self._live_linear[name]
-                self._live_linear_ty.pop(name, None)
                 continue
-            subs = self._linear_field_paths(name, self._live_linear_ty.get(name))
-            consumed = [s for s in subs if self._prefix_consumed(s)]
+            subs = self._linear_field_paths(name, ty)
+            # Discharge is read from the INTERSECTION-merged field-move set,
+            # not ``_consumed``: a field moved on only some branches is NOT
+            # discharged at scope exit (Connection C).
+            consumed = [s for s in subs if self._field_discharged(s)]
             if not consumed:
                 self._err(
                     f"linear value {name!r} is dropped without being "
@@ -723,7 +764,7 @@ class _LinearMixin:
                 )
             elif len(consumed) < len(subs):
                 for s in subs:
-                    if self._prefix_consumed(s):
+                    if self._field_discharged(s):
                         continue
                     self._err(
                         f"linear field {s!r} is dropped without being "
@@ -733,4 +774,3 @@ class _LinearMixin:
                         pos,
                     )
             del self._live_linear[name]
-            self._live_linear_ty.pop(name, None)

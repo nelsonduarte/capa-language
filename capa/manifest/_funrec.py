@@ -20,6 +20,11 @@ from typing import Any, Optional
 from .. import capa_ast as A
 from .._borrow import borrow_escapes, is_fun_typed_param
 from .._declassify import FUNCTION_KINDS, module_expression_roots
+from .._owned_obligation import (
+    field_roots_from_module,
+    linear_type_names,
+    owned_obligation,
+)
 from ..lexer import SYNTHETIC_FILENAME
 from ..typesys import CAPABILITY_NAMES
 
@@ -459,12 +464,16 @@ def build_manifest(
         module, user_cap_names=user_cap_names_mangled,
     )
 
-    # Roadmap S1: names of ``linear type`` structs, so per-function
-    # records can flag must-consume params + obligations.
-    linear_types: set[str] = {
-        item.name for item in module.items
-        if isinstance(item, A.TypeStruct) and getattr(item, "is_linear", False)
-    }
+    # Roadmap S1: the must-consume obligation surface, single-sourced
+    # through the SHARED ``owned_obligation`` predicate the analyzer
+    # enforces on. ``linear_names`` is every linear/typestate NAME;
+    # ``field_roots`` is the AST-based struct-field lookup. Together they
+    # let a per-function record flag a bare linear, a CARRIER struct (one
+    # that transitively owns a linear field), OR a typestate uniformly --
+    # closing the old divergence where this builder computed its own set
+    # that excluded typestates and carriers.
+    linear_names: set[str] = linear_type_names(module)
+    field_roots = field_roots_from_module(module)
 
     # Feature #4 (F1): typed foreign components. The names are used to
     # flag functions that INVOKE a foreign component (which compose as
@@ -501,7 +510,7 @@ def build_manifest(
                 item, cap_names, filename,
                 container=None, implicit_cap=None,
                 reachable=reachable, unprovable=unprovable,
-                linear_types=linear_types,
+                linear_names=linear_names, field_roots=field_roots,
                 bindings=bindings,
                 expr_labels=expr_labels,
                 foreign_names=foreign_names,
@@ -520,7 +529,7 @@ def build_manifest(
                     container=item.type_name,
                     implicit_cap=implicit,
                     reachable=reachable, unprovable=unprovable,
-                    linear_types=linear_types,
+                    linear_names=linear_names, field_roots=field_roots,
                     bindings=bindings,
                     expr_labels=expr_labels,
                     foreign_names=foreign_names,
@@ -741,7 +750,8 @@ def _fun_record(
     implicit_cap: Optional[str] = None,
     reachable: Optional[dict[str, set[str]]] = None,
     unprovable: Optional[set[str]] = None,
-    linear_types: Optional[set[str]] = None,
+    linear_names: Optional[set[str]] = None,
+    field_roots: Optional[dict[str, list[str]]] = None,
     bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
     foreign_names: Optional[set[str]] = None,
@@ -754,8 +764,10 @@ def _fun_record(
         top_funs = {}
     if unprovable is None:
         unprovable = set()
-    if linear_types is None:
-        linear_types = set()
+    if linear_names is None:
+        linear_names = set()
+    if field_roots is None:
+        field_roots = {}
     if foreign_names is None:
         foreign_names = set()
     param_records: list[dict[str, Any]] = []
@@ -769,10 +781,13 @@ def _fun_record(
             # non-pub imported types (audit slice 20, 2026-05-29).
             ty_text = _demangle_type_text(_ty_text(p.type_expr)) if p.type_expr else "?"
         is_cap = _root_type_name(p.type_expr) in cap_names if p.type_expr else False
-        # Roadmap S1: flag a must-consume (linear-typed) parameter so
-        # the SBOM surfaces the obligation the caller transfers in.
+        # Roadmap S1: flag a must-consume parameter so the SBOM surfaces the
+        # obligation the caller transfers in. Uses the SHARED
+        # ``owned_obligation`` predicate, so a CARRIER struct (one that
+        # transitively owns a linear field) or a typestate counts, not only
+        # a bare ``linear type``.
         root_ty = _root_type_name(p.type_expr) if p.type_expr else None
-        is_linear = root_ty in linear_types if root_ty else False
+        is_linear = owned_obligation(root_ty, linear_names, field_roots.get)
         param_records.append({
             "name": p.name,
             "type": ty_text,
@@ -1076,9 +1091,9 @@ def _fun_record(
         p["name"] for p in param_records
         if p.get("is_linear") and p["consuming"]
     ]
-    return_is_linear = (
-        _root_type_name(fn.return_type) in linear_types
-        if fn.return_type else False
+    return_is_linear = owned_obligation(
+        _root_type_name(fn.return_type) if fn.return_type else None,
+        linear_names, field_roots.get,
     )
 
     # The declaration's own lexed filename, not the root file the

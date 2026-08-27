@@ -52,56 +52,19 @@ class _DisciplineMixin:
         for arg, consuming in zip(args, consuming_flags):
             if not consuming:
                 continue
-            # Roadmap S1: a ``consume`` param also discharges a linear
-            # obligation when the arg is a bare identifier holding a
-            # live linear value. (Linear values are user structs, not
-            # capabilities, so they don't match ``_is_capability_ident``
-            # below; handle them first and continue.)
-            if isinstance(arg, A.Ident) and (
-                arg.name in self._live_linear
-                or arg.name in self._borrowed_linear
-            ):
-                # Consuming a linear value CAPTURED from an enclosing scope
-                # is an error for the same reason a captured capability is:
-                # the closure may be invoked multiple times, but the value
-                # can only be consumed once. A name not local to any
-                # enclosing lambda frame is a capture.
-                if self._lambda_local_names_stack and not any(
-                    arg.name in frame
-                    for frame in self._lambda_local_names_stack
-                ):
-                    self._err(
-                        f"cannot consume linear value {arg.name!r} captured "
-                        f"from enclosing scope; closures may be invoked "
-                        f"multiple times, but a `linear type` / typestate "
-                        f"value can only be consumed once",
-                        arg.pos,
-                    )
-                    continue
-                self._linear_discharge(arg.name, arg.pos)
+            # Roadmap S1: a ``consume`` param discharges a linear obligation.
+            # A BORROWED bare identifier consumed here is a transfer the
+            # callee may not make (the caller still owns it); route it into
+            # the discharge guard, which rejects it after the capture check.
+            if isinstance(arg, A.Ident) and arg.name in self._borrowed_linear:
+                if not self._reject_linear_capture(arg.name, arg.pos):
+                    self._linear_discharge(arg.name, arg.pos)
                 continue
-            # Roadmap S1 (move-paths): a ``consume`` param also moves a
-            # linear FIELD when the arg is a field place naming a live
-            # linear/typestate value (``close(s.conn)``). Poison the path so
-            # the whole-value consume scan and scope-exit accounting see it.
-            if isinstance(arg, A.FieldAccess):
-                lin_place = self._linear_place(arg)
-                if lin_place is not None:
-                    root = lin_place.split(".", 1)[0]
-                    if self._lambda_local_names_stack and not any(
-                        root in frame
-                        for frame in self._lambda_local_names_stack
-                    ):
-                        self._err(
-                            f"cannot consume linear value {lin_place!r} "
-                            f"captured from enclosing scope; closures may be "
-                            f"invoked multiple times, but a `linear type` / "
-                            f"typestate value can only be consumed once",
-                            arg.pos,
-                        )
-                        continue
-                    self._linear_move_field(lin_place, arg.pos)
-                    continue
+            # An OWNED linear identifier or a linear FIELD place
+            # (``close(h)`` / ``close(s.conn)``) is moved out through the
+            # ONE move seam shared with the aggregate-pack sites.
+            if self._move_linear_operand(arg):
+                continue
             path = self._consumable_cap_path(arg)
             if path is None:
                 continue
@@ -121,6 +84,64 @@ class _DisciplineMixin:
                     )
                     continue
             self._consumed.add(path)
+
+    def _reject_linear_capture(
+        self, root: str, pos: Pos, place: Optional[str] = None,
+    ) -> bool:
+        """True (and reports) iff ``root`` names a linear/typestate value
+        CAPTURED from an enclosing scope while a lambda body is being
+        checked: moving it out (consume / pack / field-move) is unsound
+        because the closure may be invoked more than once, but a
+        single-owner value can be moved only once. ``place`` is the dotted
+        field path when the move is a field (``s.conn``), else ``None``.
+        False when not inside a lambda, or ``root`` is local to some
+        enclosing lambda frame."""
+        if not self._lambda_local_names_stack:
+            return False
+        if any(root in frame for frame in self._lambda_local_names_stack):
+            return False
+        what = place if place is not None else root
+        self._err(
+            f"cannot consume linear value {what!r} captured from enclosing "
+            f"scope; closures may be invoked multiple times, but a "
+            f"`linear type` / typestate value can only be consumed once",
+            pos,
+        )
+        return True
+
+    def _move_linear_operand(self, expr: A.Expr) -> bool:
+        """THE single seam that MOVES a bare OWNED linear/typestate value or
+        an owned linear FIELD out at ``expr`` -- discharging the ident's
+        obligation (it has been consumed / packed and is single-owner
+        elsewhere) or poisoning the field path. Shared by the consume-arg
+        path (``_mark_consumed_args``), the struct literal, and the
+        typestate-``new`` literal, so a value packed into an aggregate is
+        move-tracked exactly as one passed to a ``consume`` parameter.
+
+        Returns True iff ``expr`` named a live OWNED linear operand (or a
+        linear field place) and was handled -- so a caller can stop further
+        processing -- and False for a non-linear / fresh / borrowed-bare-
+        identifier expression (each caller applies its own borrowed reject
+        with the right wording; a borrowed FIELD is rejected in place by
+        ``_linear_move_field``). Moving a value CAPTURED into a lambda is
+        rejected via ``_reject_linear_capture``."""
+        if isinstance(expr, A.Ident):
+            if expr.name not in self._live_linear:
+                return False
+            if self._reject_linear_capture(expr.name, expr.pos):
+                return True
+            self._linear_discharge(expr.name, expr.pos)
+            return True
+        if isinstance(expr, A.FieldAccess):
+            place = self._linear_place(expr)
+            if place is None:
+                return False
+            root = place.split(".", 1)[0]
+            if self._reject_linear_capture(root, expr.pos, place=place):
+                return True
+            self._linear_move_field(place, expr.pos)
+            return True
+        return False
 
     def _substitute_self(self, ty: Ty, self_ty: Ty) -> Ty:
         """Substitute ``TyName('Self')`` in ``ty`` with ``self_ty``.

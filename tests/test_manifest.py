@@ -401,6 +401,60 @@ class TestLinearObligations(unittest.TestCase):
         self.assertFalse(mn["linear_obligations"]["produces_linear"])
 
 
+class TestCarrierAndTypestateObligations(unittest.TestCase):
+    """The linear obligation surface is single-sourced through the shared
+    ``owned_obligation`` predicate, so it covers CARRIERS (structs that
+    transitively own a linear field) and TYPESTATES, not only bare
+    ``linear type`` structs. A carrier factory / consumer surfaces the same
+    ``produces_linear`` / ``consumes`` obligation a bare-linear one does, and
+    a typestate factory (``make() -> Socket[Created]``) now reports
+    ``produces_linear`` (a pre-existing gap where the manifest excluded
+    typestates)."""
+
+    _SRC = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+        "type Box { h: Handle }\n"
+        "fun make_box() -> Box\n"
+        "    return Box { h: open() }\n"
+        "fun sink(consume b: Box) -> Unit\n"
+        "    return ()\n"
+        "typestate Socket\n    Created\n    Closed\n"
+        "fun make() -> Socket[Created]\n"
+        "    return Socket[Created] {}\n"
+        "fun close_it(consume s: Socket[Closed]) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _fn(self, name: str):
+        m = build_manifest(_analysed(self._SRC))
+        return next(f for f in m["functions"] if f["source_name"] == name)
+
+    def test_carrier_factory_produces_linear(self):
+        mb = self._fn("make_box")
+        self.assertTrue(mb["linear_obligations"]["produces_linear"])
+
+    def test_carrier_consumer_lists_param(self):
+        sk = self._fn("sink")
+        self.assertEqual(sk["linear_obligations"]["consumes"], ["b"])
+
+    def test_carrier_param_is_flagged_linear(self):
+        sk = self._fn("sink")
+        bp = next(p for p in sk["params"] if p["name"] == "b")
+        self.assertTrue(bp["is_linear"])
+
+    def test_typestate_factory_produces_linear(self):
+        mk = self._fn("make")
+        self.assertTrue(mk["linear_obligations"]["produces_linear"])
+
+    def test_typestate_consumer_lists_param(self):
+        ci = self._fn("close_it")
+        self.assertEqual(ci["linear_obligations"]["consumes"], ["s"])
+
+
 class TestDeclassificationSites(unittest.TestCase):
     """``declassification_sites`` counts only genuine ``@secret ->
     @public`` bridges. A no-op declassify of an already-public value

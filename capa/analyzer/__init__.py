@@ -577,23 +577,33 @@ class Analyzer(
         # Roadmap S3: typestate name -> ordered list of state names.
         # Populated in ``analyze``; used to validate ``Name[State]``.
         self._typestates: dict[str, list[str]] = {}
-        # Live linear values in the current function: local name -> Pos
-        # (the bind site, for the error message). Reset per function. A
-        # name enters when a linear value is bound (``let h = open()``)
-        # and leaves when consumed. At end of scope / function the set
-        # must be empty -- the DUAL of ``_consumed`` (that one errors on
-        # use-after-consume; this errors on never-consumed). Branch
-        # merge is an INTERSECTION of survivors over non-diverging arms
-        # (a value still-live on every path stays live; one consumed on
+        # Live linear obligations in the current function: local name ->
+        # ``(Pos, Ty)`` -- the bind site (for the error message) and the
+        # resolved type (so scope exit can enumerate the value's
+        # linear/typestate sub-fields for per-field partial-move
+        # accounting). ONE map, not two hand-synced tables: the pos and the
+        # ty are always set and cleared together, so a single structure
+        # cannot leave one stale behind a branch merge. Reset per function.
+        # A name enters when a linear value or a linear-owning CARRIER struct
+        # is bound (``let h = open()`` / ``let b = make_box()``) and leaves
+        # when consumed / moved / transferred. At end of scope / function the
+        # map must be empty -- the DUAL of ``_consumed`` (that one errors on
+        # use-after-consume; this errors on never-consumed). Branch merge is
+        # an INTERSECTION of survivors over non-diverging arms (a value
+        # still-live on every path stays live; one consumed on
         # some-but-not-all paths is an error, surfaced at merge).
-        self._live_linear: dict[str, "Pos"] = {}
-        # Companion to ``_live_linear``: the resolved type of each live
-        # obligation, recorded at bind time so scope exit can enumerate the
-        # value's linear/typestate sub-fields (per-field partial-move
-        # accounting). Keyed by the same place; a stale entry is harmless
-        # because it is consulted only for a place still in ``_live_linear``.
-        # Reset per function in ``_check_fun`` alongside ``_live_linear``.
-        self._live_linear_ty: dict[str, "Ty"] = {}
+        self._live_linear: dict[str, tuple["Pos", "Ty"]] = {}
+        # Linear/typestate FIELD paths (``b.h``, ``s.conn``) moved out on the
+        # current flow path -- consumed, projected, ``become``-transitioned,
+        # or returned. The per-FIELD analogue of removing a whole value from
+        # ``_live_linear``. Distinct from ``_consumed`` because the two merge
+        # on OPPOSITE lattices: ``_consumed`` is UNION-merged (use-after-
+        # consume: consumed on ANY path poisons later use), while a field is
+        # DISCHARGED at scope exit only if moved on ALL paths, so this set is
+        # INTERSECTION-merged at each branch. Written at the single field-move
+        # seam ``_linear_move_field``; read only by the scope-exit per-field
+        # accounting (``_linear_check_dropped``). Reset per function.
+        self._linear_field_moved: set[str] = set()
         # Borrowed linear / typestate parameters of the current function
         # (audit B-F1). A non-``consume`` parameter of a linear / typestate
         # type is BORROWED: the caller retains the must-consume obligation,
@@ -806,16 +816,23 @@ class Analyzer(
         # transitioned). Used by statement/expression checking to track
         # must-consume values, and by the container-of-linear entry-gates
         # that ``_collect_globals`` runs on signatures / fields, so it must
-        # be populated BEFORE ``_collect_globals``. Both inputs come straight
-        # off ``module`` (and the already-built ``_typestates``), so nothing
-        # here depends on global registration.
-        self._linear_types = {
-            it.name for it in module.items
-            if isinstance(it, A.TypeStruct) and it.is_linear
-        }
-        self._linear_types |= set(self._typestates)
+        # be populated BEFORE ``_collect_globals``. Single-sourced through
+        # ``linear_type_names`` so the analyzer and the manifest builder,
+        # which classifies the same values, cannot disagree on which bare
+        # names are linear.
+        from .._owned_obligation import linear_type_names
+        self._linear_types = linear_type_names(module)
         # Phase 1: register all top-level declarations (forward refs).
         self._collect_globals(module)
+        # Fail-closed single-source guard for the must-consume obligation.
+        # The analyzer (which ENFORCES the obligation) feeds a Symbol-based
+        # field lookup to the shared ``owned_obligation`` predicate; the
+        # manifest (which REPORTS it) feeds an AST-based one. They must
+        # classify every declared struct/typestate identically, or a
+        # function could enforce an obligation the SBOM never reported.
+        # Assert the two lookups agree, now that the global scope is
+        # populated so the Symbol-based lookup can resolve field types.
+        self._assert_owned_obligation_single_source(module)
         # Phase 1b: compute the set of frozen struct types
         # (those reachable from any ``Set<...>`` / ``Map<...K, V>``
         # key position). Must run after ``_collect_globals``
@@ -1121,6 +1138,47 @@ class Analyzer(
     # ``_check_no_builtin_capability``, ``_compatible_with_impls``)
     # lives in ``_discipline.py`` and is folded in via
     # :class:`_DisciplineMixin`.
+
+    def _symbol_field_roots(self, name: str) -> Optional[list[str]]:
+        """The ROOT type names of the declared fields of the struct /
+        typestate ``name`` (a ``TyName`` head; non-``TyName`` field types --
+        tuples, closures -- are dropped, exactly as the carrier walk skips
+        them), or ``None`` if ``name`` is not a struct/typestate. The
+        Symbol-based ``field_roots`` the analyzer feeds the shared
+        ``owned_obligation`` predicate."""
+        sym = self.global_scope.lookup(name)
+        if sym is None or sym.kind != SymbolKind.TYPE_STRUCT:
+            return None
+        return [
+            fty.name for fty in sym.struct_fields.values()
+            if isinstance(fty, TyName)
+        ]
+
+    def _assert_owned_obligation_single_source(self, module: A.Module) -> None:
+        """Fail-closed: the analyzer's Symbol-based and the manifest's
+        AST-based ``field_roots`` lookups must feed the ONE shared
+        ``owned_obligation`` predicate the same verdict for every declared
+        struct/typestate, so the enforced obligation and the reported one
+        can never silently drift. Raise loudly (a compiler bug, not a user
+        error) if they disagree."""
+        from .._owned_obligation import (
+            field_roots_from_module,
+            owned_obligation,
+        )
+        ast_roots = field_roots_from_module(module)
+        for name in set(ast_roots) | self._linear_types:
+            sym_verdict = owned_obligation(
+                name, self._linear_types, self._symbol_field_roots,
+            )
+            ast_verdict = owned_obligation(
+                name, self._linear_types, ast_roots.get,
+            )
+            if sym_verdict != ast_verdict:
+                raise AssertionError(
+                    f"owned-obligation classification of {name!r} diverges "
+                    f"between the analyzer (symbol) and manifest (AST) field "
+                    f"lookups; the single-source predicate invariant is broken"
+                )
 
     def _install_builtins(self) -> None:
         """Install the language-level built-ins.

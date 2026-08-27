@@ -461,6 +461,12 @@ class _ExpressionsMixin:
         # arms are excluded -- their path does not reach the merge.
         before_live = dict(self._live_linear)
         branch_live: list[dict] = []
+        # Connection C: per-FIELD discharge is INTERSECTION-merged across the
+        # reachable arms (a field is discharged past the match only if moved
+        # on every arm), the opposite lattice to the union-merged
+        # ``_consumed``. Each arm starts from the pre-match snapshot.
+        before_field_moved = set(self._linear_field_moved)
+        branch_field_moved: list[set[str]] = []
         # A scrutinee that is a bare identifier holding a live linear value
         # is moved into the match; whether it is consumed is decided
         # per-arm, so it stays in ``before_live`` and each arm sees it.
@@ -488,6 +494,7 @@ class _ExpressionsMixin:
         for arm in s.arms:
             self._consumed = set(before)
             self._live_linear = dict(before_live)
+            self._linear_field_moved = set(before_field_moved)
             self._push_scope()
             self._bind_pattern(arm.pattern, scrutinee_ty, mutable=False)
             self._label_pattern_binds(arm.pattern, scrutinee_label, scrutinee_ty)
@@ -532,6 +539,7 @@ class _ExpressionsMixin:
             if not arm_diverges:
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
+                branch_field_moved.append(set(self._linear_field_moved))
                 branch_ct.append(self._container_taint)
 
         # Restore the pc-label raised for the arm bodies (S2.implicit).
@@ -550,12 +558,15 @@ class _ExpressionsMixin:
             for live in branch_live:
                 merged_live.update(live)
             self._live_linear = merged_live
+            # Intersection of per-field moves across reachable arms.
+            self._linear_field_moved = set.intersection(*branch_field_moved)
         else:
             # All arms diverge: the code after this match is
             # unreachable. Keep ``_consumed`` / ``_live_linear`` at the
             # pre-match state.
             self._consumed = before
             self._live_linear = before_live
+            self._linear_field_moved = before_field_moved
 
         self._check_match_exhaustiveness(s, scrutinee_ty)
 
@@ -1306,7 +1317,13 @@ class _ExpressionsMixin:
             if fname in seen:
                 self._err(f"duplicate field {fname!r} in {name!r}", e.pos)
             seen.add(fname)
+            # A borrowed linear/typestate value must not escape into a
+            # typestate field, and a bare OWNED one packed here is MOVED out
+            # of its source -- the same aggregate-pack discipline a struct
+            # literal applies (a typestate is a state-indexed struct).
+            self._linear_check_borrowed_escape(fexpr, fexpr.pos)
             actual = self._check_expr(fexpr)
+            self._move_linear_operand(fexpr)
             if fname not in fields:
                 hint = self._hint_did_you_mean(fname, list(fields.keys()))
                 self._err(
@@ -1404,6 +1421,12 @@ class _ExpressionsMixin:
             expected = sym.struct_fields[fname]
             actual = self._check_expr(fexpr)
             unify(expected, actual, mapping)
+            # Roadmap S1 (carrier): a bare OWNED linear/typestate value (or
+            # a linear field) packed into this field is MOVED out of its
+            # source, so a later re-use double-frees. The borrowed-escape
+            # reject above handles a borrowed operand; this moves an owned
+            # one, through the same seam the consume-arg path uses.
+            self._move_linear_operand(fexpr)
         # Phase 2: check compatibility after substitution.
         for fname, fexpr in e.fields:
             if fname not in sym.struct_fields:
