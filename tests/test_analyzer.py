@@ -8331,6 +8331,316 @@ class TestLinearUseAfterConsume(unittest.TestCase):
         )
 
 
+class TestLinearConsumeParamReuse(unittest.TestCase):
+    """LIN-1: a ``consume`` linear / typestate PARAMETER is OWNED by the
+    receiving body, so consuming it a second time -- or using it after a
+    consume -- is a use-after-consume, exactly as for a let-bound value.
+
+    Before the fix the consume parameter was seeded into NO tracker (not
+    ``_live_linear`` and not ``_borrowed_linear``), so the first discharge
+    never poisoned it and every re-use slipped ``--check`` (rc0) and ran a
+    real double-free / double-spend. This is the consume analog of the
+    borrowed B-F1 hole: the let-bound TWIN of each case below is already
+    caught (see ``TestLinearUseAfterConsume``), which is what pins the gap
+    to the parameter seeding.
+
+    The whole class shares one root and closes on one seam -- seed the
+    consume parameter into the ``_live_linear`` owned tracker (drop-exempt)
+    -- so each member is rejected with the single use-after-consume
+    message. The negatives pin the class boundary: dropping a consume
+    parameter WITHOUT re-consuming stays legal (the terminal-owner
+    semantics used by ``discard`` / ``adopt`` and the typestate
+    examples)."""
+
+    _LIN = (
+        "linear type Handle { id: Int }\n"
+        "fun release(consume h: Handle)\n"
+        "    return\n"
+        "fun forward(consume h: Handle)\n"
+        "    release(h)\n"
+    )
+    _FILE = (
+        "linear type File { fd: Int }\n"
+        "impl File\n"
+        "    fun close(consume self)\n"
+        "        return\n"
+    )
+    _TS = (
+        "typestate Claim\n    Draft\n    Approved\n"
+        "fun settle(consume c: Claim[Approved])\n"
+        "    return\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    def _assert_reuse_rejected(self, src: str, name: str) -> None:
+        errs = self._errs(src)
+        self.assertTrue(
+            any(
+                f"linear value {name!r} was consumed earlier and cannot "
+                f"be used again" in e
+                for e in errs
+            ),
+            errs,
+        )
+
+    # ---- the six-member class (each rc0 before the fix) ----------
+
+    def test_member1_double_consume_arg_rejected(self):
+        self._assert_reuse_rejected(
+            self._LIN
+            + "fun choose(consume h: Handle)\n"
+            "    release(h)\n"
+            "    release(h)\n",
+            "h",
+        )
+
+    def test_member2_use_after_consume_field_read_rejected(self):
+        self._assert_reuse_rejected(
+            self._LIN
+            + "fun bad(consume h: Handle) -> Int\n"
+            "    release(h)\n"
+            "    return h.id\n",
+            "h",
+        )
+
+    def test_member3_double_free_sink_twice_rejected(self):
+        self._assert_reuse_rejected(
+            "linear type File { fd: Int }\n"
+            "fun sink(consume f: File)\n"
+            "    return\n"
+            "fun bad(consume f: File)\n"
+            "    sink(f)\n"
+            "    sink(f)\n",
+            "f",
+        )
+
+    def test_member4_forward_then_reuse_rejected(self):
+        self._assert_reuse_rejected(
+            self._LIN
+            + "fun bad(consume h: Handle)\n"
+            "    forward(h)\n"
+            "    release(h)\n",
+            "h",
+        )
+
+    def test_member5_pack_after_consume_rejected(self):
+        self._assert_reuse_rejected(
+            self._LIN
+            + "type Box { h: Handle }\n"
+            "fun bad(consume h: Handle) -> Box\n"
+            "    release(h)\n"
+            "    return Box { h: h }\n",
+            "h",
+        )
+
+    def test_member6_typestate_double_become_rejected(self):
+        self._assert_reuse_rejected(
+            self._TS
+            + "fun bad(consume c: Claim[Draft])\n"
+            "    let a = become(c, Approved)\n"
+            "    let b = become(c, Approved)\n"
+            "    settle(a)\n"
+            "    settle(b)\n",
+            "c",
+        )
+
+    def test_member1_double_consume_self_method_rejected(self):
+        # The consume-self shape of the double-consume: ``f.close()`` twice.
+        self._assert_reuse_rejected(
+            self._FILE
+            + "fun bad(consume f: File)\n"
+            "    f.close()\n"
+            "    f.close()\n",
+            "f",
+        )
+
+    # ---- the class boundary: drop stays legal (negatives) --------
+
+    def test_neg7_terminal_consumer_drop_is_legal(self):
+        # A consume parameter received and never re-consumed is the
+        # documented terminal owner (``discard`` / ``adopt``): still rc0.
+        # This is the case the drop-exemption exists to preserve.
+        self.assertEqual(
+            self._errs(
+                self._LIN
+                + "fun discard(consume h: Handle)\n"
+                "    return\n"
+            ),
+            [],
+        )
+
+    def test_neg8_typestate_examples_stay_accepted(self):
+        # The canonical typestate examples end each protocol with a
+        # terminal ``discard(consume ...)``; the drop-exemption keeps them
+        # rc0. A regression here would reject a shipped example.
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for rel in (
+            "examples/wasm/typestate_door.capa",
+            "examples/wasm/typestate_methods.capa",
+            "examples/wasm/typestate_socket.capa",
+        ):
+            src = (root / rel).read_text(encoding="utf-8")
+            errs = self._errs(src)
+            self.assertEqual(errs, [], f"{rel}: {errs}")
+
+    def test_neg9_valid_single_consume_arg_is_legal(self):
+        self.assertEqual(
+            self._errs(
+                self._LIN
+                + "fun closeit(consume h: Handle)\n"
+                "    release(h)\n"
+            ),
+            [],
+        )
+
+    def test_neg9_valid_single_consume_self_is_legal(self):
+        self.assertEqual(
+            self._errs(
+                self._FILE
+                + "fun closeit(consume f: File)\n"
+                "    f.close()\n"
+            ),
+            [],
+        )
+
+    def test_neg9_valid_single_become_and_forward_is_legal(self):
+        # Transition a consume typestate parameter once and hand the result
+        # to a consumer: a valid single consume, not a re-use.
+        self.assertEqual(
+            self._errs(
+                self._TS
+                + "fun approve(consume c: Claim[Draft])\n"
+                "    settle(become(c, Approved))\n"
+            ),
+            [],
+        )
+
+    def test_neg10_borrowed_linear_param_consume_still_rejected(self):
+        # B-F1 unchanged: a NON-consume linear parameter is BORROWED, so
+        # consuming it stays a compile error (the caller retains ownership).
+        errs = self._errs(
+            self._LIN
+            + "fun peek(h: Handle)\n"
+            "    release(h)\n"
+        )
+        self.assertTrue(
+            any(
+                "borrowed linear/typestate value 'h'" in e for e in errs
+            ),
+            errs,
+        )
+
+    def test_neg10_alias_consume_param_then_consume_alias_is_legal(self):
+        # Aliasing the consume parameter MOVES the obligation onto the
+        # alias; consuming the alias once is valid (the source is poisoned,
+        # not re-consumed). Confirms the let-owned move path is unchanged.
+        self.assertEqual(
+            self._errs(
+                self._LIN
+                + "fun ok(consume h: Handle)\n"
+                "    let h2 = h\n"
+                "    release(h2)\n"
+            ),
+            [],
+        )
+
+
+class TestLinearConsumeParamDoubleFreeRuntime(unittest.TestCase):
+    """LIN-1 member 3 (double-free) end to end. ``--check`` now REJECTS a
+    consume-parameter double-consume, so a rejected program never reaches
+    a backend. To prove that rejection is load-bearing -- that the base
+    really would double-free -- we BYPASS the analyzer verdict and drive
+    the codegen directly: the value is consumed twice (a double-spend,
+    ``PAID 100`` printed twice) IDENTICALLY on all three backends (legacy
+    / --ir / --wasm). The types and bindings are fully resolved even when
+    the flow check rejects, so the codegen runs; the fix stops the program
+    at ``--check`` before it can ever execute this double-spend."""
+
+    # ``settle`` spends the payment; consuming ``p`` twice double-spends.
+    _DOUBLE_SPEND = (
+        "linear type Payment { amount: Int }\n"
+        "impl Payment\n"
+        "    fun settle(consume self, stdio: Stdio)\n"
+        '        stdio.println("PAID ${self.amount}")\n'
+        "fun process(consume p: Payment, stdio: Stdio)\n"
+        "    p.settle(stdio)\n"
+        "    p.settle(stdio)\n"
+        "fun main(stdio: Stdio)\n"
+        "    process(Payment { amount: 100 }, stdio)\n"
+    )
+
+    @staticmethod
+    def _has_wasm() -> bool:
+        import shutil
+        if shutil.which("wasm-tools") is None:
+            return False
+        try:
+            import wasmtime  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def _run_unchecked(self, backend: str) -> str:
+        """Compile + run ``_DOUBLE_SPEND`` on ``backend`` with the analyzer
+        verdict IGNORED, capturing stdout."""
+        import io
+        import sys
+        module = Parser(
+            Lexer(self._DOUBLE_SPEND).lex(), source=self._DOUBLE_SPEND,
+        ).parse_module()
+        result = analyze(module, source=self._DOUBLE_SPEND)  # rejects; ignored
+        buf = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = buf
+        try:
+            if backend == "legacy":
+                from capa import transpile
+                code = transpile(
+                    module, types=result.types, bindings=result.bindings,
+                )
+                exec(compile(code, "<lin1>", "exec"), {"__name__": "__main__"})
+            elif backend == "ir":
+                from capa.ir import compile_program
+                code = compile_program(
+                    module, types=result.types, bindings=result.bindings,
+                )
+                exec(compile(code, "<lin1>", "exec"), {"__name__": "__main__"})
+            elif backend == "wasm":
+                from capa.ir import compile_wasm
+                from capa.runtime._wasm_host import WasmHost
+                blob = compile_wasm(module, types=result.types)
+                WasmHost().run_main(blob)
+        finally:
+            sys.stdout = saved
+        return buf.getvalue()
+
+    def test_check_rejects_the_double_spend(self):
+        errs = [
+            e for e in errors_of(self._DOUBLE_SPEND) if "never used" not in e
+        ]
+        self.assertTrue(
+            any(
+                "linear value 'p' was consumed earlier and cannot "
+                "be used again" in e
+                for e in errs
+            ),
+            errs,
+        )
+
+    def test_base_double_spends_on_legacy_and_ir_when_unchecked(self):
+        # Analysis bypassed: both Python backends consume ``p`` twice.
+        self.assertEqual(self._run_unchecked("legacy"), "PAID 100\nPAID 100\n")
+        self.assertEqual(self._run_unchecked("ir"), "PAID 100\nPAID 100\n")
+
+    def test_base_double_spends_on_wasm_when_unchecked(self):
+        if not self._has_wasm():
+            self.skipTest("wasm-tools and/or wasmtime-py not installed")
+        self.assertEqual(self._run_unchecked("wasm"), "PAID 100\nPAID 100\n")
+
+
 class TestLinearAnonymousDrop(unittest.TestCase):
     """Soundness: a linear / typestate value cannot be dropped into an
     anonymous slot -- a wildcard binding ``let _ = open()`` or a bare

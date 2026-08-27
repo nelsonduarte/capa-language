@@ -593,16 +593,24 @@ class _LinearMixin:
         # borrowed marker it held, so ``_linear_bind`` below can arm a
         # fresh owned obligation from the new value.
         self._borrowed_linear.discard(name)
+        # LIN-1: a ``consume`` parameter's value is drop exempt, so
+        # overwriting it by re-assignment is a legal drop of the terminal
+        # owner, not a leak of the old value. Clear the exemption: the value
+        # assigned below is freshly produced and carries a real must-consume
+        # obligation of its own (``_linear_bind`` arms it non-exempt).
+        was_drop_exempt = name in self._drop_exempt_linear
+        self._drop_exempt_linear.discard(name)
         old_pos = self._live_linear.get(name)
         if old_pos is not None:
-            self._err(
-                f"linear value {name!r} is dropped without being "
-                f"consumed; re-assigning to it overwrites the old value, "
-                f"which a `linear type` / typestate value cannot be -- "
-                f"consume the current value (e.g. a `consume self` method "
-                f"like `close`, or `become`) before re-assigning",
-                pos,
-            )
+            if not was_drop_exempt:
+                self._err(
+                    f"linear value {name!r} is dropped without being "
+                    f"consumed; re-assigning to it overwrites the old value, "
+                    f"which a `linear type` / typestate value cannot be -- "
+                    f"consume the current value (e.g. a `consume self` method "
+                    f"like `close`, or `become`) before re-assigning",
+                    pos,
+                )
             del self._live_linear[name]
             self._live_linear_ty.pop(name, None)
         self._linear_bind(name, ty, pos)
@@ -692,6 +700,16 @@ class _LinearMixin:
         for name in names:
             pos = self._live_linear.get(name)
             if pos is None:
+                continue
+            # LIN-1: a ``consume`` parameter is DROP EXEMPT. It was seeded
+            # into ``_live_linear`` only to poison a re-consume / use-after-
+            # consume (caught by the single use-after-consume check above);
+            # dropping it without re-consuming is the terminal-owner
+            # semantics (``discard`` / ``adopt``), not a leak. Clear it so it
+            # is not re-checked up the scope chain.
+            if name in self._drop_exempt_linear:
+                del self._live_linear[name]
+                self._live_linear_ty.pop(name, None)
                 continue
             subs = self._linear_field_paths(name, self._live_linear_ty.get(name))
             consumed = [s for s in subs if self._prefix_consumed(s)]

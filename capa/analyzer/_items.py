@@ -366,13 +366,33 @@ class _ItemsMixin:
         # ``self`` receiver is borrowed too.
         prev_borrowed_linear = self._borrowed_linear
         self._borrowed_linear = set()
+        # LIN-1: seed the consume-owned drop-exempt set (see below).
+        prev_drop_exempt_linear = self._drop_exempt_linear
+        self._drop_exempt_linear = set()
         for p in fn.params:
-            if p.consuming:
-                continue
             p_ty = (
                 self.self_type if p.name == "self"
                 else (self._resolve_type(p.type_expr) if p.type_expr else None)
             )
+            if p.consuming:
+                # LIN-1: a ``consume`` parameter OWNS its value here. Seed a
+                # bare linear/typestate one into the SAME ``_live_linear``
+                # owned tracker as a let-bound value, so a re-consume or a
+                # use-after-consume is poisoned and caught by the single
+                # use-after-consume check -- the consume analog of the
+                # borrowed seeding below. It is DROP EXEMPT: a consume
+                # parameter dropped without re-consuming is the terminal
+                # owner (``close(consume h)`` destroys the handle;
+                # ``discard`` / ``adopt`` receive and drop it), so the
+                # scope-exit leak check skips it. Only a BARE linear/
+                # typestate value is tracked here (the same gate as
+                # ``_linear_bind``); a carrier struct's linear fields are
+                # place-tracked instead.
+                if self._ty_is_linear(p_ty):
+                    self._live_linear[p.name] = p.pos
+                    self._live_linear_ty[p.name] = p_ty
+                    self._drop_exempt_linear.add(p.name)
+                continue
             # A non-``consume`` parameter is borrowed when it is itself a
             # linear/typestate value OR a struct that transitively OWNS a
             # linear/typestate field (a `Session` / `Settlement` carrier):
@@ -521,6 +541,7 @@ class _ItemsMixin:
         self._live_linear = prev_live_linear
         self._live_linear_ty = prev_live_linear_ty
         self._borrowed_linear = prev_borrowed_linear
+        self._drop_exempt_linear = prev_drop_exempt_linear
 
         self._consumed = prev_consumed
         self._linear_names = prev_linear_names

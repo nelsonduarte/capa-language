@@ -606,6 +606,20 @@ class Analyzer(
         # the borrowed marker. Seeded from the params and reset per function
         # in ``_check_fun`` alongside ``_live_linear``.
         self._borrowed_linear: set[str] = set()
+        # Consume linear / typestate parameters of the current function
+        # (audit LIN-1). A ``consume`` parameter OWNS its value here, so it
+        # is seeded into ``_live_linear`` like a let-bound value: consuming
+        # it a second time (or using it after a consume) is poisoned and
+        # caught by the single use-after-consume check, exactly as for a
+        # let-bound owned value. It differs in ONE respect -- it is DROP
+        # EXEMPT: dropping a consume parameter without re-consuming is the
+        # documented terminal semantics (``discard`` / ``adopt``), so the
+        # scope-exit leak check and the reassign-drop check skip it. A name
+        # leaves this set once it is re-assigned to a freshly produced value
+        # (which carries a real must-consume obligation of its own). Seeded
+        # from the params and reset per function in ``_check_fun`` alongside
+        # ``_live_linear``.
+        self._drop_exempt_linear: set[str] = set()
         # Names that were consumed *as linear / typestate values* in the
         # current flow (a subset of the keys recorded in ``_consumed``).
         # ``_consumed`` is shared with the capability discipline and
