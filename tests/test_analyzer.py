@@ -11181,6 +11181,81 @@ class TestLinearCarrierObligation(unittest.TestCase):
             self._TS + "fun main(_s: Stdio)\n    let rec = mkrec()\n"
         )
 
+    # ---- HUSK re-consume after ALL linear fields moved out ----
+    # A carrier whose linear field(s) are all moved out is a spent husk. It
+    # may be DROPPED, but consuming / returning / re-packing the WHOLE husk
+    # again re-transfers an already-moved field -- a runtime double-free.
+
+    def test_field_moved_then_whole_consumed_rejected(self):
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    close(b.h)\n    sink(b)\n"
+        )
+
+    def test_field_projected_then_whole_consumed_rejected(self):
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    let x = b.h\n    close(x)\n    sink(b)\n"
+        )
+
+    def test_field_moved_then_whole_returned_rejected(self):
+        self._rejects(
+            self._BASE + "fun leak(consume b: Box) -> Box\n"
+            "    close(b.h)\n    return b\n"
+        )
+
+    def test_field_moved_then_repacked_rejected(self):
+        self._rejects(
+            self._BASE + "type Outer2 { inner: Box }\n"
+            "fun sink_o2(consume o: Outer2) -> Unit\n    return ()\n"
+            "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    close(b.h)\n    let o = Outer2 { inner: b }\n    sink_o2(o)\n"
+        )
+
+    def test_two_fields_both_moved_then_whole_consumed_rejected(self):
+        self._rejects(
+            self._BASE + "type W2 { c: Handle, d: Handle }\n"
+            "fun mkw2() -> W2\n    return W2 { c: open(), d: open() }\n"
+            "fun sink2(consume w: W2) -> Unit\n    return ()\n"
+            "fun main(_s: Stdio)\n    let w = mkw2()\n"
+            "    close(w.c)\n    close(w.d)\n    sink2(w)\n"
+        )
+
+    def test_nested_field_moved_then_whole_consumed_rejected(self):
+        self._rejects(
+            self._BASE + "type Inner2 { h: Handle }\n"
+            "type Outer3 { inner: Inner2 }\n"
+            "fun mko3() -> Outer3\n"
+            "    return Outer3 { inner: Inner2 { h: open() } }\n"
+            "fun sink_o3(consume o: Outer3) -> Unit\n    return ()\n"
+            "fun main(_s: Stdio)\n    let o = mko3()\n"
+            "    close(o.inner.h)\n    sink_o3(o)\n"
+        )
+
+    # ---- STAY ACCEPTED: husk dropped / husk non-linear field read ----
+
+    def test_husk_dropped_ok(self):
+        # Field moved out, husk merely dropped, never re-consumed: legal (the
+        # per-field-discharge semantic that keeps claimdesk compiling).
+        self._compiles(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    close(b.h)\n"
+        )
+
+    def test_husk_nonlinear_field_read_after_move_ok(self):
+        # Reading a husk's NON-linear field after moving out its linear field
+        # must stay legal (this is why the husk root is not marked
+        # wholesale-consumed).
+        self._compiles(
+            "linear type Handle { id: Int }\n"
+            "fun open() -> Handle\n    return Handle { id: 1 }\n"
+            "fun close(consume h: Handle) -> Unit\n    return ()\n"
+            "type BoxT { h: Handle, tag: Int }\n"
+            "fun make_boxt() -> BoxT\n    return BoxT { h: open(), tag: 0 }\n"
+            "fun main(_s: Stdio)\n    let b = make_boxt()\n"
+            "    let x = b.h\n    close(x)\n    let n = b.tag\n"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

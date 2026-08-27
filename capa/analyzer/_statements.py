@@ -1102,6 +1102,11 @@ class _StatementsMixin:
             or s.value.name in self._borrowed_linear
         ):
             self._linear_discharge(s.value.name, s.pos)
+        elif isinstance(s.value, A.Ident):
+            # Returning a spent HUSK (a carrier whose linear fields were all
+            # moved out) re-transfers an already-moved field to the caller --
+            # a double-free, caught by the same HOLE-1(iii) guard.
+            self._reject_husk_reconsume(s.value.name, s.pos)
         elif isinstance(s.value, A.FieldAccess):
             # ``return s.conn`` transfers a linear FIELD to the caller;
             # move it out of its carrier so it is not re-reported at exit.

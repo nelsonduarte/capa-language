@@ -127,7 +127,10 @@ class _DisciplineMixin:
         rejected via ``_reject_linear_capture``."""
         if isinstance(expr, A.Ident):
             if expr.name not in self._live_linear:
-                return False
+                # A spent HUSK (all linear fields moved out, popped from the
+                # live set) cannot be whole-consumed / re-packed again -- that
+                # re-transfers an already-moved field (double-free).
+                return self._reject_husk_reconsume(expr.name, expr.pos)
             if self._reject_linear_capture(expr.name, expr.pos):
                 return True
             self._linear_discharge(expr.name, expr.pos)

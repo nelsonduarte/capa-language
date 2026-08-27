@@ -482,6 +482,36 @@ class _LinearMixin:
             self._consumed.add(name)
             self._linear_names.add(name)
 
+    def _reject_husk_reconsume(self, name: str, pos: Pos) -> bool:
+        """Carrier-class completion: a carrier whose linear field(s) were ALL
+        moved out is a spent HUSK -- ``_linear_move_field`` popped it from
+        ``_live_linear`` (its obligation was discharged PER FIELD), so it is
+        no longer a live obligation, but consuming / returning / re-packing
+        the WHOLE husk again would re-transfer an already-moved field, a
+        double-free (``close(b.h); sink(b)`` ran ``close`` twice at runtime).
+
+        Reuses the SAME HOLE-1(iii) ``_subpath_consumed`` scan the still-live
+        partial-move path uses: if any ``name.<field>...`` was moved out, the
+        whole husk cannot be re-consumed. Returns True (and reports) iff
+        ``name`` is such a husk. Fires ONLY for a name NOT in ``_live_linear``
+        (a live carrier's whole-consume is caught in ``_linear_discharge``);
+        the husk root is deliberately NOT marked wholesale-consumed, so
+        READING its other (non-linear) fields and DROPPING it stay legal --
+        the per-field-discharge semantic that keeps a field moved out in one
+        arm and the husk dropped (capa_claimdesk) compiling."""
+        if name in self._live_linear:
+            return False
+        sub = self._subpath_consumed(name)
+        if sub is None:
+            return False
+        self._err(
+            f"cannot consume {name!r}: its field {sub!r} was already "
+            f"consumed, so consuming the whole value would double-free that "
+            f"field -- its linear fields were already moved out",
+            pos,
+        )
+        return True
+
     def _linear_move_field(self, place: str, pos: Pos) -> None:
         """HOLE-1 (ii): consume / move a linear FIELD ``place`` (``s.conn``)
         -- via ``close(s.conn)``, ``become(s.conn, ..)``, a ``consume self``
