@@ -31,7 +31,11 @@ server, formatter, documentation generator, and a **WebAssembly
 Component Model backend** (`capa --wasm`) that compiles the same
 source to a `.wasm` component with a WIT spec per capability, runnable
 on any Component-Model-aware runtime or inline through the bundled
-wasmtime host.
+wasmtime host. Top-level functions tagged `@export()` are lifted into
+that component's WIT world alongside `main`, callable directly from a
+Component-Model host; this covers scalar (`Int`/`Float`/`Bool`/`Unit`)
+signatures today, with `String` and composite types across the
+boundary still deferred.
 
 ```bash
 $ capa --run examples/grades.capa
@@ -39,9 +43,14 @@ $ capa --run examples/grades.capa
   Ana: 17.5 (Excellent)
   Bruno: 13.0 (Pass)
   Carla: 8.5 (Fail)
+  Diogo: 15.5 (Good)
+  Eva: 11.0 (Pass)
+  Filipe: 19.0 (Excellent)
 
 Statistics:
   Average: 14.083333333333334
+  Minimum: 8.5
+  Maximum: 19.0
   Passed:  5
   Failed:  1
 ```
@@ -67,7 +76,9 @@ needs `Fs`. The signature is the contract:
 ```capa
 fun summarise(stdio: Stdio, fs: Fs, path: String) -> Result<Unit, IoError>
     let body = fs.read(path)?
-    stdio.println("first line: ${body.split("\n").get(0)}")
+    match body.split("\n").get(0)
+        Some(first) -> stdio.println("first line: ${first}")
+        None -> stdio.println("empty file")
     return Ok(())
 ```
 
@@ -84,14 +95,16 @@ and the narrowing is monotonic by construction.
 
 Capabilities control *which* effects a function may exercise;
 **information-flow control** constrains *where* data may flow. Mark
-data `@secret` and the compiler proves it cannot reach a public sink
-(a log line, a network call, a file write) unless you route it
-through an audited `declassify`:
+data `@secret` and the analyzer tracks it to every public sink (a log
+line, a network call, a file write): by default reaching a sink is a
+**warning** that names the exact flow, and a function annotated
+`@strict_ifc()` turns that warning into a hard **error**. Either way
+the one audited escape hatch is `declassify`:
 
 ```capa
 fun leak(env: Env, stdio: Stdio)
     match env.get("API_KEY")              // env.get is @secret by default
-        Some(key) -> stdio.println(key)   // information-flow violation: secret to a public sink
+        Some(key) -> stdio.println(key)   // analyzer flags this: @secret to a public sink
         None -> stdio.println("no key")
 ```
 
@@ -130,6 +143,10 @@ VSCode extension, see [`docs/getting-started.md`](https://github.com/nelsonduart
 capa --run                  file.capa   # transpile + execute via Python
 capa --check                file.capa   # lex + parse + semantic check
 capa --transpile            file.capa   # emit Python to stdout
+capa --ir --run             file.capa   # run via the CIR middle-end
+                                        # (AST->CIR->Python); falls back
+                                        # to the legacy transpiler for
+                                        # constructs CIR does not cover
 capa --wasm --run           file.capa   # compile + run on wasmtime
 capa --wasm --component --run    file.capa
                                         # wrap as a Component Model
@@ -140,7 +157,7 @@ capa --wasm --component --output app.wasm  file.capa
                                         # component (WIT embedded)
 capa --wit                  file.capa   # emit the WIT spec to stdout
 capa --manifest             file.capa   # JSON capability manifest
-capa --cyclonedx            file.capa   # CycloneDX 1.5 SBOM (caps embedded)
+capa --cyclonedx            file.capa   # CycloneDX 1.6 SBOM (caps embedded)
 capa --spdx                 file.capa   # SPDX 2.3 (caps embedded)
 capa --vex                  file.capa   # standalone VEX document
 capa --provenance           file.capa   # in-toto + SLSA Provenance v1.0
@@ -261,9 +278,9 @@ lockfile semantics, and resolution order.
 ```
 capa/                 # Python package: compiler + runtime + pkg manager
   lexer/  parser/  analyzer/  transpiler/  runtime/
-  ir/                 # CIR + Wasm Component Model backend + WIT emitter
-  manifest/  docgen/  lsp/    pkg/    cli.py
-tests/                # 3,500+ unit, end-to-end, and property tests
+  ir/                 # CIR + Python and Wasm Component Model backends + WIT emitter
+  manifest/  docgen/  lsp/    pkg/    cli/
+tests/                # 5,600+ unit, end-to-end, and property tests
 examples/             # .capa programs (basics, CVE case studies, LLM sandbox)
 # (seed libraries now all live in standalone repos; see Standard library section)
 docs/                 # public website (HTML) + design writeups (.md)
@@ -276,7 +293,7 @@ LICENSE  STABILITY.md  CONTRIBUTING.md  SECURITY.md  README.md
 
 ## Status
 
-Capa ships as **`1.31.0`** (released 2026-08-11), with the full
+Capa ships as **`1.32.0`** (released 2026-08-22), with the full
 security axis (information-flow control, constant-time markers, and
 typestate protocols) and the fully functional Wasm backend (see
 [`CHANGELOG.md`](https://github.com/nelsonduarte/capa-language/blob/main/CHANGELOG.md)). The stability commitment in
@@ -284,7 +301,7 @@ typestate protocols) and the fully functional Wasm backend (see
 breaking changes to the covered surfaces require a major bump, and
 deprecations get one minor release of warning first.
 
-**3,500+ tests** spanning the lexer, parser, analyzer, transpiler,
+**5,600+ tests** spanning the lexer, parser, analyzer, transpiler,
 LSP, formatter, attribute-schema validation, package manager, the
 information-flow / constant-time / typestate checkers, the Wasm
 backend (with a Python/Wasm output parity harness), and
@@ -343,7 +360,7 @@ The Tier 1 supply-chain artefacts are **all shipping** today:
 | Artefact | Command | Notes |
 |----------|---------|-------|
 | Capability manifest | `capa --manifest`     | per-function caps + attributes |
-| CycloneDX 1.5 SBOM  | `capa --cyclonedx`    | capability metadata via `properties[]` |
+| CycloneDX 1.6 SBOM  | `capa --cyclonedx`    | capability metadata via `properties[]` |
 | SPDX 2.3 SBOM       | `capa --spdx`         | capability metadata via `annotations[]` |
 | VEX                 | `capa --vex`          | per-function exploitability claims via `@vex(...)` |
 | SLSA Build L1       | `capa --provenance`   | in-toto Statement v1 + Provenance v1.0 predicate |
