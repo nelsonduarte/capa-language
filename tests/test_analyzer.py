@@ -11256,6 +11256,95 @@ class TestLinearCarrierObligation(unittest.TestCase):
             "    let x = b.h\n    close(x)\n    let n = b.tag\n"
         )
 
+    # ---- HUSK re-consume through an ALIAS / reassignment ----
+    # The move seam poisons the SOURCE binding, but an alias / reassignment
+    # re-arms the TARGET with a fresh FULL obligation, so without carrying the
+    # moved-out sub-path across, re-consuming the whole husk through the alias
+    # slips past every use-site scan and lowers to a runtime double-free. The
+    # moved sub-path must travel across the alias (and along a chain), so the
+    # husk-reconsume / discharge / field-use scans fire on the alias too.
+
+    def test_alias_husk_then_consume_alias_rejected(self):
+        # Alias the spent husk, then consume the alias whole -> double-free.
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    close(b.h)\n    let c = b\n    sink(c)\n"
+        )
+
+    def test_alias_husk_then_field_moved_again_rejected(self):
+        # Alias the husk, then move the SAME (already-freed) field out again
+        # through the alias.
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    close(b.h)\n    let c = b\n    close(c.h)\n"
+        )
+
+    def test_alias_husk_then_returned_rejected(self):
+        # Alias the husk, then return the alias from a by-consume function ->
+        # re-transfers an already-moved field to the caller.
+        self._rejects(
+            self._BASE + "fun leak2(consume b: Box) -> Box\n"
+            "    close(b.h)\n    let c = b\n    return c\n"
+        )
+
+    def test_chained_alias_husk_then_consume_tail_rejected(self):
+        # Alias the alias (a chain), then consume the tail: the moved-out
+        # sub-path must travel the whole chain.
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    close(b.h)\n    let c = b\n    let d = c\n    sink(d)\n"
+        )
+
+    def test_reassign_husk_into_var_then_consume_rejected(self):
+        # Reassign the husk into an existing (cleanly discharged) var, then
+        # consume it whole -> double-free through the reassigned binding.
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    close(b.h)\n    var c = make_box()\n    sink(c)\n"
+            "    c = b\n    sink(c)\n"
+        )
+
+    def test_typestate_alias_husk_then_consume_rejected(self):
+        # Typestate facet: move out a carrier's typestate field, alias the
+        # husk, then consume the alias whole.
+        self._rejects(
+            self._TS + "fun sink_rec(consume r: Rec) -> Unit\n    return ()\n"
+            "fun main(_s: Stdio)\n    let rec = mkrec()\n"
+            "    let settled = rec.claim\n    archive(settled)\n"
+            "    let alias = rec\n    sink_rec(alias)\n"
+        )
+
+    # ---- STAY ACCEPTED: alias route must not over-reject ----
+
+    def test_alias_full_carrier_consumed_once_ok(self):
+        # A full carrier aliased then consumed exactly once, with NO prior
+        # field-move: the obligation just moves onto the alias.
+        self._compiles(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    let c = b\n    sink(c)\n"
+        )
+
+    def test_alias_husk_nonlinear_field_read_ok(self):
+        # Aliasing a husk then reading the alias's NON-linear field stays
+        # legal (only the moved linear sub-path travels, never the root).
+        self._compiles(
+            "linear type Handle { id: Int }\n"
+            "fun open() -> Handle\n    return Handle { id: 1 }\n"
+            "fun close(consume h: Handle) -> Unit\n    return ()\n"
+            "type BoxT { h: Handle, tag: Int }\n"
+            "fun make_boxt() -> BoxT\n    return BoxT { h: open(), tag: 0 }\n"
+            "fun main(_s: Stdio)\n    let b = make_boxt()\n"
+            "    close(b.h)\n    let c = b\n    let n = c.tag\n"
+        )
+
+    def test_alias_husk_dropped_ok(self):
+        # Aliasing a husk and merely DROPPING the alias (never re-consumed)
+        # stays legal, exactly as dropping the husk itself does.
+        self._compiles(
+            self._BASE + "fun main(_s: Stdio)\n    let b = make_box()\n"
+            "    close(b.h)\n    let c = b\n"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

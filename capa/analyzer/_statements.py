@@ -633,6 +633,15 @@ class _StatementsMixin:
             # rejected above) reaches a useful state, but running this
             # unconditionally is harmless: a poisoned/consumed name simply
             # is not in ``_live_linear`` and the fresh value re-binds.
+            #
+            # A bare-identifier RHS naming a spent husk (``c = b`` after its
+            # field was moved out) carries the moved-out sub-path onto the
+            # reassigned name through the SAME alias-carry seam a ``let`` /
+            # ``var`` alias uses, so re-consuming the whole husk through the
+            # reassigned binding is rejected. A non-husk / non-identifier RHS
+            # carries nothing.
+            if isinstance(s.value, A.Ident):
+                self._carry_moved_subpaths(s.value.name, s.target.name)
             self._linear_reassign(s.target.name, value_ty, s.pos)
         elif isinstance(s.target, (A.FieldAccess, A.Index)):
             # A bare index-element target (``xs[i] = v`` and the

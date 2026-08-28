@@ -563,6 +563,32 @@ class _LinearMixin:
             if subs and all(self._field_discharged(s) for s in subs):
                 self._live_linear.pop(root, None)
 
+    def _carry_moved_subpaths(self, src: str, dst: str) -> None:
+        """Re-key every moved-out linear sub-path of ``src`` onto ``dst`` when
+        ``dst`` aliases ``src`` (``let d = c``, ``var d = c``, ``d = c``). A
+        carrier whose field was moved out is a spent HUSK; the move seam
+        poisons the SOURCE sub-path but the alias arms a FRESH obligation on
+        the target, so without carrying the moved-out sub-path across, the
+        target forgets the field was already freed and the whole husk can be
+        re-consumed through the alias -- a double-free, and the same route a
+        chain of aliases (``let c = b; let d = c``) extends.
+
+        Reuses the EXISTING ``_consumed`` / ``_linear_field_moved`` sub-path
+        sets that ``_linear_move_field`` already keys the husk-reconsume /
+        discharge / field-use scans on, so those scans fire on the alias with
+        no new state and no mirror table. Only the moved SUB-PATH travels,
+        never the whole root, so a non-linear read of the aliased husk stays
+        legal (that is why root-marking was dropped). A ``src`` with no
+        moved-out sub-path (a still-whole carrier, a bare linear, a chain
+        root) carries nothing, so the whole-carrier alias is untouched."""
+        prefix = src + "."
+        for p in [q for q in self._consumed if q.startswith(prefix)]:
+            moved = dst + p[len(src):]
+            self._consumed.add(moved)
+            self._linear_names.add(moved)
+            if p in self._linear_field_moved:
+                self._linear_field_moved.add(moved)
+
     def _linear_transfer_if_alias(self, value: "A.Expr", target: str) -> None:
         """When a ``let``/``var`` RHS is a bare identifier naming a still-
         live linear obligation (``let h2 = h``), MOVE the obligation off
@@ -619,6 +645,11 @@ class _LinearMixin:
             self._borrowed_linear.add(target)
             return
         if value.name in self._live_linear:
+            # Carry any partially-moved sub-path onto the alias BEFORE the
+            # whole obligation transfers, so the tail of an alias chain (whose
+            # husk head re-armed it live) inherits the moved-out field and a
+            # re-consume through it is rejected.
+            self._carry_moved_subpaths(value.name, target)
             self._linear_discharge(value.name)
             return
         # HOLE-2 (option a): aliasing a value whose type TRANSITIVELY
@@ -637,6 +668,12 @@ class _LinearMixin:
         if self._type_carries_linear(val_ty):
             self._consumed.add(value.name)
             self._linear_names.add(value.name)
+            # The source may be a spent HUSK (its linear field already moved
+            # out, popped from the live set). Carry that moved-out sub-path
+            # onto the alias so consuming / returning / re-packing the whole
+            # husk through ``target`` (or the next link of a chain) is rejected
+            # exactly as it is on the source.
+            self._carry_moved_subpaths(value.name, target)
 
     def _linear_reassign(self, name: str, ty: Optional[Ty], pos: Pos) -> None:
         """Handle ``h = <expr>`` re-assignment to an existing name.
