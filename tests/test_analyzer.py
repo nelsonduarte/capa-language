@@ -8,23 +8,9 @@ the canonical examples.
 
 import unittest
 
-from capa import (
-    Lexer, Parser, analyze, AnalysisResult,
-    TyName, TyUnit, TyUnknown, ty_str,
-)
+from capa import Lexer, Parser, analyze
 
-
-def check(source: str) -> AnalysisResult:
-    """Lex + parse + analyze. Returns the AnalysisResult."""
-    tokens = Lexer(source).lex()
-    module = Parser(tokens, source=source).parse_module()
-    return analyze(module, source=source)
-
-
-def errors_of(source: str) -> list[str]:
-    """List of error messages (just the message part, without position)."""
-    result = check(source)
-    return [e.message for e in result.errors]
+from tests.analyzer._helpers import check, errors_of
 
 
 # =============================================================
