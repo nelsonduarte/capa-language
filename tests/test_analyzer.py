@@ -11345,6 +11345,62 @@ class TestLinearCarrierObligation(unittest.TestCase):
             "    close(b.h)\n    let c = b\n"
         )
 
+    # ---- husk REASSIGNED to a FRESH value: re-arm must be fully live ----
+    # A `var` husk (its linear/typestate field moved out) reassigned to a
+    # brand-new value must be tracked as fully live again: the stale moved-out
+    # sub-path must NOT survive the fresh re-arm, or a legitimate consume is
+    # rejected (false positive) and the fresh value's own leak is masked
+    # (soundness). Complement of the alias-carry route.
+
+    def test_reassign_fresh_after_husk_consumed_ok(self):
+        # FP face (linear): consuming the reassigned-to-fresh carrier once is
+        # legal; the stale `c.h` from the spent husk must not linger.
+        self._compiles(
+            self._BASE + "fun main(_s: Stdio)\n    var c = make_box()\n"
+            "    close(c.h)\n    c = make_box()\n    sink(c)\n"
+        )
+
+    def test_reassign_fresh_after_husk_dropped_rejected(self):
+        # Soundness face (linear): dropping the reassigned-to-fresh carrier
+        # without consuming leaks the fresh resource and must be rejected,
+        # exactly as a plain fresh-drop is.
+        self._rejects(
+            self._BASE + "fun main(_s: Stdio)\n    var c = make_box()\n"
+            "    close(c.h)\n    c = make_box()\n"
+        )
+
+    def test_typestate_reassign_fresh_after_husk_consumed_ok(self):
+        # FP face (typestate): same, with a typestate field moved out by
+        # projection before the fresh re-arm.
+        self._compiles(
+            self._TS + "fun sink_rec(consume r: Rec) -> Unit\n    return ()\n"
+            "fun main(_s: Stdio)\n    var rec = mkrec()\n"
+            "    let settled = rec.claim\n    archive(settled)\n"
+            "    rec = mkrec()\n    sink_rec(rec)\n"
+        )
+
+    def test_typestate_reassign_fresh_after_husk_dropped_rejected(self):
+        # Soundness face (typestate): dropping the reassigned-to-fresh carrier
+        # leaks and must be rejected.
+        self._rejects(
+            self._TS + "fun main(_s: Stdio)\n    var rec = mkrec()\n"
+            "    let settled = rec.claim\n    archive(settled)\n"
+            "    rec = mkrec()\n"
+        )
+
+    def test_reassign_fresh_clears_only_own_subtree(self):
+        # Precision: the fresh re-arm of `c` clears only `c.*`, never a sibling
+        # husk `cc` (nor the root `c`). Consuming the fresh `c` is accepted,
+        # while the untouched sibling husk `cc` still rejects its re-consume, so
+        # an over-clear (or a whole-root wipe) cannot pass silently.
+        errs = self._errs(
+            self._BASE + "fun main(_s: Stdio)\n    var c = make_box()\n"
+            "    var cc = make_box()\n    close(c.h)\n    close(cc.h)\n"
+            "    c = make_box()\n    sink(c)\n    sink(cc)\n"
+        )
+        self.assertTrue(any("'cc'" in e for e in errs), errs)
+        self.assertFalse(any("consume 'c'" in e for e in errs), errs)
+
 
 if __name__ == "__main__":
     unittest.main()

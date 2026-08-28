@@ -512,6 +512,23 @@ class _LinearMixin:
         )
         return True
 
+    def _moved_subpath_sets(self) -> tuple:
+        """THE single source of the sub-path-keyed structures the move seam
+        (``_linear_move_field``) records a moved-out linear field place in.
+        ``_linear_move_field`` writes a place THROUGH this tuple, and both
+        ``_carry_moved_subpaths`` (re-key a moved sub-path across an alias) and
+        ``_clear_moved_subpaths`` (drop a stale moved sub-path on a fresh
+        re-arm) iterate it, so the producer and the two re-keyers cannot
+        diverge: adding a fourth structure here propagates to all three at
+        once, and a carry / clear can never silently under-cover a structure
+        the move seam populates. Read FRESH each call because a branch merge
+        (``_check_if`` / ``_check_match_expr``) rebinds these sets.
+
+        The prefix scans that walk this tuple are ``.``-component scoped
+        (``name + "."``), so they touch only the DOTTED sub-paths a field move
+        produces, never a whole-root consume entry that shares the name."""
+        return (self._consumed, self._linear_names, self._linear_field_moved)
+
     def _linear_move_field(self, place: str, pos: Pos) -> None:
         """HOLE-1 (ii): consume / move a linear FIELD ``place`` (``s.conn``)
         -- via ``close(s.conn)``, ``become(s.conn, ..)``, a ``consume self``
@@ -540,15 +557,16 @@ class _LinearMixin:
             return
         if self._prefix_consumed(place):
             return
-        self._consumed.add(place)
-        self._linear_names.add(place)
-        # Per-field discharge accounting (Connection C). The single field-
-        # move seam, so this is the one place a moved field is recorded for
-        # the scope-exit per-field check. Merged by INTERSECTION at branch
-        # points (see ``_check_if`` / ``_check_match_expr``), unlike the
-        # union-merged ``_consumed`` above, so a field consumed on only some
-        # branches is NOT counted as discharged at scope exit.
-        self._linear_field_moved.add(place)
+        # Record the moved-out place in every sub-path-keyed structure through
+        # the single ``_moved_subpath_sets`` source, so the carry / clear
+        # re-keyers cannot drift from what a move poisons. This is the one
+        # place a moved field is recorded, including the Connection C per-field
+        # discharge record (``_linear_field_moved``), which is INTERSECTION-
+        # merged at branch points (see ``_check_if`` / ``_check_match_expr``),
+        # unlike the union-merged use-after-consume set, so a field consumed on
+        # only some branches is NOT counted as discharged at scope exit.
+        for moved_set in self._moved_subpath_sets():
+            moved_set.add(place)
         # Moving out a carrier's LAST outstanding linear field discharges the
         # whole carrier obligation (the blessed per-field-discharge
         # semantic): drop it from the live set so it is not re-reported at
@@ -573,21 +591,39 @@ class _LinearMixin:
         re-consumed through the alias -- a double-free, and the same route a
         chain of aliases (``let c = b; let d = c``) extends.
 
-        Reuses the EXISTING ``_consumed`` / ``_linear_field_moved`` sub-path
-        sets that ``_linear_move_field`` already keys the husk-reconsume /
-        discharge / field-use scans on, so those scans fire on the alias with
-        no new state and no mirror table. Only the moved SUB-PATH travels,
-        never the whole root, so a non-linear read of the aliased husk stays
-        legal (that is why root-marking was dropped). A ``src`` with no
-        moved-out sub-path (a still-whole carrier, a bare linear, a chain
-        root) carries nothing, so the whole-carrier alias is untouched."""
+        Re-keys within EACH structure the move seam populates
+        (``_moved_subpath_sets``), so the husk-reconsume / discharge /
+        field-use scans fire on the alias with no new state and no mirror
+        table, and each set's own membership is preserved (a sub-path in the
+        union-merged consume set but not the intersection-merged field-move set
+        carries into only the former). Only the moved SUB-PATH travels, never
+        the whole root, so a non-linear read of the aliased husk stays legal
+        (that is why root-marking was dropped). A ``src`` with no moved-out
+        sub-path (a still-whole carrier, a bare linear, a chain root) carries
+        nothing, so the whole-carrier alias is untouched."""
         prefix = src + "."
-        for p in [q for q in self._consumed if q.startswith(prefix)]:
-            moved = dst + p[len(src):]
-            self._consumed.add(moved)
-            self._linear_names.add(moved)
-            if p in self._linear_field_moved:
-                self._linear_field_moved.add(moved)
+        for moved_set in self._moved_subpath_sets():
+            for p in [q for q in moved_set if q.startswith(prefix)]:
+                moved_set.add(dst + p[len(src):])
+
+    def _clear_moved_subpaths(self, name: str) -> None:
+        """Drop the WHOLE ``name.*`` moved sub-tree from every moved-subpath
+        structure (``_moved_subpath_sets``) when ``name`` is re-armed to a
+        FRESH value (a non-alias reassignment ``c = make_box()``). The move
+        seam records a moved field as a sub-path (``c.h``), but a re-arm's bind
+        clears only the exact ROOT ``c``, so a stale ``c.*`` would otherwise
+        persist across the reassignment and both (i) reject a legitimate
+        whole-consume of the fresh value as a double-free and (ii) mask the
+        fresh value's own leak at scope exit.
+
+        Strict ``name + "."`` prefix: only sub-paths are cleared, never the
+        root ``name`` itself and never a sibling like ``name2``. Complement of
+        ``_carry_moved_subpaths``; the alias (bare-identifier RHS) path calls
+        that instead, so a just-carried ``name.*`` is never wiped."""
+        prefix = name + "."
+        for moved_set in self._moved_subpath_sets():
+            for p in [q for q in moved_set if q.startswith(prefix)]:
+                moved_set.discard(p)
 
     def _linear_transfer_if_alias(self, value: "A.Expr", target: str) -> None:
         """When a ``let``/``var`` RHS is a bare identifier naming a still-

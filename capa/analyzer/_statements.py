@@ -638,10 +638,17 @@ class _StatementsMixin:
             # field was moved out) carries the moved-out sub-path onto the
             # reassigned name through the SAME alias-carry seam a ``let`` /
             # ``var`` alias uses, so re-consuming the whole husk through the
-            # reassigned binding is rejected. A non-husk / non-identifier RHS
-            # carries nothing.
+            # reassigned binding is rejected. A FRESH value (a non-identifier
+            # RHS: a call / literal / ``become`` / struct literal) instead
+            # DROPS the old binding's stale moved-out sub-path, or a spent husk
+            # reassigned to a fresh value would keep rejecting a legitimate
+            # consume as a double-free (a false positive) and mask the fresh
+            # value's own leak. The two are complements on the ONE re-arm seam,
+            # so the clear never fires on the alias path (which populates it).
             if isinstance(s.value, A.Ident):
                 self._carry_moved_subpaths(s.value.name, s.target.name)
+            else:
+                self._clear_moved_subpaths(s.target.name)
             self._linear_reassign(s.target.name, value_ty, s.pos)
         elif isinstance(s.target, (A.FieldAccess, A.Index)):
             # A bare index-element target (``xs[i] = v`` and the
