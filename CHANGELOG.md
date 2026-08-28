@@ -11,6 +11,45 @@ breaking changes and the discipline is still being shaped.
 
 **Security / soundness (unreleased).**
 
+- *A linear / typestate value packed into a struct FIELD (a CARRIER) is now a
+  must-consume value, closing a silent double-free at `--check` (carrier /
+  husk-reconsume class).* A struct that transitively owns a linear / typestate
+  field is a CARRIER: it must be consumed, transitioned, returned, or have its
+  linear field(s) moved out before it leaves scope, else it leaks. Two shapes
+  that previously passed `--check` (rc0) and then double-freed at run time are
+  now rejected: packing a linear handle into a struct field and then re-using it
+  (`let b = Box { h: h }; close(h); close(b.h)`), and consuming / returning /
+  re-packing a spent HUSK (a carrier whose linear field was already moved out)
+  again, across the direct, alias / chain / `var`-reassign, re-pack, and
+  reassign-to-fresh shapes, in both the linear and typestate facets. The
+  must-consume predicate is single-sourced into one
+  [`capa/_owned_obligation.py`](capa/_owned_obligation.py) that both the analyzer
+  ([`capa/analyzer/_linear.py`](capa/analyzer/_linear.py)) and the manifest
+  builder ([`capa/manifest/_funrec.py`](capa/manifest/_funrec.py)) call, with a
+  fail-closed guard asserting the two field lookups agree; as an intended
+  coupling the manifest / SBOM obligation surface now reports `is_linear`,
+  `consumes`, and `produces_linear` for carriers and typestates (closing a
+  pre-existing typestate-factory gap). Analyzer + manifest only, reject-only: a
+  rejected program never reaches codegen, no golden moved, and the Python
+  interpreter and the Wasm Component Model backend stay byte-identical on
+  accepted programs. No version change and no GHSA (Python-style cadence; a
+  security-fix advisory batches at the next stable release). Commits `5ae915d`,
+  `9058cf5`, `4384343`, `30ae1ad`; pinned by `TestLinearCarrierObligation` in
+  [`tests/test_analyzer.py`](tests/test_analyzer.py) and `TestLinearObligations`
+  / `TestCarrierAndTypestateObligations` in
+  [`tests/test_manifest.py`](tests/test_manifest.py).
+
+  Honest scope: this closes the carrier / husk-reconsume double-free class, NOT
+  every linear double-free. Distinct holes remain open, each tracked internally:
+  the `t = s` AssignStmt whole-value alias double-free (the reassign carries the
+  source's moved-out sub-paths but does not move its whole-value obligation, so
+  `s` and `t` stay independently consumable) and its soundness-safe husk-target
+  over-rejection twin; the borrow-read residual (passing a spent husk by borrow
+  to a callee that reads the moved-out field, a use-after-move-via-borrow, not a
+  double-free); destructure of a linear carrier; and the E3 generic-return
+  aliasing double-free (`let b2 = id(b); close(b2.h); close(b.h)`), a
+  pre-existing general hole the bare-linear analog shares.
+
 - *A `consume` linear / typestate PARAMETER re-used inside the receiving body
   slipped `--check` (rc0) and executed a real double-consume / double-free on
   all three backends (audit LIN-1).* At function entry the parameter loop did
@@ -48,7 +87,7 @@ breaking changes and the discipline is still being shaped.
   the base double-spends `PAID 100` twice identically on legacy / `--ir` /
   `--wasm`, proving the new rejection is load-bearing). No version change and no
   GHSA (Python-style cadence; a security-fix advisory batches at the next stable
-  release). Commit `a54095a`.
+  release). Commit `bb61ef6`.
 
   Honest scope: LIN-1 closes the consume-PARAMETER re-use double-consume (a
   bare `consume` linear / typestate parameter re-used within the receiving
@@ -144,19 +183,23 @@ breaking changes and the discipline is still being shaped.
 
   Honest scope: H-F1 (the signed-SBOM false-exclusion of a body-obtained user
   capability) is closed for every call form the language actually SUPPORTS, the
-  free-function factory and the inherent-instance-method factory. A SEPARATE
-  typechecker hole, tracked and scheduled as the next item, still ACCEPTS the
-  unsupported `TypeName.method()` associated-call surface (`Factory.create()`,
-  even `Factory.nonexistent()`, which passes `--check` and then fails at runtime).
-  While that hole stands, that one unsupported-but-accepted form can still exhibit
-  the false-exclude; rejecting it removes the last observable false-exclude of this
-  class by construction. See Known issues below.
+  free-function factory and the inherent-instance-method factory. The related
+  unsupported `TypeName.method()` associated-call surface is now REJECTED for a
+  user struct / sum type by commit `b2dd49e` (`Factory.create()`, `Color.make()`,
+  and even `Factory.nonexistent()` fail `--check` with "type '<T>' has no static
+  method '<m>'; Capa has no static-method call syntax"); because a rejected
+  program yields no manifest, that closes the H-F1 false-exclude via a user-type
+  factory-static-call by construction. See Known issues below for the same-class
+  holes that remain accepted.
 
-  Known issue (one residual stays open by ROOT CAUSE): the `TypeName.method()`
-  associated-call surface is accepted by the typechecker although the language
-  does not support it, so a body that mints a cap-bearing value through that
-  form is not yet charged. It is tracked for the next fix, which removes the last
-  observable false-exclude of this class.
+  Known issue (same-class static-call holes still accepted): a `TraitName.method()`
+  static-call (`Shape.area()`) and the builtin-receiver forms (`Some.foo()`,
+  `Map.new`) still pass `--check`, since the `b2dd49e` reject fires only for a
+  non-builtin struct / sum type name. Of these only `TraitName.method()` can mint
+  a USER cap-bearing value, so it is the one that could still exhibit the H-F1
+  false-exclude; the builtin `Some.foo()` / `Map.new` forms cannot introduce a
+  user capability. Extending the reject to cover the trait and builtin forms is
+  tracked as a follow-up.
 
 - *The fifth face of the rigid-destructure IFC class: a trait-typed-scrutinee
   downcast could launder a `@secret` through a public twin.* The `1.32.0`
