@@ -48,29 +48,9 @@ from capa.ir import (
     UnsupportedCapabilityMethod, MainReturnTypeUnsupported,
 )
 
-
-def _parse_lower(src: str):
-    """Lex + parse + analyze + lower; returns (ir_module, types_map).
-    Aborts the test if analysis fails so we get a clear message."""
-    tokens = Lexer(src).lex()
-    module = Parser(tokens, source=src).parse_module()
-    result = analyze(module, source=src)
-    if not result.ok:
-        raise AssertionError(f"analyzer errors: {result.errors}")
-    ir_mod = lower(module, types=result.types)
-    return ir_mod, result.types, module
-
-
-def _has_wasm_tools() -> bool:
-    return shutil.which("wasm-tools") is not None
-
-
-def _has_wasmtime_py() -> bool:
-    try:
-        import wasmtime  # noqa: F401
-        return True
-    except ImportError:
-        return False
+from tests.ir_wasm._helpers import (
+    _has_wasm_tools, _has_wasmtime_py, _parse_lower,
+)
 
 
 # A generic function monomorphised at a *qualified typestate*: the
