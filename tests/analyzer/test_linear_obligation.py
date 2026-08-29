@@ -2031,5 +2031,314 @@ class TestLinearCarrierObligation(unittest.TestCase):
         self.assertFalse(any("consume 'c'" in e for e in errs), errs)
 
 
+class TestAssignAliasWholeValue(unittest.TestCase):
+    """AssignStmt whole-value alias handling (T1 + T2).
+
+    A re-assignment ``t = s`` to an Ident target is the SAME whole-value
+    move / re-arm discipline a ``let`` / ``var`` introduction runs, so it
+    routes through the ONE ``_linear_transfer_if_alias`` seam. Before this
+    fix ``_check_assign`` re-implemented only a partial slice of that seam
+    by hand, so on the re-assign path the whole-value obligation MOVE, the
+    borrowed propagation, and the target-stale-clear were all missing:
+
+    - T2 (double-frees accepted at --check): aliasing a live linear value
+      (``t = s``) left BOTH names independently consumable, so
+      ``close(s)`` / ``close(t)`` freed the same value twice. The carrier,
+      typestate, chained, if / match-branch, projection, borrowed-launder,
+      loop-carried, and consume-both shapes are all the one hole.
+    - T1 (false positives): re-assigning a spent-husk target to a fresh
+      whole value kept the stale moved-out sub-path, wrongly rejecting a
+      later legitimate consume and leaking the fresh value; aliasing a
+      borrowed value then only READING it, or a projection then a read of
+      the REST, were rejected as leaks because the source obligation was
+      never moved.
+
+    The seam moves the whole obligation off an aliased source, re-carries
+    the source's moved-out sub-paths onto the target, and propagates a
+    borrowed marker; the borrowed-clear on a fresh re-arm is single-sourced
+    in that seam's no-op top. A SELF-ASSIGN (``c = c``) stays a no-op re-arm
+    that preserves the target's own sub-paths, so a husk ``c = c`` is still
+    rejected when the whole husk is later consumed.
+
+    Out of scope (each a SEPARATE class / seam, its own next brief): a
+    field-store linear laundering ``s.h = t`` (the FieldAccess-target
+    branch, not this Ident-target re-arm), the borrow-read residual, E3
+    generic-return aliasing, destructure of a linear carrier, and the
+    pre-existing live ``t = t`` self-assign drop FP."""
+
+    _LIN = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n"
+        "    return ()\n"
+    )
+    _CARRIER = _LIN + (
+        "type Box { h: Handle }\n"
+        "fun make_box() -> Box\n"
+        "    return Box { h: open() }\n"
+        "fun sink(consume b: Box) -> Unit\n"
+        "    return ()\n"
+    )
+    # A carrier whose linear field co-exists with an intact NON-linear
+    # field, so a husk still has a readable scalar after the move.
+    _BOXT = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n    return Handle { id: 1 }\n"
+        "fun close(consume h: Handle) -> Unit\n    return ()\n"
+        "type BoxT { h: Handle, tag: Int }\n"
+        "fun make_boxt() -> BoxT\n    return BoxT { h: open(), tag: 0 }\n"
+        "fun sinkt(consume b: BoxT) -> Unit\n    return ()\n"
+    )
+    # A NON-linear carrier S owning a linear field conn plus a scalar tag.
+    _NL = (
+        "linear type Conn { id: Int }\n"
+        "fun open() -> Conn\n    return Conn { id: 1 }\n"
+        "fun close(consume c: Conn) -> Unit\n    return ()\n"
+        "type S { conn: Conn, tag: Int }\n"
+        "fun mks() -> S\n    return S { conn: open(), tag: 0 }\n"
+    )
+    _TS = (
+        "typestate Claim\n    Draft\n    Approved\n"
+        "fun mk() -> Claim[Draft]\n    return Claim[Draft] {}\n"
+        "fun settle(consume c: Claim[Approved]) -> Unit\n    return ()\n"
+    )
+    _TSCARR = (
+        "typestate Claim\n    Draft\n    Settled\n"
+        "fun mk() -> Claim[Draft]\n    return Claim[Draft] {}\n"
+        "fun archive(consume c: Claim[Settled]) -> Unit\n    return ()\n"
+        "type Rec { claim: Claim[Settled], tag: Int }\n"
+        "fun mkrec() -> Rec\n"
+        "    return Rec { claim: become(mk(), Settled), tag: 0 }\n"
+        "fun sink_rec(consume r: Rec) -> Unit\n    return ()\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    def _reject_with(self, body: str, needle: str) -> None:
+        """Assert the SPECIFIC diagnostic ``needle`` is reported (C1: a bare
+        'some rejection' is GREEN-on-broken for a member main already errors
+        on for a spurious reason)."""
+        errs = self._errs(body)
+        self.assertTrue(any(needle in e for e in errs), errs)
+
+    def _compiles(self, body: str) -> None:
+        errs = self._errs(body)
+        self.assertEqual(errs, [], errs)
+
+    # ---- T2: double-frees now REJECTED (RED-first, right reason) ----
+
+    def test_m1_bare_alias_double_free_rejected(self):
+        # ``t = s`` moves s onto t; consuming the moved-out source rejects.
+        self._reject_with(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    var s = open()\n    var t = open()\n"
+            "    close(t)\n    t = s\n    close(s)\n    close(t)\n",
+            "linear value 's' was consumed earlier and cannot be used again",
+        )
+
+    def test_m2_carrier_alias_double_free_rejected(self):
+        self._reject_with(
+            self._CARRIER + "fun main(_s: Stdio)\n"
+            "    var s = make_box()\n    var t = make_box()\n"
+            "    sink(t)\n    t = s\n    sink(s)\n    sink(t)\n",
+            "linear value 's' was consumed earlier and cannot be used again",
+        )
+
+    def test_m3_typestate_alias_double_free_rejected(self):
+        self._reject_with(
+            self._TS + "fun main(_s: Stdio)\n"
+            "    var s = become(mk(), Approved)\n"
+            "    var t = become(mk(), Approved)\n"
+            "    settle(t)\n    t = s\n    settle(s)\n    settle(t)\n",
+            "linear value 's' was consumed earlier and cannot be used again",
+        )
+
+    def test_m4_chained_alias_double_free_rejected(self):
+        # ``t = s; u = t`` chains the alias. C1: main already rejects this for
+        # a SPURIOUS reason (``t``/``u`` dropped), masking the double-free, so
+        # the test pins the double-free (``was consumed earlier``), which is
+        # RED-absent on main and only appears once the move is routed.
+        self._reject_with(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    var s = open()\n    var t = open()\n    var u = open()\n"
+            "    t = s\n    u = t\n"
+            "    close(s)\n    close(t)\n    close(u)\n",
+            "was consumed earlier and cannot be used again",
+        )
+
+    def test_m5a_if_branch_alias_double_free_rejected(self):
+        # Alias + consume inside an ``if`` branch; the branch's consume of s
+        # unions into _consumed, so the post-if close(s) rejects.
+        self._reject_with(
+            self._LIN + "fun main(_s: Stdio, cond: Bool)\n"
+            "    var s = open()\n    var t = open()\n    close(t)\n"
+            "    if cond\n        t = s\n        close(t)\n"
+            "    close(s)\n",
+            "linear value 's' was consumed earlier and cannot be used again",
+        )
+
+    def test_m5a_match_arm_alias_double_free_rejected(self):
+        # The match-arm twin of the if-branch member.
+        self._reject_with(
+            self._LIN + "fun main(_s: Stdio, flag: Bool)\n"
+            "    var s = open()\n    var t = open()\n    close(t)\n"
+            "    match flag\n"
+            "        true ->\n            t = s\n            close(t)\n"
+            "        false -> ()\n"
+            "    close(s)\n",
+            "linear value 's' was consumed earlier and cannot be used again",
+        )
+
+    def test_m6_preconsumed_target_consume_both_rejected(self):
+        # Target pre-consumed, re-armed from a live source, then both freed.
+        self._reject_with(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    var s = open()\n    var t = open()\n    close(t)\n"
+            "    t = s\n    close(t)\n    close(s)\n",
+            "linear value 's' was consumed earlier and cannot be used again",
+        )
+
+    def test_m8_projection_alias_double_free_rejected(self):
+        # ``t = s.conn`` moves the field out; re-consuming s.conn rejects.
+        self._reject_with(
+            self._NL + "fun main(_s: Stdio)\n"
+            "    var s = mks()\n    var t = open()\n    close(t)\n"
+            "    t = s.conn\n    close(s.conn)\n    close(t)\n",
+            "linear value 's.conn' was consumed earlier and cannot be "
+            "used again",
+        )
+
+    def test_m9_borrowed_launder_rejected(self):
+        # ``t = h`` where h is borrowed propagates the borrowed marker; the
+        # re-arm keeps it borrowed (Edit B), so close(t) hits the borrow guard.
+        self._reject_with(
+            self._LIN + "fun bad(h: Handle)\n"
+            "    var t = open()\n    close(t)\n    t = h\n    close(t)\n",
+            "cannot consume or transfer borrowed linear/typestate value 't'",
+        )
+
+    def test_loop_iteration_carried_alias_double_free_rejected(self):
+        # The loop body aliases s into t and consumes t each iteration; the
+        # two-pass loop analysis flags the re-consume of the moved-out s.
+        self._reject_with(
+            self._LIN + "fun main(_s: Stdio, cond: Bool)\n"
+            "    var s = open()\n    var t = open()\n    close(t)\n"
+            "    while cond\n        t = s\n        close(t)\n"
+            "    close(s)\n",
+            "linear value 's' was consumed earlier and cannot be used again",
+        )
+
+    def test_alias_then_consume_both_rejected(self):
+        # The canonical minimal double-free: alias then consume both aliases.
+        self._reject_with(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    var s = open()\n    var t = open()\n    close(t)\n"
+            "    t = s\n    close(s)\n    close(t)\n",
+            "linear value 's' was consumed earlier and cannot be used again",
+        )
+
+    # ---- T1: false positives now ACCEPTED ----
+
+    def test_m7_linear_carrier_reassign_over_husk_ok(self):
+        # ``close(t.h); t = s; sink(t)``: the spent-husk target's stale t.h is
+        # cleared and s moves onto t, so consuming t once is legal.
+        self._compiles(
+            self._CARRIER + "fun main(_s: Stdio)\n"
+            "    var s = make_box()\n    var t = make_box()\n"
+            "    close(t.h)\n    t = s\n    sink(t)\n"
+        )
+
+    def test_m7_typestate_carrier_reassign_over_husk_ok(self):
+        self._compiles(
+            self._TSCARR + "fun main(_s: Stdio)\n"
+            "    var s = mkrec()\n    var t = mkrec()\n"
+            "    let moved = t.claim\n    archive(moved)\n"
+            "    t = s\n    sink_rec(t)\n"
+        )
+
+    def test_m7_boxt_intact_nonlinear_field_ok(self):
+        # Husk target carries an intact non-linear field; re-arm over it and
+        # consume the whole fresh value once.
+        self._compiles(
+            self._BOXT + "fun main(_s: Stdio)\n"
+            "    var s = make_boxt()\n    var t = make_boxt()\n"
+            "    close(t.h)\n    t = s\n    sinkt(t)\n"
+        )
+
+    def test_borrowed_alias_then_read_ok(self):
+        # ``t = h`` (h borrowed) then only READING t must not leak: t stays
+        # borrowed, the caller retains ownership, nothing is consumed.
+        self._compiles(
+            self._LIN + "fun peek(h: Handle) -> Int\n    return h.id\n"
+            "fun bad(h: Handle)\n"
+            "    var t = open()\n    close(t)\n    t = h\n"
+            "    let n = peek(t)\n"
+        )
+
+    def test_alias_then_consume_alias_only_ok(self):
+        # Alias then consume ONLY the alias once: the source moved off, so a
+        # single consume of the target is legal (no leak, no double-free).
+        self._compiles(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    var s = open()\n    var t = open()\n    close(t)\n"
+            "    t = s\n    close(t)\n"
+        )
+
+    def test_projection_then_use_rest_ok(self):
+        # ``t = s.conn`` moves the field out; s becomes a husk whose scalar
+        # rest stays readable, and the moved field is owned by t.
+        self._compiles(
+            self._NL + "fun main(_s: Stdio)\n"
+            "    var s = mks()\n    var t = open()\n    close(t)\n"
+            "    t = s.conn\n    close(t)\n    let n = s.tag\n"
+        )
+
+    def test_fresh_reassign_of_previously_borrowed_ok(self):
+        # A name made borrowed by ``t = h`` then re-armed to a FRESH value
+        # clears the stale borrow (single-sourced in the seam's no-op top) and
+        # is owned again, so the final consume discharges it.
+        self._compiles(
+            self._LIN + "fun use(h: Handle)\n"
+            "    var t = open()\n    close(t)\n    t = h\n"
+            "    t = open()\n    close(t)\n"
+        )
+
+    # ---- boundary: stay-accepted / stay-rejected negatives ----
+
+    def test_neg_rearm_after_consume_ok(self):
+        self._compiles(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    var h = open()\n    close(h)\n    h = open()\n    close(h)\n"
+        )
+
+    def test_neg_chained_fresh_rearm_ok(self):
+        # Repeated fresh re-arm of the same name (no aliasing) stays legal.
+        self._compiles(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    var h = open()\n    close(h)\n    h = open()\n    close(h)\n"
+            "    h = open()\n    close(h)\n"
+        )
+
+    def test_neg_live_value_drop_stays_rejected(self):
+        # Re-assigning over a LIVE value drops it: an honest leak, unchanged.
+        self._reject_with(
+            self._LIN + "fun main(_s: Stdio)\n"
+            "    var h = open()\n    h = open()\n    close(h)\n",
+            "linear value 'h' is dropped without being consumed; "
+            "re-assigning to it overwrites the old value",
+        )
+
+    def test_neg_husk_self_assign_stays_rejected(self):
+        # ``c = c`` on a spent husk is a no-op re-arm that PRESERVES c.h, so
+        # consuming the whole husk still double-frees the moved-out field.
+        self._reject_with(
+            self._CARRIER + "fun main(_s: Stdio)\n"
+            "    var c = make_box()\n    close(c.h)\n    c = c\n    sink(c)\n",
+            "cannot consume 'c': its field 'c.h' was already consumed",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

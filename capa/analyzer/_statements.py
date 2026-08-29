@@ -626,30 +626,42 @@ class _StatementsMixin:
                 self._err(
                     f"cannot assign to parameter {sym.name!r}", s.pos,
                 )
-            # Roadmap S1: re-assigning a name (``h = open()``) that still
-            # holds a live linear obligation drops the old value (a leak);
-            # the fresh RHS re-arms the obligation if it is itself linear.
-            # Only the legal-mutation case (an immutable ``let`` was not
-            # rejected above) reaches a useful state, but running this
-            # unconditionally is harmless: a poisoned/consumed name simply
-            # is not in ``_live_linear`` and the fresh value re-binds.
+            # Roadmap S1: re-assigning a name (``h = open()``) is the SAME
+            # whole-value move / re-arm discipline a ``let`` / ``var``
+            # introduction runs, so it routes through the ONE
+            # ``_linear_transfer_if_alias`` seam rather than re-implementing a
+            # partial slice of it here. That seam moves the whole obligation
+            # off an aliased source (so ``t = s; close(s)`` rejects instead of
+            # double-freeing), re-carries the source's moved-out sub-paths onto
+            # the target, and propagates a borrowed marker (so ``t = h; close(t)``
+            # on a borrowed ``h`` rejects instead of laundering the caller's
+            # value). Three cases:
             #
-            # A bare-identifier RHS naming a spent husk (``c = b`` after its
-            # field was moved out) carries the moved-out sub-path onto the
-            # reassigned name through the SAME alias-carry seam a ``let`` /
-            # ``var`` alias uses, so re-consuming the whole husk through the
-            # reassigned binding is rejected. A FRESH value (a non-identifier
-            # RHS: a call / literal / ``become`` / struct literal) instead
-            # DROPS the old binding's stale moved-out sub-path, or a spent husk
-            # reassigned to a fresh value would keep rejecting a legitimate
-            # consume as a double-free (a false positive) and mask the fresh
-            # value's own leak. The two are complements on the ONE re-arm seam,
-            # so the clear never fires on the alias path (which populates it).
-            if isinstance(s.value, A.Ident):
-                self._carry_moved_subpaths(s.value.name, s.target.name)
+            # - SELF-ASSIGN (``c = c``): a no-op re-arm. The RHS names the
+            #   target itself, so there is no source to move off and the target's
+            #   own moved-out sub-paths must be PRESERVED -- a spent husk assigned
+            #   to itself stays a husk, so ``c = c`` on a husk is still rejected
+            #   when the whole husk is later consumed. Routing it through the
+            #   clear-then-transfer path below would wipe those sub-paths.
+            # - ALIAS / FRESH (everything else), in THIS ORDER: clear the
+            #   target's OWN stale moved-out sub-tree FIRST (a spent-husk target
+            #   re-armed to a fresh value must not keep rejecting a legitimate
+            #   consume, nor mask the fresh value's leak), THEN
+            #   ``_linear_transfer_if_alias`` (which re-carries the SOURCE's
+            #   sub-paths and clears any stale borrow on the target), THEN the
+            #   re-arm. The order is load-bearing: clearing AFTER the transfer,
+            #   or clearing unconditionally, would wipe the sub-paths the
+            #   transfer just re-carried and reopen the husk double-free.
+            #
+            # Out of scope here (a SEPARATE double-free class with its own seam):
+            # a field-store linear laundering ``s.h = t`` is the FieldAccess-
+            # target branch below, not this Ident-target re-arm.
+            if isinstance(s.value, A.Ident) and s.value.name == s.target.name:
+                self._linear_reassign(s.target.name, value_ty, s.pos)
             else:
                 self._clear_moved_subpaths(s.target.name)
-            self._linear_reassign(s.target.name, value_ty, s.pos)
+                self._linear_transfer_if_alias(s.value, s.target.name)
+                self._linear_reassign(s.target.name, value_ty, s.pos)
         elif isinstance(s.target, (A.FieldAccess, A.Index)):
             # A bare index-element target (``xs[i] = v`` and the
             # augmented ``xs[i] += 1``) has no sound lowering on

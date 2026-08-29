@@ -608,18 +608,21 @@ class _LinearMixin:
 
     def _clear_moved_subpaths(self, name: str) -> None:
         """Drop the WHOLE ``name.*`` moved sub-tree from every moved-subpath
-        structure (``_moved_subpath_sets``) when ``name`` is re-armed to a
-        FRESH value (a non-alias reassignment ``c = make_box()``). The move
-        seam records a moved field as a sub-path (``c.h``), but a re-arm's bind
-        clears only the exact ROOT ``c``, so a stale ``c.*`` would otherwise
-        persist across the reassignment and both (i) reject a legitimate
-        whole-consume of the fresh value as a double-free and (ii) mask the
-        fresh value's own leak at scope exit.
+        structure (``_moved_subpath_sets``) when a re-assignment re-arms the
+        TARGET ``name``. The move seam records a moved field as a sub-path
+        (``c.h``), but a re-arm's bind clears only the exact ROOT ``c``, so a
+        stale ``c.*`` from a spent-husk target would otherwise persist across
+        the reassignment and both (i) reject a legitimate whole-consume of the
+        fresh value as a double-free and (ii) mask the fresh value's own leak
+        at scope exit.
 
         Strict ``name + "."`` prefix: only sub-paths are cleared, never the
-        root ``name`` itself and never a sibling like ``name2``. Complement of
-        ``_carry_moved_subpaths``; the alias (bare-identifier RHS) path calls
-        that instead, so a just-carried ``name.*`` is never wiped."""
+        root ``name`` itself and never a sibling like ``name2``. Called by the
+        re-assign re-arm path (``_check_assign``) BEFORE
+        ``_linear_transfer_if_alias`` re-carries the SOURCE's sub-paths onto
+        the target, so it clears the target's OWN stale sub-tree without
+        wiping the ones the alias transfer then re-carries -- the order is
+        why an alias whose source is itself a spent husk stays rejected."""
         prefix = name + "."
         for moved_set in self._moved_subpath_sets():
             for p in [q for q in moved_set if q.startswith(prefix)]:
@@ -725,11 +728,16 @@ class _LinearMixin:
         Valid: re-assigning to a name whose previous value was already
         consumed (``close(h); h = open()``) -- the old value is gone
         from ``_live_linear``, so nothing is reported, and the fresh
-        value re-arms the obligation."""
-        # B-F1: re-assigning a non-borrowed value to the name clears any
-        # borrowed marker it held, so ``_linear_bind`` below can arm a
-        # fresh owned obligation from the new value.
-        self._borrowed_linear.discard(name)
+        value re-arms the obligation.
+
+        B-F1: the target's borrowed marker is cleared by
+        ``_linear_transfer_if_alias`` (its no-op top always runs before this
+        re-arm on the non-self-assign path, so a fresh reassign of a
+        previously-borrowed name still drops the stale borrow), which is why
+        it is NOT cleared here: a borrowed source aliased in
+        (``t = h``) must keep ``t`` borrowed so the re-arm below skips arming
+        a fresh OWNED obligation and a later consume routes into the borrowed
+        guard. Clearing it here would launder the caller's value."""
         # LIN-1: a ``consume`` parameter's value is drop exempt, so
         # overwriting it by re-assignment is a legal drop of the terminal
         # owner, not a leak of the old value. Clear the exemption: the value
