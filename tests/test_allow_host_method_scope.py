@@ -17,17 +17,17 @@ The operator can scope a Net grant to GET (read) or POST (write) with a
 - the SBOM records the access scope (get / post / connect).
 """
 
-import sys
 import unittest
 
-sys.path.insert(0, "tests")
-from test_wasi_mode import (  # noqa: E402
-    _has_wasm_tools, _has_wasmtime_wasi_http, _parse_analyze,
-    _LocalHttpServer, _LocalPostServer, _wasi_run_capture,
+from tests.wasi._helpers import (
+    _has_wasm_tools, _parse_analyze, _wasi_run_capture,
+)
+from tests.wasi.test_wasi_net import (
+    _has_wasmtime_wasi_http, _LocalHttpServer, _LocalPostServer,
 )
 
-from capa.ir._net_host import NetGrant  # noqa: E402
-from capa.cli import (  # noqa: E402
+from capa.ir._net_host import NetGrant
+from capa.cli import (
     _parse_allow_host_spec, _normalize_allow_hosts, _operator_grants_from_args,
     _AllowHostSpecError,
 )

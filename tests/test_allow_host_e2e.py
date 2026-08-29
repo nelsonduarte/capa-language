@@ -9,14 +9,12 @@ host -- including the URL-parsing bypass vectors (userinfo ``@``, fragment
 server (no external network).
 """
 
-import sys
 import unittest
 
-sys.path.insert(0, "tests")
-from test_wasi_mode import (  # noqa: E402
-    _has_wasm_tools, _has_wasmtime_wasi_http, _parse_analyze,
-    _LocalHttpServer, _wasi_run_capture,
+from tests.wasi._helpers import (
+    _has_wasm_tools, _parse_analyze, _wasi_run_capture,
 )
+from tests.wasi.test_wasi_net import _has_wasmtime_wasi_http, _LocalHttpServer
 
 # The dynamic-URL program: reads the URL from env.args()[0] (genuinely
 # runtime), GETs it, prints [body] on Ok / ERR on Err.
