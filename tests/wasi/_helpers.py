@@ -17,8 +17,16 @@ from __future__ import annotations
 import io
 import shutil
 import sys
+from pathlib import Path
 
 from capa import Lexer, Parser, analyze
+
+
+# Repo root, derived ONCE from this file's location (tests/wasi/_helpers.py) so
+# the moved capability modules locate examples/ and capa/wasi_wit/ against a
+# single source instead of re-deriving Path(__file__).parent... at each call
+# site, where the parent depth is coupled to the module's location under tests/.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _has_wasm_tools() -> bool:
