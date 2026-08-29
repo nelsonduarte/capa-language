@@ -2816,7 +2816,7 @@ class TestNetRuntime(unittest.TestCase):
 class TestSafetyTrapsRaise(unittest.TestCase):
     """Audit 2026-05 safety fixes: assert the Python backend raises
     at the same input the Wasm backend traps on. Pairs with
-    ``tests/test_ir_wasm.py::TestWasmSafetyTraps``; together they
+    ``tests/ir_wasm/test_wasm_safety.py::TestWasmSafetyTraps``; together they
     pin "both backends fail loud at the same point".
 
     These tests run the transpiled Capa code as a subprocess (same
@@ -2960,7 +2960,7 @@ class TestBoundsRaise(unittest.TestCase):
     """Audit fix C1: List indexing and String.substring route through
     the bounds-check runtime helpers so the Python backend raises at
     the same input the Wasm backend traps on (see
-    ``tests/test_ir_wasm.py::TestWasmBoundsChecks``).
+    ``tests/ir_wasm/test_wasm_safety.py::TestWasmBoundsChecks``).
 
     Capa indices are non-negative-only on both backends; the helper
     rejects negative indices that Python's native ``[]`` would

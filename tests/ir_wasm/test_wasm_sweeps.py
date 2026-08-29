@@ -291,7 +291,7 @@ _WASI_STATIC_SRC = (
 
 # The dynamic-path emitter only fires for a NON-literal path, which
 # needs an operator preopen (``--preopen``, i.e. wasi_dynamic_fs=True).
-# Mirrors the shape test_wasi_mode.py's dynamic tests use.
+# Mirrors the shape tests/wasi/test_wasi_fs.py's dynamic tests use.
 _WASI_DYNAMIC_SRC = (
     "fun main(fs: Fs, env: Env, stdio: Stdio)\n"
     "    let args = env.args()\n"

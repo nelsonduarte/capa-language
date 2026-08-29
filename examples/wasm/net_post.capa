@@ -6,7 +6,7 @@
 // endpoint.
 //
 // The happy path (a POST that reaches a server) is exercised by
-// TestWasmNet in tests/test_ir_wasm.py via a Python loopback
+// TestWasmNetExecutes in tests/ir_wasm/test_wasm_capabilities.py via a Python loopback
 // http.server fixture; parity-checking that needs both sides to
 // reach the same server which would be too flaky for the harness.
 

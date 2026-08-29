@@ -989,7 +989,8 @@ class TestDestructuredSecretField(unittest.TestCase):
     def test_nested_destructure_secret_subfield_flagged(self):
         # A struct-pattern nested inside a let field is rejected by the
         # analyzer (neither backend lowers it; see
-        # test_analyzer.TestStructPatternBinding). The supported form is
+        # tests/analyzer/test_match_patterns.py::TestStructPatternBinding).
+        # The supported form is
         # the two-step destructure: bind the sub-struct, then destructure
         # it separately. The secret-subfield taint must still flow
         # through that form so sinking ``sec`` warns.

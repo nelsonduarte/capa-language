@@ -35,7 +35,8 @@ breaking changes and the discipline is still being shaped.
   accepted programs. No version change and no GHSA (Python-style cadence; a
   security-fix advisory batches at the next stable release). Commits `5ae915d`,
   `9058cf5`, `4384343`, `30ae1ad`; pinned by `TestLinearCarrierObligation` in
-  [`tests/test_analyzer.py`](tests/test_analyzer.py) and `TestLinearObligations`
+  [`tests/analyzer/test_linear_obligation.py`](tests/analyzer/test_linear_obligation.py)
+  and `TestLinearObligations`
   / `TestCarrierAndTypestateObligations` in
   [`tests/test_manifest.py`](tests/test_manifest.py).
 
@@ -78,7 +79,7 @@ breaking changes and the discipline is still being shaped.
   tracking stays on. Analyzer-only: a rejected program never reaches codegen, no
   backend path and no golden moved, and the Python interpreter and the Wasm
   Component Model backend stay byte-identical on accepted programs. Pinned by
-  [`tests/test_analyzer.py`](tests/test_analyzer.py)
+  [`tests/analyzer/test_linear_obligation.py`](tests/analyzer/test_linear_obligation.py)
   `TestLinearConsumeParamReuse` (the six-member class rejected with the existing
   `linear value 'h' was consumed earlier and cannot be used again` diagnostic,
   plus boundary negatives keeping the terminal drop, the single valid consume,

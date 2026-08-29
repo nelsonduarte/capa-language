@@ -2,8 +2,8 @@
 // 2026-05 security audit. Each section pairs valid inputs whose
 // observable output is byte-identical between the Python and Wasm
 // backends; the negative cases (overflow, shift out of range,
-// out-of-bounds index, etc.) live in tests/test_ir_wasm.py and
-// tests/test_transpiler.py, where each backend can assert its
+// out-of-bounds index, etc.) live in tests/ir_wasm/test_wasm_safety.py
+// and tests/test_transpiler.py, where each backend can assert its
 // trap / raise fires at the same input.
 //
 // Both backends now fail loud at the same point on the negative
@@ -36,7 +36,7 @@ fun main(stdio: Stdio)
 
     // Fix C1: List indexing inside [0, len) returns the element on
     // both backends. The OOB / negative-index trap cases live in
-    // tests/test_ir_wasm.py::TestWasmBoundsChecks and
+    // tests/ir_wasm/test_wasm_safety.py::TestWasmBoundsChecks and
     // tests/test_transpiler.py::TestBoundsRaise (they cannot share
     // this happy-path parity file because the program would abort
     // before printing).

@@ -96,8 +96,11 @@ the project; each is intentionally compact.
 - **Fixing analyzer bugs.** A `.capa` program that should compile and
   does not, or one that should not compile and does, is always
   interesting. Include the program in the issue.
-- **More test coverage** in `tests/test_analyzer.py`, especially
-  around capabilities and `consume`.
+- **More test coverage** in `tests/analyzer/`, especially around
+  capabilities and `consume`. See
+  [`tests/analyzer/__init__.py`](tests/analyzer/__init__.py) for the
+  growth convention (one module per analyzer subsystem; a new test
+  goes to the module whose subject it exercises).
 - **Documentation fixes**, the white paper and the EBNF should match
   the implementation; if they drift, please report it.
 - **Examples** in `examples/` that exercise an idiom not already

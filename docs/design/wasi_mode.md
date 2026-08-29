@@ -133,7 +133,7 @@ delivers only the ceiling keys, so a variable outside the ceiling is
 not reachable even under a stock host. When a key is dynamic the host
 falls back to `inherit_env` (a full-environment ceiling, Level 2). See
 "Env ceiling (runtime-imposed, Level 1)" below. The byte-parity test
-(`tests/test_wasi_mode.py::TestWasiEnvAttenuation`) pins the guest-side
+(`tests/wasi/test_wasi_env.py::TestWasiEnvAttenuation`) pins the guest-side
 narrowing to the host-side `capa:host` narrowing and the Python oracle
 for the controlled keys.
 
@@ -198,7 +198,7 @@ restricted `WasiConfig.env` (or `inherit_env`) accordingly and records
 the installed env-set in `WasmComponentHost._wasi_env_applied` (a dict
 for a closed ceiling, the sentinel `"inherit"` otherwise) so the
 leak-closed guarantee is inspectable. Tests:
-`tests/test_wasi_mode.py::TestWasiEnvCeilingAnalysis` (pure analysis)
+`tests/wasi/test_wasi_env.py::TestWasiEnvCeilingAnalysis` (pure analysis)
 and `::TestWasiEnvCeilingLevel1` (end-to-end: `CAPA_SECRET` set in the
 host env is **not** delivered to the component; output parity across
 the three backends; dynamic-key fallback to `inherit_env`).
@@ -274,7 +274,7 @@ into an `i32` handle slot (the WASI wrappers simply ignore it).
 > read_line / stdin: the byte-parity of every other migrated capability
 > -- Fs / Net / Env / Stdio output -- is unaffected.) The lone-CR case is
 > asserted in the test suite only as the **expected `--wasi` behaviour**
-> (`tests/test_wasi_mode.py::TestWasiStdinReadLine::test_lone_cr_is_not_a_line_break_wasi_divergence`),
+> (`tests/wasi/test_wasi_core.py::TestWasiStdinReadLine::test_lone_cr_is_not_a_line_break_wasi_divergence`),
 > never inside a three-backend parity assertion.
 
 ## Unit conversion (guest-side, in WAT)
@@ -844,7 +844,7 @@ syscall (Level 2, honest).
 
 **Parity.** Three-backend byte-parity (Python oracle == `capa:host` ==
 WASI) is asserted by `TestWasiFsAttenuation` in
-`tests/test_wasi_mode.py` over a controlled temp directory:
+`tests/wasi/test_wasi_fs.py` over a controlled temp directory:
 `restrict_to` + `allows` + every op's fail-closed deny, chaining
 (intersection), isolation (a child Fs does not affect its parent), the
 unrestricted root, and the **cross-function-boundary** restriction
@@ -969,7 +969,7 @@ deliberate divergence** (the `--wasi` guest fails closed where the oracle
 follows the redirect; see "Redirects are fail-closed (anti-SSRF)" below),
 so they are **not** asserted as three-backend parity. `TestWasiNetGet` /
 `TestWasiNetCeiling` / `TestWasiNetWitGeneration` / `TestWasiNetRejections`
-in `tests/test_wasi_mode.py`.
+in `tests/wasi/test_wasi_net.py`.
 
 ### Redirects are fail-closed (anti-SSRF, security decision)
 
@@ -1025,7 +1025,7 @@ redirect whose target the capability permits**, and the three backends
 **agree** on every hop the capability forbids.
 
 This is covered by `TestWasiNetRedirectFailClosed` in
-`tests/test_wasi_mode.py` (a local server returning `301` / `302` / `307`
+`tests/wasi/test_wasi_net.py` (a local server returning `301` / `302` / `307`
 / `308` with a `Location`, and a `304` without one, for both `Net.get`
 and `Net.post`); those are **fail-closed behaviour** tests, **not**
 three-backend parity tests (the oracle / `capa:host` intentionally
@@ -1080,7 +1080,7 @@ connection-refused transport error are coherent `Err` (fixed message
 `HTTP POST failed`, parity on the discriminant). A **1500x leak loop** runs
 with no handle exhaustion. The Net **ceiling** now collects the hosts of
 literal `net.post` urls too, and a **dynamic** post url is fail-closed.
-`TestWasiNetPost` / `TestWasiNetPostCeiling` in `tests/test_wasi_mode.py`.
+`TestWasiNetPost` / `TestWasiNetPostCeiling` in `tests/wasi/test_wasi_net.py`.
 
 ### Net fine attenuation (guest-side, Level 2, Phase 3)
 
@@ -1149,7 +1149,7 @@ operator grant they fold in (see `--allow-host` below); the
 compiler-derived literal ceiling is combined into both.
 
 `TestWasiNetAttenuation` / `TestWasiNetRejections` in
-`tests/test_wasi_mode.py` cover restrict + allowed + denied (get and post),
+`tests/wasi/test_wasi_net.py` cover restrict + allowed + denied (get and post),
 `allows` true / false, chaining / intersection-collapse, parent isolation,
 the unrestricted root, and **exact-equality-not-substring**, each with
 byte-identical output across the three backends. Example:
@@ -1280,7 +1280,7 @@ instructions are in `capa/wasi_wit/README.md`.
 ## Validation
 
 The migrated touch-points are non-deterministic, so validation is by
-property (see `tests/test_wasi_mode.py`):
+property (see `tests/wasi/`):
 
 - **Pipeline**: a Clock + Random + Stdio program compiles, embeds the
   WASI WIT, instantiates, and runs without trap.

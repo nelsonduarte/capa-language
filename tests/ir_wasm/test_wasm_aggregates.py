@@ -1231,7 +1231,8 @@ class TestWasmAggregateSlotTypeInference(unittest.TestCase):
         # keeps ordinary mutable-struct semantics (the analyzer's
         # read-only rule applies only to the BUILTIN_POS symbol), and
         # a field write runs with Python/Wasm parity. The builtin's
-        # write rejection is covered in test_analyzer.py
+        # write rejection is covered in
+        # tests/analyzer/test_builtins_stdlib.py
         # (TestBuiltinIoErrorReadOnly).
         src = (
             "type IoError { message: String, cause: String }\n"

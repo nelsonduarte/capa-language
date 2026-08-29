@@ -4,7 +4,7 @@
 The README's claim that the Wasm backend produces output
 bit-identical to the Python reference path lacked an in-tree
 verification: every Wasm execution test in
-``tests/test_ir_wasm.py`` checks the Wasm output against a
+``tests/ir_wasm/`` checks the Wasm output against a
 hand-rolled expected string, never against the same program's
 Python output. This file closes that gap for the parity-clean
 subset of ``examples/wasm/`` -- those programs that:
@@ -868,7 +868,7 @@ _EXCLUDED: dict[str, str] = {
         "Experimental --wasi mode demo: Clock + system_seed Random are "
         "non-deterministic so there is no byte-equality reference. "
         "Covered by the dedicated TestWasiMode property tests in "
-        "tests/test_wasi_mode.py (monotonic non-decreasing, wall "
+        "tests/wasi/test_wasi_core.py (monotonic non-decreasing, wall "
         "plausible, system_seed distinct, seeded byte-identical)."
     ),
     "wasi_env.capa": (
@@ -877,7 +877,7 @@ _EXCLUDED: dict[str, str] = {
         "does not control (and the default backend would read the "
         "real environment), so there is no fixed byte-equality "
         "reference. Covered by the dedicated TestWasiEnvMode tests in "
-        "tests/test_wasi_mode.py, which set a known env var + argv and "
+        "tests/wasi/test_wasi_env.py, which set a known env var + argv and "
         "assert controlled-key parity with the Python backend."
     ),
     "wasi_env_attenuation.capa": (
@@ -886,7 +886,7 @@ _EXCLUDED: dict[str, str] = {
         "ambient host environment, which the auto-list harness does "
         "not control, so there is no fixed byte-equality reference "
         "here. Covered by the dedicated TestWasiEnvAttenuation tests "
-        "in tests/test_wasi_mode.py, which set known env vars and "
+        "in tests/wasi/test_wasi_env.py, which set known env vars and "
         "assert three-backend byte-parity (Python oracle == capa:host "
         "host-side narrowing == WASI guest-side narrowing)."
     ),
@@ -896,7 +896,7 @@ _EXCLUDED: dict[str, str] = {
         "depends on host filesystem state (which directories the demo "
         "paths point at), which the auto-list harness does not control, "
         "so there is no fixed byte-equality reference here. Covered by "
-        "the dedicated TestWasiFsMode tests in tests/test_wasi_mode.py, "
+        "the dedicated TestWasiFsMode tests in tests/wasi/test_wasi_fs.py, "
         "which build a known temp directory and assert three-backend "
         "parity (Python oracle == capa:host == WASI)."
     ),
@@ -907,7 +907,7 @@ _EXCLUDED: dict[str, str] = {
         "filesystem state (the contents of the demo's data/file.txt), "
         "which the auto-list harness does not control, so there is no "
         "fixed byte-equality reference here. Covered by the dedicated "
-        "TestWasiFsRead tests in tests/test_wasi_mode.py, which build a "
+        "TestWasiFsRead tests in tests/wasi/test_wasi_fs.py, which build a "
         "known temp directory (small / empty / large-multichunk / UTF-8 "
         "files) and assert three-backend byte parity (Python oracle == "
         "capa:host == WASI)."
@@ -920,7 +920,7 @@ _EXCLUDED: dict[str, str] = {
         "(its data/note.txt), which the auto-list harness does not "
         "control, so there is no fixed byte-equality reference here. "
         "Covered by the dedicated TestWasiFsWrite tests in "
-        "tests/test_wasi_mode.py, which build a known temp directory "
+        "tests/wasi/test_wasi_fs.py, which build a known temp directory "
         "(small / empty / large-multichunk / UTF-8 / overwrite) and "
         "assert three-backend byte parity AND on-disk byte equality "
         "(Python oracle == capa:host == WASI) via write-then-read-back."
@@ -933,7 +933,7 @@ _EXCLUDED: dict[str, str] = {
         "host filesystem state (the entries of the demo's data/ "
         "directory), which the auto-list harness does not control, so "
         "there is no fixed byte-equality reference here. Covered by the "
-        "dedicated TestWasiFsListDir tests in tests/test_wasi_mode.py, "
+        "dedicated TestWasiFsListDir tests in tests/wasi/test_wasi_fs.py, "
         "which build a known temp directory (multi-entry mixed-case + a "
         "subdirectory / empty / UTF-8 names / a non-directory / a missing "
         "path) and assert three-backend byte parity INCLUDING the sorted "
@@ -948,7 +948,7 @@ _EXCLUDED: dict[str, str] = {
         "(/tmp/capa/data/...), which the auto-list parity harness does not "
         "control, so there is no fixed byte-equality reference here. "
         "Covered by the dedicated TestWasiFsAttenuation tests in "
-        "tests/test_wasi_mode.py, which build a known temp directory and "
+        "tests/wasi/test_wasi_fs.py, which build a known temp directory and "
         "assert three-backend byte parity (Python oracle == capa:host == "
         "WASI) for restrict_to + allows + every op's fail-closed deny, "
         "chaining/intersection, isolation, the unrestricted root, and the "
@@ -962,7 +962,7 @@ _EXCLUDED: dict[str, str] = {
         "a live HTTP server (its literal url points at 127.0.0.1:8080), which "
         "the auto-list parity harness does not run, so there is no fixed "
         "byte-equality reference here. Covered by the dedicated TestWasiNetGet "
-        "tests in tests/test_wasi_mode.py, which start a controlled local "
+        "tests in tests/wasi/test_wasi_net.py, which start a controlled local "
         "127.0.0.1 server (small / empty / large-multichunk / UTF-8 bodies / "
         "404 / 500 / connection-refused) and assert three-backend byte parity "
         "(Python urllib oracle == capa:host == WASI)."
@@ -975,7 +975,7 @@ _EXCLUDED: dict[str, str] = {
         "the auto-list parity harness does not run, so there is no fixed "
         "byte-equality reference here. Covered by the dedicated "
         "TestWasiNetPost / TestWasiNetPostCeiling tests in "
-        "tests/test_wasi_mode.py, which start a controlled local 127.0.0.1 "
+        "tests/wasi/test_wasi_net.py, which start a controlled local 127.0.0.1 "
         "server (small / empty / large-multichunk request bodies / "
         "large-multichunk responses / UTF-8 / 404 / 500 / connection-refused) "
         "and assert three-backend byte parity of the RESPONSE plus the exact "
@@ -990,7 +990,7 @@ _EXCLUDED: dict[str, str] = {
         "points at 127.0.0.1:8080), which the auto-list parity harness does "
         "not run, so there is no fixed byte-equality reference here. Covered "
         "by the dedicated TestWasiNetAttenuation tests in "
-        "tests/test_wasi_mode.py, which start a controlled local 127.0.0.1 "
+        "tests/wasi/test_wasi_net.py, which start a controlled local 127.0.0.1 "
         "server and assert three-backend byte parity (Python oracle == "
         "capa:host == WASI) for restrict + allowed + denied (get and post), "
         "allows true / false, chaining / intersection-collapse, parent "
@@ -3433,7 +3433,7 @@ class TestJsonStrictNumbersDepthAndSignParity(unittest.TestCase):
        what json.dumps does with the real -0.0 value, and the
        integer-form "-0" input collapses to 0 like json.loads.
     5. _capa_chr stays internal (analyzer rejection covered in
-       tests/test_analyzer.py::TestInternalBuiltinRejection); the
+       tests/analyzer/test_builtins_stdlib.py::TestInternalBuiltinRejection); the
        \uXXXX decode path it backs keeps working on both backends,
        re-pinned here through a round-trip probe.
 
@@ -5381,7 +5381,7 @@ class TestCapErrorMessageParity(unittest.TestCase):
 
     The ``--wasi`` compiled path is intentionally NOT covered: it emits
     a fixed path-less message by documented contract (its parity test is
-    discriminant-only, in test_wasi_mode.py).
+    discriminant-only, in tests/wasi/test_wasi_fs.py).
     """
 
     def _probe(self, template: str, path: str) -> str:
