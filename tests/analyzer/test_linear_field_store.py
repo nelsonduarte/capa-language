@@ -348,5 +348,360 @@ class TestFieldStoreLinearAlias(unittest.TestCase):
         self.assertTrue(r.ok, [e.message for e in r.errors])
 
 
+class TestFieldStoreCarrierTarget(unittest.TestCase):
+    """The `o.inner = a` store into a CARRIER-typed target field (a subtree of
+    linear/typestate leaves, not a bare leaf).
+
+    This is the carrier facet of the same field-store subject as
+    TestFieldStoreLinearAlias: both drive off the ONE leaf-set enumerator
+    `_field_linear_leaves`, where the bare leaf is the degenerate one-element
+    instance. A carrier-typed target field owns a whole SUBTREE of leaves, which
+    the leaf-only `_linear_place` gate excluded, reopening the same three faces
+    at subtree scale:
+
+    - Face A (double-free, was ACCEPTED): the RHS carrier (whole or projection)
+      is now discharged, so a later consume of it is use-after-move.
+    - Face B (false-positive, was REJECTED for a spurious husk-reconsume): the
+      RHS is moved and the subtree re-armed, so no spurious drop / husk error.
+    - Face C (missed leak, was ACCEPTED): re-arming re-opens the carrier root, so
+      an overwritten-live or re-stored-then-dropped leaf now leaks by path.
+
+    A borrowed RHS carrier is rejected with the struct-literal PACK wording; a
+    carrier PROJECTION RHS (`o.inner = p.inner`) has its subtree moved so the
+    source becomes a husk (Correction 1).
+
+    OUT OF SCOPE (separate mechanisms, unchanged here): the deep-8
+    `_LINEAR_PATH_MAX_DEPTH` fail-open (its own depth-cap item), an Index
+    target/receiver, the borrow-read residual, and E3 generic-return aliasing.
+    Analyzer-only; the accepted shapes run byte-identically on all backends via
+    test_ir_wasm_parity."""
+
+    # Carrier zoo over one linear leaf Conn: S(conn), Outer(inner:S),
+    # Mid(s:S)/Deep(mid:Mid) for depth, Two(a,b:Conn)/Box(two:Two) for multi-leaf.
+    _C = (
+        "linear type Conn { id: Int }\n"
+        "fun open() -> Conn\n"
+        "    return Conn { id: 1 }\n"
+        "fun close(consume c: Conn) -> Unit\n"
+        "    return ()\n"
+        "type S { conn: Conn, tag: Int }\n"
+        "fun mks() -> S\n"
+        "    return S { conn: open(), tag: 0 }\n"
+        "fun sinks(consume s: S) -> Unit\n"
+        "    return ()\n"
+        "type Outer { inner: S, tag: Int }\n"
+        "fun mko() -> Outer\n"
+        "    return Outer { inner: mks(), tag: 0 }\n"
+        "fun sinko(consume o: Outer) -> Unit\n"
+        "    return ()\n"
+        "type Mid { s: S, tag: Int }\n"
+        "type Deep { mid: Mid, tag: Int }\n"
+        "fun mkdeep() -> Deep\n"
+        "    return Deep { mid: Mid { s: mks(), tag: 0 }, tag: 0 }\n"
+        "fun sinkdeep(consume d: Deep) -> Unit\n"
+        "    return ()\n"
+        "type Two { a: Conn, b: Conn, tag: Int }\n"
+        "fun mk2() -> Two\n"
+        "    return Two { a: open(), b: open(), tag: 0 }\n"
+        "fun close2(consume t: Two) -> Unit\n"
+        "    return ()\n"
+        "type Box { two: Two, tag: Int }\n"
+        "fun mkbox() -> Box\n"
+        "    return Box { two: mk2(), tag: 0 }\n"
+        "fun sinkbox(consume b: Box) -> Unit\n"
+        "    return ()\n"
+    )
+    # Typestate carrier: Rec(claim:Claim[Settled]) inside TBox(rec:Rec).
+    _TS = (
+        "typestate Claim\n    Draft\n    Settled\n"
+        "fun mk() -> Claim[Draft]\n"
+        "    return Claim[Draft] {}\n"
+        "fun archive(consume c: Claim[Settled]) -> Unit\n"
+        "    return ()\n"
+        "type Rec { claim: Claim[Settled], tag: Int }\n"
+        "fun mkrec() -> Rec\n"
+        "    return Rec { claim: become(mk(), Settled), tag: 0 }\n"
+        "type TBox { rec: Rec, tag: Int }\n"
+        "fun mktbox() -> TBox\n"
+        "    return TBox { rec: mkrec(), tag: 0 }\n"
+        "fun sinktbox(consume b: TBox) -> Unit\n"
+        "    return ()\n"
+    )
+
+    def _errs(self, body: str) -> list[str]:
+        return [e for e in errors_of(body) if "never used" not in e]
+
+    # ---- Face A: double-free of the laundered RHS carrier -> REJECT ----
+
+    def test_carrier_single_leaf_face_a(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var o = mko()\n"
+            "    var a = mks()\n    o.inner = a\n    sinko(o)\n    close(a.conn)\n"
+        )
+        self.assertTrue(
+            any("'a'" in e and "consumed earlier" in e for e in errs), errs,
+        )
+
+    def test_carrier_multi_leaf_launder_double_free(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var b = mkbox()\n"
+            "    let t = mk2()\n    close(b.two.a)\n    close(b.two.b)\n"
+            "    b.two = t\n    sinkbox(b)\n    close2(t)\n"
+        )
+        self.assertTrue(
+            any("'t'" in e and "consumed earlier" in e for e in errs), errs,
+        )
+
+    # ---- Face B: FP husk-reconsume / drop repaired -> ACCEPT ----
+
+    def test_carrier_single_leaf_face_b(self):
+        body = (
+            self._C + "fun main(_s: Stdio)\n    var o = mko()\n"
+            "    close(o.inner.conn)\n    let a = mks()\n    o.inner = a\n"
+            "    sinko(o)\n"
+        )
+        r = check(body)
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+        errs = self._errs(body)
+        self.assertFalse(any("'a'" in e and "dropped" in e for e in errs), errs)
+        self.assertFalse(any("already consumed" in e for e in errs), errs)
+
+    # ---- Face C: overwrite-live and drop-after-fresh -> REJECT ----
+
+    def test_carrier_single_leaf_overwrite(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var o = mko()\n"
+            "    o.inner = mks()\n    sinko(o)\n"
+        )
+        self.assertTrue(
+            any("'o.inner.conn' is overwritten without being consumed" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_carrier_single_leaf_drop_after_fresh(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var o = mko()\n"
+            "    close(o.inner.conn)\n    o.inner = mks()\n"
+        )
+        self.assertTrue(
+            any("'o'" in e and "dropped without being consumed" in e
+                for e in errs),
+            errs,
+        )
+
+    # ---- member 5: intermediate (depth-2) carrier target ----
+
+    def test_carrier_intermediate_overwrite(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var d = mkdeep()\n"
+            "    d.mid = Mid { s: mks(), tag: 0 }\n    sinkdeep(d)\n"
+        )
+        self.assertTrue(
+            any("'d.mid.s.conn' is overwritten without being consumed" in e
+                for e in errs),
+            errs,
+        )
+
+    # ---- member 6: multi-leaf overwrite = one diagnostic PER leaf ----
+
+    def test_carrier_multi_leaf_overwrite_two_diagnostics(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var b = mkbox()\n"
+            "    b.two = mk2()\n    sinkbox(b)\n"
+        )
+        overwrites = [e for e in errs if "is overwritten without being consumed" in e]
+        self.assertEqual(len(overwrites), 2, errs)
+        self.assertTrue(any("'b.two.a'" in e for e in overwrites), errs)
+        self.assertTrue(any("'b.two.b'" in e for e in overwrites), errs)
+
+    # ---- member 8: multi-leaf partial -> store-time by-path, not scope-exit ----
+
+    def test_carrier_multi_leaf_partial_store_time(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var b = mkbox()\n"
+            "    close(b.two.a)\n    b.two = mk2()\n    sinkbox(b)\n"
+        )
+        self.assertTrue(
+            any("'b.two.b' is overwritten without being consumed" in e
+                for e in errs),
+            errs,
+        )
+        # The STORE-time overwrite form, not the scope-exit leak form.
+        self.assertFalse(
+            any("is dropped without being consumed" in e for e in errs), errs,
+        )
+
+    # ---- member 10: typestate carrier target ----
+
+    def test_typestate_carrier_overwrite(self):
+        errs = self._errs(
+            self._TS + "fun main(_s: Stdio)\n    var b = mktbox()\n"
+            "    b.rec = mkrec()\n    sinktbox(b)\n"
+        )
+        self.assertTrue(
+            any("'b.rec.claim' is overwritten without being consumed" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_typestate_carrier_launder_double_free(self):
+        errs = self._errs(
+            self._TS + "fun main(_s: Stdio)\n    var b = mktbox()\n"
+            "    let r = mkrec()\n    archive(b.rec.claim)\n    b.rec = r\n"
+            "    sinktbox(b)\n    archive(r.claim)\n"
+        )
+        self.assertTrue(
+            any("'r'" in e and "consumed earlier" in e for e in errs), errs,
+        )
+
+    # ---- member 11: borrowed-RHS carrier -> struct-literal PACK wording ----
+
+    def test_borrowed_rhs_carrier(self):
+        errs = self._errs(
+            self._C + "fun launder(s: S) -> Unit\n    var o = mko()\n"
+            "    close(o.inner.conn)\n    o.inner = s\n    sinko(o)\n"
+        )
+        self.assertTrue(
+            any("cannot pack borrowed" in e and "'s'" in e for e in errs), errs,
+        )
+
+    # ---- member 12: Face A inside an if branch AND a match arm ----
+
+    def test_carrier_face_a_inside_if(self):
+        errs = self._errs(
+            self._C + "fun run(cond: Bool) -> Unit\n"
+            "    var o = mko()\n    var a = mks()\n    if cond\n"
+            "        close(o.inner.conn)\n        o.inner = a\n"
+            "        sinko(o)\n        close(a.conn)\n    else\n"
+            "        close(o.inner.conn)\n        close(a.conn)\n"
+        )
+        self.assertTrue(
+            any("'a'" in e and "consumed earlier" in e for e in errs), errs,
+        )
+
+    def test_carrier_face_a_inside_match(self):
+        errs = self._errs(
+            self._C + "fun run(cond: Bool) -> Unit\n"
+            "    var o = mko()\n    var a = mks()\n    match cond\n"
+            "        true ->\n            close(o.inner.conn)\n"
+            "            o.inner = a\n            sinko(o)\n"
+            "            close(a.conn)\n        false ->\n"
+            "            close(o.inner.conn)\n            close(a.conn)\n"
+        )
+        self.assertTrue(
+            any("'a'" in e and "consumed earlier" in e for e in errs), errs,
+        )
+
+    # ---- member 13: re-arm + consume inside a while loop -> ACCEPT ----
+
+    def test_carrier_inside_while_ok(self):
+        r = check(
+            self._C + "fun run(n: Int) -> Unit\n    var o = mko()\n"
+            "    var i = n\n    while i > 0\n        close(o.inner.conn)\n"
+            "        o.inner = mks()\n        i = i - 1\n    sinko(o)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    # ---- Correction 1: carrier-projection RHS + self-store ----
+
+    def test_self_store_ok(self):
+        # Bites Correction 1: without the RHS-projection subtree move this
+        # spuriously rejects (overwrite of the still-live leaf).
+        r = check(
+            self._C + "fun main(_s: Stdio)\n    var o = mko()\n"
+            "    o.inner = o.inner\n    sinko(o)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_carrier_projection_double_free(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var o = mko()\n"
+            "    var p = mko()\n    close(o.inner.conn)\n    o.inner = p.inner\n"
+            "    sinko(o)\n    sinko(p)\n"
+        )
+        self.assertTrue(
+            any("'p.inner.conn'" in e and "already consumed" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_deeper_projection_double_free(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var o = mko()\n"
+            "    var d = mkdeep()\n    close(o.inner.conn)\n"
+            "    o.inner = d.mid.s\n    sinko(o)\n    sinkdeep(d)\n"
+        )
+        self.assertTrue(
+            any("'d.mid.s.conn'" in e and "already consumed" in e
+                for e in errs),
+            errs,
+        )
+
+    def test_borrowed_projection_rhs_rejected(self):
+        errs = self._errs(
+            self._C + "fun launder(p: Outer) -> Unit\n    var o = mko()\n"
+            "    close(o.inner.conn)\n    o.inner = p.inner\n    sinko(o)\n"
+        )
+        self.assertTrue(
+            any("belongs to a borrowed value" in e and "'p.inner.conn'" in e
+                for e in errs),
+            errs,
+        )
+
+    # ---- Correction 2: these REJECT on main (husk-reconsume) -> FLIP to ACCEPT ----
+
+    def test_fresh_store_then_consume_whole_ok(self):
+        r = check(
+            self._C + "fun main(_s: Stdio)\n    var o = mko()\n"
+            "    close(o.inner.conn)\n    o.inner = mks()\n    sinko(o)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_carrier_returned_after_store_ok(self):
+        r = check(
+            self._C + "fun make() -> Outer\n    var o = mko()\n"
+            "    close(o.inner.conn)\n    o.inner = mks()\n    return o\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_multi_leaf_restore_then_consume_ok(self):
+        r = check(
+            self._C + "fun main(_s: Stdio)\n    var b = mkbox()\n"
+            "    close(b.two.a)\n    close(b.two.b)\n    b.two = mk2()\n"
+            "    close(b.two.a)\n    close(b.two.b)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    # ---- genuine stay-accepted negatives (green on main, stay green) ----
+
+    def test_drop_exempt_consume_param_carrier_target_ok(self):
+        # The critical negative: the re-key re-adds o to _live_linear, so this
+        # proves _drop_exempt_linear (checked first) still exempts it.
+        r = check(
+            self._C + "fun take(consume o: Outer) -> Unit\n"
+            "    close(o.inner.conn)\n    o.inner = mks()\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_sibling_scalar_read_after_store_ok(self):
+        r = check(
+            self._C + "fun main(_s: Stdio)\n    var b = mkbox()\n"
+            "    close(b.two.a)\n    close(b.two.b)\n    b.two = mk2()\n"
+            "    let n = b.two.tag\n    sinkbox(b)\n"
+        )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
+
+    def test_overwrite_live_single_leaf_one_diagnostic(self):
+        errs = self._errs(
+            self._C + "fun main(_s: Stdio)\n    var o = mko()\n"
+            "    o.inner = mks()\n    sinko(o)\n"
+        )
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn(
+            "'o.inner.conn' is overwritten without being consumed", errs[0],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

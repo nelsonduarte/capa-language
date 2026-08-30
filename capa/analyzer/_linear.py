@@ -624,10 +624,11 @@ class _LinearMixin:
           the ``_linear_place`` depth-collapse), and
         - a non-linear field yields none.
 
-        Step 2 widens this so a CARRIER-typed target field yields its subtree of
-        linear leaves via ``_linear_field_paths`` (the single subtree
-        enumerator); until then a carrier field yields none, so the field-store
-        behaviour is unchanged for it."""
+        A CARRIER-typed target field yields its subtree of linear leaves via
+        ``_linear_field_paths`` (the single subtree enumerator, already
+        ``_LINEAR_PATH_MAX_DEPTH``-bounded), so the store into a carrier field is
+        driven by the SAME per-leaf loop as the bare leaf with no parallel
+        mechanism."""
         place = self._path_of(target)
         if place is None:
             return []
@@ -635,6 +636,8 @@ class _LinearMixin:
         if self._ty_is_linear(field_ty):
             leaf = self._linear_place(target)
             return [leaf] if leaf is not None else []
+        if self._owned_obligation(field_ty):
+            return self._linear_field_paths(place, field_ty)
         return []
 
     def _carry_moved_subpaths(self, src: str, dst: str) -> None:

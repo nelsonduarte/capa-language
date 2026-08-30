@@ -743,25 +743,36 @@ class _StatementsMixin:
                 f"{ty_str(target_ty)}",
                 s.value.pos,
             )
-        # Roadmap S1 (field-store move, SOURCE side): storing a bare OWNED
-        # linear/typestate value or a linear FIELD into a linear LEAF field
-        # (``s.conn = t`` / ``s.conn = a.conn``) MOVES it out of its source,
-        # exactly as packing it into a struct literal does -- so route the RHS
-        # through the SAME borrowed-escape reject + move seam the aggregate
-        # pack uses, in the SAME order. A laundered value is then discharged
-        # (no later double-free), and a borrowed operand is rejected with the
-        # pack wording. Gated on a bare-linear LEAF target and ``=`` only: an
-        # augmented store on a linear leaf is ill-typed, and a carrier-typed
-        # target field (``o.inner = a``) has ``_linear_place`` None, so it is
-        # left untouched (its own separate-mechanism increment). A fresh-call
-        # RHS (``s.conn = open()``) is a no-op here, so it adds no diagnostic.
-        if (
-            isinstance(s.target, A.FieldAccess)
-            and s.op == "="
-            and self._linear_place(s.target) is not None
-        ):
-            self._linear_check_borrowed_escape(s.value, s.value.pos)
-            self._move_linear_operand(s.value)
+        # Roadmap S1 (field-store move, SOURCE side): storing an OWNED
+        # linear/typestate value into a field that carries an obligation MOVES
+        # it out of its source, exactly as packing it into a struct literal
+        # does -- so route the RHS through the SAME borrowed-escape reject +
+        # move seam the aggregate pack uses, in the SAME order. This covers a
+        # bare-linear LEAF target (``s.conn = t``) AND a CARRIER-typed target
+        # field (``o.inner = a``, a subtree of leaves): the gate is the widened
+        # obligation predicate ``_owned_obligation(field_ty)``, and ``=`` only
+        # (an augmented store on such a field is ill-typed). ``_move_linear_operand``
+        # handles a whole-carrier / bare Ident (discharge) and a bare-linear
+        # FIELD projection (field move), and returns False for a fresh call or a
+        # borrowed bare ident (the escape reject fires with the pack wording).
+        #
+        # Correction: a CARRIER projection RHS (``o.inner = p.inner``, whose
+        # ``_linear_place`` is None) returns False from the seam, so move each of
+        # its subtree leaves out through the SAME leaf-set enumerator + move seam,
+        # else the source carrier's subtree is never discharged (a new
+        # double-free) and a self-store never becomes a no-op re-arm (a new FP).
+        # Restricted to a FieldAccess RHS so a borrowed bare ident stays a single
+        # escape reject.
+        if isinstance(s.target, A.FieldAccess) and s.op == "=":
+            field_ty = self.types.get(id(s.target))
+            if self._owned_obligation(field_ty):
+                self._linear_check_borrowed_escape(s.value, s.value.pos)
+                if (
+                    not self._move_linear_operand(s.value)
+                    and isinstance(s.value, A.FieldAccess)
+                ):
+                    for leaf in self._field_linear_leaves(s.value):
+                        self._linear_move_field(leaf, s.value.pos)
         # WARNING-3: overwriting a LIVE linear/typestate field
         # (``s.conn = fresh()`` while the current ``s.conn`` was never
         # consumed) drops the old value with no consume -- a leak, symmetric
