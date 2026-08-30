@@ -1172,10 +1172,11 @@ class _DispatchMixin:
             if isinstance(e.receiver, A.Ident):
                 self._linear_discharge(e.receiver.name, e.receiver.pos)
             elif isinstance(e.receiver, A.FieldAccess):
-                # ``s.conn.close()`` consumes a linear FIELD; move it out
-                # of its carrier so the whole-value consume scan sees it.
-                place = self._linear_place(e.receiver)
-                if place is not None:
-                    self._linear_move_field(place, e.receiver.pos)
+                # ``s.conn.close()`` / ``b.two.eat()`` consumes a linear FIELD
+                # (a bare leaf or a whole carrier subtree); move it out through
+                # the ONE field-projection mover so the whole-value consume scan
+                # sees it, and a re-consume of an already-moved carrier field is
+                # rejected.
+                self._move_field_leaves(e.receiver, e.receiver.pos)
 
         return ret_ty

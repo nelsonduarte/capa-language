@@ -615,10 +615,12 @@ class _LinearMixin:
             self._live_linear[root] = (pos, root_ty)
 
     def _field_linear_leaves(self, target: "A.Expr") -> list[str]:
-        """THE single source of the linear/typestate LEAF places a field-store
-        TARGET field owns, driving BOTH the RHS move and the per-leaf re-arm /
-        overwrite-leak so the bare-leaf and carrier-field paths share one
-        mechanism (the bare leaf is the degenerate one-element instance).
+        """THE single source of the linear/typestate LEAF places a field
+        projection owns -- a store TARGET field or a move OPERAND alike --
+        driving the RHS move, the per-leaf re-arm / overwrite-leak, AND every
+        field-projection move (``_move_field_leaves``), so the bare-leaf and
+        carrier-field paths share one mechanism (the bare leaf is the degenerate
+        one-element instance).
 
         - a bare ``linear type`` / typestate leaf yields its one place (keeping
           the ``_linear_place`` depth-collapse), and
@@ -639,6 +641,45 @@ class _LinearMixin:
         if self._owned_obligation(field_ty):
             return self._linear_field_paths(place, field_ty)
         return []
+
+    def _move_field_leaves(self, fa: "A.Expr", pos: Pos) -> bool:
+        """THE single source of "move a field-PROJECTION operand's linear
+        subtree out", used at every move position (consume-arg / struct +
+        typestate pack / return / bind / field-store RHS / ``consume self``
+        receiver). Composes the two existing single sources -- ``_field_linear_
+        leaves`` (which leaves the field owns) and ``_linear_move_field`` (move
+        one leaf, including its borrowed reject and moved-set recording) -- and
+        returns whether the field owned any linear leaf. A bare leaf (a
+        one-element leaf set) and a whole carrier subtree move identically, so
+        no move position re-implements the loop.
+
+        Correction: moving only the leaves does NOT catch RE-consuming an
+        already-moved CARRIER field. ``_linear_move_field`` short-circuits on an
+        already-moved leaf, and the FieldAccess use-site check keys on the field
+        / root path, not the deeper leaf, so ``close2(b.two); close2(b.two)`` /
+        ``... ; return b.two`` would slip through. Reject it here FIRST -- the
+        husk-reconsume analogue for a FieldAccess operand -- CARRIER-only (a
+        bare leaf is left to its own use-site check, so its double-consume stays
+        exactly one diagnostic)."""
+        leaves = self._field_linear_leaves(fa)
+        if not leaves:
+            return False
+        path = self._path_of(fa)
+        field_ty = self.types.get(id(fa))
+        if path is not None and not self._ty_is_linear(field_ty):
+            sub = self._subpath_consumed(path)
+            if sub is not None:
+                self._err(
+                    f"cannot consume or move carrier field {path!r}: its "
+                    f"linear field {sub!r} was already consumed, so consuming "
+                    f"it again would double-free that field -- its linear "
+                    f"fields were already moved out",
+                    pos,
+                )
+                return True
+        for leaf in leaves:
+            self._linear_move_field(leaf, pos)
+        return True
 
     def _carry_moved_subpaths(self, src: str, dst: str) -> None:
         """Re-key every moved-out linear sub-path of ``src`` onto ``dst`` when
@@ -721,13 +762,16 @@ class _LinearMixin:
         from .. import capa_ast as _A
         self._borrowed_linear.discard(target)
         if isinstance(value, _A.FieldAccess):
-            # HOLE-1 (ii): a projection ``let c = s.conn`` MOVES the linear
-            # field out of its carrier -- poison ``s.conn`` so the carrier
-            # can no longer consume it, and let ``_linear_bind`` arm ``c``
-            # as the fresh owner.
-            place = self._linear_place(value)
-            if place is None:
+            # HOLE-1 (ii): a projection ``let c = s.conn`` / ``let t = b.two``
+            # MOVES the field's linear subtree out of its carrier -- poison the
+            # leaves so the carrier can no longer consume them, and let
+            # ``_linear_bind`` arm ``target`` as the fresh owner. Driven by the
+            # leaf-set enumerator so a bare leaf and a whole carrier field move
+            # identically (covers ``let`` + ``var`` + name-reassign at once).
+            leaves = self._field_linear_leaves(value)
+            if not leaves:
                 return
+            place = self._path_of(value)
             # WARNING-5: projecting a field of a BORROWED value binds the
             # new name BORROWED too (the caller still owns it), so
             # ``_linear_bind`` skips arming an owned obligation and a later
@@ -735,7 +779,7 @@ class _LinearMixin:
             if self._prefix_borrowed(place):
                 self._borrowed_linear.add(target)
                 return
-            self._linear_move_field(place, value.pos)
+            self._move_field_leaves(value, value.pos)
             return
         if not isinstance(value, _A.Ident):
             return

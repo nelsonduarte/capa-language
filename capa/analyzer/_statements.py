@@ -756,23 +756,16 @@ class _StatementsMixin:
         # FIELD projection (field move), and returns False for a fresh call or a
         # borrowed bare ident (the escape reject fires with the pack wording).
         #
-        # Correction: a CARRIER projection RHS (``o.inner = p.inner``, whose
-        # ``_linear_place`` is None) returns False from the seam, so move each of
-        # its subtree leaves out through the SAME leaf-set enumerator + move seam,
-        # else the source carrier's subtree is never discharged (a new
-        # double-free) and a self-store never becomes a no-op re-arm (a new FP).
-        # Restricted to a FieldAccess RHS so a borrowed bare ident stays a single
-        # escape reject.
+        # A carrier projection RHS (``o.inner = p.inner``) is now moved by the
+        # seam itself: ``_move_linear_operand``'s FieldAccess branch routes
+        # through the one field-projection mover, so the source carrier's subtree
+        # is discharged and a self-store becomes a no-op re-arm without an inline
+        # special-case here.
         if isinstance(s.target, A.FieldAccess) and s.op == "=":
             field_ty = self.types.get(id(s.target))
             if self._owned_obligation(field_ty):
                 self._linear_check_borrowed_escape(s.value, s.value.pos)
-                if (
-                    not self._move_linear_operand(s.value)
-                    and isinstance(s.value, A.FieldAccess)
-                ):
-                    for leaf in self._field_linear_leaves(s.value):
-                        self._linear_move_field(leaf, s.value.pos)
+                self._move_linear_operand(s.value)
         # WARNING-3: overwriting a LIVE linear/typestate field
         # (``s.conn = fresh()`` while the current ``s.conn`` was never
         # consumed) drops the old value with no consume -- a leak, symmetric
@@ -1173,8 +1166,8 @@ class _StatementsMixin:
             # a double-free, caught by the same HOLE-1(iii) guard.
             self._reject_husk_reconsume(s.value.name, s.pos)
         elif isinstance(s.value, A.FieldAccess):
-            # ``return s.conn`` transfers a linear FIELD to the caller;
-            # move it out of its carrier so it is not re-reported at exit.
-            place = self._linear_place(s.value)
-            if place is not None:
-                self._linear_move_field(place, s.pos)
+            # ``return s.conn`` / ``return b.two`` transfers a linear FIELD (a
+            # bare leaf or a whole carrier subtree) to the caller; move it out
+            # through the ONE field-projection mover so it is not re-reported at
+            # exit, and a return of an already-moved carrier field is rejected.
+            self._move_field_leaves(s.value, s.pos)

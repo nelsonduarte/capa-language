@@ -136,13 +136,19 @@ class _DisciplineMixin:
             self._linear_discharge(expr.name, expr.pos)
             return True
         if isinstance(expr, A.FieldAccess):
-            place = self._linear_place(expr)
-            if place is None:
+            # A field projection is moved out through the ONE field-projection
+            # mover, driven by the leaf-set enumerator: a bare leaf moves its
+            # one place, a CARRIER field moves its whole subtree. This single
+            # widening sweeps in every caller of this seam (consume-arg, the
+            # struct-literal + typestate-``new`` packs, and the field-store RHS).
+            leaves = self._field_linear_leaves(expr)
+            if not leaves:
                 return False
+            place = self._path_of(expr)
             root = place.split(".", 1)[0]
             if self._reject_linear_capture(root, expr.pos, place=place):
                 return True
-            self._linear_move_field(place, expr.pos)
+            self._move_field_leaves(expr, expr.pos)
             return True
         return False
 
