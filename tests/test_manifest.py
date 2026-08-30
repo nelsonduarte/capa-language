@@ -454,6 +454,51 @@ class TestCarrierAndTypestateObligations(unittest.TestCase):
         ci = self._fn("close_it")
         self.assertEqual(ci["linear_obligations"]["consumes"], ["s"])
 
+    # A DEEP carrier (its linear leaf at field-hop 11, past the old fail-open
+    # depth-8 cap) is now classified through the same cycle-detecting
+    # ``owned_obligation`` predicate the analyzer enforces on, so the SBOM no
+    # longer under-reports it. Pre-fix the manifest reported ``consumes: []``
+    # / ``produces_linear: False`` / ``is_linear: False`` for these.
+    _DEEP_SRC = (
+        "linear type Handle { id: Int }\n"
+        "fun open() -> Handle\n"
+        "    return Handle { id: 1 }\n"
+        + "".join(f"type D{i} {{ f: D{i+1} }}\n" for i in range(10))
+        + "type D10 { h: Handle }\n"
+        + "fun deep_make() -> D0\n"
+        + "    return "
+        + "".join(f"D{i} {{ f: " for i in range(10))
+        + "D10 { h: open() }"
+        + " }" * 10
+        + "\n"
+        + "fun deep_sink(consume x: D0) -> Unit\n"
+        + "    return ()\n"
+    )
+
+    def _deep_fn(self, name: str):
+        # Building the manifest through ``_analysed`` also exercises the
+        # analyzer's fail-closed single-source guard; if the symbol/AST
+        # predicate lookups (or the predicate/enumerator walks) disagreed on
+        # a deep carrier it would raise here, so a clean build IS the
+        # analyzer<->manifest agreement assertion.
+        m = build_manifest(_analysed(self._DEEP_SRC))
+        return next(f for f in m["functions"] if f["source_name"] == name)
+
+    def test_deep_carrier_consumer_lists_param(self):
+        self.assertEqual(
+            self._deep_fn("deep_sink")["linear_obligations"]["consumes"], ["x"],
+        )
+
+    def test_deep_carrier_factory_produces_linear(self):
+        self.assertTrue(
+            self._deep_fn("deep_make")["linear_obligations"]["produces_linear"],
+        )
+
+    def test_deep_carrier_param_is_flagged_linear(self):
+        sk = self._deep_fn("deep_sink")
+        xp = next(p for p in sk["params"] if p["name"] == "x")
+        self.assertTrue(xp["is_linear"])
+
 
 class TestDeclassificationSites(unittest.TestCase):
     """``declassification_sites`` counts only genuine ``@secret ->

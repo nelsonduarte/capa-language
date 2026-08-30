@@ -30,18 +30,23 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .._owned_obligation import carries_linear, owned_obligation
+from .._owned_obligation import (
+    carries_linear,
+    linear_leaf_paths,
+    owned_obligation,
+)
 from ..tokens import Pos
 from ..typesys import Ty, TyName, TyTuple
 
 
 class _LinearMixin:
-    # A linear/typestate value cannot contain itself by value and a
-    # container nesting collapses (an index has no static path), so the
-    # depth of a move path is naturally bounded. This is a defensive
-    # backstop only: a chain deeper than K linear fields collapses to the
-    # whole-value place so the analysis stays finite on a pathological type.
-    _LINEAR_PATH_MAX_DEPTH = 8
+    # A move PLACE is a syntactic dotted path (``s.conn.fd``); a chain
+    # deeper than K field components collapses to the whole-value base so
+    # the tracked place stays a bounded string. This is a sound
+    # finite-syntactic bound, NOT a carrier-termination guard: the
+    # obligation predicate / enumerator terminate by cycle detection (see
+    # ``capa/_owned_obligation.py``), decoupled from this collapse.
+    _LINEAR_PLACE_MAX_DEPTH = 8
 
     # ---- type predicate ------------------------------------------
 
@@ -62,21 +67,6 @@ class _LinearMixin:
 
     # ---- place / move-path helpers -------------------------------
 
-    def _struct_fields_of(self, ty: Optional[Ty]) -> Optional[dict]:
-        """The declared field map of a struct / typestate ``TyName``
-        (``field name -> Ty``), or ``None`` for any other type. A
-        typestate is a state-indexed struct, so its fields live in the
-        same ``struct_fields`` map as a plain struct's."""
-        if not isinstance(ty, TyName):
-            return None
-        sym = self.global_scope.lookup(ty.name)
-        if sym is None:
-            return None
-        from . import SymbolKind
-        if sym.kind != SymbolKind.TYPE_STRUCT:
-            return None
-        return sym.struct_fields
-
     def _type_carries_linear(self, ty: Optional[Ty]) -> bool:
         """True iff ``ty`` transitively reaches a linear/typestate type
         through struct fields (never through a container element or a
@@ -90,12 +80,18 @@ class _LinearMixin:
 
     # ---- container-of-linear invariant (mirror of the cap discipline) ----
 
-    def _reaches_linear(self, ty: Optional[Ty], _depth: int = 0) -> bool:
+    def _reaches_linear(self, ty: Optional[Ty]) -> bool:
         """Recursive leaf test: True iff a linear/typestate type is reachable
         anywhere in ``ty`` -- as ``ty`` itself, through a struct field
         (``_type_carries_linear``), or below a container / tuple layer at any
         nesting depth. Structural twin of ``_contains_any_capability``, so the
         container-of-linear invariant mirrors the capability one exactly.
+
+        No depth cap: ``ty`` is a resolved type tree whose generic-arg /
+        tuple-element nesting is finite (it cannot cycle), and it delegates
+        struct-field descent to the now-cycle-safe ``_owned_obligation``
+        predicate, so the walk terminates without a fail-open bound (a deep
+        ``List<...<Conn>>`` is correctly rejected at any nesting).
 
         Like ``_cap_in_container`` it does NOT descend a ``TyFun``: a linear
         value captured inside a closure is a signature, not container storage,
@@ -105,14 +101,10 @@ class _LinearMixin:
             return False
         if self._owned_obligation(ty):
             return True
-        if _depth >= self._LINEAR_PATH_MAX_DEPTH:
-            return False
         if isinstance(ty, TyName):
-            return any(self._reaches_linear(a, _depth + 1) for a in ty.args)
+            return any(self._reaches_linear(a) for a in ty.args)
         if isinstance(ty, TyTuple):
-            return any(
-                self._reaches_linear(e, _depth + 1) for e in ty.elements
-            )
+            return any(self._reaches_linear(e) for e in ty.elements)
         return False
 
     def _container_carries_linear(self, ty: Optional[Ty]) -> bool:
@@ -307,40 +299,31 @@ class _LinearMixin:
             pos,
         )
 
-    def _linear_field_paths(
-        self, place: str, ty: Optional[Ty], _depth: int = 0,
-    ) -> list[str]:
+    def _linear_field_paths(self, place: str, ty: Optional[Ty]) -> list[str]:
         """The finite set of ``place.f...`` sub-paths whose leaf type is
-        linear/typestate, enumerated from ``ty``'s struct fields (bounded
-        by ``_LINEAR_PATH_MAX_DEPTH``). A linear field is a leaf (consuming
-        it whole satisfies it, so we do not descend into it); a non-linear
-        struct field is descended to find any deeper linear leaf. Walks
-        struct fields only -- never a container element or a ``Fun``
-        signature -- so authority reached only through a container / closure
-        is not enumerated here (it is barred from containers separately)."""
-        if _depth >= self._LINEAR_PATH_MAX_DEPTH:
-            return []
-        fields = self._struct_fields_of(ty)
-        if fields is None:
-            return []
-        out: list[str] = []
-        for fname, fty in fields.items():
-            sub = f"{place}.{fname}"
-            if self._ty_is_linear(fty):
-                out.append(sub)
-            else:
-                out.extend(self._linear_field_paths(sub, fty, _depth + 1))
-        return out
+        linear/typestate, enumerated from ``ty``'s struct fields. Delegates
+        to the shared :func:`linear_leaf_paths` seam (the same field-root
+        lookup the obligation predicate walks), so the carrier leaf
+        enumeration lives in exactly one place; the analyzer supplies its
+        Symbol-based field-root lookup. The enumeration is path-scoped (a
+        diamond yields both branches) and fail-CLOSED budgeted (a crafted
+        exponential-diamond type collapses to a whole-value obligation),
+        never depth-capped."""
+        root = ty.name if isinstance(ty, TyName) else None
+        return linear_leaf_paths(
+            place, root, self._linear_types, self._symbol_field_roots,
+        )
 
     def _linear_place(self, expr: "A.Expr") -> Optional[str]:
         """The canonical dotted place for an Ident-rooted ``expr`` whose
         LEAF type is linear/typestate, or ``None``. This is ``_path_of``
         restricted to the linear/typestate places the discipline tracks,
-        with the ``_LINEAR_PATH_MAX_DEPTH`` collapse: a chain deeper than K
-        fields collapses to its base name so a pathological type stays
-        finite. An index (``xs[i]``) or any non-static component yields
-        ``None`` via ``_path_of`` -- the Model-B container collapse for
-        free (no per-element move path)."""
+        with the ``_LINEAR_PLACE_MAX_DEPTH`` collapse: a chain deeper than K
+        fields collapses to its base name so the tracked place stays a
+        bounded string (a sound finite-syntactic bound, independent of
+        carrier termination). An index (``xs[i]``) or any non-static
+        component yields ``None`` via ``_path_of`` -- the Model-B container
+        collapse for free (no per-element move path)."""
         path = self._path_of(expr)
         if path is None:
             return None
@@ -352,7 +335,7 @@ class _LinearMixin:
             leaf_ty = self.types.get(id(expr))
         if not self._ty_is_linear(leaf_ty):
             return None
-        if path.count(".") > self._LINEAR_PATH_MAX_DEPTH:
+        if path.count(".") > self._LINEAR_PLACE_MAX_DEPTH:
             return path.split(".", 1)[0]
         return path
 
@@ -627,10 +610,9 @@ class _LinearMixin:
         - a non-linear field yields none.
 
         A CARRIER-typed target field yields its subtree of linear leaves via
-        ``_linear_field_paths`` (the single subtree enumerator, already
-        ``_LINEAR_PATH_MAX_DEPTH``-bounded), so the store into a carrier field is
-        driven by the SAME per-leaf loop as the bare leaf with no parallel
-        mechanism."""
+        ``_linear_field_paths`` (the single subtree enumerator, cycle-safe and
+        fail-closed budgeted), so the store into a carrier field is driven by
+        the SAME per-leaf loop as the bare leaf with no parallel mechanism."""
         place = self._path_of(target)
         if place is None:
             return []

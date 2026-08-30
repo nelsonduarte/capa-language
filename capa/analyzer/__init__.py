@@ -1139,30 +1139,50 @@ class Analyzer(
     # lives in ``_discipline.py`` and is folded in via
     # :class:`_DisciplineMixin`.
 
-    def _symbol_field_roots(self, name: str) -> Optional[list[str]]:
-        """The ROOT type names of the declared fields of the struct /
-        typestate ``name`` (a ``TyName`` head; non-``TyName`` field types --
-        tuples, closures -- are dropped, exactly as the carrier walk skips
-        them), or ``None`` if ``name`` is not a struct/typestate. The
-        Symbol-based ``field_roots`` the analyzer feeds the shared
-        ``owned_obligation`` predicate."""
+    def _symbol_field_roots(self, name: str) -> Optional[list[tuple[str, str]]]:
+        """The ``(field name, ROOT type name)`` pairs of the declared fields
+        of the struct / typestate ``name`` (a ``TyName`` head; non-``TyName``
+        field types -- tuples, closures -- are dropped, exactly as the
+        carrier walk skips them), or ``None`` if ``name`` is not a
+        struct/typestate. The Symbol-based ``field_roots`` the analyzer feeds
+        the ONE shared field-root seam: the obligation predicate (which
+        ignores the field name) and the leaf enumerator (which builds dotted
+        places from it)."""
         sym = self.global_scope.lookup(name)
         if sym is None or sym.kind != SymbolKind.TYPE_STRUCT:
             return None
         return [
-            fty.name for fty in sym.struct_fields.values()
+            (fname, fty.name)
+            for fname, fty in sym.struct_fields.items()
             if isinstance(fty, TyName)
         ]
 
     def _assert_owned_obligation_single_source(self, module: A.Module) -> None:
-        """Fail-closed: the analyzer's Symbol-based and the manifest's
-        AST-based ``field_roots`` lookups must feed the ONE shared
-        ``owned_obligation`` predicate the same verdict for every declared
-        struct/typestate, so the enforced obligation and the reported one
-        can never silently drift. Raise loudly (a compiler bug, not a user
-        error) if they disagree."""
+        """Fail-closed: the two now-DISTINCT walks over the ONE field-root
+        seam must not drift.
+
+        1. Predicate agreement: the analyzer's Symbol-based and the
+           manifest's AST-based ``field_roots`` lookups must feed the shared
+           ``owned_obligation`` predicate the same verdict for every declared
+           struct/typestate, so the enforced obligation and the reported one
+           can never silently disagree.
+
+        2. Predicate-implies-enumerable pin: the obligation predicate is a
+           global-memo boolean walk; the leaf enumerator is a path-scoped DFS
+           with a fail-closed budget. They are complexity-safe in DIFFERENT
+           shapes, so a bug could arm a carrier the enumerator then fails to
+           enumerate -- a drop check would mis-report. Pin that every CARRIER
+           (a struct the predicate says reaches a linear leaf through its
+           fields) yields at least one enumerated leaf. A bare linear/typestate
+           value is deliberately exempt: it is a whole-value leaf with no
+           linear SUB-field, so ``carries_linear`` is False for it and it is
+           not pinned.
+
+        Raise loudly (a compiler bug, not a user error) if either fails."""
         from .._owned_obligation import (
+            carries_linear,
             field_roots_from_module,
+            linear_leaf_paths,
             owned_obligation,
         )
         ast_roots = field_roots_from_module(module)
@@ -1178,6 +1198,16 @@ class Analyzer(
                     f"owned-obligation classification of {name!r} diverges "
                     f"between the analyzer (symbol) and manifest (AST) field "
                     f"lookups; the single-source predicate invariant is broken"
+                )
+            if carries_linear(
+                name, self._linear_types, self._symbol_field_roots,
+            ) and not linear_leaf_paths(
+                name, name, self._linear_types, self._symbol_field_roots,
+            ):
+                raise AssertionError(
+                    f"carrier {name!r} is armed by the obligation predicate "
+                    f"but the leaf enumerator yields no linear leaf; the "
+                    f"predicate and enumerator walks have drifted"
                 )
 
     def _install_builtins(self) -> None:

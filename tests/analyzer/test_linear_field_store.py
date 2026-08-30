@@ -370,11 +370,13 @@ class TestFieldStoreCarrierTarget(unittest.TestCase):
     carrier PROJECTION RHS (`o.inner = p.inner`) has its subtree moved so the
     source becomes a husk (Correction 1).
 
-    OUT OF SCOPE (separate mechanisms, unchanged here): the deep-8
-    `_LINEAR_PATH_MAX_DEPTH` fail-open (its own depth-cap item), an Index
-    target/receiver, the borrow-read residual, and E3 generic-return aliasing.
-    Analyzer-only; the accepted shapes run byte-identically on all backends via
-    test_ir_wasm_parity."""
+    The deep `_LINEAR_PATH_MAX_DEPTH` fail-open is now CLOSED: the carrier walk
+    cycle-detects instead of failing open past depth 8 (the cycle-detecting
+    `owned_obligation` predicate plus the fail-closed enumerator budget), covered
+    by test_linear_depth.py. OUT OF SCOPE (separate mechanisms, unchanged here):
+    an Index target/receiver, the borrow-read residual, E3 generic-return
+    aliasing, and the compiler-wide diamond wall-clock DoS. Analyzer-only; the
+    accepted shapes run byte-identically on all backends via test_ir_wasm_parity."""
 
     # Carrier zoo over one linear leaf Conn: S(conn), Outer(inner:S),
     # Mid(s:S)/Deep(mid:Mid) for depth, Two(a,b:Conn)/Box(two:Two) for multi-leaf.

@@ -16,9 +16,12 @@ field moves its whole subtree, identically. The helper also rejects re-consuming
 an already-moved carrier field (the husk-reconsume analogue for a FieldAccess
 operand), which the per-leaf move alone would swallow.
 
-OUT OF SCOPE (separate items, unchanged here): the deep-8
-``_LINEAR_PATH_MAX_DEPTH`` fail-open, an Index target/receiver, the borrow-read
-residual, and E3 generic-return aliasing. Analyzer-only; accepted shapes run
+The deep ``_LINEAR_PATH_MAX_DEPTH`` fail-open is now CLOSED: the carrier walk
+cycle-detects instead of failing open past depth 8 (the cycle-detecting
+``owned_obligation`` predicate plus the fail-closed enumerator budget), covered
+by test_linear_depth.py. OUT OF SCOPE (separate items, unchanged here): an Index
+target/receiver, the borrow-read residual, E3 generic-return aliasing, and the
+compiler-wide diamond wall-clock DoS. Analyzer-only; accepted shapes run
 byte-identically on all backends via test_ir_wasm_parity."""
 
 import unittest
