@@ -769,20 +769,24 @@ class _StatementsMixin:
         # store after a legitimate prior consume/move of the field re-arms
         # it (the field place leaves ``_consumed``), so the fresh value is
         # tracked afresh.
+        # Driven off the target field's linear-leaf SET (``_field_linear_leaves``):
+        # a bare leaf is the one-element instance and a carrier-typed field is
+        # its subtree of leaves, so one per-leaf loop handles both. For each leaf
+        # a store after a legitimate prior consume/move RE-ARMS it (via the single
+        # ``_linear_rearm_field`` primitive: clears the leaf + subtree through
+        # ``_moved_subpath_sets()`` and re-opens the carrier root); overwriting a
+        # still-LIVE leaf drops it, one diagnostic per leaked leaf by path.
+        # ``_field_target_rearm`` (computed on the exact write path) only matches
+        # the bare-leaf-exact term; for a carrier subtree leaf it is always False
+        # and the condition reduces to ``leaf in _consumed``.
         if isinstance(s.target, A.FieldAccess):
-            place = self._linear_place(s.target)
-            if place is not None:
-                if _field_target_rearm or place in self._consumed:
-                    # Re-arm after a legitimate prior consume/move: clear the
-                    # stored-into place through the single moved-subpath source
-                    # (undoing the move on EVERY set, incl. the field-move set
-                    # the old inline discard skipped) and re-open the carrier's
-                    # obligation, so the fresh value is accounted afresh with no
-                    # drop and no missed leak.
-                    self._linear_rearm_field(place, s.pos)
-                elif not self._prefix_consumed(place):
+            base = self._path_of(s.target)
+            for leaf in self._field_linear_leaves(s.target):
+                if (leaf == base and _field_target_rearm) or leaf in self._consumed:
+                    self._linear_rearm_field(leaf, s.pos)
+                elif not self._prefix_consumed(leaf):
                     self._err(
-                        f"linear field {place!r} is overwritten without "
+                        f"linear field {leaf!r} is overwritten without "
                         f"being consumed; a `linear type` / typestate value "
                         f"cannot be dropped -- consume the current value "
                         f"(e.g. a `consume self` method like `close`) before "

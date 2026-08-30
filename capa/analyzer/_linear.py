@@ -614,6 +614,29 @@ class _LinearMixin:
         if self._owned_obligation(root_ty):
             self._live_linear[root] = (pos, root_ty)
 
+    def _field_linear_leaves(self, target: "A.Expr") -> list[str]:
+        """THE single source of the linear/typestate LEAF places a field-store
+        TARGET field owns, driving BOTH the RHS move and the per-leaf re-arm /
+        overwrite-leak so the bare-leaf and carrier-field paths share one
+        mechanism (the bare leaf is the degenerate one-element instance).
+
+        - a bare ``linear type`` / typestate leaf yields its one place (keeping
+          the ``_linear_place`` depth-collapse), and
+        - a non-linear field yields none.
+
+        Step 2 widens this so a CARRIER-typed target field yields its subtree of
+        linear leaves via ``_linear_field_paths`` (the single subtree
+        enumerator); until then a carrier field yields none, so the field-store
+        behaviour is unchanged for it."""
+        place = self._path_of(target)
+        if place is None:
+            return []
+        field_ty = self.types.get(id(target))
+        if self._ty_is_linear(field_ty):
+            leaf = self._linear_place(target)
+            return [leaf] if leaf is not None else []
+        return []
+
     def _carry_moved_subpaths(self, src: str, dst: str) -> None:
         """Re-key every moved-out linear sub-path of ``src`` onto ``dst`` when
         ``dst`` aliases ``src`` (``let d = c``, ``var d = c``, ``d = c``). A
