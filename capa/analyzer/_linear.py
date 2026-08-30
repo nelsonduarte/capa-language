@@ -581,6 +581,39 @@ class _LinearMixin:
             if subs and all(self._field_discharged(s) for s in subs):
                 self._live_linear.pop(root, None)
 
+    def _linear_rearm_field(self, place: str, pos: Pos) -> None:
+        """The INVERSE of ``_linear_move_field``: re-arm a linear FIELD
+        ``place`` (``s.conn``) that a fresh store wrote into AFTER a prior
+        consume / move of the same field (``close(s.conn); s.conn = ...``).
+
+        Two symmetric effects, each undoing one the move seam applied:
+
+        - Clear the exact leaf ``place`` and every ``place.`` sub-path from
+          EVERY moved-subpath structure through the single
+          ``_moved_subpath_sets()`` source (the same tuple the move seam
+          records THROUGH), so the re-arm can never under-cover a structure
+          the move poisoned. Skipping ``_linear_field_moved`` here was the
+          root of Face C, so iterating the one source -- never a hard-coded
+          2-of-3 list -- is the fail-closed guard.
+        - Re-open the carrier ROOT's must-consume obligation in
+          ``_live_linear`` when its declared type carries one, so the newly
+          stored value is accounted at scope exit (no missed leak) instead of
+          lingering popped as a spent husk.
+
+        Deliberately does NOT touch ``_drop_exempt_linear``: a re-armed
+        ``consume`` parameter carrier stays drop-exempt (that exemption is
+        checked FIRST in ``_linear_check_dropped``)."""
+        prefix = place + "."
+        for moved_set in self._moved_subpath_sets():
+            moved_set.discard(place)
+            for p in [q for q in moved_set if q.startswith(prefix)]:
+                moved_set.discard(p)
+        root = place.split(".", 1)[0]
+        sym = self.scope.lookup(root)
+        root_ty = sym.ty if sym is not None else None
+        if self._owned_obligation(root_ty):
+            self._live_linear[root] = (pos, root_ty)
+
     def _carry_moved_subpaths(self, src: str, dst: str) -> None:
         """Re-key every moved-out linear sub-path of ``src`` onto ``dst`` when
         ``dst`` aliases ``src`` (``let d = c``, ``var d = c``, ``d = c``). A

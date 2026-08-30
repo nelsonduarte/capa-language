@@ -743,6 +743,25 @@ class _StatementsMixin:
                 f"{ty_str(target_ty)}",
                 s.value.pos,
             )
+        # Roadmap S1 (field-store move, SOURCE side): storing a bare OWNED
+        # linear/typestate value or a linear FIELD into a linear LEAF field
+        # (``s.conn = t`` / ``s.conn = a.conn``) MOVES it out of its source,
+        # exactly as packing it into a struct literal does -- so route the RHS
+        # through the SAME borrowed-escape reject + move seam the aggregate
+        # pack uses, in the SAME order. A laundered value is then discharged
+        # (no later double-free), and a borrowed operand is rejected with the
+        # pack wording. Gated on a bare-linear LEAF target and ``=`` only: an
+        # augmented store on a linear leaf is ill-typed, and a carrier-typed
+        # target field (``o.inner = a``) has ``_linear_place`` None, so it is
+        # left untouched (its own separate-mechanism increment). A fresh-call
+        # RHS (``s.conn = open()``) is a no-op here, so it adds no diagnostic.
+        if (
+            isinstance(s.target, A.FieldAccess)
+            and s.op == "="
+            and self._linear_place(s.target) is not None
+        ):
+            self._linear_check_borrowed_escape(s.value, s.value.pos)
+            self._move_linear_operand(s.value)
         # WARNING-3: overwriting a LIVE linear/typestate field
         # (``s.conn = fresh()`` while the current ``s.conn`` was never
         # consumed) drops the old value with no consume -- a leak, symmetric
@@ -754,10 +773,13 @@ class _StatementsMixin:
             place = self._linear_place(s.target)
             if place is not None:
                 if _field_target_rearm or place in self._consumed:
-                    # Re-arm after a legitimate prior consume/move: the fresh
-                    # value is tracked afresh, no drop.
-                    self._consumed.discard(place)
-                    self._linear_names.discard(place)
+                    # Re-arm after a legitimate prior consume/move: clear the
+                    # stored-into place through the single moved-subpath source
+                    # (undoing the move on EVERY set, incl. the field-move set
+                    # the old inline discard skipped) and re-open the carrier's
+                    # obligation, so the fresh value is accounted afresh with no
+                    # drop and no missed leak.
+                    self._linear_rearm_field(place, s.pos)
                 elif not self._prefix_consumed(place):
                     self._err(
                         f"linear field {place!r} is overwritten without "
