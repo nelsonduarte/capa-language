@@ -1370,7 +1370,12 @@ class _ExpressionsMixin:
         # The old-state value is consumed: its linear obligation moves
         # to the freshly-typed result (which the surrounding binding
         # re-registers as live).
-        if isinstance(e.value, A.Ident):
+        if isinstance(e.value, (A.Call, A.MethodCall)):
+            # E3: ``become(id(c), Settled)`` transitions a value whose result
+            # LAUNDERS the argument's obligation; move the aliased argument out
+            # through the ONE move seam so the transition is accounted once.
+            self._move_linear_operand(e.value)
+        elif isinstance(e.value, A.Ident):
             self._linear_discharge(e.value.name, e.value.pos)
         elif isinstance(e.value, A.FieldAccess):
             # ``become(s.claim, Settled)`` transitions a linear FIELD in

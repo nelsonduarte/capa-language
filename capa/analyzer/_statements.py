@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from .. import capa_ast as A
 from .. import _labels as L
+from ..tokens import Pos
 from ..typesys import (
     Ty, TyBool, TyName, TyString, TyUnit, TyUnknown,
     compatible, ty_str,
@@ -1150,24 +1151,38 @@ class _StatementsMixin:
             self._check_closure_ret_flow(
                 expected, actual, s.pos, "returned",
             )
-        # Roadmap S1: ``return h`` transfers the linear obligation to
-        # the caller -- discharge it here so it isn't reported as a
-        # leak at function exit. B-F1: returning a BORROWED linear param
-        # (the caller still owns it) routes into the discharge guard,
-        # which rejects the transfer.
-        if isinstance(s.value, A.Ident) and (
-            s.value.name in self._live_linear
-            or s.value.name in self._borrowed_linear
+        # Roadmap S1: ``return <value>`` transfers the linear obligation to
+        # the caller -- discharge it here so it isn't reported as a leak at
+        # function exit.
+        self._discharge_return_operand(s.value, s.pos)
+
+    def _discharge_return_operand(self, value: A.Expr, pos: Pos) -> None:
+        """Transfer the linear/typestate obligation a returned operand carries
+        to the caller, at the ``return`` site. A bare Ident naming a live or
+        borrowed value routes into the discharge guard (a borrowed one is
+        rejected -- the caller still owns it); a spent husk Ident is rejected
+        (returning it re-transfers an already-moved field); a field projection
+        moves the field's subtree out through the ONE field-projection mover.
+
+        E3: a ``Call`` / ``MethodCall`` operand whose result LAUNDERS a
+        linear/typestate argument (``return id(x)``) moves the aliased
+        argument off its source through the ONE move seam, so the transfer is
+        accounted for exactly once."""
+        if isinstance(value, (A.Call, A.MethodCall)):
+            self._move_linear_operand(value)
+        elif isinstance(value, A.Ident) and (
+            value.name in self._live_linear
+            or value.name in self._borrowed_linear
         ):
-            self._linear_discharge(s.value.name, s.pos)
-        elif isinstance(s.value, A.Ident):
+            self._linear_discharge(value.name, pos)
+        elif isinstance(value, A.Ident):
             # Returning a spent HUSK (a carrier whose linear fields were all
             # moved out) re-transfers an already-moved field to the caller --
             # a double-free, caught by the same HOLE-1(iii) guard.
-            self._reject_husk_reconsume(s.value.name, s.pos)
-        elif isinstance(s.value, A.FieldAccess):
+            self._reject_husk_reconsume(value.name, pos)
+        elif isinstance(value, A.FieldAccess):
             # ``return s.conn`` / ``return b.two`` transfers a linear FIELD (a
             # bare leaf or a whole carrier subtree) to the caller; move it out
             # through the ONE field-projection mover so it is not re-reported at
             # exit, and a return of an already-moved carrier field is rejected.
-            self._move_field_leaves(s.value, s.pos)
+            self._move_field_leaves(value, pos)

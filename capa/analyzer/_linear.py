@@ -763,6 +763,16 @@ class _LinearMixin:
                 return
             self._move_field_leaves(value, value.pos)
             return
+        if isinstance(value, (_A.Call, _A.MethodCall)):
+            # E3: a ``let``/``var``/assign RHS that is a generic identity /
+            # passthrough call (``let h2 = id(h)``) MOVES the argument its
+            # result aliases off the source, through the ONE move seam, so the
+            # caller's ``_linear_bind`` arms the NEW name as the single owner
+            # (the source is poisoned, a later ``close(h)`` rejects). A fresh
+            # factory call moves nothing and the new obligation is genuinely
+            # fresh.
+            self._move_linear_operand(value)
+            return
         if not isinstance(value, _A.Ident):
             return
         if value.name in self._borrowed_linear:

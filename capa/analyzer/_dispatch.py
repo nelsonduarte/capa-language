@@ -1169,14 +1169,20 @@ class _DispatchMixin:
         # Roadmap S1: a ``consume self`` method discharges the linear
         # obligation on its receiver (``h.close()`` releases ``h``).
         if getattr(method_sym, "consumes_self", False):
-            if isinstance(e.receiver, A.Ident):
+            # The receiver of a ``consume self`` method is a move OPERAND like
+            # any other, so route EVERY shape through the ONE move seam rather
+            # than open-coding a shape list here: a bare ident, a field
+            # projection (a bare leaf or a whole carrier subtree), a call whose
+            # result LAUNDERS an argument's obligation (``id(s).eat()``), and
+            # any operand shape the seam grows later. Open-coding it let an
+            # unlisted receiver shape fall through every branch silently.
+            # A BORROWED bare identifier is the one case the seam deliberately
+            # returns False for (its contract: the caller supplies the wording),
+            # so route it into the same transfer guard the direct move uses.
+            if not self._move_linear_operand(e.receiver) and (
+                isinstance(e.receiver, A.Ident)
+                and e.receiver.name in self._borrowed_linear
+            ):
                 self._linear_discharge(e.receiver.name, e.receiver.pos)
-            elif isinstance(e.receiver, A.FieldAccess):
-                # ``s.conn.close()`` / ``b.two.eat()`` consumes a linear FIELD
-                # (a bare leaf or a whole carrier subtree); move it out through
-                # the ONE field-projection mover so the whole-value consume scan
-                # sees it, and a re-consume of an already-moved carrier field is
-                # rejected.
-                self._move_field_leaves(e.receiver, e.receiver.pos)
 
         return ret_ty

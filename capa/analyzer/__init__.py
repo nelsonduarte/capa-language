@@ -351,6 +351,7 @@ class AnalysisResult:
 from ._declarations import _DeclarationsMixin
 from ._discipline import _DisciplineMixin
 from ._dispatch import _DispatchMixin
+from ._e3 import _E3Mixin
 from ._expressions import _ExpressionsMixin
 from ._frozen import _FrozenTypesMixin
 from ._ifc import _IfcMixin
@@ -364,7 +365,7 @@ from ._typing import _TypingMixin
 class Analyzer(
     _TypingMixin, _DisciplineMixin, _DispatchMixin,
     _PatternsMixin, _DeclarationsMixin, _FrozenTypesMixin,
-    _IfcMixin, _LinearMixin, _StatementsMixin, _ExpressionsMixin,
+    _IfcMixin, _E3Mixin, _LinearMixin, _StatementsMixin, _ExpressionsMixin,
     _ItemsMixin,
 ):
     """Performs the semantic analysis of a Module.
@@ -860,6 +861,16 @@ class Analyzer(
             self._ifc_sink_pc,
             self._ct_sensitive_params,
         ) = compute_ifc_summaries(module, self.global_scope)
+        # Phase 1d (E3): per-callable RETURN-ORIGIN summaries -- the parameter
+        # indices a generic identity / passthrough return laundered the
+        # argument's must-consume obligation from. Built over the SAME shared
+        # callable enumeration the IFC summaries use, purely syntactically, so
+        # the E3 resolver can move the aliased argument at each call site
+        # before the double-free lands. Consulted only where the call RESULT
+        # actually carries an obligation (see :mod:`._e3`).
+        from ._return_origin import compute_return_origins
+        self._return_origins, self._return_origin_callables = \
+            compute_return_origins(module)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
             self._check_item(item)

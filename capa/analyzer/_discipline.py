@@ -124,7 +124,32 @@ class _DisciplineMixin:
         identifier expression (each caller applies its own borrowed reject
         with the right wording; a borrowed FIELD is rejected in place by
         ``_linear_move_field``). Moving a value CAPTURED into a lambda is
-        rejected via ``_reject_linear_capture``."""
+        rejected via ``_reject_linear_capture``.
+
+        E3: a ``Call`` / ``MethodCall`` operand whose result LAUNDERS a
+        linear/typestate argument (a generic identity / passthrough return)
+        is routed through the ONE origin-resolution seam
+        (``_call_result_alias_args``), and each aliased argument is moved
+        back through THIS seam -- so ``close(id(c))`` / ``Box { f: id(c) }``
+        move ``c`` exactly as ``close(c)`` would, and a chained ``id(id(c))``
+        recurses. A fresh factory call moves nothing; a fail-closed reject is
+        raised in place by the seam."""
+        if isinstance(expr, (A.Call, A.MethodCall)):
+            for origin_arg in self._call_result_alias_args(expr):
+                if not self._move_linear_operand(origin_arg) and (
+                    isinstance(origin_arg, A.Ident)
+                    and origin_arg.name in self._borrowed_linear
+                ):
+                    # ``_move_linear_operand`` returns False for a BORROWED
+                    # bare ident (its contract: each caller applies its own
+                    # borrowed reject). A borrowed value laundered through the
+                    # call is the caller's still-owned value, so route it into
+                    # the SAME borrowed-transfer guard the direct move
+                    # (``return c`` / ``close(c)``) applies -- otherwise
+                    # ``return id(c)`` / ``close(id(c))`` on a borrowed ``c``
+                    # would silently launder it (a double-free).
+                    self._linear_discharge(origin_arg.name, origin_arg.pos)
+            return True
         if isinstance(expr, A.Ident):
             if expr.name not in self._live_linear:
                 # A spent HUSK (all linear fields moved out, popped from the
