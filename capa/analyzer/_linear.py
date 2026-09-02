@@ -150,101 +150,6 @@ class _LinearMixin:
             e.pos,
         )
 
-    # ---- conditional/match alias bar (Finding 1) ------------------
-
-    def _arm_is_linear_place(self, arm: "A.Expr") -> bool:
-        """True iff ``arm`` yields an EXISTING linear/typestate place: a bare
-        ``Ident`` or an Ident-rooted ``FieldAccess`` whose leaf type is
-        linear/typestate. A nested ``IfExpr`` / ``MatchExpr`` wrapper is
-        recursively unwrapped (``if a then s else (if b then s else s)``), so a
-        place selected at any nesting depth counts. A call / literal /
-        ``become`` / struct-literal produces a FRESH value that cannot alias an
-        existing obligation, so it is not a place and is not barred.
-
-        A ``FieldAccess`` is judged through ``_linear_place`` (the same
-        Ident-rooted, linear-leaf recognition the move seams use), so a
-        projection of a non-linear carrier down to a linear field
-        (``s.conn``) counts while a non-linear field (``s.name``) does not."""
-        from .. import capa_ast as _A
-        if isinstance(arm, _A.IfExpr):
-            return (
-                self._arm_is_linear_place(arm.then_expr)
-                or self._arm_is_linear_place(arm.else_expr)
-            )
-        if isinstance(arm, _A.MatchExpr):
-            return any(
-                isinstance(a.body, _A.Expr)
-                and self._arm_is_linear_place(a.body)
-                for a in arm.arms
-            )
-        if isinstance(arm, _A.Ident):
-            sym = self.scope.lookup(arm.name)
-            return self._ty_is_linear(sym.ty if sym is not None else None)
-        if isinstance(arm, _A.FieldAccess):
-            return self._linear_place(arm) is not None
-        return False
-
-    def _conditional_selects_linear_place(self, e: "A.Expr") -> bool:
-        """True iff the conditional/match wrapper ``e`` yields an EXISTING
-        linear/typestate place in at least one arm (recursing through nested
-        wrappers). The arm bodies are ``IfExpr.then_expr`` / ``else_expr`` and
-        each ``MatchExpr`` arm body that is an ``Expr`` (a multi-line ``Block``
-        arm body is Unit-typed, so it can never host a place)."""
-        from .. import capa_ast as _A
-        if isinstance(e, _A.IfExpr):
-            return (
-                self._arm_is_linear_place(e.then_expr)
-                or self._arm_is_linear_place(e.else_expr)
-            )
-        if isinstance(e, _A.MatchExpr):
-            return any(
-                isinstance(a.body, _A.Expr)
-                and self._arm_is_linear_place(a.body)
-                for a in e.arms
-            )
-        return False
-
-    def _check_linear_conditional_alias(
-        self, e: "A.Expr", ty: Optional[Ty],
-    ) -> None:
-        """Per-expression bar (Finding 1): reject an ``if`` / ``match``
-        expression that selects an EXISTING linear/typestate place in a branch.
-
-        A conditional whose value is a linear place aliases an obligation the
-        analysis already tracks under its own name: the move / consume / return
-        / receiver seams recognise only a bare ``Ident`` / ``FieldAccess``, not
-        an ``if`` / ``match`` wrapper, so binding, consuming, or returning the
-        wrapper opens a SECOND obligation on the same runtime value (a double-
-        free). Because every producing context (a ``let`` / ``var`` RHS, a
-        consume argument, a ``consume self`` receiver, a ``return`` value, a
-        ``become`` value, a struct-literal element) evaluates the wrapper
-        through ``_check_expr``, this ONE gate closes every site.
-
-        Barred syntactically on the arm nodes plus a type lookup, so it does
-        not depend on the live-set at the check moment. Only an ``Ident`` /
-        ``FieldAccess`` arm of linear type can alias an existing obligation; a
-        call / literal / ``become`` arm yields a FRESH value, so the legitimate
-        conditional factory (``let t = if c then open(1) else open(2)``) is not
-        barred. Deduped per node. A NON-linear conditional (yielding a String /
-        Int / Option / plain struct) is filtered out first by ``ty``."""
-        from .. import capa_ast as _A
-        if not isinstance(e, (_A.IfExpr, _A.MatchExpr)):
-            return
-        if not self._owned_obligation(ty):
-            return
-        if id(e) in self._linear_conditional_reported:
-            return
-        if not self._conditional_selects_linear_place(e):
-            return
-        self._linear_conditional_reported.add(id(e))
-        self._err(
-            "a linear/typestate value cannot be selected through a "
-            "conditional / match expression; bind it directly (e.g. "
-            "`let x = ...` in each branch) or open a fresh value per branch, "
-            "so each resource has a single owner",
-            e.pos,
-        )
-
     def _check_no_linear_container(
         self, ty: Optional[Ty], pos: Pos, context: str,
     ) -> None:
@@ -616,10 +521,20 @@ class _LinearMixin:
         place = self._path_of(target)
         if place is None:
             return []
-        field_ty = self.types.get(id(target))
+        return self._linear_leaves_of(place, self.types.get(id(target)))
+
+    def _linear_leaves_of(self, place: str, field_ty) -> list[str]:
+        """The place-driven core of ``_field_linear_leaves``: which linear /
+        typestate leaves the value at ``place`` (of type ``field_ty``) owns.
+        Split out so an operand that resolves to a place WITHOUT being spelled
+        as a field-access node -- a ``match`` arm binder that VIEWS a carrier
+        field -- enumerates its leaves through the SAME single source. Keeps
+        the ``_LINEAR_PLACE_MAX_DEPTH`` collapse the node-driven form applied
+        through ``_linear_place``."""
         if self._ty_is_linear(field_ty):
-            leaf = self._linear_place(target)
-            return [leaf] if leaf is not None else []
+            if place.count(".") > self._LINEAR_PLACE_MAX_DEPTH:
+                place = place.split(".", 1)[0]
+            return [place]
         if self._owned_obligation(field_ty):
             return self._linear_field_paths(place, field_ty)
         return []
@@ -643,11 +558,18 @@ class _LinearMixin:
         husk-reconsume analogue for a FieldAccess operand -- CARRIER-only (a
         bare leaf is left to its own use-site check, so its double-consume stays
         exactly one diagnostic)."""
-        leaves = self._field_linear_leaves(fa)
+        path = self._path_of(fa)
+        if path is None:
+            return False
+        return self._move_leaves_of(path, self.types.get(id(fa)), pos)
+
+    def _move_leaves_of(self, path: str, field_ty, pos: Pos) -> bool:
+        """The place-driven core of ``_move_field_leaves`` (same contract, same
+        order of checks), so a field projection and a pattern-binding VIEW of
+        the same field move through ONE body."""
+        leaves = self._linear_leaves_of(path, field_ty)
         if not leaves:
             return False
-        path = self._path_of(fa)
-        field_ty = self.types.get(id(fa))
         if path is not None and not self._ty_is_linear(field_ty):
             sub = self._subpath_consumed(path)
             if sub is not None:
@@ -710,6 +632,40 @@ class _LinearMixin:
             for p in [q for q in moved_set if q.startswith(prefix)]:
                 moved_set.discard(p)
 
+    def _transfer_borrowed_marker(self, value: "A.Expr", target: str) -> bool:
+        """THE one place the BORROWED marker's propagation onto a ``let`` /
+        ``var`` / assign target is decided. True iff ``target`` inherited it,
+        in which case the caller must not move or arm anything: a borrowed
+        source has no obligation to move (the caller still owns it) and
+        ``_linear_bind`` skips opening a fresh owned one under the alias.
+
+        Decided on the RESOLVED place, through the same ``_path_of`` every
+        other position-driven rule uses, so a conditional / match SELECTION
+        and a pattern-binding VIEW reach it exactly as a bare identifier
+        does. Spelled syntactically -- ``isinstance(value, Ident)`` reading
+        ``value.name``, plus a second copy on the field-projection path --
+        both alias forms slipped past every copy: the move seam is a NO-OP on
+        a borrowed source, so the bind that follows armed the target as a
+        FRESH OWNER and laundered the caller's still-owned value into a
+        second obligation. The escape rule at the aggregate-pack sites then
+        saw a name that was no longer borrowed, so laundering here defeated
+        it one statement later as well.
+
+        PREFIX membership, not whole-place: projecting a field of a borrowed
+        value (``let c = h.conn``) binds the new name borrowed too, which is
+        what the field-projection path decided for itself before this seam
+        existed. That is the opposite choice from
+        ``_linear_check_borrowed_escape``, deliberately: the escape rule
+        tests the whole place because a borrowed FIELD packed into an
+        aggregate is already rejected inside the move seam, so a prefix test
+        there would report one mistake twice. Here nothing else reports, and
+        a prefix IS the borrow."""
+        place = self._path_of(value)
+        if place is None or not self._prefix_borrowed(place):
+            return False
+        self._borrowed_linear.add(target)
+        return True
+
     def _linear_transfer_if_alias(self, value: "A.Expr", target: str) -> None:
         """When a ``let``/``var`` RHS is a bare identifier naming a still-
         live linear obligation (``let h2 = h``), MOVE the obligation off
@@ -733,7 +689,9 @@ class _LinearMixin:
         param) then propagates the borrowed marker onto ``target`` and does
         NOT move an obligation -- there is none to move, the caller still
         owns it -- so the alias is borrowed too and ``_linear_bind`` skips
-        opening a fresh owned obligation under it.
+        opening a fresh owned obligation under it. That propagation is
+        decided ONCE, on the RESOLVED place, by
+        ``_transfer_borrowed_marker`` below -- not per RHS shape.
 
         No-op (beyond clearing the target marker) unless the RHS is a bare
         ``Ident`` naming a borrowed value or one that currently holds a live
@@ -743,6 +701,16 @@ class _LinearMixin:
         check on the RHS itself."""
         from .. import capa_ast as _A
         self._borrowed_linear.discard(target)
+        if self._transfer_borrowed_marker(value, target):
+            return
+        if isinstance(value, (_A.IfExpr, _A.MatchExpr)) or (
+            self._selection_root_of(value) is not None
+        ):
+            # A conditional / match SELECTION RHS (bare, or projected off
+            # one): the ONE move seam owns the resolve-or-fail-closed verdict,
+            # so the bind below arms the target as the single owner.
+            self._move_linear_operand(value)
+            return
         if isinstance(value, _A.FieldAccess):
             # HOLE-1 (ii): a projection ``let c = s.conn`` / ``let t = b.two``
             # MOVES the field's linear subtree out of its carrier -- poison the
@@ -750,16 +718,7 @@ class _LinearMixin:
             # ``_linear_bind`` arm ``target`` as the fresh owner. Driven by the
             # leaf-set enumerator so a bare leaf and a whole carrier field move
             # identically (covers ``let`` + ``var`` + name-reassign at once).
-            leaves = self._field_linear_leaves(value)
-            if not leaves:
-                return
-            place = self._path_of(value)
-            # WARNING-5: projecting a field of a BORROWED value binds the
-            # new name BORROWED too (the caller still owns it), so
-            # ``_linear_bind`` skips arming an owned obligation and a later
-            # consume of the name routes into the borrowed guard.
-            if self._prefix_borrowed(place):
-                self._borrowed_linear.add(target)
+            if not self._field_linear_leaves(value):
                 return
             self._move_field_leaves(value, value.pos)
             return
@@ -775,10 +734,17 @@ class _LinearMixin:
             return
         if not isinstance(value, _A.Ident):
             return
-        if value.name in self._borrowed_linear:
-            self._borrowed_linear.add(target)
+        place = self._path_of(value)
+        if place != value.name:
+            # The RHS is a pattern-binding VIEW of another place (a ``match``
+            # arm binder): the obligation lives at the place it views, so move
+            # THAT through the one seam rather than opening a second one here.
+            self._move_linear_operand(value)
             return
-        if value.name in self._live_linear:
+        # Past this point the RESOLVED place and the spelled name are the same
+        # string, proven by the test above, so keying on either is keying on
+        # the resolved place -- ``place`` is used to say so.
+        if place in self._live_linear:
             # Carry any partially-moved sub-path onto the alias BEFORE the
             # whole obligation transfers, so the tail of an alias chain (whose
             # husk head re-armed it live) inherits the moved-out field and a
@@ -808,6 +774,160 @@ class _LinearMixin:
             # husk through ``target`` (or the next link of a chain) is rejected
             # exactly as it is on the source.
             self._carry_moved_subpaths(value.name, target)
+
+    # ---- the ONE transfer-operand rule ---------------------------
+
+    def _move_transfer_operand(self, value: "A.Expr", pos: Pos) -> bool:
+        """Move a TRANSFER operand -- a ``return`` value, a ``become`` value, a
+        ``consume self`` receiver, a ``consume`` argument -- through the ONE
+        move seam, and apply the ONE borrowed-transfer reject the four
+        positions share.
+
+        The seam deliberately returns False for a BORROWED bare value (its
+        contract: the caller supplies the wording, because the aggregate-pack
+        position words it differently). That reject used to be spelled out at
+        each transfer position as ``isinstance(value, Ident) and value.name in
+        _borrowed_linear``, which is a SYNTACTIC test: a borrowed value reached
+        through a pattern-binding view or a conditional selection matched none
+        of the four copies and was silently transferred. Deciding it on the
+        RESOLVED place instead, in one place, closes all four at once."""
+        if self._move_linear_operand(value, pos=pos):
+            return True
+        place = self._path_of(value)
+        if place is None or place not in self._borrowed_linear:
+            return False
+        if self._reject_linear_capture(place, pos):
+            return True
+        self._linear_discharge(place, pos)
+        return True
+
+    # ---- the ONE pattern-binding seam ----------------------------
+
+    def _linear_bind_pattern_own(
+        self, p: "A.Pattern", value: "A.Expr", ty: Optional[Ty], pos: Pos,
+    ) -> None:
+        """Record the linear consequence of an OWNING binding -- a ``let``,
+        whose bound names outlive the statement, so the obligation TRANSFERS
+        onto them.
+
+        A bare ``IdentPat`` is the shape ``let h = open()`` / ``let h2 = h``
+        already used: move any aliased source, then arm the name. A
+        DESTRUCTURING ``let Box { c: inner } = b`` binds each field name to
+        the corresponding field PLACE, so it is exactly the projection
+        ``let inner = b.c`` per field and moves the field out of its carrier
+        -- the shape that previously bound nothing at all and left the
+        carrier consumable a second time through its original name. The
+        field's type is read back from the symbol the pattern binder just
+        defined, so this seam never re-derives a field type."""
+        from .. import capa_ast as _A
+        if isinstance(p, _A.IdentPat):
+            self._linear_transfer_if_alias(value, p.name)
+            self._linear_bind(p.name, ty, pos)
+            return
+        if isinstance(p, _A.WildcardPat):
+            self._linear_check_anonymous_drop(value, ty, pos)
+            return
+        if not self._owned_obligation(ty):
+            return
+        if isinstance(p, _A.StructPat):
+            for fname, fpat in p.fields:
+                if fpat is None:
+                    bound = fname
+                elif isinstance(fpat, _A.IdentPat):
+                    bound = fpat.name
+                elif isinstance(fpat, _A.WildcardPat):
+                    continue
+                else:
+                    self._reject_unresolvable_binding(p.pos)
+                    return
+                sym = self.scope.lookup_local(bound)
+                sub_ty = sym.ty if sym is not None else None
+                proj = _A.FieldAccess(
+                    pos=p.pos, receiver=value, field_name=fname,
+                )
+                self.types[id(proj)] = sub_ty
+                self._linear_transfer_if_alias(proj, bound)
+                self._linear_bind(bound, sub_ty, pos)
+            return
+        if self._pattern_has_binding(p):
+            self._reject_unresolvable_binding(p.pos)
+
+    def _linear_bind_pattern_view(
+        self, p: "A.Pattern", source: "A.Expr", ty: Optional[Ty], pos: Pos,
+    ) -> None:
+        """Record the linear consequence of a VIEWING binding -- a ``match``
+        arm binder, whose names live only inside the arm while the scrutinee
+        keeps the obligation.
+
+        This is the seam the whole match-arm class turns on. The binder is NOT
+        a second obligation: it is registered in ``_linear_alias`` as a view of
+        the scrutinee's place, so consuming it, projecting a field off it,
+        returning it, packing it, or re-reading it after a consume all resolve
+        -- through the single ``_path_of`` -- to the scrutinee. When the
+        scrutinee is a genuinely FRESH value instead (``match mkbox() { v ->
+        ... }``) the binder is the only owner, so it is armed as one. When the
+        scrutinee resolves to neither (an unsummarisable call, arms that
+        disagree) the binding FAILS CLOSED, because a binder whose owner the
+        compiler cannot name could be consumed once through the binder and
+        again through the original."""
+        if not self._owned_obligation(ty):
+            return
+        bound = set(self.scope.symbols)
+        if not bound:
+            # A literal / wildcard arm binds nothing: the obligation simply
+            # stays under the scrutinee's own name, as it does today.
+            return
+        cls = self._classify_selection_value(source)
+        if cls[0] == "place":
+            views = self._pattern_view_places(p, cls[1])
+            if views is not None and set(views) == bound:
+                self._linear_alias.update(views)
+                return
+        elif cls[0] == "fresh":
+            from .. import capa_ast as _A
+            if isinstance(p, _A.IdentPat):
+                self._linear_bind(p.name, ty, pos)
+                return
+        self._reject_unresolvable_binding(pos)
+
+    def _pattern_view_places(self, p: "A.Pattern", place: str):
+        """Map each name ``p`` binds to the PLACE it views, given the
+        scrutinee's place. ``None`` when a shape cannot be mapped, which the
+        caller turns into the fail-closed reject."""
+        from .. import capa_ast as _A
+        if isinstance(p, _A.IdentPat):
+            return {p.name: place}
+        if isinstance(p, _A.WildcardPat):
+            return {}
+        if isinstance(p, _A.StructPat):
+            out: dict = {}
+            for fname, fpat in p.fields:
+                sub = f"{place}.{fname}"
+                if fpat is None:
+                    out[fname] = sub
+                    continue
+                nested = self._pattern_view_places(fpat, sub)
+                if nested is None:
+                    return None
+                out.update(nested)
+            return out
+        if isinstance(p, _A.LiteralPat):
+            return {}
+        return None
+
+    def _reject_unresolvable_binding(self, pos: Pos) -> None:
+        """The fail-closed verdict for a binding over a must-consume value
+        whose single owner cannot be named. Rejecting is the conservative
+        side: accepting would let the value be consumed through the binder AND
+        through whatever else still names it."""
+        self._err(
+            "a linear/typestate value cannot be bound by this pattern: the "
+            "compiler cannot tell which single owner each bound name denotes, "
+            "so consuming through the binding could free the value twice -- "
+            "bind the whole value to one name (e.g. `v -> ...`) and project "
+            "its fields from that name",
+            pos,
+        )
 
     def _linear_reassign(self, name: str, ty: Optional[Ty], pos: Pos) -> None:
         """Handle ``h = <expr>`` re-assignment to an existing name.
@@ -869,19 +989,24 @@ class _LinearMixin:
         We flag it at the drop site with the same intent as the named
         case. ``ty`` is the value's type as computed by ``_check_expr``.
 
-        If the dropped expression is a bare identifier naming a still
-        live linear binding (``let _ = h``), discharge that binding too:
-        the value has moved into the anonymous slot and is reported once
-        here, not again at function exit.
+        If the dropped expression denotes a still live linear PLACE
+        (``let _ = h``), discharge that binding too: the value has moved
+        into the anonymous slot and is reported once here, not again at
+        function exit. The place is taken from ``_path_of``, the one
+        resolver, so an alias spelling of the same drop -- a conditional
+        selection or a pattern-binding view -- pops the SAME binding. Popped
+        by ``expr.name`` instead, an alias spelling left the binding live
+        and the value was reported a second time at scope exit: one mistake,
+        two diagnostics.
 
         Gated on ``_owned_obligation`` (D), so dropping a CARRIER-returning
         call as a bare statement / ``let _ = make_box()`` -- which leaks the
         struct's linear field -- is caught, not just a bare linear value."""
         if not self._owned_obligation(ty):
             return
-        from .. import capa_ast as _A
-        if isinstance(expr, _A.Ident):
-            self._live_linear.pop(expr.name, None)
+        place = self._path_of(expr)
+        if place is not None:
+            self._live_linear.pop(place, None)
         self._err(
             "linear value is dropped without being consumed; a "
             "`linear type` / typestate value must be passed to a "
@@ -906,12 +1031,24 @@ class _LinearMixin:
         is neither a consume position nor a bare-identifier return), so it
         gets an explicit check here, mirroring the owned-value leak-at-exit
         protection the analyzer already applies to an OWNED value packed
-        the same way."""
-        from .. import capa_ast as _A
-        if isinstance(expr, _A.Ident) and expr.name in self._borrowed_linear:
+        the same way.
+
+        Decides on the RESOLVED place, through the same ``_path_of`` every
+        other position-driven rule uses, so a pattern-binding view and a
+        conditional selection reach it exactly as a bare identifier does.
+        Spelled syntactically it was laundered by both alias forms, at every
+        pack site, while the identical direct spelling was rejected.
+
+        WHOLE-place only, deliberately: a borrowed FIELD (``p.conn``) packed
+        here is already rejected inside the move seam by
+        ``_linear_move_field``'s own borrowed guard, so testing a prefix here
+        would report one mistake twice. The division of labour between this
+        rule and the move seam is unchanged; only the resolution is."""
+        place = self._path_of(expr)
+        if place is not None and place in self._borrowed_linear:
             self._err(
                 f"cannot pack borrowed linear/typestate value "
-                f"{expr.name!r} into an aggregate; the caller retains "
+                f"{place!r} into an aggregate; the caller retains "
                 f"ownership -- declare the parameter `consume` to take "
                 f"ownership",
                 pos,

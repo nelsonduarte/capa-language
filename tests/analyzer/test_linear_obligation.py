@@ -1415,22 +1415,31 @@ class TestLinearMovePaths(unittest.TestCase):
 
 
 class TestLinearConditionalAlias(unittest.TestCase):
-    """Finding 1: a linear/typestate value cannot flow through an if/match
-    EXPRESSION whose arm selects an existing place.
+    """A linear/typestate value selected through an if/match EXPRESSION.
 
-    The move / consume / return / receiver seams recognise only a bare
+    The move / consume / return / receiver seams recognised only a bare
     ``Ident`` / ``FieldAccess`` node, so an ``if`` / ``match`` wrapper that
     yields a linear place was invisible to them: binding, consuming, or
     returning the wrapper opened a SECOND obligation on the same runtime
-    value, a double-free. ``_check_linear_conditional_alias`` bars it at a
-    single ``_check_expr`` site, covering the bind RHS, consume argument,
-    ``consume self`` receiver, return value, ``become`` value, and struct-
-    literal element uniformly.
+    value, a double-free. A single position-independent bar used to reject
+    every such wrapper at one ``_check_expr`` site.
 
-    The bar is PRECISE and syntactic: only an ``Ident`` / linear-rooted
-    ``FieldAccess`` arm (recursing through nested wrappers) is barred, so the
-    legitimate fresh-factory conditional (arms are calls) stays legal, and a
-    non-linear conditional (String / Int / Option / plain struct) is untouched.
+    That bar was replaced by RESOLUTION: the selection's outcome is computed
+    once, where the arms have been checked, and read back through
+    ``_path_of`` by every position-driven rule. So the reject now comes from
+    the rule the program actually violates, and says which value:
+
+    * a selection whose arms hand over the SAME place IS that place, so
+      reusing it afterwards is an ordinary use-after-consume naming the
+      value, and consuming it exactly ONCE is legal (the bar rejected that
+      too -- `test_nested_wrapper_form` below is the case, and it now
+      compiles and closes its resource once on all three backends);
+    * a selection over a BORROWED value reports the borrow, with the wording
+      the direct spelling already used;
+    * a selection naming DIFFERENT places, or one arm that cannot be
+      resolved, keeps the fail-closed selection reject, because one branch
+      would leak -- `test_selection_of_distinct_places_rejected` pins it.
+
     Both facets (``linear type`` and ``typestate``) are exercised; the reject
     parity across the three backends is pinned by ``test_ir_wasm_parity``."""
 
@@ -1462,78 +1471,123 @@ class TestLinearConditionalAlias(unittest.TestCase):
         return [e for e in errors_of(body) if "never used" not in e]
 
     def _assert_barred(self, body: str) -> None:
+        """The fail-closed SELECTION reject, for a selection that cannot be
+        resolved to one place."""
         errs = self._errs(body)
         self.assertTrue(any(self._MSG in e for e in errs), errs)
 
+    def _assert_says(self, body: str, needle: str) -> None:
+        """Rejected, and the diagnostic names the value or the borrow. The
+        message is asserted rather than only the verdict because the whole
+        point of resolving the operand is WHICH rule fires: a generic bar
+        would still reject these and say nothing useful."""
+        errs = self._errs(body)
+        self.assertTrue(any(needle in e for e in errs), errs)
+
+    def _assert_reuse_of(self, body: str, name: str) -> None:
+        """Rejected as an ordinary use-after-consume NAMING ``name``."""
+        self._assert_says(
+            body, f"linear value {name!r} was consumed earlier")
+
+    def _assert_borrowed_value(self, body: str, name: str) -> None:
+        """Rejected by the shared borrowed-TRANSFER reject."""
+        self._assert_says(
+            body,
+            f"cannot consume or transfer borrowed linear/typestate value "
+            f"{name!r}")
+
+    def _assert_borrowed_field(self, body: str, place: str) -> None:
+        """Rejected by the borrowed-FIELD reject inside the move seam."""
+        self._assert_says(
+            body,
+            f"cannot consume or move linear/typestate field {place!r}")
+
     # ---- must REJECT: whole value / field / borrowed / all sites ----
+    #
+    # Each of these still rejects, and now asserts WHICH rule fires. Before
+    # the selection was resolved they all produced the same generic
+    # "cannot be selected through a conditional" text, which said nothing
+    # about what was wrong with the program.
 
     def test_1a_whole_value_via_if_bind(self):
         # ``let t = if true then s else s; close(s); close(t)`` double-frees.
-        self._assert_barred(
+        # Both arms hand over ``s``, so ``t`` IS ``s`` and the second close
+        # is an ordinary use-after-consume that NAMES the value.
+        self._assert_reuse_of(
             self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
             "    let t = if true then s else s\n"
-            "    close(s)\n    close(t)\n"
+            "    close(s)\n    close(t)\n", "s"
         )
 
     def test_a3_whole_value_via_match_bind(self):
-        self._assert_barred(
+        self._assert_reuse_of(
             self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
             "    let t = match 0\n        _ -> s\n"
-            "    close(s)\n    close(t)\n"
+            "    close(s)\n    close(t)\n", "s"
         )
 
     def test_1b_linear_field_via_if(self):
         # b1: a linear field of a non-linear carrier, selected through if.
-        self._assert_barred(
+        # The selection resolves to the FIELD place, so the reject names it.
+        self._assert_reuse_of(
             self._NL + "fun main(_s: Stdio)\n    let s = mks()\n"
             "    let c = if true then s.conn else s.conn\n"
-            "    close(c)\n    close(s.conn)\n"
+            "    close(c)\n    close(s.conn)\n", "s.conn"
         )
 
     def test_1c_borrowed_carrier_field_via_if_return(self):
-        # b2: a borrowed carrier's field returned through if bypasses the
-        # borrow guard; the wrapper is barred outright.
-        self._assert_barred(
+        # b2: a borrowed carrier's field returned through if bypassed the
+        # borrow guard. Resolved, it reaches the borrowed-FIELD reject with
+        # the wording the direct spelling ``return s.conn`` already used.
+        self._assert_borrowed_field(
             self._NL + "fun bad(s: S) -> Conn\n"
-            "    return if true then s.conn else s.conn\n"
+            "    return if true then s.conn else s.conn\n", "s.conn"
         )
 
     def test_consume_arg_form(self):
         # ``close(if c then s else s)`` -- the wrapper as a consume argument.
-        self._assert_barred(
+        self._assert_reuse_of(
             self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
-            "    close(if true then s else s)\n    close(s)\n"
+            "    close(if true then s else s)\n    close(s)\n", "s"
         )
 
     def test_return_form_on_borrowed_param(self):
         # ``return if c then s else s`` on a borrowed param -- borrow bypass.
-        self._assert_barred(
+        # Reaches the shared borrowed-TRANSFER reject, naming the parameter.
+        self._assert_borrowed_value(
             self._LIN + "fun bad(c: Conn) -> Conn\n"
-            "    return if true then c else c\n"
+            "    return if true then c else c\n", "c"
         )
 
     def test_nested_wrapper_form(self):
         # ``if a then s else (if b then s else s)`` -- a place at depth.
-        self._assert_barred(
+        # EVERY arm hands over ``s`` and ``t`` is consumed exactly ONCE, so
+        # nothing doubles and nothing leaks: this is a CORRECT program and
+        # it must COMPILE. The old position-independent bar rejected it
+        # because it could not tell one place from two; a resolved selection
+        # can. Verified to run byte-identically on the legacy, ``--ir`` and
+        # ``--wasm`` backends, closing its resource exactly once.
+        r = check(
             self._LIN + "fun main(_s: Stdio)\n    let s = open(1)\n"
             "    let t = if true then s else (if false then s else s)\n"
             "    close(t)\n"
         )
+        self.assertTrue(r.ok, [e.message for e in r.errors])
 
     def test_claimdesk_double_disbursement_typestate(self):
         # The claimdesk shape: one authorization settled twice via an alias
         # laundered through a conditional.
-        self._assert_barred(
+        self._assert_reuse_of(
             self._TS + "fun main(_s: Stdio)\n    let authz = mk()\n"
             "    let dup = if true then authz else authz\n"
-            "    settle(authz)\n    settle(dup)\n"
+            "    settle(authz)\n    settle(dup)\n", "authz"
         )
 
     def test_typestate_whole_value_via_if_bind(self):
-        self._assert_barred(
+        self._assert_reuse_of(
             self._TS + "fun main(_s: Stdio)\n    let a = mk()\n"
             "    let t = if true then a else a\n"
-            "    settle(a)\n    settle(t)\n"
+            "    settle(a)\n    settle(t)\n", "a"
         )
 
     def test_selection_of_distinct_places_rejected(self):

@@ -53,17 +53,12 @@ class _DisciplineMixin:
             if not consuming:
                 continue
             # Roadmap S1: a ``consume`` param discharges a linear obligation.
-            # A BORROWED bare identifier consumed here is a transfer the
-            # callee may not make (the caller still owns it); route it into
-            # the discharge guard, which rejects it after the capture check.
-            if isinstance(arg, A.Ident) and arg.name in self._borrowed_linear:
-                if not self._reject_linear_capture(arg.name, arg.pos):
-                    self._linear_discharge(arg.name, arg.pos)
-                continue
             # An OWNED linear identifier or a linear FIELD place
-            # (``close(h)`` / ``close(s.conn)``) is moved out through the
-            # ONE move seam shared with the aggregate-pack sites.
-            if self._move_linear_operand(arg):
+            # (``close(h)`` / ``close(s.conn)``) is moved out through the ONE
+            # move seam shared with the aggregate-pack sites; a BORROWED value
+            # consumed here is a transfer the callee may not make (the caller
+            # still owns it) and routes into the shared transfer guard.
+            if self._move_transfer_operand(arg, arg.pos):
                 continue
             path = self._consumable_cap_path(arg)
             if path is None:
@@ -109,7 +104,9 @@ class _DisciplineMixin:
         )
         return True
 
-    def _move_linear_operand(self, expr: A.Expr) -> bool:
+    def _move_linear_operand(
+        self, expr: A.Expr, pos: Optional[Pos] = None,
+    ) -> bool:
         """THE single seam that MOVES a bare OWNED linear/typestate value or
         an owned linear FIELD out at ``expr`` -- discharging the ident's
         obligation (it has been consumed / packed and is single-owner
@@ -136,46 +133,184 @@ class _DisciplineMixin:
         raised in place by the seam."""
         if isinstance(expr, (A.Call, A.MethodCall)):
             for origin_arg in self._call_result_alias_args(expr):
-                if not self._move_linear_operand(origin_arg) and (
-                    isinstance(origin_arg, A.Ident)
-                    and origin_arg.name in self._borrowed_linear
-                ):
-                    # ``_move_linear_operand`` returns False for a BORROWED
-                    # bare ident (its contract: each caller applies its own
-                    # borrowed reject). A borrowed value laundered through the
-                    # call is the caller's still-owned value, so route it into
-                    # the SAME borrowed-transfer guard the direct move
-                    # (``return c`` / ``close(c)``) applies -- otherwise
-                    # ``return id(c)`` / ``close(id(c))`` on a borrowed ``c``
-                    # would silently launder it (a double-free).
-                    self._linear_discharge(origin_arg.name, origin_arg.pos)
+                # A laundering call hands its argument on exactly as a
+                # ``return`` / ``consume`` argument does, so the argument is a
+                # TRANSFER operand: route it through the one transfer seam,
+                # which moves an owned operand and applies the shared
+                # borrowed reject on the RESOLVED place. Deciding the
+                # borrowed half here on ``isinstance(arg, Ident)`` and
+                # ``arg.name`` instead would be a second copy of that rule,
+                # and both alias spellings would slip past it -- so
+                # ``return id(if c then b else b)`` on a borrowed ``b`` would
+                # launder what ``return id(b)`` rejects.
+                self._move_transfer_operand(origin_arg, origin_arg.pos)
             return True
-        if isinstance(expr, A.Ident):
-            if expr.name not in self._live_linear:
+        if self._reject_selection_operand(expr):
+            return True
+        if isinstance(expr, (A.IfExpr, A.MatchExpr)):
+            out = self._selection_place.get(id(expr))
+            if out is not None and out[0] == "place":
+                # Every arm hands over the SAME place: the selection IS that
+                # place, so move it exactly once through this seam.
+                return self._move_linear_place(out[1], out[2], pos or expr.pos)
+            # Fresh (or a non-obligation selection): nothing existing moves.
+            return False
+        place = self._path_of(expr)
+        if place is None:
+            return False
+        return self._move_linear_place(
+            place, self._operand_leaf_ty(expr), pos or expr.pos,
+        )
+
+    def _operand_leaf_ty(self, expr: A.Expr):
+        """The type of the value a place-denoting operand yields. Taken from
+        the recorded expression type, falling back to the binding's declared
+        type for a bare identifier the walk has not typed."""
+        ty = self.types.get(id(expr))
+        if ty is None and isinstance(expr, A.Ident):
+            sym = self.scope.lookup(expr.name)
+            ty = sym.ty if sym is not None else None
+        return ty
+
+    def _move_linear_place(self, place: str, ty, pos) -> bool:
+        """Move the obligation held at the canonical ``place`` out. THE one
+        body behind every operand shape: a whole-value place discharges its
+        name; a FIELD place moves its linear leaf subtree out through the one
+        field-projection mover. Splitting on the PLACE -- not on the operand's
+        syntax -- is what lets a match-arm binder that VIEWS a carrier field
+        (``match b { Box { c: inner } -> close(inner) }``) move exactly the
+        field it names, with no per-shape branch."""
+        if "." not in place:
+            if place not in self._live_linear:
                 # A spent HUSK (all linear fields moved out, popped from the
                 # live set) cannot be whole-consumed / re-packed again -- that
                 # re-transfers an already-moved field (double-free).
-                return self._reject_husk_reconsume(expr.name, expr.pos)
-            if self._reject_linear_capture(expr.name, expr.pos):
+                return self._reject_husk_reconsume(place, pos)
+            if self._reject_linear_capture(place, pos):
                 return True
-            self._linear_discharge(expr.name, expr.pos)
+            self._linear_discharge(place, pos)
             return True
-        if isinstance(expr, A.FieldAccess):
-            # A field projection is moved out through the ONE field-projection
-            # mover, driven by the leaf-set enumerator: a bare leaf moves its
-            # one place, a CARRIER field moves its whole subtree. This single
-            # widening sweeps in every caller of this seam (consume-arg, the
-            # struct-literal + typestate-``new`` packs, and the field-store RHS).
-            leaves = self._field_linear_leaves(expr)
-            if not leaves:
-                return False
-            place = self._path_of(expr)
-            root = place.split(".", 1)[0]
-            if self._reject_linear_capture(root, expr.pos, place=place):
-                return True
-            self._move_field_leaves(expr, expr.pos)
+        # A field projection is moved out through the ONE field-projection
+        # mover, driven by the leaf-set enumerator: a bare leaf moves its
+        # one place, a CARRIER field moves its whole subtree. This single
+        # widening sweeps in every caller of this seam (consume-arg, the
+        # struct-literal + typestate-``new`` packs, and the field-store RHS).
+        if not self._linear_leaves_of(place, ty):
+            return False
+        root = place.split(".", 1)[0]
+        if self._reject_linear_capture(root, pos, place=place):
             return True
-        return False
+        self._move_leaves_of(place, ty, pos)
+        return True
+
+    # ---- fail-closed reject of an unresolvable selection ----------------
+
+    def _reject_selection_operand(self, expr: A.Expr) -> bool:
+        """True (and reports once) iff ``expr`` is, or projects off, an
+        ``if`` / ``match`` selection the classifier could not resolve to a
+        single place or to a fresh value. This is the ONE site the fail-closed
+        verdict is reported at, because a move position is the only place
+        where silently losing the obligation is unsound: a mere READ of an
+        unresolvable selection stays legal."""
+        root = (
+            expr if isinstance(expr, (A.IfExpr, A.MatchExpr))
+            else self._selection_root_of(expr)
+        )
+        if root is None:
+            return False
+        out = self._selection_place.get(id(root))
+        if out is None or out[0] != "reject":
+            return False
+        if id(root) in self._linear_conditional_reported:
+            return True
+        self._linear_conditional_reported.add(id(root))
+        self._err(
+            "a linear/typestate value cannot be selected through a "
+            "conditional / match expression; bind it directly (e.g. "
+            "`let x = ...` in each branch) or open a fresh value per branch, "
+            "so each resource has a single owner",
+            root.pos,
+        )
+        return True
+
+    # ---- the ONE selection classifier ----------------------------------
+
+    def _classify_selection_value(self, e) -> tuple:
+        """Classify ONE arm value of a linear/typestate selection, WHILE its
+        scope is live, as ``("place", expr)`` / ``("fresh",)`` /
+        ``("reject",)``.
+
+        A place is anything ``_path_of`` resolves -- an identifier, a field
+        projection, a pattern-binding VIEW, or a nested selection already
+        classified -- so the arm binder and the nested wrapper need no second
+        mechanism here. FRESHNESS of a call is decided by the ONE acceptance
+        rule sibling A already applies to a call at a move position (provably
+        fresh, or un-summarisable with no live-obligation argument), so a call
+        does not change verdict merely by being wrapped in a conditional.
+        Everything else fails CLOSED."""
+        if isinstance(e, (A.IntLit, A.StringLit, A.BoolLit, A.FloatLit,
+                          A.CharLit, A.UnitLit, A.StructLit, A.Become)):
+            return ("fresh",)
+        if isinstance(e, (A.Call, A.MethodCall)):
+            if self._provably_fresh(e):
+                return ("fresh",)
+            _key, unresolved = self._e3_callee_key(e)
+            if unresolved and not self._e3_backstop_fires(e):
+                return ("fresh",)
+            return ("reject",)
+        if isinstance(e, (A.IfExpr, A.MatchExpr)):
+            return self._selection_place.get(id(e), ("reject",))
+        place = self._path_of(e)
+        if place is None:
+            return ("reject",)
+        # The RESOLVED PLACE and its type, not the arm's node: the arm may
+        # spell a pattern-binding VIEW (``v.c``) that only resolves while the
+        # arm's aliases are live, and the move position that consumes the
+        # selection runs after the arm scope has been popped. Carrying the
+        # answer, rather than something that must be re-resolved later, is
+        # what makes the fact stable.
+        return ("place", place, self._operand_leaf_ty(e))
+
+    @staticmethod
+    def _combine_selection(parts: list) -> tuple:
+        """Combine the arm classifications of ONE selection into its outcome.
+
+        Fail-closed by construction, and deliberately ONE function: collapsing
+        same-place arms and deciding the verdict were split in an earlier
+        build, and the halves disagreed -- ``if flag then a else b`` resolved
+        to the FIRST place and shipped a real double-free. Deduplication and
+        the verdict now share a body, so the rule cannot be half-applied.
+
+        - no arms at all, or any arm the classifier could not resolve: REJECT;
+        - arms naming MORE THAN ONE distinct place: REJECT, because which
+          obligation moves would depend on the runtime branch;
+        - a MIX of an existing place and a fresh value: REJECT, because one
+          branch would move an obligation and the other would not;
+        - every arm fresh: FRESH, nothing existing moves;
+        - every arm naming the SAME place: that place, moved exactly once."""
+        if not parts:
+            return ("reject",)
+        if any(p[0] == "reject" for p in parts):
+            return ("reject",)
+        places: dict = {}
+        for p in parts:
+            if p[0] == "place":
+                places.setdefault(p[1], p)
+        if not places:
+            return ("fresh",)
+        if len(places) > 1:
+            return ("reject",)
+        if any(p[0] != "place" for p in parts):
+            return ("reject",)
+        return next(iter(places.values()))
+
+    def _record_selection(self, node, ty, parts: list) -> None:
+        """Record the selection outcome for ``node``. Gated on the ONE
+        obligation predicate, so a selection over a String / Int / plain
+        struct records nothing and costs nothing."""
+        if not self._owned_obligation(ty):
+            return
+        self._selection_place[id(node)] = self._combine_selection(parts)
 
     def _substitute_self(self, ty: Ty, self_ty: Ty) -> Ty:
         """Substitute ``TyName('Self')`` in ``ty`` with ``self_ty``.
@@ -273,18 +408,60 @@ class _DisciplineMixin:
         return None
 
     def _path_of(self, expr: A.Expr) -> Optional[str]:
-        """Canonical dotted-path string for an Ident-rooted
-        FieldAccess chain (``a``, ``a.b``, ``a.b.c``). Returns
-        ``None`` for any other shape so the aliasing check stays
-        conservative on non-static paths (calls, indices, ...)."""
+        """Canonical dotted-path string for a place-denoting expression
+        (``a``, ``a.b``, ``a.b.c``). Returns ``None`` for any shape that does
+        not denote an existing place, so the aliasing check stays conservative
+        on non-static paths (calls, indices, ...).
+
+        THE one place the two binding-time facts are resolved, so every
+        place-keyed operation inherits them instead of re-deriving them:
+
+        - an identifier bound by a PATTERN as a VIEW of an existing place (a
+          ``match`` arm binder) resolves to that place (``_linear_alias``), so
+          consuming / projecting / re-reading the binder is the same operation
+          on the scrutinee it names;
+        - an ``if`` / ``match`` EXPRESSION whose arms all hand over the SAME
+          place resolves to that place (``_selection_place``), so a projection
+          off a selection (``(if c then o else o).inner``) is an ordinary
+          field path and every FieldAccess site closes at once.
+
+        A selection classified fresh or fail-closed has NO place and yields
+        ``None``; the fail-closed REJECT is reported at the move seam, which
+        is the only site where losing the value is unsound."""
         if isinstance(expr, A.Ident):
-            return expr.name
+            return self._linear_alias_root(expr.name)
         if isinstance(expr, A.FieldAccess):
             base = self._path_of(expr.receiver)
             if base is None:
                 return None
             return f"{base}.{expr.field_name}"
+        if isinstance(expr, (A.IfExpr, A.MatchExpr)):
+            out = self._selection_place.get(id(expr))
+            if out is not None and out[0] == "place":
+                return out[1]
+            return None
         return None
+
+    def _linear_alias_root(self, name: str) -> str:
+        """Resolve a pattern-binding VIEW name to the canonical place it
+        denotes, following a chain of views (an arm binder of an arm binder)
+        to a fixed point. Cycle-guarded, and the identity for every name that
+        is not a view -- which is every name in a program with no pattern
+        binding over an owned obligation, so this is invisible until the
+        binding seam records something."""
+        seen: set = set()
+        while name in self._linear_alias and name not in seen:
+            seen.add(name)
+            name = self._linear_alias[name]
+        return name
+
+    def _selection_root_of(self, expr: A.Expr):
+        """The ``if`` / ``match`` node at the root of a (possibly empty) chain
+        of field projections, or ``None``. ``(if c then o else o).inner.fd``
+        roots at the ``if``; ``o.inner`` roots at nothing."""
+        while isinstance(expr, A.FieldAccess):
+            expr = expr.receiver
+        return expr if isinstance(expr, (A.IfExpr, A.MatchExpr)) else None
 
     def _ty_is_capability(self, ty: Ty) -> bool:
         """True iff ``ty`` is a built-in or user-declared

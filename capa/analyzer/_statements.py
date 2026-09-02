@@ -432,17 +432,13 @@ class _StatementsMixin:
         # bare identifier we treated as a move below in
         # ``_check_ident``; here the common ``let h = <call>`` case is
         # the obligation source.
-        if isinstance(s.pattern, A.IdentPat):
-            # ``let h2 = h`` aliasing a live linear value MOVES the
-            # obligation onto the new name (poisoning the source) so the
-            # value stays single-owner; without this the source and alias
-            # would each be independently consumable -> double-consume.
-            self._linear_transfer_if_alias(s.value, s.pattern.name)
-            self._linear_bind(s.pattern.name, actual, s.pos)
-        elif isinstance(s.pattern, A.WildcardPat):
-            # ``let _ = open()`` drops a linear value into a slot that
-            # holds no obligation; flag it like a named leak.
-            self._linear_check_anonymous_drop(s.value, actual, s.pos)
+        # ``let h2 = h`` aliasing a live linear value MOVES the obligation
+        # onto the new name (poisoning the source) so the value stays
+        # single-owner; a DESTRUCTURING ``let Box { c: inner } = b`` moves the
+        # field out of its carrier per bound name; ``let _ = open()`` drops the
+        # value into a slot that holds no obligation. All three are the ONE
+        # owning-binding seam.
+        self._linear_bind_pattern_own(s.pattern, s.value, actual, s.pos)
 
     def _check_var(self, s: A.VarStmt) -> None:
         from . import Symbol, SymbolKind
@@ -537,27 +533,23 @@ class _StatementsMixin:
     def _check_assign(self, s: A.AssignStmt) -> None:
         from . import SymbolKind
 
-        # Roadmap S1: the left side of ``h = ...`` is a WRITE target, not
-        # a use, so reading a poisoned (already-consumed) linear name here
-        # must not raise use-after-consume -- ``close(h); h = open()`` is
-        # the legitimate re-arm. Lift the poison on a bare-identifier
-        # target before evaluating it; ``_linear_reassign`` below restores
-        # the correct obligation state from the fresh RHS.
-        if isinstance(s.target, A.Ident) and s.target.name in self._consumed:
-            self._consumed.discard(s.target.name)
-            self._linear_names.discard(s.target.name)
-        # Same for a FIELD target: ``close(s.conn); s.conn = open()`` is the
-        # legitimate re-arm of a linear field after a prior consume/move, so
-        # lift the poison on that exact path before evaluating the write
-        # target. Remembered so the WARNING-3 drop check below treats this
-        # as a re-arm (not a drop of a live value).
+        # Roadmap S1: the left side of ``h = ...`` / ``s.conn = ...`` is a
+        # WRITE target, not a use, so reading a poisoned (already-consumed)
+        # linear place here must not raise use-after-consume --
+        # ``close(h); h = open()`` and ``close(s.conn); s.conn = open()``
+        # are both the legitimate re-arm. Lift the poison on the RESOLVED
+        # place before evaluating the target; ``_linear_reassign`` below
+        # restores the correct obligation state from the fresh RHS. One
+        # branch, through the one resolver, because a bare name and a field
+        # path are two spellings of one question -- asked separately, the
+        # two copies drifted apart, and only the field one recorded the
+        # re-arm the drop check below reads.
+        _tpath = self._path_of(s.target)
         _field_target_rearm = False
-        if isinstance(s.target, A.FieldAccess):
-            _tpath = self._path_of(s.target)
-            if _tpath is not None and _tpath in self._consumed:
-                _field_target_rearm = True
-                self._consumed.discard(_tpath)
-                self._linear_names.discard(_tpath)
+        if _tpath is not None and _tpath in self._consumed:
+            _field_target_rearm = isinstance(s.target, A.FieldAccess)
+            self._consumed.discard(_tpath)
+            self._linear_names.discard(_tpath)
         target_ty = self._check_expr(s.target)
         value_ty = self._check_expr(s.value)
         # Higher-order IFC: reassigning a secret-returning closure into a
@@ -1168,21 +1160,4 @@ class _StatementsMixin:
         linear/typestate argument (``return id(x)``) moves the aliased
         argument off its source through the ONE move seam, so the transfer is
         accounted for exactly once."""
-        if isinstance(value, (A.Call, A.MethodCall)):
-            self._move_linear_operand(value)
-        elif isinstance(value, A.Ident) and (
-            value.name in self._live_linear
-            or value.name in self._borrowed_linear
-        ):
-            self._linear_discharge(value.name, pos)
-        elif isinstance(value, A.Ident):
-            # Returning a spent HUSK (a carrier whose linear fields were all
-            # moved out) re-transfers an already-moved field to the caller --
-            # a double-free, caught by the same HOLE-1(iii) guard.
-            self._reject_husk_reconsume(value.name, pos)
-        elif isinstance(value, A.FieldAccess):
-            # ``return s.conn`` / ``return b.two`` transfers a linear FIELD (a
-            # bare leaf or a whole carrier subtree) to the caller; move it out
-            # through the ONE field-projection mover so it is not re-reported at
-            # exit, and a return of an already-moved carrier field is rejected.
-            self._move_field_leaves(value, pos)
+        self._move_transfer_operand(value, pos)

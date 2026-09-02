@@ -1179,10 +1179,6 @@ class _DispatchMixin:
             # A BORROWED bare identifier is the one case the seam deliberately
             # returns False for (its contract: the caller supplies the wording),
             # so route it into the same transfer guard the direct move uses.
-            if not self._move_linear_operand(e.receiver) and (
-                isinstance(e.receiver, A.Ident)
-                and e.receiver.name in self._borrowed_linear
-            ):
-                self._linear_discharge(e.receiver.name, e.receiver.pos)
+            self._move_transfer_operand(e.receiver, e.receiver.pos)
 
         return ret_ty
