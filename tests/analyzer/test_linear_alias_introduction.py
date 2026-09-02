@@ -904,5 +904,160 @@ class TestNoLaunderedSpelling(_Base):
                     )
 
 
+class TestRulesTheSuiteWasNotGuarding(_Base):
+    """Members for rules that the probe corpus exercised and NO test did.
+
+    Found by running each mutation against the test suite rather than against
+    a probe corpus. A mutation that a corpus catches but no test catches means
+    the rule is guarded by a file in a gitignored scratch directory and by
+    nothing CI runs, which for regression purposes is the same as unguarded.
+    Eight of seventeen mutations were in that state, six of them on rules with
+    real corpus witnesses.
+
+    The gap was one shape. Every binder test elsewhere in this module spells
+    the alias ``match 0 { _ -> a }``, a binder over an UNRELATED scrutinee,
+    whose outcome is recorded by ``_selection_place``. The rule those tests
+    never touched is the OTHER fact: ``match a { v -> ... }``, a binder that
+    VIEWS its scrutinee, recorded by ``_linear_alias`` and resolved by
+    ``_path_of``. Neutralising that resolution moves 32 corpus programs, eight
+    of them re-opening double-frees, and every test in this file still passed.
+
+    Each test below names the mutation it exists to catch, so a future reader
+    can tell whether removing it loses coverage.
+    """
+
+    # ---- M11 / M9: the pattern-binding VIEW and its resolution ----
+
+    def test_m11_binder_views_scrutinee_then_scrutinee_reused(self):
+        # ``match a { v -> close(v) }; close(a)``. The binder VIEWS ``a``, so
+        # consuming it consumes ``a`` and the later close is a double-free.
+        # Bites M11 (``_path_of`` stops resolving view aliases) and M9 (the
+        # binding seam stops recording the view).
+        self.assertRejects(
+            _LIN + "fun main(_s: Stdio)\n    let a = open()\n"
+            "    match a\n        v -> close(v)\n"
+            "    close(a)\n", "consumed earlier"
+        )
+
+    def test_m11_binder_views_carrier_field_then_carrier_sunk(self):
+        # ``match h { v -> close(v.c) }; sink(h)`` -- the view resolves to the
+        # carrier, so the field consumed through it is the carrier's own.
+        self.assertRejects(
+            _CARRIER + "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    match h\n        v -> close(v.c)\n"
+            "    sink(h)\n"
+        )
+
+    def test_m11_binder_view_over_a_borrowed_scrutinee(self):
+        # ``return match c { v -> v }`` on a BORROWED parameter: the view
+        # resolves to ``c``, so the return reaches the borrowed-transfer
+        # reject rather than transferring a value the caller still owns.
+        self.assertRejects(
+            _LIN + "fun bad(c: Conn) -> Conn\n"
+            "    return match c\n        v -> v\n",
+            "borrowed"
+        )
+
+    def test_m11_binder_view_at_a_consume_self_receiver(self):
+        # ``match h { v -> v.eat() }; sink(h)`` -- the view resolves at the
+        # receiver position too. Bites M13 as well as M11.
+        self.assertRejects(
+            _CARRIER + "impl Holder\n"
+            "    fun eat(consume self) -> Unit\n"
+            "        close(self.c)\n"
+            "        return ()\n"
+            "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    match h\n        v -> v.eat()\n"
+            "    sink(h)\n"
+        )
+
+    def test_m11_binder_view_consumed_once_is_accepted(self):
+        # The negative: viewing and consuming exactly once is correct, so the
+        # resolution must not turn a legal program into a double report.
+        self.assertAccepts(
+            _LIN + "fun main(_s: Stdio)\n    let a = open()\n"
+            "    match a\n        v -> close(v)\n"
+        )
+
+    # ---- M7: the resolved PLACE is carried, not the arm's own name ----
+
+    def test_m7_binder_over_a_field_scrutinee_resolves_to_the_field(self):
+        # ``match h.c { v -> close(v) }; close(h.c)``. The view resolves to
+        # the FIELD place ``h.c``, not to the binder name ``v``. Carrying the
+        # name instead (hazard D-1) poisons the wrong place, so the second
+        # close is not caught.
+        self.assertRejects(
+            _CARRIER + "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    match h.c\n        v -> close(v)\n"
+            "    close(h.c)\n"
+        )
+
+    def test_m7_two_matches_sharing_a_binder_name_stay_distinct(self):
+        # The mirror negative: if the arm's NAME were carried rather than the
+        # place, two matches using the same binder name would alias each
+        # other. Both resources are consumed exactly once here.
+        self.assertAccepts(
+            _CARRIER + "fun main(_s: Stdio)\n"
+            "    let h = mkh()\n    let k = mkh()\n"
+            "    match h\n        v -> close(v.c)\n"
+            "    match k\n        v -> close(v.c)\n"
+        )
+
+    # ---- M6: the fail-closed pattern-binding reject ----
+
+    def test_m6_or_pattern_binder_cannot_be_resolved_so_it_rejects(self):
+        # ``match b { v | v -> sink(v) }; sink(b)``. An or-pattern binder has
+        # no single owner to resolve to, so the binding fails CLOSED rather
+        # than being tracked as a fresh value.
+        self.assertRejects(
+            _CARRIER + "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    match h\n        v | v -> sink(v)\n"
+            "    sink(h)\n"
+        )
+
+    def test_m6_binder_over_an_unresolvable_call_scrutinee_rejects(self):
+        # ``match idb(b) { v -> sink(v) }; sink(b)`` -- the scrutinee is a
+        # generic passthrough, so what the binder views cannot be resolved.
+        self.assertRejects(
+            _CARRIER + "fun idb<T>(x: T) -> T\n    return x\n"
+            "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    match idb(h)\n        v -> sink(v)\n"
+            "    sink(h)\n"
+        )
+
+    # ---- M4 / M3: a non-fresh call arm, and any unresolved arm ----
+
+    def test_m4_a_generic_passthrough_call_arm_is_not_fresh(self):
+        # ``let t = match 0 { _ -> idc(a) }; close(t); close(a)``. The arm is
+        # a call whose result may alias its argument, so treating it as fresh
+        # loses the double-free.
+        self.assertRejects(
+            _LIN + "fun idc<T>(c: T) -> T\n    return c\n"
+            "fun main(_s: Stdio)\n    let a = open()\n"
+            "    let t = match 0\n        _ -> idc(a)\n"
+            "    close(t)\n    close(a)\n"
+        )
+
+    def test_m3_one_place_arm_and_one_unresolved_arm_fails_closed(self):
+        # ``if true then a else idc(a)`` mixes a place with a call that is
+        # not provably fresh, so the selection cannot be resolved to one
+        # place and must fail closed.
+        self.assertRejects(
+            _LIN + "fun idc(consume c: Conn) -> Conn\n    return c\n"
+            "fun main(_s: Stdio)\n    let a = open()\n"
+            "    let t = if true then a else idc(a)\n"
+            "    close(t)\n"
+        )
+
+    def test_m4_a_genuinely_fresh_factory_arm_stays_accepted(self):
+        # The negative that keeps the freshness rule from being "reject every
+        # call": a call the analyzer can prove fresh is still fresh.
+        self.assertAccepts(
+            _LIN + "fun main(_s: Stdio)\n"
+            "    let t = match 0\n        _ -> open()\n"
+            "    close(t)\n"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
