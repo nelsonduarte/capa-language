@@ -492,18 +492,55 @@ class _Fake:
                 % (module_name, fn_name),
             )
 
-    def test_the_detector_sees_every_analyzer_module(self):
-        """A guard that silently scanned nothing would pass forever. Pin that
-        it parsed the real package and that the modules the class lives in
-        are among them."""
+    def test_the_detector_visits_every_analyzer_module(self):
+        """A guard that silently scanned nothing would pass forever, so this
+        pins what the detector ACTUALLY traversed.
+
+        The version this replaces re-implemented its own ``os.listdir`` and
+        ``.py`` filter and compared that against itself, never touching the
+        detector. It was a SECOND HAND-SYNCED COPY of the enumeration, which
+        is the exact defect this release exists to remove, sitting inside the
+        guard built against that defect. MEASURED vacuous rather than argued:
+        narrowing the detector's own extension filter so it scanned ZERO
+        modules left all eleven tests in this module GREEN, including that one.
+
+        So the property here is OBSERVATION, not re-derivation. The per-file
+        entry point is spied on, the top-level scan is invoked for real, and
+        the set of module names it was actually called with must EQUAL the set
+        of Python files in the analyzer directory. Nothing skipped, nothing
+        invented, and the expected set is read from the directory rather than
+        listed here, so adding a module to the package cannot silently leave
+        it unscanned.
+        """
         adir = _analyzer_dir()
-        mods = [n for n in os.listdir(adir) if n.endswith(".py")]
-        self.assertGreater(len(mods), 5, mods)
+        expected = {n for n in os.listdir(adir) if n.endswith(".py")}
+        self.assertGreater(len(expected), 5, sorted(expected))
+
+        import tests.analyzer.test_single_use_resolution_guard as _self
+        visited = []
+        real = _self.find_in_source
+
+        def _spy(module_name, src):
+            visited.append(module_name)
+            return real(module_name, src)
+
+        _self.find_in_source = _spy
+        try:
+            _self.find_syntactic_single_use_rules(adir)
+        finally:
+            _self.find_in_source = real
+
+        self.assertEqual(
+            sorted(visited), sorted(expected),
+            "the detector did not traverse what it claims to: it visited %r, "
+            "the analyzer package contains %r"
+            % (sorted(visited), sorted(expected)),
+        )
+        # And the modules this defect class lives in are genuinely among them,
+        # so a package that shrank to a couple of files could not pass either.
         for required in ("_linear.py", "_discipline.py", "_statements.py",
                          "_expressions.py", "_items.py"):
-            self.assertIn(required, mods)
-            src = _read(os.path.join(adir, required))
-            ast.parse(src)
+            self.assertIn(required, visited)
 
 
 if __name__ == "__main__":
