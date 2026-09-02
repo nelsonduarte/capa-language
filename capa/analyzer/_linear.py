@@ -749,8 +749,8 @@ class _LinearMixin:
             # whole obligation transfers, so the tail of an alias chain (whose
             # husk head re-armed it live) inherits the moved-out field and a
             # re-consume through it is rejected.
-            self._carry_moved_subpaths(value.name, target)
-            self._linear_discharge(value.name)
+            self._carry_moved_subpaths(place, target)
+            self._linear_discharge(place)
             return
         # HOLE-2 (option a): aliasing a value whose type TRANSITIVELY
         # carries a linear/typestate field -- a struct that may be
@@ -761,19 +761,16 @@ class _LinearMixin:
         # close(t.conn)`` would double-free the shared field. A projection
         # (``let settled = result.claim``) is a field access, handled above,
         # so a carrier that is only projected from is never moved here.
-        val_ty = self.types.get(id(value))
-        if val_ty is None:
-            sym = self.scope.lookup(value.name)
-            val_ty = sym.ty if sym is not None else None
+        val_ty = self._operand_leaf_ty(value)
         if self._type_carries_linear(val_ty):
-            self._consumed.add(value.name)
-            self._linear_names.add(value.name)
+            self._consumed.add(place)
+            self._linear_names.add(place)
             # The source may be a spent HUSK (its linear field already moved
             # out, popped from the live set). Carry that moved-out sub-path
             # onto the alias so consuming / returning / re-packing the whole
             # husk through ``target`` (or the next link of a chain) is rejected
             # exactly as it is on the source.
-            self._carry_moved_subpaths(value.name, target)
+            self._carry_moved_subpaths(place, target)
 
     # ---- the ONE transfer-operand rule ---------------------------
 
