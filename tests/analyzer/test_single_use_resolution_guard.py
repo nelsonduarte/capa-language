@@ -41,10 +41,21 @@ upstream could have aliased it -- so `self._live_linear[p.name] = ...` and
 That allowance is pinned to the function name, so moving the seeding somewhere
 else, or adding a second producer, fails this guard rather than inheriting it.
 
-THIS GUARD IS ONLY WORTH ITS LINES IF IT BITES. `test_the_guard_bites` below
-re-introduces a syntactic single-use test into the analyzer source in memory
-and asserts the detector flags it, so the guard is proven to fail on the shape
-it forbids and not merely to run. The negatives beside it prove it does not
+A FOURTH instance was then found while implementing the fix, at the
+laundering-call argument in `_move_linear_operand`, so the list above is
+"known", not "all".
+
+THIS GUARD IS ONLY WORTH ITS LINES IF IT BITES ON THE HARD CASE, and the
+first version did not. It exempted a whole FUNCTION that called the resolver
+anywhere, which is precisely wrong: the functions most likely to hide a stray
+syntactic branch are the big resolve-then-decide seams, which by construction
+resolve somewhere. A build with the laundering-call branch reverted ACCEPTS
+three double-frees on all three backends, and that version of this guard
+reported ten passing tests on it. The exemption is now scoped to the BRANCH,
+and `test_the_guard_bites_on_the_case_that_defeated_it` is the primary proof;
+the three hand-written bite tests are secondary, because all three used shapes
+the broken exemption happened not to cover, which is how they passed while the
+real defect walked through. The negatives beside them prove the guard does not
 flag the shapes that are fine, which is what keeps it from being disabled the
 first time it cries wolf.
 """
@@ -148,14 +159,6 @@ def _isinstance_operand_classes(tree: ast.AST) -> bool:
     return False
 
 
-def _calls_resolver(tree: ast.AST) -> bool:
-    """True iff this subtree calls ``self._path_of(...)``."""
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Call) and _self_attr(n.func, {RESOLVER}):
-            return True
-    return False
-
-
 # The statement kinds a single-use DECISION is spelled as. A decision keys
 # the state on something, so it is a test, an assignment, a call or a return
 # -- never a whole function body, which is why the scan is per statement.
@@ -169,13 +172,15 @@ def find_syntactic_single_use_rules(analyzer_dir: str) -> list:
     """Every function that decides a single-use question by SYNTAX.
 
     A STATEMENT is flagged when it BOTH touches a single-use set AND, in the
-    SAME statement, reaches an operand's ``.name`` or narrows a value with
-    ``isinstance(x, A.Ident)``; the enclosing function is then reported
-    unless it calls the resolver. Scoping the co-occurrence to one statement
-    is what keeps the guard precise: a function that saves and restores
-    ``_consumed`` around a scope, and separately reads ``.name`` to bind a
-    pattern, is doing two unrelated things and is not deciding anything about
-    an operand. Requiring all of it keeps the guard quiet on:
+    SAME statement or under an enclosing ``isinstance`` narrowing, reaches an
+    operand's ``.name``; the enclosing function is then reported. The
+    exemption for going through the resolver is scoped to the BRANCH, not to
+    the function: see ``_scan``, where getting that wrong was a measured
+    false negative. Scoping the co-occurrence this way keeps the guard
+    precise, so a function that saves and restores ``_consumed`` around a
+    scope and separately reads ``.name`` to bind a pattern is not confused
+    with one that decides something about an operand. It keeps the guard
+    quiet on:
 
     * touching a set with no operand in the statement -- bookkeeping over a
       place string a caller already resolved, or set-level flow merging;
@@ -197,57 +202,96 @@ def find_syntactic_single_use_rules(analyzer_dir: str) -> list:
     return sorted(findings)
 
 
-def _scan(body, narrowed: bool, hit: set) -> None:
-    """Walk a statement list, carrying whether an enclosing ``if`` NARROWED a
-    value to an operand node class.
+def _resolves(node) -> bool:
+    """True iff this subtree calls ``self._path_of(...)``."""
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call) and _self_attr(n.func, {RESOLVER}):
+            return True
+    return False
 
-    Narrowing propagates into the branch it guards, because that is how the
-    receiver defect was written: ``if isinstance(recv, (Ident, FieldAccess))``
-    and then the single-use work in the body, with ``.name`` never read. It
-    does NOT propagate out of the function or across sibling statements, which
-    is what stops a function that merely saves and restores a set from being
-    confused with one that decides something about an operand.
+
+def _scan(body, narrowed: bool, resolved: bool, hit: set) -> None:
+    """Walk a statement list, carrying two facts down the branch structure.
+
+    ``narrowed``  an enclosing ``if`` narrowed a value to an operand node
+                  class. It propagates INTO the branch it guards, because
+                  that is how the receiver defect was written:
+                  ``if isinstance(recv, (Ident, FieldAccess))`` and then the
+                  single-use work in the body, with ``.name`` never read.
+
+    ``resolved``  this statement, or a branch enclosing it, went through the
+                  resolver. It is the EXEMPTION, and it is scoped to the
+                  branch rather than to the function.
+
+    THE SCOPE OF THE EXEMPTION IS THE WHOLE POINT, and getting it wrong was a
+    measured false negative rather than a hypothetical one. Exempting the
+    whole enclosing FUNCTION when it calls ``_path_of`` ANYWHERE let a
+    syntactic branch at the top of ``_move_linear_operand`` pass unseen,
+    because that function resolves further down its own body. The build with
+    that branch re-introduced accepts three double-frees on all three
+    backends, and the guard reported ten passing tests on it.
+
+    A function-scoped exemption is aimed exactly at the hardest case: the
+    functions most likely to hide a stray syntactic branch are the big
+    resolve-then-decide seams, which by construction call the resolver
+    somewhere. So the exemption follows the branch.
     """
     for st in body:
         if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue  # scanned as its own unit
         if isinstance(st, (ast.If, ast.While)):
-            here = narrowed or _isinstance_operand_classes(st.test)
+            here_narrowed = narrowed or _isinstance_operand_classes(st.test)
+            here_resolved = resolved or _resolves(st.test)
             sets = _touches_single_use(st.test)
-            if sets and (here or _reads_operand_name(st.test)):
+            if sets and not here_resolved and (
+                    here_narrowed or _reads_operand_name(st.test)):
                 hit |= sets
-            _scan(st.body, here, hit)
-            _scan(st.orelse, narrowed, hit)
+            _scan(st.body, here_narrowed, here_resolved, hit)
+            # The else-branch does not inherit the test's narrowing, but it
+            # does inherit a resolution that happened before the ``if``.
+            _scan(st.orelse, narrowed, resolved, hit)
             continue
         if isinstance(st, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith,
                            ast.Try)):
             for attr in ("body", "orelse", "finalbody"):
-                _scan(getattr(st, attr, []) or [], narrowed, hit)
+                _scan(getattr(st, attr, []) or [], narrowed, resolved, hit)
             for h in getattr(st, "handlers", []) or []:
-                _scan(h.body, narrowed, hit)
+                _scan(h.body, narrowed, resolved, hit)
             continue
         if not isinstance(st, _DECISION_STMTS):
             continue
+        # A statement that resolves IN PLACE is the resolve-then-decide shape
+        # and is fine; ``resolved`` inherited from an enclosing branch counts
+        # too, so ``place = self._path_of(x)`` followed by decisions on
+        # ``place`` in the same block is not flagged.
+        if _resolves(st):
+            resolved = True
+            continue
         sets = _touches_single_use(st)
-        if sets and (narrowed or _reads_operand_name(st)
-                     or _isinstance_operand_classes(st)):
+        if sets and not resolved and (
+                narrowed or _reads_operand_name(st)
+                or _isinstance_operand_classes(st)):
             hit |= sets
 
 
 def find_in_source(module_name: str, src: str) -> list:
     """The detector, over one module's SOURCE TEXT rather than a path, so the
     bite test can feed it a deliberately-broken variant without touching any
-    file on disk."""
+    file on disk.
+
+    There is deliberately NO function-level exemption here. Skipping a whole
+    function because it calls the resolver somewhere is what let the
+    laundering-call branch at the top of ``_move_linear_operand`` pass unseen
+    while the build accepted three double-frees. ``_scan`` carries the
+    exemption down the branch structure instead."""
     findings = []
     for fn in ast.walk(ast.parse(src)):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if (module_name, fn.name) in ALLOWED:
             continue
-        if _calls_resolver(fn):
-            continue
         hit: set = set()
-        _scan(fn.body, False, hit)
+        _scan(fn.body, False, False, hit)
         if hit:
             findings.append(
                 (module_name, fn.name, fn.lineno, tuple(sorted(hit))))
@@ -304,6 +348,49 @@ class _Fake:
         found = find_in_source("_fake.py", src)
         self.assertEqual(len(found), 1, found)
         self.assertEqual(found[0][1], "_receiver_rule")
+
+    def test_the_guard_bites_on_the_case_that_defeated_it(self):
+        """THE PRIMARY BITE PROOF. Everything else in this class is
+        secondary to it.
+
+        An earlier version of this guard exempted a whole FUNCTION when that
+        function called the resolver anywhere. Reverting the laundering-call
+        branch at the top of ``_move_linear_operand`` to its syntactic form
+        therefore produced a build that ACCEPTS three double-frees on all
+        three backends while this guard reported ten passing tests. The three
+        hand-written bite tests below all happened to use shapes the
+        function-scoped exemption did not cover, so they passed while the real
+        defect walked through: the guard was proven to RUN, not to BITE.
+
+        This reverts the SHIPPED source of the rule that defeated it, and the
+        function it lives in resolves further down its own body, so it is a
+        direct regression test for the exemption being branch-scoped rather
+        than function-scoped. If someone widens the exemption again, this goes
+        red and the three below do not.
+        """
+        path = os.path.join(_analyzer_dir(), "_discipline.py")
+        src = _read(path)
+        self.assertEqual(
+            find_in_source("_discipline.py", src), [],
+            "shipped source must be clean before reverting")
+        resolved = (
+            "                self._move_transfer_operand(origin_arg, origin_arg.pos)\n"
+        )
+        self.assertIn(resolved, src, "the laundering-call fold moved")
+        syntactic = (
+            "                if not self._move_linear_operand(origin_arg) and (\n"
+            "                    isinstance(origin_arg, A.Ident)\n"
+            "                    and origin_arg.name in self._borrowed_linear\n"
+            "                ):\n"
+            "                    self._linear_discharge(origin_arg.name, origin_arg.pos)\n"
+        )
+        found = find_in_source(
+            "_discipline.py", src.replace(resolved, syntactic))
+        self.assertTrue(
+            any(f[1] == "_move_linear_operand" for f in found),
+            "reverting the laundering-call fold must be flagged even though "
+            "the enclosing function resolves elsewhere; got %r" % (found,),
+        )
 
     def test_the_guard_bites_when_a_real_rule_is_reverted(self):
         """The strongest form: take the SHIPPED source of the rule the last
