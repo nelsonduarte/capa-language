@@ -29,8 +29,48 @@ All three share ONE textual signature, which is what makes them machine
 checkable rather than only sample-checkable: a function that both touches a
 single-use state set and reaches an operand's `.name` (or narrows an operand
 with `isinstance(..., Ident)` before doing so) is deciding by syntax. Behaviour
-tests catch the members you thought to write; this catches the SHAPE, so the
-fourth instance cannot be added without a test going red.
+tests catch the members you thought to write; this catches a SHAPE.
+
+WHAT A GREEN RESULT HERE DOES NOT MEAN. The bound has three parts and all
+three are load-bearing. A reader who takes a green guard for a closed class
+will be wrong, and the failure would be silent.
+
+1. IT SEES ONE TEXTUAL SIGNATURE. A rule that decides a single-use question
+   some other way is outside it entirely. This is a detector for how the four
+   known instances happened to be spelled, not a decision procedure for the
+   property.
+
+2. IT ONLY SEES RULES THAT TOUCH ONE OF THE NAMED STATE SETS. `SINGLE_USE_SETS`
+   below is the whole of its reach. If either discipline grows new state -- a
+   new map, a new poisoned-place set -- a rule keyed on it is invisible here
+   until that name is added. Widening that set is the maintenance this guard
+   requires and nothing enforces it.
+
+3. ELEVEN KNOWN SPELLINGS EVADE IT TODAY. 25 candidate evasions were
+   constructed and run against this detector; 14 were flagged and 11 were not:
+
+       hoisting the name into a local before keying state on it;
+       `getattr(expr, "name", None)`;
+       a helper method that returns the name;
+       `match` / `case` pattern matching on the node class;
+       resolving an UNRELATED operand first;
+       resolving the operand and then ignoring the result;
+       keying on a state set not in `SINGLE_USE_SETS`;
+       a lambda body;
+       a module-level function taking the analyzer as a parameter;
+       a `staticmethod` taking it as a parameter;
+       a ternary that extracts the name conditionally.
+
+   Every one was checked against the shipped analyzer and NONE occurs, so
+   these are latent rather than live. They are recorded because a guard whose
+   holes are unwritten invites the belief that it has none. The reproducible
+   list is `.claude/e3_v5_scripts/qa7_guard_attack.py`; run it after changing
+   the detector, and treat a drop in the flagged count as a regression.
+
+So the honest claim is: this catches the shape the four known instances share,
+across the modules it traverses, for the state it knows about. It is one
+instrument among several, and the sixth rule in this class was found by
+constructing programs rather than by any detector.
 
 WHAT IT ALLOWS, and why each allowance is safe rather than convenient.
 
