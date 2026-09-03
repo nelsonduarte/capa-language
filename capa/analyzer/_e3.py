@@ -32,6 +32,24 @@ class _E3Mixin:
             self._reject_e3_backstop(expr)
         return []
 
+    def _call_result_alias_operand(self, expr: A.Expr):
+        """The SINGLE operand a laundering call's result aliases, or ``None``.
+
+        The PURE half of :meth:`_call_result_alias_args`: same resolution, no
+        diagnostic. Splitting reporting from resolution is what lets a READ
+        position ask the question -- ``_path_of`` runs at read sites too, and
+        a mere read of a laundered value is legal -- while the move seam keeps
+        the fail-closed rejects it must emit.
+
+        ``None`` for a fresh factory, for a callee whose result may alias more
+        than one argument (fail-closed: which obligation moves is unknown),
+        and for an un-summarisable callee (the backstop reports that at the
+        move seam, so resolving it here would report it twice)."""
+        kind, data = self._e3_resolve(expr)
+        if kind != "args" or len(data) != 1:
+            return None
+        return data[0]
+
     # ---- callee-key resolution (single source for resolve + freshness) ----
 
     def _e3_callee_key(self, expr: A.Expr) -> tuple:

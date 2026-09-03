@@ -70,9 +70,28 @@ _TSC_DECLS = (
     "    close(x.c)\n"
     "    return ()\n"
 )
+# A generic passthrough whose result ALIASES its argument, and a two-level
+# carrier. Both exist for the WRAP spelling below: laundering needs a callee
+# whose return origin resolves back to an argument, and the nested carrier is
+# the value kind a one-level projection cannot reach.
+_ID_DECLS = (
+    "fun idc<T>(x: T) -> T\n"
+    "    return x\n"
+)
+_DEEP_DECLS = (
+    "type Outer { inner: Holder, n: Int }\n"
+    "fun mko() -> Outer\n"
+    "    return Outer { inner: mkh(), n: 0 }\n"
+    "fun sinko(consume o: Outer) -> Unit\n"
+    "    sink(o.inner)\n"
+    "    return ()\n"
+)
 _CARRIER = _LIN + _CARRIER_DECLS
 _TSC = _LIN + _TSC_DECLS
 _BOTH = _LIN + _CARRIER_DECLS + _TSC_DECLS
+_WRAP = _LIN + _ID_DECLS + _CARRIER_DECLS
+_WRAP_TSC = _WRAP + _TSC_DECLS
+_WRAP_DEEP = _WRAP + _DEEP_DECLS
 _TS = (
     "typestate Auth\n    Pending\n    Settled\n"
     "fun mk() -> Auth[Pending]\n"
@@ -139,6 +158,14 @@ def select(x: str) -> str:
 
 def binder(x: str) -> str:
     return f"(match 0 {{ _ -> {x} }})"
+
+
+def wrap(x: str) -> str:
+    """The fourth spelling: a generic passthrough CALL whose result aliases
+    its argument. Unlike the first three it is only a place when it is
+    PROJECTED off -- ``idc(h)`` on its own is a move the seam already
+    handles -- so it appears in the projection matrix, not in ``SPELLINGS``."""
+    return f"idc({x})"
 
 
 SPELLINGS = (direct, select, binder)
@@ -1056,6 +1083,328 @@ class TestRulesTheSuiteWasNotGuarding(_Base):
             _LIN + "fun main(_s: Stdio)\n"
             "    let t = match 0\n        _ -> open()\n"
             "    close(t)\n"
+        )
+
+
+class TestCallReceiverProjection(_Base):
+    """Family W: a field PROJECTED off a CALL whose result aliases an
+    argument (``idc(h).c``).
+
+    The seventh known member of this class, and the one this module's own
+    coverage could not have found: every projection test above spells the
+    receiver as a SELECTION (``(if c then h else h).c``) and none spells it
+    as a CALL. ``_path_of`` resolved an ``Ident``, a ``FieldAccess`` and an
+    ``IfExpr``/``MatchExpr`` receiver; a ``Call`` receiver resolved to
+    ``None``, so the move seam moved nothing and the projected field stayed
+    consumable through the carrier as well -- a double free that ran on all
+    three backends.
+
+    The fix resolves a call receiver through the SAME origin seam the move
+    positions already use for a whole-value launder (``idc(h)``), so the two
+    halves of one fact -- what a laundering call's result aliases, and what
+    place an operand denotes -- have one producer instead of two.
+
+    The matrix below is the class boundary the pentest measured, not a
+    sample: NINE positions and FIVE value kinds, each asserted to reach the
+    same verdict in all three receiver spellings.
+    """
+
+    # ---- the nine POSITIONS, receiver spelled three ways ----
+
+    POSITIONS = {
+        "consume_arg": (
+            _WRAP, "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    close({X}.c)\n    sink(h)\n", "h"),
+        "let_rhs": (
+            _WRAP, "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    let d = {X}.c\n    close(d)\n    sink(h)\n", "h"),
+        "var_rhs": (
+            _WRAP, "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    var d = {X}.c\n    close(d)\n    sink(h)\n", "h"),
+        "structlit": (
+            _WRAP, "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    let g = Holder { c: {X}.c, tag: 0 }\n"
+            "    sink(g)\n    sink(h)\n", "h"),
+        "typestatelit": (
+            _WRAP_TSC, "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    let x = Sess[Open] { c: {X}.c }\n"
+            "    sinkt(x)\n    sink(h)\n", "h"),
+        "return": (
+            _WRAP, "fun give(consume h: Holder) -> Conn\n"
+            "    close(h.c)\n    return {X}.c\n", "h"),
+        "lambda_body": (
+            _WRAP + "fun apply(f: Fun() -> Conn) -> Conn\n    return f()\n",
+            "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    let g = fun () -> Conn => {X}.c\n"
+            "    close(apply(g))\n    sink(h)\n", "h"),
+        "b_close": (
+            _WRAP, "fun esc(h: Holder) -> Unit\n"
+            "    close({X}.c)\n    return ()\n"
+            "fun main(_s: Stdio)\n    let x = mkh()\n"
+            "    esc(x)\n    sink(x)\n", "h"),
+        "b_return": (
+            _WRAP, "fun esc(h: Holder) -> Conn\n"
+            "    return {X}.c\n"
+            "fun main(_s: Stdio)\n    let x = mkh()\n"
+            "    close(esc(x))\n    sink(x)\n", "h"),
+    }
+
+    # ---- the five VALUE KINDS, at the consume-argument position ----
+
+    KINDS = {
+        "bare_linear": (
+            _WRAP, "fun main(_s: Stdio)\n    let a = open()\n"
+            "    let n = {X}.id\n    close(a)\n    close(a)\n"
+            "    let _ = n\n", "a"),
+        "carrier_field": (
+            _WRAP, "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    close({X}.c)\n    sink(h)\n", "h"),
+        "nested_two_deep": (
+            _WRAP_DEEP, "fun main(_s: Stdio)\n    let o = mko()\n"
+            "    close({X}.inner.c)\n    sinko(o)\n", "o"),
+        "whole_carrier_field": (
+            _WRAP_DEEP, "fun main(_s: Stdio)\n    let o = mko()\n"
+            "    sink({X}.inner)\n    sinko(o)\n", "o"),
+        "typestate_field": (
+            _WRAP_TSC, "fun main(_s: Stdio)\n    let x = mks()\n"
+            "    close({X}.c)\n    sinkt(x)\n", "x"),
+    }
+
+    RECEIVERS = (direct, select, wrap)
+
+    def _assert_agree(self, table: dict) -> None:
+        disagreed = []
+        for name, (pre, tmpl, operand) in sorted(table.items()):
+            verdicts = {}
+            for spell in self.RECEIVERS:
+                body = pre + tmpl.replace("{X}", spell(operand))
+                verdicts[spell.__name__] = bool(_errs(body))
+            with self.subTest(cell=name):
+                self.assertEqual(
+                    len(set(verdicts.values())), 1,
+                    f"{name}: receiver spellings disagree {verdicts}",
+                )
+            if len(set(verdicts.values())) != 1:
+                disagreed.append(name)
+        self.assertEqual(disagreed, [], f"laundered cells: {disagreed}")
+
+    def test_w1_all_nine_positions_agree_across_receiver_spellings(self):
+        self._assert_agree(self.POSITIONS)
+
+    def test_w2_all_five_value_kinds_agree_across_receiver_spellings(self):
+        self._assert_agree(self.KINDS)
+
+    def test_w3_every_cell_parses_in_every_receiver_spelling(self):
+        # A cell that is silently a parse error tests nothing, so the
+        # differencing above would report agreement for the wrong reason.
+        for table in (self.POSITIONS, self.KINDS):
+            for name, (pre, tmpl, operand) in sorted(table.items()):
+                for spell in self.RECEIVERS:
+                    body = pre + tmpl.replace("{X}", spell(operand))
+                    with self.subTest(cell=name, spelling=spell.__name__):
+                        msgs = errors_of(body)
+                        self.assertFalse(
+                            any("parse" in m.lower() or "expected" in m.lower()
+                                for m in msgs),
+                            f"{name}/{spell.__name__} does not parse: {msgs}",
+                        )
+
+    # ---- the pentest repro programs ----
+
+    def test_w4_the_repro_double_free_rejects(self):
+        # ``close(idc(a).c); sink(a)`` -- ``closing 1`` twice on all three
+        # backends on the pre-fix build.
+        self.assertRejects(
+            _WRAP + "fun main(_s: Stdio)\n    let a = mkh()\n"
+            "    close(idc(a).c)\n    sink(a)\n"
+        )
+
+    def test_w5_the_repro_triple_free_rejects(self):
+        self.assertRejects(
+            _WRAP + "fun main(_s: Stdio)\n    let a = mkh()\n"
+            "    close(idc(a).c)\n    close(idc(a).c)\n    sink(a)\n"
+        )
+
+    def test_w6_use_after_consume_through_the_launder(self):
+        self.assertRejects(
+            _WRAP + "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    close(h.c)\n    close(idc(h).c)\n"
+        )
+
+    def test_w7_borrowed_field_escapes_through_the_launder(self):
+        # The consequence beyond double-free: a BORROWED holder's linear
+        # field returned out, the caller then sinks the holder.
+        self.assertRejects(
+            _WRAP + "fun leak(h: Holder) -> Conn\n"
+            "    return idc(h).c\n"
+            "fun main(_s: Stdio)\n    let x = mkh()\n"
+            "    close(leak(x))\n    sink(x)\n"
+        )
+
+    def test_w8_realistic_pool_idiom_rejects(self):
+        # A generic ``tap`` helper over a connection pool: the shape a real
+        # program reaches this hole through.
+        self.assertRejects(
+            _WRAP + "fun tap<T>(x: T, n: Int) -> T\n    return x\n"
+            "fun main(_s: Stdio)\n    let pool = mkh()\n"
+            "    close(tap(pool, 7).c)\n    sink(pool)\n"
+        )
+
+    # ---- the LAUNDERING CALLEE shapes: the same operand, many wrappers ----
+
+    def test_w9_laundering_callee_shapes_all_reject(self):
+        shapes = {
+            "identity": "idc(h)",
+            "extra_args": "tap(h, 1)",
+            "nested": "idc(idc(h))",
+            "triple_nested": "idc(idc(idc(h)))",
+            "wrap_of_selection": "idc(if true then h else h)",
+            "selection_of_wrap": "(if true then idc(h) else idc(h))",
+        }
+        pre = _WRAP + "fun tap<T>(x: T, n: Int) -> T\n    return x\n"
+        for name, recv in sorted(shapes.items()):
+            with self.subTest(shape=name):
+                self.assertRejects(
+                    pre + "fun main(_s: Stdio)\n"
+                    "    let h = mkh()\n"
+                    "    close(" + recv + ".c)\n    sink(h)\n"
+                )
+
+    # ---- the AMBIGUOUS receiver: resolution alone fails OPEN ----
+    #
+    # Found by mutation-testing the resolution above rather than by reading:
+    # neutralising the "exactly one origin" guard changed no verdict, which
+    # means the guard was not what decided them. A callee whose result may
+    # alias EITHER argument (``pick2``, whose two ``return``s disagree)
+    # resolves to NO place, and a move seam reads "no place" as "nothing to
+    # move". So the whole-value position rejected it fail-closed while the
+    # PROJECTION off it ran a double free on all three backends. Resolution
+    # closes the unambiguous member; the fail-closed reject closes this one.
+
+    _PICK2 = (
+        "fun pick2<T>(x: T, y: T) -> T\n"
+        "    if true\n"
+        "        return x\n"
+        "    return y\n"
+    )
+
+    def test_w9b_ambiguous_origin_projection_fails_closed(self):
+        self.assertRejects(
+            _WRAP + self._PICK2 + "fun main(_s: Stdio)\n"
+            "    let h = mkh()\n    let h2 = mkh()\n"
+            "    close(pick2(h, h2).c)\n    sink(h)\n    sink(h2)\n",
+            "cannot be traced to one owner",
+        )
+
+    def test_w9c_ambiguous_origin_whole_value_keeps_its_own_wording(self):
+        # The whole-value position was already fail-closed and must keep the
+        # wording it had: the projection reject is an addition, not a
+        # replacement, and the two say different things because the advice
+        # differs (bind the result vs take ownership).
+        self.assertRejects(
+            _WRAP + self._PICK2 + "fun main(_s: Stdio)\n"
+            "    let h = mkh()\n    let h2 = mkh()\n"
+            "    sink(pick2(h, h2))\n    sink(h)\n    sink(h2)\n",
+            "which must-consume obligation it carries cannot be determined",
+        )
+
+    def test_w9d_reading_through_an_ambiguous_receiver_accepted(self):
+        # A READ is not a move: failing closed at a read position would
+        # reject a correct program. The reject belongs at the move seam only.
+        self.assertAccepts(
+            _WRAP + self._PICK2 + "fun main(_s: Stdio)\n"
+            "    let h = mkh()\n    let h2 = mkh()\n"
+            "    let n = pick2(h, h2).tag\n"
+            "    sink(h)\n    sink(h2)\n    let _ = n\n"
+        )
+
+    def test_w9e_ambiguous_receiver_reported_once(self):
+        # One unresolvable receiver is ONE mistake, however many field
+        # projections hang off it.
+        errs = _errs(
+            _WRAP + self._PICK2 + "fun main(_s: Stdio)\n"
+            "    let h = mkh()\n    let h2 = mkh()\n"
+            "    close(pick2(h, h2).c)\n    sink(h)\n    sink(h2)\n"
+        )
+        traced = [e for e in errs if "cannot be traced to one owner" in e]
+        self.assertEqual(len(traced), 1, errs)
+
+    def test_w10_launder_through_a_local_alias_of_the_generic(self):
+        # The callee reached through a LOCAL binding rather than by name.
+        self.assertRejects(
+            _WRAP + "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    let f = idc\n"
+            "    close(f(h).c)\n    sink(h)\n"
+        )
+
+    def test_w11_launder_through_a_lambda_valued_identity(self):
+        self.assertRejects(
+            _WRAP + "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    let f = fun (x: Holder) -> Holder => x\n"
+            "    close(f(h).c)\n    sink(h)\n"
+        )
+
+    def test_w12_method_call_receiver_launders_the_same_way(self):
+        # The boundary the pentest measured is "a FieldAccess whose receiver
+        # is a Call OR MethodCall", so the method half needs its own member.
+        self.assertRejects(
+            _WRAP + "impl Holder\n"
+            "    fun me(self) -> Holder\n"
+            "        return self\n"
+            "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    close(h.me().c)\n    sink(h)\n"
+        )
+
+    # ---- NEGATIVES: the measured-correct boundary must not move ----
+
+    def test_w13_projection_off_a_fresh_factory_stays_accepted(self):
+        # ``mkh()`` is a proven factory: nothing existing is aliased, so the
+        # projection is an ordinary consume of a fresh value.
+        self.assertAccepts(
+            _WRAP + "fun main(_s: Stdio)\n    close(mkh().c)\n"
+        )
+
+    def test_w14_launder_projected_and_consumed_exactly_once_accepted(self):
+        # THE over-rejection guard. ``close(idc(a).c)`` alone is the SAME
+        # program as ``close(a.c)``: the field moves out and the husk is
+        # droppable. Failing closed at the move seam instead of resolving
+        # would reject a correct program, which is why the fix resolves.
+        for recv in ("idc(a)", "a", "(if true then a else a)"):
+            with self.subTest(receiver=recv):
+                self.assertAccepts(
+                    _WRAP + "fun main(_s: Stdio)\n    let a = mkh()\n"
+                    "    close(" + recv + ".c)\n"
+                )
+
+    def test_w15_reading_a_non_linear_field_through_a_launder_accepted(self):
+        # A READ is not a move, at any receiver spelling.
+        self.assertAccepts(
+            _WRAP + "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    let n = idc(h).tag\n    sink(h)\n    let _ = n\n"
+        )
+
+    def test_w16_non_linear_projection_off_a_call_untouched(self):
+        # No obligation anywhere: the resolution must cost nothing and
+        # change nothing.
+        self.assertAccepts(
+            "type P { x: Int }\n"
+            "fun mkp() -> P\n    return P { x: 1 }\n"
+            "fun idp<T>(v: T) -> T\n    return v\n"
+            "fun main(_s: Stdio)\n    let p = mkp()\n"
+            "    let n = idp(p).x\n    let _ = n\n"
+        )
+
+    def test_w17_projection_off_a_method_call_on_a_launder_unchanged(self):
+        # ``idc(a).eat(s)`` -- a METHOD CALL on the launder result -- was
+        # measured as already correctly rejected. It must stay rejected, by
+        # the receiver seam it already goes through.
+        self.assertRejects(
+            _WRAP + "impl Holder\n"
+            "    fun eat(consume self) -> Unit\n"
+            "        close(self.c)\n"
+            "        return ()\n"
+            "fun main(_s: Stdio)\n    let h = mkh()\n"
+            "    idc(h).eat()\n    sink(h)\n"
         )
 
 

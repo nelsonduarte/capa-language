@@ -203,34 +203,64 @@ class _DisciplineMixin:
         self._move_leaves_of(place, ty, pos)
         return True
 
-    # ---- fail-closed reject of an unresolvable selection ----------------
+    # ---- fail-closed reject of an unresolvable projection root ----------
 
     def _reject_selection_operand(self, expr: A.Expr) -> bool:
-        """True (and reports once) iff ``expr`` is, or projects off, an
-        ``if`` / ``match`` selection the classifier could not resolve to a
-        single place or to a fresh value. This is the ONE site the fail-closed
-        verdict is reported at, because a move position is the only place
-        where silently losing the obligation is unsound: a mere READ of an
-        unresolvable selection stays legal."""
-        root = (
-            expr if isinstance(expr, (A.IfExpr, A.MatchExpr))
-            else self._selection_root_of(expr)
-        )
-        if root is None:
-            return False
-        out = self._selection_place.get(id(root))
-        if out is None or out[0] != "reject":
-            return False
+        """True (and reports once) iff ``expr`` is, or projects off, a
+        RECEIVER the resolver could not reduce to a single place: an
+        ``if`` / ``match`` selection whose arms disagree, or a CALL whose
+        result may alias more than one argument. This is the ONE site the
+        fail-closed verdict is reported at, because a move position is the
+        only place where silently losing the obligation is unsound: a mere
+        READ of an unresolvable receiver stays legal.
+
+        The CALL half exists because resolving alone fails OPEN. ``pick(h,
+        h2)`` -- a callee whose result may be either argument -- is rejected
+        fail-closed at a whole-value move position by the origin seam, but
+        the projection ``pick(h, h2).c`` asks the resolver for a PLACE and
+        gets ``None``, which the move seam reads as "nothing to move". So
+        resolution closes the unambiguous member and this closes the
+        ambiguous one; the two together are what makes the receiver
+        dimension fail closed rather than half open."""
+        root = self._projection_root_of(expr)
+        if isinstance(root, (A.IfExpr, A.MatchExpr)):
+            out = self._selection_place.get(id(root))
+            if out is None or out[0] != "reject":
+                return False
+            return self._report_unresolvable_root(
+                root,
+                "a linear/typestate value cannot be selected through a "
+                "conditional / match expression; bind it directly (e.g. "
+                "`let x = ...` in each branch) or open a fresh value per "
+                "branch, so each resource has a single owner",
+            )
+        if isinstance(root, (A.Call, A.MethodCall)) and root is not expr:
+            # ``root is expr`` is the WHOLE-value position, already handled by
+            # the origin seam at the top of the move seam with its own
+            # wording; only a PROJECTION off the call reaches here.
+            if not self._owned_obligation(self.types.get(id(root))):
+                return False
+            kind, data = self._e3_resolve(root)
+            if kind != "args" or len(data) < 2:
+                return False
+            return self._report_unresolvable_root(
+                root,
+                "this call's result may alias one of several linear/typestate "
+                "arguments, so the field projected off it cannot be traced to "
+                "one owner; rejected fail-closed -- bind the result to a name "
+                "first, or call a concrete (non-generic) function whose return "
+                "is unambiguous",
+            )
+        return False
+
+    def _report_unresolvable_root(self, root, message: str) -> bool:
+        """Report ``message`` at ``root`` exactly ONCE. Two move positions can
+        share a projection root (``close(sel.c)`` inside a bigger operand),
+        and one unresolvable receiver is one mistake."""
         if id(root) in self._linear_conditional_reported:
             return True
         self._linear_conditional_reported.add(id(root))
-        self._err(
-            "a linear/typestate value cannot be selected through a "
-            "conditional / match expression; bind it directly (e.g. "
-            "`let x = ...` in each branch) or open a fresh value per branch, "
-            "so each resource has a single owner",
-            root.pos,
-        )
+        self._err(message, root.pos)
         return True
 
     # ---- the ONE selection classifier ----------------------------------
@@ -431,7 +461,7 @@ class _DisciplineMixin:
         if isinstance(expr, A.Ident):
             return self._linear_alias_root(expr.name)
         if isinstance(expr, A.FieldAccess):
-            base = self._path_of(expr.receiver)
+            base = self._receiver_path_of(expr.receiver)
             if base is None:
                 return None
             return f"{base}.{expr.field_name}"
@@ -441,6 +471,40 @@ class _DisciplineMixin:
                 return out[1]
             return None
         return None
+
+    def _receiver_path_of(self, recv: A.Expr) -> Optional[str]:
+        """The place a FIELD-PROJECTION RECEIVER denotes, ``None`` if none.
+
+        ``_path_of`` for every receiver shape, plus the one shape a receiver
+        can take that a whole operand cannot usefully take: a CALL whose
+        result aliases an argument. ``idc(h)`` in a move position is already
+        moved by the move seam, which unwraps the call and moves the argument;
+        but ``idc(h).c`` is a PROJECTION off that result, and the projection
+        needs a PLACE, not a move. Resolving the call to the place its result
+        aliases is what makes ``idc(h).c``, ``(if c then h else h).c`` and
+        ``h.c`` one path expression with one answer, so every position-driven
+        rule inherits the call receiver exactly as it already inherits the
+        selection receiver -- rather than each move position growing a case.
+
+        Bounded by the receiver chain: the resolved operand is fed back
+        through THIS function, so a nested ``idc(idc(h)).c`` unwraps one layer
+        per recursion over a finite expression tree and terminates with it.
+
+        The call is resolved through the ONE origin seam (its pure half), so
+        a fresh factory (``mkh().c``), a multi-origin callee and an
+        un-summarisable one all yield ``None`` exactly as they do at a move
+        position -- and the reject those last two deserve is still emitted
+        once, at the move seam, not here."""
+        if isinstance(recv, (A.Call, A.MethodCall)):
+            origin = self._call_result_alias_operand(recv)
+            if origin is None:
+                return None
+            # THROUGH THIS SAME FUNCTION, not ``_path_of``: the operand a
+            # laundering call aliases may itself be a laundering call
+            # (``idc(idc(h)).c``), and unwrapping only the outer layer would
+            # close the one-deep spelling and leave the two-deep one open.
+            return self._receiver_path_of(origin)
+        return self._path_of(recv)
 
     def _linear_alias_root(self, name: str) -> str:
         """Resolve a pattern-binding VIEW name to the canonical place it
@@ -455,13 +519,25 @@ class _DisciplineMixin:
             name = self._linear_alias[name]
         return name
 
-    def _selection_root_of(self, expr: A.Expr):
-        """The ``if`` / ``match`` node at the root of a (possibly empty) chain
-        of field projections, or ``None``. ``(if c then o else o).inner.fd``
-        roots at the ``if``; ``o.inner`` roots at nothing."""
+    def _projection_root_of(self, expr: A.Expr):
+        """The node at the root of a (possibly empty) chain of field
+        projections. ``(if c then o else o).inner.fd`` roots at the ``if``,
+        ``idc(h).c`` roots at the call, ``o.inner`` roots at the ``Ident``.
+
+        THE one walk to the receiver at the bottom of a projection chain, so
+        the two rules that need it -- the fail-closed reject and the borrowed
+        propagation -- ask the same question and cannot drift on which
+        receiver shapes count."""
         while isinstance(expr, A.FieldAccess):
             expr = expr.receiver
-        return expr if isinstance(expr, (A.IfExpr, A.MatchExpr)) else None
+        return expr
+
+    def _selection_root_of(self, expr: A.Expr):
+        """The ``if`` / ``match`` node at the root of a projection chain, or
+        ``None``. Kept as the narrow question the borrowed-propagation bind
+        asks; the walk itself is ``_projection_root_of``."""
+        root = self._projection_root_of(expr)
+        return root if isinstance(root, (A.IfExpr, A.MatchExpr)) else None
 
     def _ty_is_capability(self, ty: Ty) -> bool:
         """True iff ``ty`` is a built-in or user-declared
