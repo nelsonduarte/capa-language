@@ -23,6 +23,7 @@ from .. import capa_ast as A
 from .. import _labels as L
 from ..builtins import BUILTIN_POS as _BUILTIN_POS
 from ..typesys import (
+    ORDERED_TYPES,
     Ty, TyBool, TyChar, TyFloat, TyFun, TyInt, TyName, TyString,
     TyTuple, TyUnit, TyUnknown, TyVar,
     compatible, is_flexible, substitute, ty_str, unify,
@@ -1123,10 +1124,12 @@ class _ExpressionsMixin:
                 )
             return TyBool
         if op in ("<", "<=", ">", ">="):
-            if not (
-                (compatible(TyInt, lt) and compatible(TyInt, rt))
-                or (compatible(TyFloat, lt) and compatible(TyFloat, rt))
-                or (compatible(TyString, lt) and compatible(TyString, rt))
+            # Both operands must be compatible with the SAME member of
+            # the ordered-type set; ``compatible`` is what admits a Char
+            # against String and an unknown / flexible type anywhere.
+            if not any(
+                compatible(ordered, lt) and compatible(ordered, rt)
+                for ordered in ORDERED_TYPES
             ):
                 self._err(
                     f"operator {op!r}: incompatible operand types "
