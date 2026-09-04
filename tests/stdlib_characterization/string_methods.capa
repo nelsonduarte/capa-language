@@ -1,0 +1,22 @@
+// Characterization: every declared String method, on all three backends,
+// including the documented edge policies (ASCII-only case folding, the
+// empty-needle replace policy, code-point indexing, WTF-8 bytes).
+
+fun main(stdio: Stdio)
+    let s = "  Hello, World  "
+    let t = s.trim()
+    stdio.println("length=${t.length()} raw_length=${s.length()}")
+    stdio.println("contains=${t.contains("World")} contains_no=${t.contains("world")}")
+    stdio.println("starts_with=${t.starts_with("Hello")} ends_with=${t.ends_with("World")} starts_no=${t.starts_with("World")}")
+    stdio.println("to_upper=${t.to_upper()} to_lower=${t.to_lower()} non_ascii_upper=${"héllo".to_upper()}")
+    stdio.println("trim=[${s.trim()}] trim_start=[${s.trim_start()}] trim_end=[${s.trim_end()}]")
+    let parts = t.split(", ")
+    stdio.println("split_len=${parts.length()} split0=${parts.get(0).unwrap_or("?")} split1=${parts.get(1).unwrap_or("?")}")
+    stdio.println("replace=${t.replace("l", "L")} replace_empty_needle=${t.replace("", "X")}")
+    stdio.println("is_empty=${t.is_empty()} empty_is_empty=${"".is_empty()}")
+    stdio.println("char_at0=${t.char_at(0).unwrap_or("?")} char_at_oob=${t.char_at(99).unwrap_or("?")}")
+    stdio.println("substring=${t.substring(7, 12)}")
+    stdio.println("index_of=${t.index_of("World").unwrap_or(0 - 1)} index_of_none=${t.index_of("xyz").unwrap_or(0 - 1)}")
+    let bytes = "aé".bytes()
+    stdio.println("bytes_len=${bytes.length()} bytes=${bytes.fold("", fun (acc, b) => acc + "${b},")}")
+    stdio.println("unicode_length=${"abcé".length()} unicode_substring=${"abcé".substring(2, 4)}")

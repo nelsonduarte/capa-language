@@ -1,0 +1,19 @@
+// Characterization: the four ordering operators over every type the
+// analyzer admits (Int, Float, String, and Char through its String
+// compatibility), on all three backends. The Float probe pair is chosen
+// so an integer bit-pattern comparison would answer wrongly; the String
+// probes cover a proper prefix and a non-ASCII code point.
+
+fun main(stdio: Stdio)
+    let a = 3
+    let b = 7
+    stdio.println("int lt=${a < b} le=${a <= b} gt=${a > b} ge=${a >= b} le_self=${a <= a}")
+    let x = -0.5
+    let y = -1.5
+    stdio.println("float lt=${x < y} le=${x <= y} gt=${x > y} ge=${x >= y} negzero_lt=${-0.0 < 0.0} negzero_le=${-0.0 <= 0.0}")
+    let s = "ab"
+    let t = "b"
+    stdio.println("string lt=${s < t} le=${s <= t} gt=${s > t} ge=${s >= t} prefix=${"a" < "ab"} non_ascii=${"é" > "z"}")
+    let c = 'a'
+    let d = 'b'
+    stdio.println("char lt=${c < d} le=${c <= d} gt=${c > d} ge=${c >= d} char_vs_string=${c < "b"} string_vs_char=${"b" > c} eq=${c == 'a'}")

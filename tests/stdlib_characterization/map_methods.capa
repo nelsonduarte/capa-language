@@ -1,0 +1,18 @@
+// Characterization: every declared Map method, on all three backends.
+// The keys / values / pairs prints pin insertion order (an overwrite of
+// an existing key keeps its original position).
+
+fun main(stdio: Stdio)
+    let m = new_map()
+    m.set("zeta", 1)
+    m.set("alpha", 2)
+    m.set("mid", 3)
+    m.set("alpha", 4)
+    stdio.println("length=${m.length()} is_empty=${m.is_empty()}")
+    stdio.println("get_alpha=${m.get("alpha").unwrap_or(0)} get_missing=${m.get("nope").unwrap_or(0 - 1)}")
+    stdio.println("contains_key=${m.contains_key("mid")} contains_key_no=${m.contains_key("nope")}")
+    stdio.println("keys=${m.keys().fold("", fun (acc, k) => acc + k + ",")}")
+    stdio.println("values=${m.values().fold("", fun (acc, v) => acc + "${v},")}")
+    stdio.println("pairs=${m.pairs().fold("", fun (acc, p) => acc + "${p[0]}=${p[1]},")}")
+    let e = new_map()
+    stdio.println("empty_length=${e.length()} empty_is_empty=${e.is_empty()}")

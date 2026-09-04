@@ -1,0 +1,10 @@
+// KNOWN-DIVERGENT, recorded as a defect and NOT as correct behaviour.
+// An inconsistent comparator (always 1) gives 1|2|3|4|5|6| on the two
+// Python paths and 6|5|4|3|2|1| on Wasm: the two sorts visit different
+// comparison sequences and only a consistent total order pins the
+// result. See .claude/STDLIB_DESIGN.md section 9, decision 2.
+
+fun main(stdio: Stdio)
+    let xs = [1, 2, 3, 4, 5, 6]
+    let s = xs.sorted_by(fun (a, b) => 1)
+    stdio.println("${s.fold("", fun (acc, x) => acc + "${x}|")}")

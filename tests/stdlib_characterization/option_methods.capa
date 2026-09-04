@@ -1,0 +1,19 @@
+// Characterization: every declared Option method on BOTH variants (the
+// panicking unwrap / expect paths are exercised on Some only; the None
+// panics abort and are pinned in tests/test_panic.py).
+
+fun main(stdio: Stdio)
+    let s: Option<Int> = Some(5)
+    let n: Option<Int> = None
+    stdio.println("is_some=${s.is_some()},${n.is_some()} is_none=${s.is_none()},${n.is_none()}")
+    stdio.println("unwrap_or=${s.unwrap_or(0)},${n.unwrap_or(0)} unwrap=${s.unwrap()} expect=${s.expect("never")}")
+    stdio.println("map=${s.map(fun (x: Int) -> Int => x + 1).unwrap_or(0)},${n.map(fun (x: Int) -> Int => x + 1).unwrap_or(0)}")
+    stdio.println("and_then=${s.and_then(fun (x: Int) -> Option<Int> => Some(x * 2)).unwrap_or(0)},${n.and_then(fun (x: Int) -> Option<Int> => Some(x * 2)).unwrap_or(0)}")
+    let to_none: Option<Int> = s.and_then(fun (x: Int) -> Option<Int> => None)
+    stdio.println("and_then_to_none=${to_none.is_none()}")
+    stdio.println("ok_or=${s.ok_or("e").is_ok()},${n.ok_or("e").is_err()}")
+    stdio.println("or_else=${s.or_else(fun () -> Option<Int> => Some(9)).unwrap_or(0)},${n.or_else(fun () -> Option<Int> => Some(9)).unwrap_or(0)}")
+    stdio.println("filter=${s.filter(fun (x: Int) -> Bool => x > 3).is_some()},${s.filter(fun (x: Int) -> Bool => x > 10).is_some()},${n.filter(fun (x: Int) -> Bool => true).is_some()}")
+    match n
+        Some(v) -> stdio.println("match=some ${v}")
+        None -> stdio.println("match=none")

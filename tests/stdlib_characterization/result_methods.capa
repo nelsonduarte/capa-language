@@ -1,0 +1,19 @@
+// Characterization: every declared Result method on BOTH variants (the
+// panicking unwrap / expect paths are exercised on Ok only; the Err
+// panics abort and are pinned in tests/test_panic.py).
+
+fun main(stdio: Stdio)
+    let ok: Result<Int, String> = Ok(5)
+    let err: Result<Int, String> = Err("boom")
+    stdio.println("is_ok=${ok.is_ok()},${err.is_ok()} is_err=${ok.is_err()},${err.is_err()}")
+    stdio.println("unwrap_or=${ok.unwrap_or(0)},${err.unwrap_or(0)} unwrap=${ok.unwrap()} expect=${ok.expect("never")}")
+    stdio.println("map=${ok.map(fun (x: Int) -> Int => x + 1).unwrap_or(0)},${err.map(fun (x: Int) -> Int => x + 1).unwrap_or(0)}")
+    stdio.println("and_then=${ok.and_then(fun (x: Int) -> Result<Int, String> => Ok(x * 2)).unwrap_or(0)},${err.and_then(fun (x: Int) -> Result<Int, String> => Ok(x * 2)).unwrap_or(0)}")
+    let to_err: Result<Int, String> = ok.and_then(fun (x: Int) -> Result<Int, String> => Err("second"))
+    stdio.println("and_then_to_err=${to_err.err().unwrap_or("")}")
+    stdio.println("map_err=${ok.map_err(fun (e: String) -> String => e + "!").err().unwrap_or("none")},${err.map_err(fun (e: String) -> String => e + "!").err().unwrap_or("none")}")
+    stdio.println("or_else=${ok.or_else(fun (e: String) -> Result<Int, String> => Ok(0 - 1)).unwrap_or(0)},${err.or_else(fun (e: String) -> Result<Int, String> => Ok(0 - 1)).unwrap_or(0)}")
+    stdio.println("ok=${ok.ok().unwrap_or(0)},${err.ok().is_none()} err=${ok.err().is_none()},${err.err().unwrap_or("")}")
+    match err
+        Ok(v) -> stdio.println("match=ok ${v}")
+        Err(e) -> stdio.println("match=err ${e}")

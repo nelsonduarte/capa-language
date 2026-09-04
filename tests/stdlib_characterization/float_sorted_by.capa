@@ -1,0 +1,8 @@
+// Characterization: sorted_by over Floats with a CONSISTENT comparator,
+// including negative zero, agrees on all three backends (the
+// inconsistent-comparator shape is the known-divergent program).
+
+fun main(stdio: Stdio)
+    let xs = [3.5, -0.0, 1.25, 0.0, 2.0, -1.5]
+    let s = xs.sorted_by(fun (a, b) => if a < b then 0 - 1 else (if a > b then 1 else 0))
+    stdio.println("${s.fold("", fun (acc, x) => acc + "${x}|")}")

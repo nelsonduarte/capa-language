@@ -1,0 +1,13 @@
+// KNOWN-DIVERGENT, recorded as a defect and NOT as correct behaviour.
+// A generic function with a closure-typed parameter runs on the two
+// Python paths and produces an INVALID module on Wasm (the specialised
+// callee is never emitted). See .claude/STDLIB_CONTEST_1.md F2 and
+// .claude/STDLIB_DESIGN.md section 9; tracked independently.
+
+fun sort_any<T>(xs: List<T>, cmp: Fun(T, T) -> Int) -> List<T>
+    return xs.sorted_by(cmp)
+
+fun main(stdio: Stdio)
+    let a = sort_any([3, 1, 2], fun (x, y) => if x < y then 0 - 1 else (if x > y then 1 else 0))
+    let b = sort_any(["b", "a"], fun (x, y) => if x < y then 0 - 1 else (if x > y then 1 else 0))
+    stdio.println("${a.first().unwrap_or(0)} ${b.first().unwrap_or("")}")

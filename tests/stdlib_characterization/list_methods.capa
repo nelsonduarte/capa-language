@@ -1,0 +1,29 @@
+// Characterization: every declared List method, on all three backends.
+// The receiver-unchanged prints pin that sorted_by / reverse return
+// fresh lists; the duplicate key (3 twice) pins sort stability.
+
+fun show(xs: List<Int>) -> String
+    return xs.fold("", fun (acc, x) => acc + "${x},")
+
+fun main(stdio: Stdio)
+    let xs = [5, 3, 6, 1, 4, 2, 3]
+    xs.push(7)
+    stdio.println("length=${xs.length()} contains2=${xs.contains(2)} contains9=${xs.contains(9)} is_empty=${xs.is_empty()}")
+    stdio.println("map=${show(xs.map(fun (x) => x * 2))}")
+    stdio.println("filter=${show(xs.filter(fun (x) => x % 2 == 1))}")
+    stdio.println("fold=${xs.fold(0, fun (acc, x) => acc + x)}")
+    stdio.println("first=${xs.first().unwrap_or(0)} last=${xs.last().unwrap_or(0)} get1=${xs.get(1).unwrap_or(0)} get99=${xs.get(99).unwrap_or(0 - 1)}")
+    stdio.println("find=${xs.find(fun (x) => x > 4).unwrap_or(0)} find_none=${xs.find(fun (x) => x > 100).unwrap_or(0 - 1)}")
+    stdio.println("find_index=${xs.find_index(fun (x) => x == 3).unwrap_or(0 - 1)} find_index_none=${xs.find_index(fun (x) => x == 100).unwrap_or(0 - 1)}")
+    let sorted = xs.sorted_by(fun (a, b) => if a < b then 0 - 1 else (if a > b then 1 else 0))
+    stdio.println("sorted_by=${show(sorted)} receiver_unchanged=${show(xs)}")
+    stdio.println("reverse=${show(xs.reverse())} receiver_unchanged=${show(xs)}")
+    let e = xs.enumerate()
+    let (i1, v1) = e.get(1).unwrap_or((0 - 1, 0 - 1))
+    stdio.println("enumerate_len=${e.length()} enumerate1=${i1}:${v1}")
+    let z = xs.zip(["a", "b", "c"])
+    let (za, zb) = z.last().unwrap_or((0, ""))
+    stdio.println("zip_len=${z.length()} zip_last=${za}:${zb}")
+    stdio.println("flat_map=${show(xs.flat_map(fun (x) => [x, x * 10]))}")
+    let empty: List<Int> = []
+    stdio.println("empty_length=${empty.length()} empty_is_empty=${empty.is_empty()} empty_first_none=${empty.first().is_none()} empty_sorted_len=${empty.sorted_by(fun (a, b) => 0).length()}")
