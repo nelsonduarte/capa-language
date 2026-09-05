@@ -67,9 +67,10 @@ the name); a BARE-BUILTIN owner (``Map`` is a ``dict``, ``String`` a
 ``str``) has no class to check, so every declared method must be
 special-cased in BOTH emit tables and can never reach the fallthrough. An
 inherited-name quarantine lists the declared names that collide with the
-Python builtin and proves each bypasses it. ``Range`` reaches the Wasm
-backend only through four direct arms or the CIR ``to_list`` desugar, so
-its guard reads both.
+Python builtin and proves each is routed on purpose (a Capa override, or
+an arm in both tables) rather than falling through to it. ``Range``
+reaches the Wasm backend only through four direct arms or the CIR
+``to_list`` desugar, so its guard reads both.
 """
 
 import inspect
@@ -291,11 +292,16 @@ _PYTHON_BUILTIN: dict[str, type] = {
 
 #: Declared names that collide with an attribute of the owner's Python
 #: builtin and are deliberately kept. Each is proven by
-#: ``test_every_quarantined_collision_bypasses_the_inherited_attribute``
-#: never to reach the inherited attribute (a Capa override for a
-#: class-backed owner; a special-case in both emit tables for a
-#: bare-builtin owner). A NEW collision that is not listed here, or a
-#: listed one that no longer collides, fails
+#: ``test_every_quarantined_collision_never_falls_through_to_the_builtin``
+#: to be routed on purpose: a Capa override for a class-backed owner, an
+#: arm in both emit tables for a bare-builtin owner. The arm may itself
+#: call the builtin, wrapped or guarded (``Map.keys`` / ``Map.values`` /
+#: ``String.split`` wrap ``dict.keys`` / ``dict.values`` / ``str.split``
+#: in a ``CapaList``; ``String.replace`` calls ``str.replace`` when the
+#: needle is non-empty); what is refused is the plain ``recv.method(args)``
+#: fallback reaching the builtin with the builtin's own semantics. A NEW
+#: collision that is not listed here, or a listed one that no longer
+#: collides, fails
 #: ``test_inherited_name_collisions_are_exactly_the_quarantined_ones``.
 _QUARANTINED_COLLISIONS = frozenset({
     ("List", "reverse"),
@@ -409,7 +415,7 @@ class TestBackendReachability(unittest.TestCase):
             "recorded in _QUARANTINED_COLLISIONS; a stale entry must go.",
         )
 
-    def test_every_quarantined_collision_bypasses_the_inherited_attribute(self):
+    def test_every_quarantined_collision_never_falls_through_to_the_builtin(self):
         for owner, name in sorted(_QUARANTINED_COLLISIONS):
             with self.subTest(owner=owner, method=name):
                 if owner in _RUNTIME_CLASSES:

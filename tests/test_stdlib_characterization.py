@@ -3,10 +3,16 @@
 Step 0 of the standard-library design (.claude/STDLIB_DESIGN.md, section
 10): land BEFORE any change to the surface, because the behaviour it pins
 was previously unguarded. The parity harness in tests/test_ir_wasm_parity.py
-runs examples/wasm/ and left several declared methods with no cross-backend
-test at all (List find_index / sorted_by / reverse / enumerate / zip /
-flat_map, the whole Set algebra, most Option / Result methods): a Python-
-runtime semantic change to any of them survived every existing test.
+runs examples/wasm/; a census of every method call in its programs, with
+the receiver type taken from the analyzer (139 programs when this corpus
+landed), found 14 of the 92 declared non-capability methods it never
+calls: JsonValue as_bool / as_int / as_number / is_null, List is_empty,
+Map is_empty, Option is_none / or_else, Result is_err, String ends_with /
+is_empty / split / trim_end / trim_start. A Python-runtime semantic change
+to any of those survived every existing test (measured at the base commit
+for Map.is_empty inverted and String.ends_with as starts_with, in both
+Python emitters). Every other declared method the earlier gap list named
+IS called by the parity corpus; that list was wrong.
 
 WHAT THIS ASSERTS
 

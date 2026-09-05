@@ -136,15 +136,15 @@ PRIMITIVE_NAMES: frozenset[str] = frozenset({
 
 
 # The types the ordering operators (``<`` ``<=`` ``>`` ``>=``) accept,
-# and therefore the only types Capa can put in order. The operator
-# typing rule consults this tuple THROUGH ``compatible``, so whatever
-# ``compatible`` admits where one of these is expected is ordered too:
-# a ``Char`` orders because it is a one-code-point ``String``, and
-# ``TyUnknown`` / a flexible inference variable pass as they do at every
-# other site. This is the one place the set is written down; anything
-# that needs an ordered element or key type consults it rather than
-# restating it, and tests/ir_wasm/test_wasm_ordering_sweep.py proves each
-# member has a comparison lowering on the Wasm backend.
+# by NAME. It is not the whole set of types Capa can put in order: the
+# operator typing rule consults this tuple THROUGH ``compatible``, so
+# whatever ``compatible`` admits where one of these is expected is
+# ordered too. A ``Char`` orders because it is a one-code-point
+# ``String``, and ``TyUnknown`` / a flexible inference variable pass as
+# they do at every other site. This is the one place the set is written
+# down; anything that needs an ordered element or key type consults it
+# rather than restating it, and tests/ir_wasm/test_wasm_ordering_sweep.py
+# proves each member has a comparison lowering on the Wasm backend.
 ORDERED_TYPES: tuple[TyName, ...] = (TyInt, TyFloat, TyString)
 
 

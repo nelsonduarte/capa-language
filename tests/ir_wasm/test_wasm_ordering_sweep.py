@@ -10,7 +10,8 @@ method tables.
 the ordering operators (``<`` ``<=`` ``>`` ``>=``) accept. The Wasm
 lowering of those operators is a per-type dispatch in ``_emit_binop``
 (String -> ``$str_cmp`` folded by ``_STR_CMP_FOLD``, Float ->
-``_FLOAT_CMP_BINOP``, everything else the i64 opcodes of ``_CMP_BINOP``):
+``_FLOAT_CMP_BINOP``, Bool refused with ``WasmEmissionError``, everything
+else the i64 opcodes of ``_CMP_BINOP``):
 a structural second copy of that set, which cannot be derived from it
 because each arm is open-coded Wasm. A member added to the constant with
 no arm would be lowered as an integer, silently. This sweep is the guard:
