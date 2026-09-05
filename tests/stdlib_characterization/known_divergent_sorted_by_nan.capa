@@ -1,0 +1,20 @@
+// KNOWN-DIVERGENT, recorded as a defect and NOT as correct behaviour.
+// NaN is reachable without a literal: a Float multiplied past the
+// largest finite value is inf, and inf - inf is NaN. Every ordering
+// comparison against NaN is false, so a comparator built from < and >
+// answers 0 for NaN against anything and is no longer a consistent
+// total order. The two Python paths (Timsort) print 1.0|nan|0.5|2.0|
+// and the Wasm merge sort prints 0.5|1.0|nan|2.0|: the same class as
+// the always-1 comparator program, reached through a value rather than
+// through the comparator's text.
+
+fun main(stdio: Stdio)
+    var big = 1.0
+    var i = 0
+    while i < 400
+        big = big * 10.0
+        i = i + 1
+    let nan = big - big
+    let xs = [1.0, nan, 0.5, 2.0]
+    let s = xs.sorted_by(fun (a, b) => if a < b then 0 - 1 else (if a > b then 1 else 0))
+    stdio.println("${s.fold("", fun (acc, x) => acc + "${x}|")}")

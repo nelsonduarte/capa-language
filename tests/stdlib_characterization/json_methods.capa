@@ -1,0 +1,27 @@
+// Characterization: every declared JsonValue method, on all three
+// backends, over every variant a parsed document can produce.
+
+fun main(stdio: Stdio)
+    let txt = "{\"n\": 3.5, \"i\": 4, \"b\": true, \"s\": \"str\", \"z\": null, \"a\": [1, 2, 3]}"
+    match parse_json(txt)
+        Ok(jv) ->
+            stdio.println("top_is_null=${jv.is_null()} top_as_object_some=${jv.as_object().is_some()} top_as_array_none=${jv.as_array().is_none()}")
+            match jv.as_object()
+                Some(obj) ->
+                    let z = obj.get("z").unwrap_or(JBool(false))
+                    stdio.println("z_is_null=${z.is_null()} z_as_bool_none=${z.as_bool().is_none()}")
+                    let b = obj.get("b").unwrap_or(JNull)
+                    stdio.println("b_as_bool=${b.as_bool().unwrap_or(false)} b_is_null=${b.is_null()}")
+                    let n = obj.get("n").unwrap_or(JNull)
+                    stdio.println("n_as_num=${n.as_num().unwrap_or(0.0)} n_as_number=${n.as_number().unwrap_or(0.0)} n_as_int_none=${n.as_int().is_none()}")
+                    let i = obj.get("i").unwrap_or(JNull)
+                    stdio.println("i_as_int=${i.as_int().unwrap_or(0 - 1)} i_as_num=${i.as_num().unwrap_or(0.0)}")
+                    let s = obj.get("s").unwrap_or(JNull)
+                    stdio.println("s_as_string=${s.as_string().unwrap_or("?")} s_as_num_none=${s.as_num().is_none()}")
+                    let a = obj.get("a").unwrap_or(JNull)
+                    match a.as_array()
+                        Some(items) -> stdio.println("a_len=${items.length()} a_sum=${items.fold(0, fun (acc: Int, x: JsonValue) -> Int => acc + x.as_int().unwrap_or(0))}")
+                        None -> stdio.println("a not an array")
+                    stdio.println("roundtrip=${to_json(jv)}")
+                None -> stdio.println("not an object")
+        Err(msg) -> stdio.println("parse error: ${msg}")

@@ -1,0 +1,25 @@
+// Characterization: every declared Range method, on all three backends.
+// Pins the behaviour docs/stdlib.md misstates (a Range carries map /
+// filter / fold and the indexed queries; the doc fix is a later step).
+
+fun show(xs: List<Int>) -> String
+    return xs.fold("", fun (acc, x) => acc + "${x},")
+
+fun main(stdio: Stdio)
+    let r = 2..7
+    let ri = 2..=7
+    let empty = 5..2
+    stdio.println("length=${r.length()} inclusive_length=${ri.length()} empty_length=${empty.length()}")
+    stdio.println("contains2=${r.contains(2)} contains7=${r.contains(7)} inclusive_contains7=${ri.contains(7)}")
+    stdio.println("is_empty=${r.is_empty()} empty_is_empty=${empty.is_empty()}")
+    stdio.println("to_list=${show(r.to_list())} inclusive_to_list=${show(ri.to_list())}")
+    stdio.println("map=${show(r.map(fun (x) => x * x))}")
+    stdio.println("filter=${show(r.filter(fun (x) => x % 2 == 0))}")
+    stdio.println("fold=${r.fold(0, fun (acc, x) => acc + x)}")
+    stdio.println("first=${r.first().unwrap_or(0 - 1)} last=${r.last().unwrap_or(0 - 1)} empty_first_none=${empty.first().is_none()}")
+    stdio.println("get0=${r.get(0).unwrap_or(0 - 1)} get4=${r.get(4).unwrap_or(0 - 1)} get5=${r.get(5).unwrap_or(0 - 1)}")
+    stdio.println("find=${r.find(fun (x) => x > 4).unwrap_or(0 - 1)} find_index=${r.find_index(fun (x) => x == 6).unwrap_or(0 - 1)}")
+    var total = 0
+    for x in r
+        total = total + x
+    stdio.println("for_total=${total}")

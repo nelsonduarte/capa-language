@@ -1,0 +1,27 @@
+// Characterization: every declared Set method, on all three backends.
+// The to_list prints pin insertion order and the documented order of
+// the algebra results (receiver order leads; re-adding does not move).
+
+fun show(s: Set<Int>) -> String
+    return s.to_list().fold("", fun (acc, x) => acc + "${x},")
+
+fun main(stdio: Stdio)
+    let a = new_set()
+    a.add(30)
+    a.add(10)
+    a.add(20)
+    a.add(10)
+    let b = new_set()
+    b.add(20)
+    b.add(40)
+    b.add(30)
+    stdio.println("length=${a.length()} is_empty=${a.is_empty()} contains10=${a.contains(10)} contains99=${a.contains(99)}")
+    stdio.println("to_list=${show(a)}")
+    stdio.println("union=${show(a.union(b))} union_ba=${show(b.union(a))}")
+    stdio.println("intersection=${show(a.intersection(b))} difference=${show(a.difference(b))} difference_ba=${show(b.difference(a))}")
+    stdio.println("is_subset=${a.is_subset(b)} subset_of_union=${a.is_subset(a.union(b))}")
+    a.remove(10)
+    a.remove(99)
+    stdio.println("after_remove=${show(a)} length=${a.length()}")
+    let e = new_set()
+    stdio.println("empty_length=${e.length()} empty_is_empty=${e.is_empty()} empty_subset=${e.is_subset(a)}")

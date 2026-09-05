@@ -9,12 +9,24 @@ Capa program, no imports required.
 
 | Type | Size/Range | Notes |
 |---|---|---|
-| `Int` | 64-bit signed | Arithmetic does not check for overflow |
+| `Int` | 64-bit signed | Arithmetic aborts on overflow rather than wrapping (see below) |
 | `Float` | 64-bit IEEE 754 | |
 | `String` | UTF-8 | Immutable |
 | `Bool` | `true` / `false` | |
 | `Char` | Unicode code point | At runtime, a str of length 1 |
 | `Unit` | `()` | "Empty" type for functions with no return value |
+
+**`Int` arithmetic is checked, not wrapping.** `+`, `-` and `*` abort
+the program when the result leaves the signed 64-bit window, `/` and
+`%` abort on a zero divisor, and `/` also aborts on
+`(-2^63) / -1`. The shifts `<<` / `>>` abort when the shift count is
+outside `[0, 64)`, and `<<` additionally aborts when the shifted
+value leaves the window. This is a run-time abort, not a compile-time
+check: `--check` accepts a program that will overflow. The failure is
+loud and immediate: the Python backend raises `OverflowError: Int
+addition overflows signed 64-bit: ...` (or a `ZeroDivisionError` for
+a zero divisor), and the Wasm backend traps. Both reach the same
+failure at the same input; neither wraps silently.
 
 ### `String`, methods
 
@@ -89,7 +101,12 @@ infers the type from the first `push`.
 | `zip<U>(other: List<U>)` | `List<(T, U)>` | Fresh list pairing `self[i]` with `other[i]`, truncated to the shorter length. |
 | `flat_map<U>(f: Fun(T) -> List<U>)` | `List<U>` | Apply `f` to each element and concatenate the resulting lists in order. |
 
-Index access: `xs[i]` (no bounds checking, use `get(i)` for safe access).
+Index access: `xs[i]`. The index is bounds-checked at run time, not
+at compile time: `i < 0` or `i >= length()` aborts the program
+(`IndexError: list index out of range: i=7, len=3` on the Python
+backend, a trap on Wasm). Negative indices never wrap around to the
+end. Use `get(i)`, which returns `Option<T>`, when an out-of-range
+index should be a value rather than an abort.
 
 The lambda passed to any of the higher-order methods above
 (`map` / `filter` / `fold` / `find` / `find_index` / `sorted_by` /
@@ -102,9 +119,14 @@ infers them from the method's `Fun(...)` signature, so
 ### Range expressions
 
 `a..b` (exclusive of `b`) and `a..=b` (inclusive) produce a
-`List<Int>` materialised from the half-open / closed integer range.
-Both endpoints must be `Int`. Float endpoints are deliberately
-excluded.
+`Range<Int>` over the half-open / closed integer range. Both
+endpoints must be `Int`. Float endpoints are deliberately excluded
+(`range '..' requires Int endpoints; left side has type Float`).
+
+A `Range<T>` is its own type, not a `List<T>`: binding one to a
+`List<Int>` is a type error (`let binding: expected List<Int>, got
+Range<Int>`), and a range is not indexable with `[]`. Call
+`to_list()` when you need an actual `List`.
 
 ```capa
 for i in 0..10            // 0, 1, 2, ..., 9
@@ -116,23 +138,43 @@ for i in 1..=5            // 1, 2, 3, 4, 5
 let n = 4
 let xs = (n - 1)..(n * 2) // 3..8, arithmetic endpoints
 
-// A Range is a lazy iterable, NOT a List: it does not carry the
-// List method API (`map` / `filter` / `fold` / ...). Build a List
-// explicitly when you need it:
-let evens = [0, 2, 4, 6, 8].filter(fun (x: Int) -> Bool => x % 2 == 0)
+// A range carries the transforming and indexed-query methods, and
+// the transforms return a fresh List, not a Range:
+let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)
 ```
 
 Ranges are first-class iterables in `for` loops on **both** the
 Python and Wasm backends; the loop consumes a range directly
 without materialising it.
 
-`Range<T>` also has a small query surface - `length() -> Int`,
-`contains(x: T) -> Bool`, `is_empty() -> Bool`, and
-`to_list() -> List<T>` - implemented on **both** the Python and
-Wasm backends. They operate against the half-open `[start, stop)`
-interval (`stop = end + 1` for the inclusive `a..=b` form,
-`stop = end` for the exclusive `a..b` form), matching Python's
-`range(start, stop)`.
+`Range<T>` declares the twelve methods below, implemented on **both**
+the Python and Wasm backends.
+
+| Method | Type | Description |
+|---|---|---|
+| `length()` | `Int` | Number of elements, without materialising |
+| `contains(x: T)` | `Bool` | Membership in the interval |
+| `is_empty()` | `Bool` | |
+| `to_list()` | `List<T>` | Materialise as a `List` |
+| `map<U>(f: Fun(T) -> U)` | `List<U>` | Transform each element |
+| `filter(p: Fun(T) -> Bool)` | `List<T>` | Keep elements that match |
+| `fold<U>(init: U, f: Fun(U, T) -> U)` | `U` | Reduce to a single value |
+| `first()` | `Option<T>` | First element or `None` |
+| `last()` | `Option<T>` | Last element or `None` |
+| `get(i: Int)` | `Option<T>` | Safe indexed access |
+| `find(p: Fun(T) -> Bool)` | `Option<T>` | First element matching `p` |
+| `find_index(p: Fun(T) -> Bool)` | `Option<Int>` | Index of first element matching `p` |
+
+`map` / `filter` / `fold` and the indexed queries carry the same
+signatures and semantics as their `List` homonyms: `r.map(f)` means
+`r.to_list().map(f)`. The `List` methods **not** declared on `Range`
+are `sorted_by`, `reverse`, `enumerate`, `zip`, `flat_map` and the
+mutating `push`; calling one reports `type 'Range' has no method
+'<name>'`. Reach them through `to_list()`.
+
+All twelve operate against the half-open `[start, stop)` interval
+(`stop = end + 1` for the inclusive `a..=b` form, `stop = end` for
+the exclusive `a..b` form), matching Python's `range(start, stop)`.
 
 Range precedence sits between addition and comparison, so
 `1+2..5+3` parses as `(1+2)..(5+3)` and `a..b == c..d` as
