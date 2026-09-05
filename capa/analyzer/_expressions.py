@@ -212,6 +212,17 @@ class _ExpressionsMixin:
             prev_ret = self.current_return_type
             self.current_return_type = decl_ret_expr
             body_ty = self._check_expr(e.body)
+            # A lambda's RESULT hands its value to whoever invokes the
+            # closure, so an expression body is a TRANSFER position exactly
+            # as a ``return`` in a block body is -- route it through the same
+            # seam. Without this the two spellings of one closure disagree:
+            # the block form rejects handing back a captured obligation (the
+            # closure may be invoked more than once, but a single-owner value
+            # can be moved only once) while the expression form accepts it.
+            # Gated on the ONE obligation predicate, so an ordinary lambda is
+            # untouched.
+            if self._owned_obligation(body_ty):
+                self._move_transfer_operand(e.body, e.body.pos)
             self.current_return_type = prev_ret
             if decl_ret_expr is not None:
                 if not self._assignable(decl_ret_expr, body_ty, e.body):
@@ -428,6 +439,17 @@ class _ExpressionsMixin:
                 f"then is {ty_str(then_ty)}, else is {ty_str(else_ty)}",
                 e.else_expr.pos,
             )
+        # B: resolve, ONCE and here, which existing place (if any) this
+        # selection hands over. Both arms are still in scope, so a binder or a
+        # nested selection resolves; every move position downstream reads the
+        # recorded answer instead of re-deriving it.
+        self._record_selection(
+            e, else_ty if then_ty is TyUnknown else then_ty,
+            [
+                self._classify_selection_value(e.then_expr),
+                self._classify_selection_value(e.else_expr),
+            ],
+        )
         if then_ty is TyUnknown:
             return else_ty
         return then_ty
@@ -492,12 +514,22 @@ class _ExpressionsMixin:
         # Unit, not Bool), so isolating the whole arm loses no in-body push.
         before_ct = dict(self._container_taint_map())
         branch_ct: list[dict] = []
+        # B: pattern-binding VIEWS are arm-scoped exactly like the arm's name
+        # scope, so each arm starts from the pre-match aliases.
+        before_alias = dict(self._linear_alias)
+        arm_selections: list = []
         for arm in s.arms:
             self._consumed = set(before)
             self._live_linear = dict(before_live)
             self._linear_field_moved = set(before_field_moved)
+            self._linear_alias = dict(before_alias)
             self._push_scope()
             self._bind_pattern(arm.pattern, scrutinee_ty, mutable=False)
+            # B: THE binding seam -- register what each bound name denotes
+            # before the arm body can consume it.
+            self._linear_bind_pattern_view(
+                arm.pattern, s.scrutinee, scrutinee_ty, arm.pos,
+            )
             self._label_pattern_binds(arm.pattern, scrutinee_label, scrutinee_ty)
             self._pc_label = arm_pc
             self._container_isolate(before_ct)
@@ -531,6 +563,12 @@ class _ExpressionsMixin:
                     arm_types.append(TyUnit)
             else:
                 arm_types.append(self._check_expr(arm.body))
+            # B: classify what this arm HANDS OVER, while its binders are
+            # still in scope. A diverging arm hands over nothing.
+            if not arm_diverges:
+                arm_selections.append(
+                    self._classify_selection_value(_arm_value(arm.body))
+                )
             self._pop_scope()
             # Divergent arms cannot reach the merge point, so their
             # ``_consumed`` set must not flow past the match. Same
@@ -545,6 +583,8 @@ class _ExpressionsMixin:
 
         # Restore the pc-label raised for the arm bodies (S2.implicit).
         self._pc_label = saved_pc
+        # B: arm-scoped views end with the arms.
+        self._linear_alias = before_alias
         # Union each reachable arm's container-mutation taint back (deferred).
         self._container_merge(before_ct, branch_ct)
 
@@ -612,6 +652,8 @@ class _ExpressionsMixin:
                     f"incompatible with previous arms ({ty_str(ref_ty)})",
                     s.arms[i].pos,
                 )
+        # B: record which existing place (if any) the whole match hands over.
+        self._record_selection(s, ref_ty, arm_selections)
         return ref_ty
 
     def _check_expr(self, e: A.Expr) -> Ty:
@@ -660,16 +702,6 @@ class _ExpressionsMixin:
         # check, not here. A container whose element type only settles LATER is
         # caught by the end-of-function deferred recheck instead.
         self._linear_container_use_gate(e, ty)
-        # Finding 1: a linear/typestate value flowing through an if/match
-        # EXPRESSION whose arm selects an existing place (a bare Ident or
-        # Ident-rooted linear FieldAccess) aliases an obligation the move /
-        # consume / return / receiver seams cannot see (they match only bare
-        # Ident / FieldAccess nodes), so the wrapper opens a second obligation
-        # on the same runtime value -- a double-free. Barring it at this single
-        # resolved-type site closes the RHS, consume-arg, consume-self
-        # receiver, return, become, and struct-literal-element forms at once,
-        # while the fresh-factory conditional (arms are calls) stays legal.
-        self._check_linear_conditional_alias(e, ty)
         # A value read OUT of an empty-origin container surfaces the bare
         # element variable (``xs[0]``, a matched ``Some(v)`` from
         # ``m.get(k)``, a ``for`` element of a set). Referencing the
@@ -1035,13 +1067,18 @@ class _ExpressionsMixin:
                 e.pos,
             )
             return TyUnknown
-        if e.name in self._consumed:
+        # Use-after-consume keys on the CANONICAL place, exactly as the
+        # FieldAccess use-site check does, so reading a pattern-binding VIEW
+        # of an already-consumed value is caught under the name that was
+        # consumed. Identical to ``e.name`` for every non-view identifier.
+        _used = self._path_of(e)
+        if _used in self._consumed:
             kind = (
-                "linear value" if e.name in self._linear_names
+                "linear value" if _used in self._linear_names
                 else "capability"
             )
             self._err(
-                f"{kind} {e.name!r} was consumed earlier and cannot "
+                f"{kind} {_used!r} was consumed earlier and cannot "
                 f"be used again",
                 e.pos,
             )
@@ -1324,8 +1361,11 @@ class _ExpressionsMixin:
             # typestate field, and a bare OWNED one packed here is MOVED out
             # of its source -- the same aggregate-pack discipline a struct
             # literal applies (a typestate is a state-indexed struct).
-            self._linear_check_borrowed_escape(fexpr, fexpr.pos)
+            # The borrowed check runs AFTER the operand is typed: it resolves
+            # the operand to a place, and a conditional / match selection has
+            # no recorded place until it has been checked.
             actual = self._check_expr(fexpr)
+            self._linear_check_borrowed_escape(fexpr, fexpr.pos)
             self._move_linear_operand(fexpr)
             if fname not in fields:
                 hint = self._hint_did_you_mean(fname, list(fields.keys()))
@@ -1373,14 +1413,12 @@ class _ExpressionsMixin:
         # The old-state value is consumed: its linear obligation moves
         # to the freshly-typed result (which the surrounding binding
         # re-registers as live).
-        if isinstance(e.value, A.Ident):
-            self._linear_discharge(e.value.name, e.value.pos)
-        elif isinstance(e.value, A.FieldAccess):
-            # ``become(s.claim, Settled)`` transitions a linear FIELD in
-            # place; move it out of its carrier so it is accounted for.
-            place = self._linear_place(e.value)
-            if place is not None:
-                self._linear_move_field(place, e.value.pos)
+        # The transitioned value is a move OPERAND like any other: route EVERY
+        # shape through the ONE move seam -- a bare ident, a field projection,
+        # a laundering call, a pattern-binding view, a conditional/match
+        # selection. A BORROWED bare identifier is the single case the seam
+        # leaves to its caller, so it routes into the same transfer guard.
+        self._move_transfer_operand(e.value, e.value.pos)
         return TyName(val_ty.name, state=e.state)
 
     def _check_struct_lit(self, e: A.StructLit) -> Ty:
@@ -1407,9 +1445,6 @@ class _ExpressionsMixin:
                     f"duplicate field {fname!r} in struct literal", e.pos,
                 )
             seen.add(fname)
-            # B-F1: a borrowed linear / typestate value must not escape
-            # into a struct field.
-            self._linear_check_borrowed_escape(fexpr, fexpr.pos)
             if fname not in sym.struct_fields:
                 hint = self._hint_did_you_mean(
                     fname, list(sym.struct_fields.keys()),
@@ -1420,9 +1455,14 @@ class _ExpressionsMixin:
                     fexpr.pos,
                 )
                 self._check_expr(fexpr)
+                self._linear_check_borrowed_escape(fexpr, fexpr.pos)
                 continue
             expected = sym.struct_fields[fname]
             actual = self._check_expr(fexpr)
+            # B-F1: a borrowed linear / typestate value must not escape into a
+            # struct field. AFTER the operand is typed, so the place a
+            # selection denotes has been recorded.
+            self._linear_check_borrowed_escape(fexpr, fexpr.pos)
             unify(expected, actual, mapping)
             # Roadmap S1 (carrier): a bare OWNED linear/typestate value (or
             # a linear field) packed into this field is MOVED out of its
@@ -1545,6 +1585,18 @@ class _ExpressionsMixin:
                 )
         return TyName("List", (first_ty,))
 
+
+
+def _arm_value(body):
+    """The expression a match arm hands over: the arm body itself, or a
+    multi-statement block's trailing bare expression (block-as-expression).
+    ``None`` for a block that ends in anything else -- such an arm is Unit and
+    hands over no obligation, which the classifier treats as unresolvable."""
+    if isinstance(body, A.Block):
+        if body.stmts and isinstance(body.stmts[-1], A.ExprStmt):
+            return body.stmts[-1].expr
+        return body
+    return body
 
 
 def _block_diverges(block: "A.Block") -> bool:

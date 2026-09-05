@@ -185,6 +185,7 @@ from __future__ import annotations
 import dataclasses
 
 from .. import capa_ast as A
+from ._callables import fun_key, method_key
 from ._ifc_tables import (
     _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
     _VARIABLE_TIME_OPS, _SHORT_CIRCUIT_COMPARE_OPS,
@@ -556,7 +557,6 @@ class _SummaryBuilder:
         self._collect_secret_fields()
         self._collect_secret_consts()
         self._collect_callables()
-        self._collect_lambda_callables()
 
     def _collect_secret_fields(self) -> None:
         """Populate ``struct_field_labels`` from every struct (and
@@ -649,103 +649,44 @@ class _SummaryBuilder:
             self.methods_by_name.setdefault(key[2], []).append(key)
 
     def _collect_callables(self) -> None:
-        for item in self.module.items:
-            if isinstance(item, A.FunDecl):
-                self._register_callable(
-                    ("fun", item.name), item, item.params, is_method=False,
+        """Seed every user callable in the module through the SINGLE shared
+        enumeration (:func:`._callables.iter_user_callables`). Free functions
+        and impl methods carry their own ``FunDecl``; a trait-method signature
+        is wrapped in ``_TraitMethodCallable`` (an empty body -- a trait method
+        is abstract, so it summarises to the empty summary while
+        ``_method_return_type_expr`` can still read its declared return type
+        for a trait-typed receiver); a lambda literal is wrapped in
+        ``_LambdaCallable`` (its expression body promoted to a value block so
+        the shared block walker treats it like a named function's trailing
+        implicit return).
+
+        Lambdas are enumerated AFTER the named callables, so the
+        ``("lambda", id)`` keys never collide with a ``("fun", name)`` /
+        ``("method", ...)`` key and every existing consumer stays inert
+        (the named-call checks look summaries up by their own keys;
+        ``methods_by_name`` filters to method keys). Both summary passes and
+        the analyzer's E3 return-origin pass consume the SAME enumeration, so
+        a duplicated walk can no longer drift from this one."""
+        from ._callables import iter_user_callables
+        for uc in iter_user_callables(self.module):
+            if uc.kind == "trait_method":
+                decl = _TraitMethodCallable(
+                    uc.return_type, A.Block(pos=uc.node.pos, stmts=[]),
                 )
-            elif isinstance(item, A.ImplBlock):
-                for method in item.methods:
-                    key = ("method", item.type_name, method.name)
-                    # Methods are keyed by (type, name); a name unique
-                    # across states is guaranteed by the analyzer.
-                    if key in self.callables:
-                        continue
-                    self._register_callable(
-                        key, method, method.params, is_method=True,
-                        owner=item.type_name, by_name=True,
-                    )
-            elif isinstance(item, A.TraitDecl):
-                # A trait-block method signature is registered under the SAME
-                # ``("method", type, name)`` scheme, keyed by the TRAIT name, so
-                # ``_method_return_type_expr`` can read its declared return type
-                # for a trait-typed receiver (RC2: closes the whole
-                # trait-typed-receiver-method scrutinee family, e.g. ``let
-                # OtherCircle { r } = s.clone()`` where ``s: Shape``). The
-                # signature has no body, so it carries an empty one and
-                # summarises to the empty summary; it is NOT added to
-                # ``methods_by_name``, so dynamic dispatch still joins over the
-                # concrete impls.
-                for sig in item.methods:
-                    key = ("method", item.name, sig.name)
-                    if key in self.callables:
-                        continue
-                    self._register_callable(
-                        key,
-                        _TraitMethodCallable(
-                            sig.return_type, A.Block(pos=item.pos, stmts=[]),
-                        ),
-                        sig.params, is_method=True, owner=item.name,
-                    )
-
-    def _collect_lambda_callables(self) -> None:
-        """Register every lambda literal anywhere in the module as a
-        SYNTHETIC callable keyed by ``("lambda", id(lambda_expr))``, so the
-        SAME sink-reaching / sink-path fixpoint that summarises a named
-        function also summarises a lambda body. The sink-side lambda-flow
-        check (``_check_ifc_local_lambda_call`` / ``_check_ifc_iife_call`` in
-        :mod:`._ifc`) then consults this summary at a locally-resolvable or
-        IIFE lambda invocation, exactly as the named-call path consults a
-        function's summary -- closing the leak where a bare @secret passed to
-        a local lambda that sinks its parameter escaped the analysis while the
-        direct named call was caught.
-
-        Keyed by the AST node's ``id``, which is stable for the single parsed
-        module both this builder and the analyzer's main walk share, so the
-        call site recovers the exact per-lambda summary. Registered AFTER the
-        named callables so the ``("lambda", id)`` keys never collide with a
-        ``("fun", name)`` / ``("method", ...)`` key, and they are inert to
-        every existing consumer (the named-call checks look summaries up by
-        their own keys; ``methods_by_name`` filters to method keys), so no
-        named-function summary changes. The parameter facts are computed from
-        the lambda's OWN ``params`` exactly as for a named function; the body
-        is wrapped in a value block (``_LambdaCallable``) so an
-        expression-bodied lambda is walked by the same block walker.
-
-        OPACITY (disclosed residual): the body walk resolves a call only to a
-        NAMED (``fun`` / method) callee, never to a LOCAL-lambda binding -- the
-        SAME limitation named callables have -- so a sink reached ONLY through
-        a nested LOCAL-lambda invocation inside the body (``let inner = fun(t)
-        => sink_str(t, stdio); let g = fun(s) => inner(s); g(secret)``) is
-        opaque to this summary and stays unflagged (it leaks on both backends,
-        as on main). So the sink-reaching a lambda summary captures is a sink
-        the parameter reaches DIRECTLY or via a NAMED callee, not one reached
-        only through another LOCAL lambda."""
-        for lam in self._iter_lambdas(self.module):
-            key = ("lambda", id(lam))
-            self._lambda_nodes[key] = lam
-            body = lam.body if isinstance(lam.body, A.Block) else A.Block(
-                pos=lam.pos,
-                stmts=[A.ExprStmt(pos=lam.pos, expr=lam.body)],
-            )
+            elif uc.kind == "lambda":
+                lam = uc.node
+                self._lambda_nodes[uc.key] = lam
+                body = lam.body if isinstance(lam.body, A.Block) else A.Block(
+                    pos=lam.pos,
+                    stmts=[A.ExprStmt(pos=lam.pos, expr=lam.body)],
+                )
+                decl = _LambdaCallable(body)
+            else:
+                decl = uc.node
             self._register_callable(
-                key, _LambdaCallable(body), lam.params, is_method=False,
+                uc.key, decl, uc.params, is_method=uc.is_method,
+                owner=uc.owner, by_name=uc.by_name,
             )
-
-    @staticmethod
-    def _iter_lambdas(node):
-        """Yield every ``LambdaExpr`` reachable from ``node`` (a nested
-        lambda inside another lambda's body is yielded too, so each gets its
-        own summary keyed by its own id). A dataclass walk mirroring
-        ``_lambda_return_exprs`` in :mod:`._ifc`."""
-        if isinstance(node, A.LambdaExpr):
-            yield node
-        if dataclasses.is_dataclass(node):
-            for f in dataclasses.fields(node):
-                yield from _SummaryBuilder._iter_lambdas(getattr(node, f.name))
-        elif isinstance(node, (list, tuple)):
-            for x in node:
-                yield from _SummaryBuilder._iter_lambdas(x)
 
     def _param_struct_types(self, params, owner: str = None) -> dict:
         """``{param name: struct type name}`` for parameters whose
@@ -2136,7 +2077,7 @@ class _SummaryBuilder:
         element-type resolver can read its first generic argument too."""
         if not isinstance(e.callee, A.Ident):
             return None
-        entry = self.callables.get(("fun", e.callee.name))
+        entry = self.callables.get(fun_key(e.callee.name))
         return entry[1].return_type if entry is not None else None
 
     def _method_return_type_expr(self, e: A.MethodCall):
@@ -2150,7 +2091,7 @@ class _SummaryBuilder:
         recv_ty = self._resolve_static_type(e.receiver)
         if recv_ty is None:
             return None
-        entry = self.callables.get(("method", recv_ty, e.method))
+        entry = self.callables.get(method_key(recv_ty, e.method))
         return entry[1].return_type if entry is not None else None
 
     def _resolve_element_type(self, recv: A.Expr):
@@ -2854,7 +2795,7 @@ class _SummaryBuilder:
         if (
             isinstance(e.callee, A.Ident)
             and e.callee.name == "panic"
-            and ("fun", "panic") not in self.callables
+            and fun_key("panic") not in self.callables
             and arg_srcs
         ):
             reaching |= arg_srcs[0]
@@ -2884,7 +2825,7 @@ class _SummaryBuilder:
                 out |= s
             return out
 
-        key = ("fun", e.callee.name)
+        key = fun_key(e.callee.name)
         # Invoking a Fun-typed PARAMETER: ``f()`` where ``f`` is parameter
         # ``idx``. The result carries ``f``'s taint, so if it reaches a
         # sink the parameter ``idx`` becomes sink-reaching -- the

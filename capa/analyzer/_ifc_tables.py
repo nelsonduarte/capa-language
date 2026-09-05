@@ -16,6 +16,7 @@ now import everything they need from here at module level.
 from __future__ import annotations
 
 from .. import capa_ast as A
+from ._callables import method_key
 
 
 # Built-in capability methods that exfiltrate data out of the program
@@ -308,7 +309,7 @@ def result_effect_keys(recv_name, method, effects, is_trait, by_name, fallback):
     resolved ``is_trait``."""
     if is_trait:
         return tuple(by_name)
-    exact_key = ("method", recv_name, method)
+    exact_key = method_key(recv_name, method)
     if exact_key in effects:
         return (exact_key,)
     return tuple(fallback)

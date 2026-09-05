@@ -351,6 +351,7 @@ class AnalysisResult:
 from ._declarations import _DeclarationsMixin
 from ._discipline import _DisciplineMixin
 from ._dispatch import _DispatchMixin
+from ._e3 import _E3Mixin
 from ._expressions import _ExpressionsMixin
 from ._frozen import _FrozenTypesMixin
 from ._ifc import _IfcMixin
@@ -364,7 +365,7 @@ from ._typing import _TypingMixin
 class Analyzer(
     _TypingMixin, _DisciplineMixin, _DispatchMixin,
     _PatternsMixin, _DeclarationsMixin, _FrozenTypesMixin,
-    _IfcMixin, _LinearMixin, _StatementsMixin, _ExpressionsMixin,
+    _IfcMixin, _E3Mixin, _LinearMixin, _StatementsMixin, _ExpressionsMixin,
     _ItemsMixin,
 ):
     """Performs the semantic analysis of a Module.
@@ -724,6 +725,27 @@ class Analyzer(
         # gate that fires once per if/match wrapper selecting a linear place (a
         # re-checked node must not double-report).
         self._linear_conditional_reported: set[int] = set()
+        # B: a pattern binding that VIEWS an existing owned-obligation place
+        # (a ``match`` arm binder over a linear / carrier scrutinee) maps its
+        # name to that place here. It is NOT a second obligation: the single
+        # obligation stays under the scrutinee's own name, and every
+        # place-keyed operation resolves the binder through ``_path_of``, so a
+        # discharge / field move / use-after-consume through the binder hits
+        # the scrutinee. THE one producer is ``_linear_bind_pattern_view``;
+        # saved and restored around each arm exactly like the arm scope.
+        self._linear_alias: dict[str, str] = {}
+        # B: the resolved LINEAR SELECTION outcome of an if / match EXPRESSION
+        # node, computed ONCE by the checker that has the arm scopes live
+        # (``_check_if_expr`` / ``_check_match_expr``) and carried to whichever
+        # move position consumes the value. One of ``("fresh",)`` (every arm
+        # produces a brand-new value), ``("place", expr)`` (every arm hands
+        # over the SAME existing place, so the selection is that place), or
+        # ``("reject",)`` (arms disagree, or an arm cannot be resolved --
+        # fail closed). Computing it once at the producer, rather than
+        # re-deriving it syntactically at each move position, is what keeps a
+        # match-arm binder resolvable: at the producer the binder is still in
+        # scope and in ``_linear_alias``.
+        self._selection_place: dict[int, tuple] = {}
         # Names of user-defined struct types whose values must
         # not be field-mutated, because the type appears
         # (directly or transitively) in a ``Set<...>`` or
@@ -860,6 +882,16 @@ class Analyzer(
             self._ifc_sink_pc,
             self._ct_sensitive_params,
         ) = compute_ifc_summaries(module, self.global_scope)
+        # Phase 1d (E3): per-callable RETURN-ORIGIN summaries -- the parameter
+        # indices a generic identity / passthrough return laundered the
+        # argument's must-consume obligation from. Built over the SAME shared
+        # callable enumeration the IFC summaries use, purely syntactically, so
+        # the E3 resolver can move the aliased argument at each call site
+        # before the double-free lands. Consulted only where the call RESULT
+        # actually carries an obligation (see :mod:`._e3`).
+        from ._return_origin import compute_return_origins
+        self._return_origins, self._return_origin_callables = \
+            compute_return_origins(module)
         # Phase 2: visit bodies of functions, impls, etc.
         for item in module.items:
             self._check_item(item)

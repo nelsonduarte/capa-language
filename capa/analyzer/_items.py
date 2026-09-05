@@ -358,6 +358,10 @@ class _ItemsMixin:
         # alongside the live map.
         prev_field_moved = self._linear_field_moved
         self._linear_field_moved = set()
+        # B: pattern-binding VIEW aliases are function-local, like the live
+        # map they resolve into.
+        prev_linear_alias = self._linear_alias
+        self._linear_alias = {}
         # B-F1: seed the borrowed-linear set. A non-``consume`` parameter
         # of a linear / typestate type is borrowed -- the caller keeps the
         # obligation, so the callee may read and forward it but must not
@@ -540,6 +544,7 @@ class _ItemsMixin:
         self._linear_check_dropped(set(self._live_linear))
         self._live_linear = prev_live_linear
         self._linear_field_moved = prev_field_moved
+        self._linear_alias = prev_linear_alias
         self._borrowed_linear = prev_borrowed_linear
         self._drop_exempt_linear = prev_drop_exempt_linear
 
