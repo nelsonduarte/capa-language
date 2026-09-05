@@ -28,7 +28,7 @@ WHAT THIS ASSERTS
 - ``TestLegacyVsCir``: the two Python paths agree on EVERY corpus program,
   including the known-divergent ones (their divergence is Wasm-only). Runs
   without the Wasm toolchain.
-- ``TestKnownDivergent``: the two programs in ``_KNOWN_DIVERGENT`` are
+- ``TestKnownDivergent``: the programs in ``_KNOWN_DIVERGENT`` are
   RECORDED as defects, never blessed as correct. Each test pins the exact
   divergence measured today and says what to do when it goes red because
   the backends now agree (promote the program to ``_AGREEING``).
@@ -83,11 +83,13 @@ _AGREEING: tuple[str, ...] = (
 )
 
 #: Programs whose Wasm behaviour DIFFERS from the two Python paths today.
-#: Each is a measured, pre-existing defect (design section 9; contest F2),
-#: pinned exactly by a dedicated test in ``TestKnownDivergent`` so the
-#: suite records the defect instead of locking it in as correct.
+#: Each is a measured, pre-existing defect (design section 9; contest F2;
+#: the NaN member found by the qa gate), pinned exactly by a dedicated
+#: test in ``TestKnownDivergent`` so the suite records the defect instead
+#: of locking it in as correct.
 _KNOWN_DIVERGENT: tuple[str, ...] = (
     "known_divergent_sorted_by_inconsistent.capa",
+    "known_divergent_sorted_by_nan.capa",
     "known_divergent_generic_closure_param.capa",
 )
 
@@ -236,6 +238,23 @@ class TestKnownDivergent(unittest.TestCase):
             "the Wasm sorted_by output for an inconsistent comparator "
             "changed; if it now equals the Python output the divergence is "
             "fixed: promote the program to _AGREEING",
+        )
+
+    def test_sorted_by_nan_is_recorded_not_blessed(self):
+        # The same class reached through a VALUE: NaN compares false
+        # against everything, so a comparator built from < and > answers
+        # 0 for it against anything and stops being a total order; the
+        # two sorts then settle on different permutations exactly as for
+        # the always-1 comparator above.
+        src = _source("known_divergent_sorted_by_nan.capa")
+        py, cir, wasm = _three_backend_outputs(src)
+        self.assertEqual(py, "1.0|nan|0.5|2.0|\n")
+        self.assertEqual(cir, py)
+        self.assertEqual(
+            wasm, "0.5|1.0|nan|2.0|\n",
+            "the Wasm sorted_by output for a NaN element changed; if it now "
+            "equals the Python output the divergence is fixed: promote the "
+            "program to _AGREEING",
         )
 
     def test_generic_closure_param_is_recorded_not_blessed(self):
