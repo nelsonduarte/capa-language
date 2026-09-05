@@ -102,9 +102,14 @@ infers them from the method's `Fun(...)` signature, so
 ### Range expressions
 
 `a..b` (exclusive of `b`) and `a..=b` (inclusive) produce a
-`List<Int>` materialised from the half-open / closed integer range.
-Both endpoints must be `Int`. Float endpoints are deliberately
-excluded.
+`Range<Int>` over the half-open / closed integer range. Both
+endpoints must be `Int`. Float endpoints are deliberately excluded
+(`range '..' requires Int endpoints; left side has type Float`).
+
+A `Range<T>` is its own type, not a `List<T>`: binding one to a
+`List<Int>` is a type error (`let binding: expected List<Int>, got
+Range<Int>`), and a range is not indexable with `[]`. Call
+`to_list()` when you need an actual `List`.
 
 ```capa
 for i in 0..10            // 0, 1, 2, ..., 9
@@ -116,23 +121,43 @@ for i in 1..=5            // 1, 2, 3, 4, 5
 let n = 4
 let xs = (n - 1)..(n * 2) // 3..8, arithmetic endpoints
 
-// A Range is a lazy iterable, NOT a List: it does not carry the
-// List method API (`map` / `filter` / `fold` / ...). Build a List
-// explicitly when you need it:
-let evens = [0, 2, 4, 6, 8].filter(fun (x: Int) -> Bool => x % 2 == 0)
+// A range carries the transforming and indexed-query methods, and
+// the transforms return a fresh List, not a Range:
+let evens = (0..10).filter(fun (x: Int) -> Bool => x % 2 == 0)
 ```
 
 Ranges are first-class iterables in `for` loops on **both** the
 Python and Wasm backends; the loop consumes a range directly
 without materialising it.
 
-`Range<T>` also has a small query surface - `length() -> Int`,
-`contains(x: T) -> Bool`, `is_empty() -> Bool`, and
-`to_list() -> List<T>` - implemented on **both** the Python and
-Wasm backends. They operate against the half-open `[start, stop)`
-interval (`stop = end + 1` for the inclusive `a..=b` form,
-`stop = end` for the exclusive `a..b` form), matching Python's
-`range(start, stop)`.
+`Range<T>` declares the twelve methods below, implemented on **both**
+the Python and Wasm backends.
+
+| Method | Type | Description |
+|---|---|---|
+| `length()` | `Int` | Number of elements, without materialising |
+| `contains(x: T)` | `Bool` | Membership in the interval |
+| `is_empty()` | `Bool` | |
+| `to_list()` | `List<T>` | Materialise as a `List` |
+| `map<U>(f: Fun(T) -> U)` | `List<U>` | Transform each element |
+| `filter(p: Fun(T) -> Bool)` | `List<T>` | Keep elements that match |
+| `fold<U>(init: U, f: Fun(U, T) -> U)` | `U` | Reduce to a single value |
+| `first()` | `Option<T>` | First element or `None` |
+| `last()` | `Option<T>` | Last element or `None` |
+| `get(i: Int)` | `Option<T>` | Safe indexed access |
+| `find(p: Fun(T) -> Bool)` | `Option<T>` | First element matching `p` |
+| `find_index(p: Fun(T) -> Bool)` | `Option<Int>` | Index of first element matching `p` |
+
+`map` / `filter` / `fold` and the indexed queries carry the same
+signatures and semantics as their `List` homonyms: `r.map(f)` means
+`r.to_list().map(f)`. The `List` methods **not** declared on `Range`
+are `sorted_by`, `reverse`, `enumerate`, `zip`, `flat_map` and the
+mutating `push`; calling one reports `type 'Range' has no method
+'<name>'`. Reach them through `to_list()`.
+
+All twelve operate against the half-open `[start, stop)` interval
+(`stop = end + 1` for the inclusive `a..=b` form, `stop = end` for
+the exclusive `a..b` form), matching Python's `range(start, stop)`.
 
 Range precedence sits between addition and comparison, so
 `1+2..5+3` parses as `(1+2)..(5+3)` and `a..b == c..d` as
