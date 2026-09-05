@@ -1564,6 +1564,23 @@ class TestSelfAssignResolvedPlace(_Base):
             "was already consumed",
         )
 
+    def test_prefix_named_other_target_still_moves(self):
+        # A target whose NAME extends the RHS place's name (``ab`` vs ``a``)
+        # is a DIFFERENT place, so this is an honest re-arm from another
+        # variable, not a self-assign: the fully consumed ``ab`` re-arms
+        # with ``a``'s value and each resource still closes exactly once.
+        # Pins EXACT equality of the two resolved place strings: a prefix
+        # or first-character comparison of the same strings takes the
+        # preserve fork here, skips the move off ``a``, and wrongly
+        # rejects this program with a leak of ``a`` -- and both such
+        # mutants survived the full suite while every name pair in this
+        # class was a single letter (qa gate, mutants D and E).
+        self.assertAccepts(
+            _WRAP + "fun main(_s: Stdio)\n    var a = mkh()\n"
+            "    var ab = mkh()\n    sink(ab)\n"
+            "    ab = (if true then a else a)\n    sink(ab)\n"
+        )
+
     def test_fresh_name_let_keeps_husk_rejection(self):
         self.assertRejects(
             _WRAP + "fun main(_s: Stdio)\n    var a = mkh()\n"
