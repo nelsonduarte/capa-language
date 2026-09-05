@@ -37,6 +37,8 @@ import unittest
 import capa.analyzer
 from capa.builtins import METHODS
 
+from tests._declared_methods import declared_methods
+
 
 #: The owner-and-method tables known today, pinned so the discovery below
 #: cannot silently shrink.
@@ -95,10 +97,6 @@ def _discover_tables() -> dict[str, object]:
     return found
 
 
-def _declared(owner: str) -> set[str]:
-    return {m for (m, _ty, _params) in METHODS.get(owner, [])}
-
-
 class TestIfcTableKeysAreDeclared(unittest.TestCase):
     def test_discovered_tables_are_the_known_ones(self):
         self.assertEqual(
@@ -118,7 +116,7 @@ class TestIfcTableKeysAreDeclared(unittest.TestCase):
                         f"capa.builtins.METHODS does not know",
                     )
                     self.assertIn(
-                        method, _declared(owner),
+                        method, declared_methods(owner),
                         f"{name} keys on {owner}.{method}, which "
                         f"capa.builtins.METHODS does not declare; the entry "
                         f"is dead and, for a fail-open table, the protection "

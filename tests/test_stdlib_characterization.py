@@ -55,6 +55,7 @@ from capa.builtins import METHODS
 from capa.manifest import build_manifest
 from capa.typesys import CAPABILITY_NAMES, TyName
 
+from tests._declared_methods import declared_methods
 from tests.test_ir_wasm_parity import (
     _capture_stdout,
     _has_wasm_tools,
@@ -98,16 +99,16 @@ def _source(filename: str) -> str:
     return (_CORPUS / filename).read_text(encoding="utf-8")
 
 
-def _declared_methods() -> set[tuple[str, str]]:
+def _declared_pairs() -> set[tuple[str, str]]:
     """Every ``(owner, method)`` declared on a non-capability owner.
     Capability surfaces are security decisions, not a completeness
     question, and their methods need fixtures or the network, so they
     are outside this corpus by construction."""
     return {
         (owner, name)
-        for owner, entries in METHODS.items()
+        for owner in METHODS
         if owner not in CAPABILITY_NAMES
-        for (name, _ty, _params) in entries
+        for name in declared_methods(owner)
     }
 
 
@@ -153,7 +154,7 @@ class TestCorpusCoverage(unittest.TestCase):
         called: set[tuple[str, str]] = set()
         for filename in _AGREEING + _KNOWN_DIVERGENT:
             called |= _called_methods(_source(filename))
-        missing = sorted(_declared_methods() - called)
+        missing = sorted(_declared_pairs() - called)
         self.assertEqual(
             missing, [],
             "capa.builtins.METHODS declares methods the characterization "

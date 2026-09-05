@@ -88,6 +88,8 @@ from capa.runtime._set import CapaSet
 from capa.transpiler._methods import _MethodsMixin
 from capa.typesys import CAPABILITY_NAMES
 
+from tests._declared_methods import declared_methods
+
 
 #: The built-in receiver types with a Python-emit table. ``Range`` has a
 #: legacy table but no CIR one (see ``_VESTIGIAL_ONE_SIDED``).
@@ -313,11 +315,6 @@ _QUARANTINED_COLLISIONS = frozenset({
 })
 
 
-def _declared(owner):
-    """The method names ``capa.builtins.METHODS`` declares on ``owner``."""
-    return [m for (m, _ty, _params) in METHODS.get(owner, [])]
-
-
 def _implementing_class(cls, name):
     """The class in ``cls``'s MRO whose OWN dictionary defines ``name``,
     or None. It is what an attribute lookup would find, which is why the
@@ -363,7 +360,7 @@ class TestBackendReachability(unittest.TestCase):
         fails here, naming the class and, when an inherited Python
         attribute would have answered instead, naming that too."""
         for owner, classes in sorted(_RUNTIME_CLASSES.items()):
-            for name in _declared(owner):
+            for name in declared_methods(owner):
                 for cls in classes:
                     with self.subTest(owner=owner, method=name, cls=cls.__name__):
                         impl = _implementing_class(cls, name)
@@ -386,7 +383,7 @@ class TestBackendReachability(unittest.TestCase):
         for owner in _BARE_BUILTIN_OWNERS:
             legacy = _special_cased(_LEGACY_FN[owner])
             cir = _cir_special_cased(owner)
-            for name in _declared(owner):
+            for name in declared_methods(owner):
                 with self.subTest(owner=owner, method=name):
                     self.assertIn(
                         name, legacy,
@@ -403,7 +400,7 @@ class TestBackendReachability(unittest.TestCase):
         collisions = {
             (owner, name)
             for owner, builtin in _PYTHON_BUILTIN.items()
-            for name in _declared(owner)
+            for name in declared_methods(owner)
             if hasattr(builtin, name)
         }
         self.assertEqual(
@@ -441,7 +438,7 @@ class TestRangeReachability(unittest.TestCase):
     ``--wasm`` at compile time (contest P6)."""
 
     def test_every_declared_range_method_is_direct_or_desugared(self):
-        declared = set(_declared("Range"))
+        declared = set(declared_methods("Range"))
         unreachable = declared - _wasm_direct_range_arms() - set(_RANGE_DESUGAR_METHODS)
         self.assertEqual(
             sorted(unreachable), [],
@@ -457,8 +454,8 @@ class TestRangeReachability(unittest.TestCase):
         # rewrite a call that cannot exist or to a method that does not.
         for name in sorted(_RANGE_DESUGAR_METHODS):
             with self.subTest(method=name):
-                self.assertIn(name, _declared("Range"))
-                self.assertIn(name, _declared("List"))
+                self.assertIn(name, declared_methods("Range"))
+                self.assertIn(name, declared_methods("List"))
 
     def test_direct_arms_and_desugar_do_not_overlap(self):
         # One lowering per name: a name in both sets would be desugared

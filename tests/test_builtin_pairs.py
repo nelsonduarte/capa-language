@@ -58,6 +58,8 @@ import unittest
 from capa.builtins import METHODS
 from capa.typesys import CAPABILITY_NAMES
 
+from tests._declared_methods import declared_methods
+
 
 class _Pair(typing.NamedTuple):
     """One group of related operations. Members are ``(owner, method)``."""
@@ -143,13 +145,9 @@ _PAIRS: tuple[_Pair, ...] = (
 )
 
 
-def _declared(owner: str) -> set[str]:
-    return {m for (m, _ty, _params) in METHODS.get(owner, [])}
-
-
 def _is_declared(member: tuple[str, str]) -> bool:
     owner, method = member
-    return method in _declared(owner)
+    return method in declared_methods(owner)
 
 
 class TestPairsTableShape(unittest.TestCase):
