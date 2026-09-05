@@ -15,22 +15,28 @@ map had covered two of the tables.
 This guard changes no table's semantics. Making the fail-open tables fail
 closed is a separate tracked security item.
 
-The set of tables is DISCOVERED from the two IFC modules, not listed: any
-module-level dict / set / frozenset whose keys are all ``(str, str)``
-pairs is a table this guard covers, so an eighth one cannot be added
-outside it. The names found today are pinned so a table that vanishes or
-changes shape is also visible.
+The set of tables is DISCOVERED, not listed. Every module of the
+``capa.analyzer`` package is imported and any module-level dict / set /
+frozenset whose keys (or elements) are all ``(str, str)`` pairs is a
+table this guard covers, whichever analyzer module defines it. That is
+the bound, stated: a table of the same shape defined OUTSIDE the package
+(the backends keep such tables for their own mappings) is not reached,
+and neither is a table whose keys are not all two-string tuples or that
+is empty at import time. Adding a guard over the backend tables is a
+separate decision. The names found today are pinned so a table that
+vanishes or changes shape is also visible, and one name bound to two
+different tables in two modules fails rather than hiding one.
 """
 
 from __future__ import annotations
 
+import importlib
+import pkgutil
 import unittest
 
-from capa.analyzer import _ifc, _ifc_tables
+import capa.analyzer
 from capa.builtins import METHODS
 
-
-_IFC_MODULES = (_ifc_tables, _ifc)
 
 #: The owner-and-method tables known today, pinned so the discovery below
 #: cannot silently shrink.
@@ -52,19 +58,40 @@ def _is_owner_method_key(key) -> bool:
     )
 
 
+def _is_owner_method_table(value) -> bool:
+    if not isinstance(value, (dict, set, frozenset)):
+        return False
+    keys = list(value)
+    return bool(keys) and all(_is_owner_method_key(k) for k in keys)
+
+
+def _analyzer_modules():
+    """Every module of the ``capa.analyzer`` package, the package itself
+    included, imported so its module-level tables exist."""
+    yield capa.analyzer
+    prefix = capa.analyzer.__name__ + "."
+    for info in pkgutil.walk_packages(capa.analyzer.__path__, prefix=prefix):
+        yield importlib.import_module(info.name)
+
+
 def _discover_tables() -> dict[str, object]:
-    """name -> table, for every module-level dict / set / frozenset in the
-    IFC modules whose keys (or elements) are all ``(str, str)`` pairs.
-    ``_ifc`` re-imports the ``_ifc_tables`` names, so the same object is
-    found under the same name twice and deduplicated by name."""
+    """name -> table, over every analyzer module. A re-imported name
+    (``_ifc`` and ``_ifc_summary`` re-import the ``_ifc_tables`` tables)
+    is the same object and is recorded once; the same name bound to a
+    DIFFERENT object in another module is refused, so a second table
+    cannot hide behind a first one's name."""
     found: dict[str, object] = {}
-    for module in _IFC_MODULES:
+    for module in _analyzer_modules():
         for name, value in vars(module).items():
-            if name.startswith("__") or not isinstance(value, (dict, set, frozenset)):
+            if name.startswith("__") or not _is_owner_method_table(value):
                 continue
-            keys = list(value)
-            if keys and all(_is_owner_method_key(k) for k in keys):
-                found[name] = value
+            if name in found and found[name] is not value:
+                raise AssertionError(
+                    f"{name} is bound to two different (owner, method)-keyed "
+                    f"tables in capa.analyzer (seen again in "
+                    f"{module.__name__}); rename one so both are guarded"
+                )
+            found[name] = value
     return found
 
 
