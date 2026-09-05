@@ -9,12 +9,24 @@ Capa program, no imports required.
 
 | Type | Size/Range | Notes |
 |---|---|---|
-| `Int` | 64-bit signed | Arithmetic does not check for overflow |
+| `Int` | 64-bit signed | Arithmetic aborts on overflow rather than wrapping (see below) |
 | `Float` | 64-bit IEEE 754 | |
 | `String` | UTF-8 | Immutable |
 | `Bool` | `true` / `false` | |
 | `Char` | Unicode code point | At runtime, a str of length 1 |
 | `Unit` | `()` | "Empty" type for functions with no return value |
+
+**`Int` arithmetic is checked, not wrapping.** `+`, `-` and `*` abort
+the program when the result leaves the signed 64-bit window, `/` and
+`%` abort on a zero divisor, and `/` also aborts on
+`(-2^63) / -1`. The shifts `<<` / `>>` abort when the shift count is
+outside `[0, 64)`, and `<<` additionally aborts when the shifted
+value leaves the window. This is a run-time abort, not a compile-time
+check: `--check` accepts a program that will overflow. The failure is
+loud and immediate: the Python backend raises `OverflowError: Int
+addition overflows signed 64-bit: ...` (or a `ZeroDivisionError` for
+a zero divisor), and the Wasm backend traps. Both reach the same
+failure at the same input; neither wraps silently.
 
 ### `String`, methods
 
@@ -89,7 +101,12 @@ infers the type from the first `push`.
 | `zip<U>(other: List<U>)` | `List<(T, U)>` | Fresh list pairing `self[i]` with `other[i]`, truncated to the shorter length. |
 | `flat_map<U>(f: Fun(T) -> List<U>)` | `List<U>` | Apply `f` to each element and concatenate the resulting lists in order. |
 
-Index access: `xs[i]` (no bounds checking, use `get(i)` for safe access).
+Index access: `xs[i]`. The index is bounds-checked at run time, not
+at compile time: `i < 0` or `i >= length()` aborts the program
+(`IndexError: list index out of range: i=7, len=3` on the Python
+backend, a trap on Wasm). Negative indices never wrap around to the
+end. Use `get(i)`, which returns `Option<T>`, when an out-of-range
+index should be a value rather than an abort.
 
 The lambda passed to any of the higher-order methods above
 (`map` / `filter` / `fold` / `find` / `find_index` / `sorted_by` /
