@@ -135,8 +135,15 @@ fun first<T>(xs: List<T>) -> Option<T>
 type Pair<A, B> { first: A, second: B }
 ```
 
-Local inference: the caller rarely needs to supply explicit args.
-`first<Int>([1,2,3])` is equivalent to `first([1,2,3])`.
+Type arguments at a call site are always inferred, never written:
+call it as `first([1,2,3])`. There is no syntax for supplying them
+explicitly. `<>` opens a type-argument list only in type position;
+in expression position `<` is the comparison operator, so
+`first<Int>([1,2,3])` parses as a chain of comparisons and is
+rejected with `comparison operators are non-associative; use
+parentheses or boolean operators to combine`. The Rust turbofish
+`first::<Int>(...)` is not accepted either. It is listed among the
+deferred features in [`Capa-EBNF.md`](../Capa-EBNF.md) section 1.5.
 
 ### 2.5. Cross-statement inference
 

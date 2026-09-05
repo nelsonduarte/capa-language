@@ -259,7 +259,7 @@ s.length() // 2
 ```capa
 let s = "  Hello, World  "
 
-s.length()                    // 17
+s.length()                    // 16
 s.trim()                      // "Hello, World"
 s.to_upper()                  // "  HELLO, WORLD  "
 s.to_lower()                  // "  hello, world  "
