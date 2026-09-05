@@ -1408,5 +1408,187 @@ class TestCallReceiverProjection(_Base):
         )
 
 
+class TestSelfAssignResolvedPlace(_Base):
+    """The IDENT-target re-arm in ``_check_assign`` decides SELF-ASSIGN at
+    the RESOLVED place, not from the RHS's syntax.
+
+    The preserve-husk fork used to test ``isinstance(s.value, Ident) and
+    s.value.name == s.target.name``, so only the literal spelling ``a = a``
+    preserved the target's moved-out sub-paths; every WRAPPED spelling of
+    the same self-assignment (a selection, a binder, a laundering call, and
+    their compositions) took the clear-then-transfer path, whose
+    ``_clear_moved_subpaths`` wiped the husk state and re-armed a partially
+    consumed value -- a double-free with a clean ``--check`` on all three
+    backends (fork-contest probes f4e / f4i / f4n).
+
+    The fork now asks ``_receiver_path_of`` -- the one operand-place
+    resolver, which sees through selections, pattern-binding views and
+    single-origin laundering calls -- whether the RHS denotes the target's
+    own place. Every spelling that RESOLVES to the target gets the direct
+    spelling's verdict; a spelling that does NOT resolve (arms disagreeing,
+    a multi-origin callee) keeps the move path, where the seam already
+    rejects it fail-closed.
+
+    The spelling set below is the family the branch's earlier rounds fixed
+    at other positions: ``SPELLINGS`` (select / binder) plus the w9
+    laundering-callee shapes (identity, extra args, nested, triple,
+    wrap-of-selection), plus the view-binder (a ``match`` over the target
+    itself) and its wrap. Bound of the enumeration: the language has
+    exactly two alias-introduction forms (binding and selection) and one
+    laundering form (a summarised passthrough call); the family is their
+    compositions to depth three. A member outside it would need a NEW
+    alias-introduction or laundering form, which ``_receiver_path_of``
+    would have to learn about for EVERY position, not just this one."""
+
+    _TAP = "fun tap<T>(x: T, n: Int) -> T\n    return x\n"
+    _PICK2 = (
+        "fun pick2<T>(x: T, y: T) -> T\n"
+        "    if true\n"
+        "        return x\n"
+        "    return y\n"
+    )
+
+    # Every RHS spelling that RESOLVES to the target's own place ``a``.
+    SELF_SPELLS = {
+        "select": "(if true then a else a)",
+        "nested_select": "(if true then a else (if false then a else a))",
+        "binder": "(match 0 { _ -> a })",
+        "view_binder": "(match a { h -> h })",
+        "wrap": "idc(a)",
+        "nested_wrap": "idc(idc(a))",
+        "triple_wrap": "idc(idc(idc(a)))",
+        "extra_args_wrap": "tap(a, 1)",
+        "wrap_of_select": "idc(if true then a else a)",
+        "wrap_of_view_binder": "idc(match a { h -> h })",
+    }
+
+    def _husk_body(self, rhs: str) -> str:
+        """Partial consume, then the self-assign spelling, then a whole
+        consume of the husk."""
+        return (
+            _WRAP + self._TAP + "fun main(_s: Stdio)\n    var a = mkh()\n"
+            f"    close(a.c)\n    a = {rhs}\n    sink(a)\n"
+        )
+
+    def _live_body(self, rhs: str) -> str:
+        return (
+            _WRAP + self._TAP + "fun main(_s: Stdio)\n    var a = mkh()\n"
+            f"    a = {rhs}\n    sink(a)\n"
+        )
+
+    # ---- the class: a wrapped self-assign must not re-arm a husk ----
+
+    def test_husk_selfassign_rejects_in_every_resolved_spelling(self):
+        for name, rhs in sorted(self.SELF_SPELLS.items()):
+            with self.subTest(spelling=name):
+                self.assertRejects(
+                    self._husk_body(rhs),
+                    "its field 'a.c' was already consumed",
+                )
+
+    def test_husk_selfassign_laundered_close_composition_rejects(self):
+        # The fork-contest composition exactly: the partial consume itself
+        # goes through the laundering call (``close(idc(a).c)``), so the
+        # husk the re-arm must preserve was produced by the resolver too.
+        for name in ("select", "view_binder", "wrap"):
+            with self.subTest(spelling=name):
+                self.assertRejects(
+                    _WRAP + self._TAP
+                    + "fun main(_s: Stdio)\n    var a = mkh()\n"
+                    f"    close(idc(a).c)\n    a = {self.SELF_SPELLS[name]}\n"
+                    "    sink(a)\n",
+                    "its field 'a.c' was already consumed",
+                )
+
+    # ---- the connection: every spelling gets the DIRECT verdict ----
+
+    def test_husk_selfassign_every_spelling_agrees_with_direct(self):
+        self.assertSameVerdict(
+            self._husk_body("a"),
+            *(self._husk_body(r) for r in self.SELF_SPELLS.values()),
+        )
+
+    def test_live_selfassign_every_spelling_agrees_with_direct(self):
+        # The LIVE half of the same cell: ``a = a`` on a live value takes
+        # the drop rule (the recorded F4 conservatism), and a wrapped
+        # spelling of the same statement must not dodge it -- a spelling-
+        # dependent verdict at a move position is the defect class itself.
+        self.assertSameVerdict(
+            self._live_body("a"),
+            *(self._live_body(r) for r in self.SELF_SPELLS.values()),
+        )
+
+    # ---- fail-closed members: no single place, the move seam rejects ----
+
+    def test_unresolvable_selfassign_spellings_stay_fail_closed(self):
+        # Arms that each launder (no recorded place) and a callee whose
+        # result may alias either argument resolve to NO place; they keep
+        # the move path and its fail-closed rejects.
+        self.assertRejects(
+            self._husk_body("(if true then idc(a) else idc(a))"),
+            "cannot be selected through a conditional",
+        )
+        self.assertRejects(
+            _WRAP + self._PICK2 + "fun main(_s: Stdio)\n    var a = mkh()\n"
+            "    close(a.c)\n    a = pick2(a, a)\n    sink(a)\n",
+            "may alias one of several",
+        )
+
+    # ---- negatives: the legitimate re-arm and the honest moves stay ----
+
+    def test_fresh_rearm_stays_accepted(self):
+        # ``close(a.c); a = mkh()`` and the after-full twin are THE re-arm
+        # idiom; the resolver returns no place for a proven factory, so the
+        # clear-then-transfer path (and the acceptance) is unchanged.
+        self.assertAccepts(
+            _WRAP + "fun main(_s: Stdio)\n    var a = mkh()\n"
+            "    close(a.c)\n    a = mkh()\n    sink(a)\n"
+        )
+        self.assertAccepts(
+            _WRAP + "fun main(_s: Stdio)\n    var a = mkh()\n"
+            "    sink(a)\n    a = mkh()\n    sink(a)\n"
+        )
+
+    def test_other_target_selection_still_moves_the_source(self):
+        # A selection of ANOTHER name is an honest move, not a self-assign:
+        # assigning it over a consumed target stays accepted, and the
+        # source's husk state still travels with the move.
+        self.assertAccepts(
+            _WRAP + "fun main(_s: Stdio)\n    var a = mkh()\n    var b = mkh()\n"
+            "    sink(b)\n    b = (if true then a else a)\n    sink(b)\n"
+        )
+        self.assertRejects(
+            _WRAP + "fun main(_s: Stdio)\n    var a = mkh()\n    var b = mkh()\n"
+            "    sink(b)\n    close(a.c)\n    b = (if true then a else a)\n"
+            "    sink(b)\n",
+            "was already consumed",
+        )
+
+    def test_fresh_name_let_keeps_husk_rejection(self):
+        self.assertRejects(
+            _WRAP + "fun main(_s: Stdio)\n    var a = mkh()\n"
+            "    close(a.c)\n    let z = (if true then a else a)\n    sink(z)\n",
+            "was already consumed",
+        )
+
+    def test_field_target_selfassign_sibling_stays_closed(self):
+        # The FieldAccess-target arm has no preserve fork at all: a field
+        # self-store is moved by the seam and re-armed, so a husk field
+        # rejects in every spelling already. Pinned so the two target arms
+        # cannot drift apart.
+        for rhs in (
+            "o.inner",
+            "(if true then o.inner else o.inner)",
+            "idc(o.inner)",
+        ):
+            with self.subTest(rhs=rhs):
+                self.assertRejects(
+                    _WRAP_DEEP + "fun main(_s: Stdio)\n    var o = mko()\n"
+                    "    close(o.inner.c)\n"
+                    f"    o.inner = {rhs}\n    sinko(o)\n",
+                    "'o.inner.c' was already consumed",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

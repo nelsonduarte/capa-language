@@ -630,26 +630,44 @@ class _StatementsMixin:
             # on a borrowed ``h`` rejects instead of laundering the caller's
             # value). Three cases:
             #
-            # - SELF-ASSIGN (``c = c``): a no-op re-arm. The RHS names the
-            #   target itself, so there is no source to move off and the target's
-            #   own moved-out sub-paths must be PRESERVED -- a spent husk assigned
-            #   to itself stays a husk, so ``c = c`` on a husk is still rejected
-            #   when the whole husk is later consumed. Routing it through the
-            #   clear-then-transfer path below would wipe those sub-paths.
-            # - ALIAS / FRESH (everything else), in THIS ORDER: clear the
-            #   target's OWN stale moved-out sub-tree FIRST (a spent-husk target
-            #   re-armed to a fresh value must not keep rejecting a legitimate
-            #   consume, nor mask the fresh value's leak), THEN
-            #   ``_linear_transfer_if_alias`` (which re-carries the SOURCE's
-            #   sub-paths and clears any stale borrow on the target), THEN the
-            #   re-arm. The order is load-bearing: clearing AFTER the transfer,
-            #   or clearing unconditionally, would wipe the sub-paths the
-            #   transfer just re-carried and reopen the husk double-free.
+            # - SELF-ASSIGN (the RHS RESOLVES to the target's own place): a
+            #   no-op re-arm. There is no source to move off and the target's
+            #   own moved-out sub-paths must be PRESERVED -- a spent husk
+            #   assigned to itself stays a husk, so a later whole consume is
+            #   still rejected. Routing it through the clear-then-transfer
+            #   path below would wipe those sub-paths. Decided on the
+            #   RESOLVED place, through ``_receiver_path_of`` (the one
+            #   operand-place resolver, which sees through a selection, a
+            #   pattern-binding view and a single-origin laundering call) --
+            #   NOT on the RHS's syntax. Spelled as ``isinstance(s.value,
+            #   Ident) and s.value.name == s.target.name``, only the literal
+            #   ``a = a`` preserved the husk, and every wrapped spelling of
+            #   the same self-assignment (``a = (if c then a else a)``,
+            #   ``a = idc(a)``, ``a = match a { h -> h }``) took the clear
+            #   path and re-armed a partially consumed value: a double-free
+            #   with a clean ``--check`` on all three backends. One
+            #   consequence is deliberate: the drop rule's conservative
+            #   reject of a LIVE self-assign now lands on every spelling,
+            #   not just the direct one -- one statement, one verdict,
+            #   whatever the wrapping.
+            # - ALIAS / FRESH / UNRESOLVABLE (everything else), in THIS
+            #   ORDER: clear the target's OWN stale moved-out sub-tree FIRST
+            #   (a spent-husk target re-armed to a fresh value must not keep
+            #   rejecting a legitimate consume, nor mask the fresh value's
+            #   leak), THEN ``_linear_transfer_if_alias`` (which re-carries
+            #   the SOURCE's sub-paths and clears any stale borrow on the
+            #   target), THEN the re-arm. The order is load-bearing: clearing
+            #   AFTER the transfer, or clearing unconditionally, would wipe
+            #   the sub-paths the transfer just re-carried and reopen the
+            #   husk double-free. An RHS the resolver cannot reduce to one
+            #   place (arms disagreeing, a multi-origin callee) lands here
+            #   too, where the move seam already rejects it fail-closed.
             #
             # Out of scope here (a SEPARATE double-free class with its own seam):
             # a field-store linear laundering ``s.h = t`` is the FieldAccess-
             # target branch below, not this Ident-target re-arm.
-            if isinstance(s.value, A.Ident) and s.value.name == s.target.name:
+            rhs_place = self._receiver_path_of(s.value)
+            if rhs_place is not None and rhs_place == _tpath:
                 self._linear_reassign(s.target.name, value_ty, s.pos)
             else:
                 self._clear_moved_subpaths(s.target.name)

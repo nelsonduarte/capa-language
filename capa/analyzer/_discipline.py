@@ -473,18 +473,23 @@ class _DisciplineMixin:
         return None
 
     def _receiver_path_of(self, recv: A.Expr) -> Optional[str]:
-        """The place a FIELD-PROJECTION RECEIVER denotes, ``None`` if none.
+        """The place an OPERAND denotes, ``None`` if none.
 
-        ``_path_of`` for every receiver shape, plus the one shape a receiver
-        can take that a whole operand cannot usefully take: a CALL whose
-        result aliases an argument. ``idc(h)`` in a move position is already
-        moved by the move seam, which unwraps the call and moves the argument;
-        but ``idc(h).c`` is a PROJECTION off that result, and the projection
-        needs a PLACE, not a move. Resolving the call to the place its result
-        aliases is what makes ``idc(h).c``, ``(if c then h else h).c`` and
-        ``h.c`` one path expression with one answer, so every position-driven
-        rule inherits the call receiver exactly as it already inherits the
-        selection receiver -- rather than each move position growing a case.
+        ``_path_of`` for every operand shape, plus the one shape a READ
+        position can need resolved that a move position handles itself: a
+        CALL whose result aliases an argument. ``idc(h)`` in a move position
+        is already moved by the move seam, which unwraps the call and moves
+        the argument; but ``idc(h).c`` is a PROJECTION off that result, and
+        the projection needs a PLACE, not a move. Resolving the call to the
+        place its result aliases is what makes ``idc(h).c``, ``(if c then h
+        else h).c`` and ``h.c`` one path expression with one answer, so
+        every position-driven rule inherits the call receiver exactly as it
+        already inherits the selection receiver -- rather than each move
+        position growing a case. Two askers: the ``_path_of`` FieldAccess
+        branch (a projection RECEIVER) and ``_check_assign``'s Ident-target
+        re-arm (does the RHS denote the TARGET's own place, whatever the
+        wrapping) -- the same question, so a third spelling family cannot
+        open one and not the other.
 
         Bounded by the receiver chain: the resolved operand is fed back
         through THIS function, so a nested ``idc(idc(h)).c`` unwraps one layer
