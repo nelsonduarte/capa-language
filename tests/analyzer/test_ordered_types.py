@@ -16,7 +16,12 @@ Two things are pinned here, each against a named mutation:
 - the operator arm CONSULTS the constant rather than mirroring it (adding
   ``Bool`` to the constant makes ``true < false`` type-check and fails the
   Bool rejection below; if the arm did not read the constant, that
-  mutation would survive).
+  mutation would survive);
+- the arm admits what ``compatible`` admits BEYOND the primitives: a
+  flexible inference variable and ``TyUnknown`` in an ordering position
+  (``TestPermissiveOperands``). No corpus program put either shape under
+  an ordering operator, so an arm rewritten to refuse them survived the
+  whole suite; these pins are the members that were missing.
 
 See tests/analyzer/__init__.py for the growth convention.
 """
@@ -112,6 +117,72 @@ class TestOrderingOperators(unittest.TestCase):
         self.assertEqual(
             accepted, {ty.name for ty in ORDERED_TYPES} | {"Char"},
         )
+
+
+class TestPermissiveOperands(unittest.TestCase):
+    """``compatible(member, t)`` holds for a flexible inference variable
+    and for ``TyUnknown`` whatever the member, so an operand of either
+    shape is admitted by the arm and reported, if at all, by the site
+    that owns it (the empty-literal inference, the name resolver). An
+    arm that short-circuits on ``is_flexible`` or ``TyUnknown`` before
+    consulting the set adds an operand diagnostic these pins refuse."""
+
+    def test_flexible_element_type_is_admitted(self):
+        # ``e`` is an empty literal whose element type is fixed only
+        # AFTER the comparison, so at the operator ``v`` is still a
+        # flexible ``?`` variable; the program type-checks today.
+        r = check(
+            "fun main(stdio: Stdio)\n"
+            "    let e = []\n"
+            "    let v = e.first().unwrap()\n"
+            "    let w = v < 1\n"
+            '    e.push("s")\n'
+            '    stdio.println("${w}")\n'
+        )
+        self.assertTrue(
+            r.ok,
+            "the ordering arm refused a flexible inference variable; it "
+            "must admit whatever compatible() admits against a member: "
+            f"{[e.message for e in r.errors]}",
+        )
+        # When the element type is never fixed, the ONE diagnostic is the
+        # element-type one; the operator adds nothing on top of it.
+        msgs = errors_of(
+            "fun main(stdio: Stdio)\n"
+            "    let e = []\n"
+            '    stdio.println("${e.first().unwrap() < 1}")\n'
+        )
+        self.assertEqual(
+            len(msgs), 1,
+            "an ordering on a flexible operand must report only the "
+            f"element-type diagnostic, never an operand one: {msgs}",
+        )
+        self.assertTrue(
+            msgs[0].startswith("cannot determine the element type"), msgs,
+        )
+
+    def test_unknown_operand_adds_no_operand_diagnostic(self):
+        # An undefined name types as TyUnknown; the resolver's diagnostic
+        # is the only one, on one side or on both.
+        for src, expected in (
+            (
+                "fun main(stdio: Stdio)\n"
+                '    stdio.println("${undefined_x < 1}")\n',
+                ["undefined name 'undefined_x'"],
+            ),
+            (
+                "fun main(stdio: Stdio)\n"
+                '    stdio.println("${undefined_x < undefined_y}")\n',
+                ["undefined name 'undefined_x'", "undefined name 'undefined_y'"],
+            ),
+        ):
+            with self.subTest(src=src.splitlines()[1].strip()):
+                self.assertEqual(
+                    errors_of(src), expected,
+                    "the ordering arm added an operand diagnostic for a "
+                    "TyUnknown operand; the undefined-name diagnostic must "
+                    "be the only one",
+                )
 
 
 if __name__ == "__main__":
