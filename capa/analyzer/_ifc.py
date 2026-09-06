@@ -38,6 +38,7 @@ from typing import Optional
 
 from .. import capa_ast as A
 from .. import _labels as L
+from ._callables import fun_key, lambda_key, method_key
 from ._ifc_tables import (
     _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
     _VARIABLE_TIME_OPS, _SHORT_CIRCUIT_COMPARE_OPS,
@@ -533,7 +534,7 @@ class _IfcMixin:
         )
         if not isinstance(e.callee, A.Ident):
             return conservative
-        sources = self._ifc_return_effects.get(("fun", e.callee.name))
+        sources = self._ifc_return_effects.get(fun_key(e.callee.name))
         if sources is None:
             return conservative
         sym = self.bindings.get(id(e.callee))
@@ -2413,7 +2414,7 @@ class _IfcMixin:
         matching the inline CT tier, NOT IFC-1's strict-only pc gate."""
         if not getattr(self, "_constant_time", False):
             return
-        ct_params = self._ct_sensitive_params.get(("fun", sym.name))
+        ct_params = self._ct_sensitive_params.get(fun_key(sym.name))
         if not ct_params:
             return
         param_tys = getattr(getattr(sym, "ty", None), "params", ())
@@ -2456,7 +2457,7 @@ class _IfcMixin:
         free form. HARD ERROR whenever ``@constant_time`` is set."""
         if not getattr(self, "_constant_time", False):
             return
-        exact_key = ("method", recv_ty.name, e.method)
+        exact_key = method_key(recv_ty.name, e.method)
         from . import SymbolKind
         recv_is_dynamic = type_sym is not None and getattr(
             type_sym, "kind", None,
@@ -3066,7 +3067,7 @@ class _IfcMixin:
         laundered through a function boundary on return."""
         if not isinstance(e.callee, A.Ident):
             return False
-        sources = self._ifc_return_effects.get(("fun", e.callee.name))
+        sources = self._ifc_return_effects.get(fun_key(e.callee.name))
         if not sources:
             return False
         sym = self.bindings.get(id(e.callee))
@@ -3226,7 +3227,7 @@ class _IfcMixin:
         free functions). The summary's parameter indices are over the
         full parameter list, which for a free function equals the
         explicit list, so no shift is needed here."""
-        key = ("fun", sym.name)
+        key = fun_key(sym.name)
         sink_params = self._ifc_summaries.get(key)
         if not sink_params:
             return
@@ -3286,7 +3287,7 @@ class _IfcMixin:
             return
         if L.normalize(getattr(self, "_pc_label", L.PUBLIC)) != L.SECRET:
             return
-        if self._ifc_sink_pc.get(("fun", sym.name), False):
+        if self._ifc_sink_pc.get(fun_key(sym.name), False):
             self._emit_ifc_call_pc(repr(sym.name), e.pos)
 
     def _check_ifc_method_call_pc(
@@ -3332,7 +3333,7 @@ class _IfcMixin:
             return
         if L.normalize(getattr(self, "_pc_label", L.PUBLIC)) != L.SECRET:
             return
-        exact_key = ("method", recv_ty.name, e.method)
+        exact_key = method_key(recv_ty.name, e.method)
         from . import SymbolKind
         recv_is_dynamic = type_sym is not None and getattr(
             type_sym, "kind", None,
@@ -3385,7 +3386,7 @@ class _IfcMixin:
         * ``("method", T, method)`` for every concrete type ``T`` that
           implements ``recv_name`` (from the ``impl recv_name for T``
           reverse index); PLUS
-        * ``("method", recv_name, method)`` -- the receiver's OWN key. This
+        * ``method_key(recv_name, method)`` -- the receiver's OWN key. This
           is the COMPLETENESS clause: a user capability with a direct
           ``impl recv_name`` (or a trait with a direct impl on itself) keys
           its methods under ``recv_name`` and lists nothing in any type's
@@ -3393,9 +3394,9 @@ class _IfcMixin:
           capability-own-impl sink would be UNDER-reported. An absent key is
           a harmless no-op (``.get`` yields False), so always including it is
           sound and never widens to an unrelated type."""
-        keys = {("method", recv_name, method)}
+        keys = {method_key(recv_name, method)}
         for tname in self._impl_reverse_index().get(recv_name, ()):
-            keys.add(("method", tname, method))
+            keys.add(method_key(tname, method))
         return keys
 
     def _impl_reverse_index(self) -> dict:
@@ -3470,7 +3471,7 @@ class _IfcMixin:
         summary to a target that was not resolved: an absent summary (the
         lambda sinks no parameter) is a no-op."""
         from ..typesys import TyFun
-        key = ("lambda", id(lam))
+        key = lambda_key(lam)
         sink_params = self._ifc_summaries.get(key)
         if not sink_params:
             return
@@ -3523,7 +3524,7 @@ class _IfcMixin:
 
         Warn by default, hard error under ``@strict_ifc`` -- the same two-tier
         discipline as the parameter check, via ``_emit_ifc_call_leak``."""
-        summary = self._ifc_capture_sink_paths.get(("lambda", id(lam)))
+        summary = self._ifc_capture_sink_paths.get(lambda_key(lam))
         if not summary:
             return
         by_name = {
@@ -3571,7 +3572,7 @@ class _IfcMixin:
           BUILDER uses for a not-statically-known receiver, so the
           call site never under-reports a leak (sound over-approx)."""
         callee_name = f"{recv_ty.name}.{e.method}"
-        exact_key = ("method", recv_ty.name, e.method)
+        exact_key = method_key(recv_ty.name, e.method)
 
         # A trait/capability-typed receiver dispatches dynamically: the
         # concrete impl is not known statically, so the precise exact
@@ -3850,7 +3851,7 @@ class _IfcMixin:
         internal-secret sentinel), the caller's binding for parameter
         ``j`` is tainted at ``field_path`` (field-keyed on the
         container-mutation channel) or whole-value (the carrier)."""
-        effects = self._ifc_field_effects.get(("fun", sym.name))
+        effects = self._ifc_field_effects.get(fun_key(sym.name))
         if not effects:
             return
         self._apply_field_effects(effects, perm, e.args)
@@ -3867,7 +3868,7 @@ class _IfcMixin:
         container-mutation channel where the effect is keyable, else the
         whole-value carrier, so a dynamic-dispatch receiver never drops
         the taint."""
-        exact_key = ("method", recv_ty.name, e.method)
+        exact_key = method_key(recv_ty.name, e.method)
         keys = [exact_key] if exact_key in self._ifc_field_effects else \
             methods_by_name(self._ifc_field_effects).get(e.method, ())
         if not keys:
