@@ -31,12 +31,14 @@ refused on failure.
 
 - **SBOM capability claims are derived from the source, not guessed.**
   The `capabilities`, `provably_excluded_capabilities`,
-  `declassification_sites`, `has_unsafe`, and `constant_time` fields in
-  the manifest / CycloneDX / SPDX output are computed by the analyzer
-  from the same signatures and flow analysis it uses to accept or reject
-  the program (`capa/manifest/`). They are not a heuristic scan layered
-  on afterwards: if the code exercises a capability, the type system
+  `declassification_sites` and `has_unsafe` fields in the manifest /
+  CycloneDX / SPDX output are computed by the analyzer from the same
+  signatures and flow analysis it uses to accept or reject the program
+  (`capa/manifest/`). They are not a heuristic scan layered on
+  afterwards: if the code exercises a capability, the type system
   already required it to be declared, and the SBOM reads it off that.
+  (`constant_time` is **not** in this list. It reports an annotation
+  rather than an analysis outcome; see the separate entry below.)
   - `provably_excluded_capabilities` is **conservative**: it is a sound
     over-approximation of what a value's type can transitively reach,
     closed-world over all impls in the program
@@ -46,6 +48,11 @@ refused on failure.
     claim before it over-claims.
   - `has_unsafe` is true whenever `Unsafe` is reachable. The escape hatch
     always surfaces in the SBOM (see tier 4).
+  - `declassification_sites` counts the `@secret -> public` sites the
+    analyzer's own flow analysis records, over function bodies plus
+    module-scope initializers. A `declassify` site is recognised by the
+    identity of its callee binding, so a user-defined function of the
+    same name does not produce a phantom record.
 
 - **Lockfile SHA enforcement catches a moved tag (retag).** When
   `capa.lock` already pins a commit for a tag dependency, `capa install`
@@ -289,6 +296,26 @@ separately.
   short-circuiting on secret values in the marked function. It does not,
   and cannot, certify the absence of cache-, port-, or
   microarchitecture-level timing leaks below the language.
+
+- **The SBOM's `constant_time` field records the annotation, not a
+  verdict.** Unlike the capability fields in tier 1, the manifest's
+  per-function `constant_time` boolean is emitted from the presence of
+  the `@constant_time` attribute on the function. It is **not** derived
+  from the outcome of the analyzer's constant-time check:
+  `build_manifest` takes no constant-time analysis result among its
+  parameters, so the field cannot depend on one
+  (`capa/manifest/_funrec.py`). Read it as *"the author marked this
+  function `@constant_time`"*, and **not** as *"the toolchain verified
+  this function is constant-time"*. The analyzer's constant-time
+  checks are real, are hard errors, and do reject the programs
+  [`docs/reference.md`](reference.md#65-constant-time-functions)
+  describes; the point here is narrower, that the SBOM **field** is not
+  a report of that check having succeeded, and an auditor should not
+  treat the field alone as evidence that it did. On the CycloneDX and
+  SPDX surfaces the same annotation appears as a bare
+  `capa:attribute:constant_time` property with an empty value, which is
+  by construction a statement that the source carries the annotation and
+  claims nothing further.
 
 - **Compromise of the GitHub release channel or a signing key.** The
   registry root key and a dependency's `verify_key` are trust anchors: an
