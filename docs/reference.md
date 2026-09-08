@@ -619,8 +619,12 @@ fun leaky(a: @secret Int, b: @secret Int) -> Bool
     return false
 ```
 
-The guarantee is surfaced in the manifest as a per-function
-`constant_time` boolean.
+The annotation is surfaced in the manifest as a per-function
+`constant_time` boolean. That boolean reports **the presence of the
+`@constant_time` attribute**, not the result of the check described
+above; see the
+[trust model](trust-model.md#4-outside-the-threat-model) for what it
+does and does not attest.
 
 ### 6.6. Typestate (protocols)
 
