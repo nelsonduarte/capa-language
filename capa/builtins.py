@@ -165,6 +165,20 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("char_at",     fun(TyInt, opt(TyString)),                                 []),
         ("substring",   fun(TyInt, TyInt, TyString),                               []),
         ("index_of",    fun(TyString, opt(TyInt)),                                 []),
+        # ``find_index(pred) -> Option<Int>``: the code-point index of
+        # the first character satisfying ``pred``, or ``None``. The
+        # predicate receives each character as a one-code-point
+        # ``String``, which is exactly what ``for c in s`` binds, so
+        # the two ways of walking a string agree on what a character
+        # is. Closes the half-pair with ``index_of``: that one asks
+        # "where is this substring", this one asks "where is the first
+        # character LIKE this", and ``List.find_index`` already spells
+        # the second question for lists with the same signature shape
+        # and the same first-match-wins order.
+        #
+        # The index is by code point, matching ``index_of`` /
+        # ``char_at`` / ``substring`` and never by byte.
+        ("find_index",  fun(fun(TyString, TyBool), opt(TyInt)),                    []),
         # ``split_once(sep) -> Option<(String, String)>``: the receiver
         # cut at the FIRST occurrence of ``sep`` into the part before
         # and the part after, with the separator itself in neither.

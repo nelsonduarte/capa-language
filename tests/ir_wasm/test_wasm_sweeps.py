@@ -69,6 +69,7 @@ for _m, _e in [
     ("char_at", "s.char_at(0)"), ("substring", "s.substring(0, 2)"),
     ("index_of", 's.index_of("e")'), ("bytes", "s.bytes()"),
     ("lines", "s.lines()"), ("split_once", 's.split_once("l")'),
+    ("find_index", 's.find_index(fun (c: String) -> Bool => c == "e")'),
 ]:
     _recipe("String", _m, [], _S_STR, _e)
 

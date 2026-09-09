@@ -119,6 +119,14 @@ class _MethodsMixin:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({recv}.find({args[0]}))"
             )
+        if method == "find_index":
+            # Option<Int>, code-point indexed, first match wins. The
+            # runtime helper owns the walk so both Python emitters and
+            # the Wasm UTF-8 scan answer the same index.
+            return (
+                f"(lambda _i: Some(_i) if _i is not None else None_)"
+                f"(_capa_find_index({recv}, {args[0]}))"
+            )
         if method == "split_once":
             # Option<(String, String)> at the FIRST occurrence. The
             # runtime helper owns the rule (including the empty-separator

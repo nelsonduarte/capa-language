@@ -890,6 +890,12 @@ class PythonEmitter:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({r}.find({a[0]}))"
             )
+        if m == "find_index":
+            # Option<Int>, code-point indexed, first match wins.
+            return (
+                f"(lambda _i: Some(_i) if _i is not None else None_)"
+                f"(_capa_find_index({r}, {a[0]}))"
+            )
         if m == "split_once":
             # Option<(String, String)> at the FIRST occurrence; the
             # runtime helper owns the rule and the empty-separator abort.

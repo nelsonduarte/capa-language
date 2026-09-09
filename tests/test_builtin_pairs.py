@@ -102,7 +102,10 @@ _PAIRS: tuple[_Pair, ...] = (
         _STEP_4 + "; pop also collides with list.pop and must pass the "
         "inherited-name quarantine in tests/test_method_emit_agreement.py",
     ),
-    _excused([("String", "index_of")], [("String", "find_index")], _STEP_5),
+    # Completed in increment 2: index_of asks "where is this substring",
+    # find_index asks "where is the first character LIKE this", and both
+    # answer Option<Int> over a code-point index.
+    _complete(("String", "index_of"), ("String", "find_index")),
     _excused([("List", "find_index")], [("List", "index_of")], _STEP_7),
     _excused([("Set", "is_subset")], [("Set", "is_superset")], _STEP_7),
     _excused(

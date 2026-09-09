@@ -287,3 +287,25 @@ def _capa_split_once(s: str, sep: str):
     if i < 0:
         return None
     return (s[:i], s[i + len(sep):])
+
+
+# ``find_index(pred)`` answers the CODE-POINT index of the first
+# character satisfying ``pred``, matching ``index_of`` / ``char_at`` /
+# ``substring``, which are all code-point indexed, and never a byte
+# offset. The predicate sees each character as a one-code-point string,
+# the same thing ``for c in s`` binds, so the two ways of walking a
+# string cannot disagree about what a character is.
+#
+# Python iteration over ``str`` is already per code point, so this is a
+# thin loop rather than a re-implementation; it exists as a helper so
+# the Option wrapping and the first-match-wins order are written once
+# for both Python emitters, exactly as _capa_lines is.
+
+def _capa_find_index(s: str, pred):
+    """The code-point index of the first character of ``s`` for which
+    ``pred`` is true, or ``None``. Byte-identical with the Wasm
+    backend's ``_emit_string_find_index``."""
+    for i, c in enumerate(s):
+        if pred(c):
+            return i
+    return None

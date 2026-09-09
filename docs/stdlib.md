@@ -43,6 +43,7 @@ failure at the same input; neither wraps silently.
 | `starts_with(s: String)` | `Bool` | |
 | `ends_with(s: String)` | `Bool` | |
 | `split(sep: String)` | `List<String>` | Split by separator |
+| `find_index(pred: (String) -> Bool)` | `Option<Int>` | `Some(i)` with the code-point index of the first character satisfying `pred`, or `None`. The predicate receives each character as a one-code-point `String`, the same thing `for c in s` binds. Where `index_of` asks "where is this substring", this asks "where is the first character like this". |
 | `split_once(sep: String)` | `Option<(String, String)>` | The receiver cut at the FIRST occurrence of `sep`, into the part before and the part after; the separator is in neither. `None` when `sep` does not occur. `"k=v=w".split_once("=")` is `Some(("k", "v=w"))`, where `split("=")` would give three parts. Aborts the program on an empty separator, exactly as `split` does. |
 | `lines()` | `List<String>` | The lines of the receiver, with their terminators removed. A terminator is `\r\n`, `\n`, or a lone `\r`; `\r\n` is matched first, so a Windows-authored line keeps no trailing `\r`. A trailing terminator yields NO phantom empty last element, which is what distinguishes this from `split("\n")`: `"a\nb\n".lines()` has 2 elements, `"a\nb\n".split("\n")` has 3. `"".lines()` is empty; `"\n".lines()` is one empty line. |
 | `replace(old: String, new: String)` | `String` | Replace every occurrence |

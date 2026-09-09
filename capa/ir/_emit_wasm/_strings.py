@@ -173,6 +173,9 @@ class _StringEmissionMixin:
         if method == "split_once":
             self._emit_string_split_once(recv, instr.args[0], dst)
             return
+        if method == "find_index":
+            self._emit_string_find_index(recv, instr.args[0], dst)
+            return
         if method == "replace":
             self._emit_string_replace(recv, instr.args[0], instr.args[1], dst)
             return
@@ -1399,6 +1402,155 @@ class _StringEmissionMixin:
         self._indent -= 1
         self._write("end")
         # Bind dst.
+        self._write("local.get $_alloc_tmp_result")
+        self._write(f"local.set ${dst}")
+
+    def _emit_string_find_index(
+        self, recv: Value, pred: Value, dst,
+    ) -> None:
+        """``recv.find_index(pred) -> Option<Int>``. Walks the receiver
+        one CODE POINT at a time, calls ``pred`` with that code point as
+        a one-code-point String, and answers the index of the first
+        character for which it is true.
+
+        The index is a CODE-POINT index, not a byte offset, matching
+        ``index_of`` / ``char_at`` / ``substring``. The scan is bytewise
+        (it has to be) and the code-point counter is incremented once
+        per code point rather than derived afterwards, which is cheaper
+        than ``index_of``'s post-hoc recount and gives the same answer
+        because the walk visits each code point exactly once.
+
+        The UTF-8 leading-byte classification (``0xxxxxxx`` -> 1,
+        ``110xxxxx`` -> 2, ``1110xxxx`` -> 3, ``11110xxx`` -> 4) is the
+        same one ``_emit_for_string`` uses, so ``s.find_index(p)`` and
+        ``for c in s`` agree about what a character is. The element
+        handed to the predicate is a (ptr, len) VIEW into the receiver,
+        allocating nothing, exactly as the for-loop's binding is.
+
+        The closure is invoked through the shared closure-call ABI, so
+        this needs no new dispatch machinery: the predicate's
+        ``(String) -> Bool`` signature is registered by the same pass
+        that registers ``List<String>.find_index``'s, which is already
+        exercised. Empty receiver: the loop body never runs and the
+        result stays ``None``, matching the Python helper's empty
+        ``for``."""
+        if dst is None:
+            return
+        sig_key = self._closure_sig_key_for(["String"], "Bool")
+        if sig_key not in self._closure_sig_keys:
+            raise WasmEmissionError(
+                f"String.find_index: no closure registered with sig "
+                f"{sig_key!r}"
+            )
+        sig_idx = self._closure_sig_keys[sig_key]
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._push_value(pred)
+        self._write("local.set $_lam_fn_tmp")
+        # Option record, defaulted to None (tag 1).
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp_result")
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        # $_str_i = byte cursor, $_str_count = code-point index.
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._write("i32.const 0")
+        self._write("local.set $_str_count")
+        self._block_counter += 1
+        loop = f"$Sfi{self._block_counter}_loop"
+        exit_ = f"$Sfi{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # Classify the leading byte into a code-point byte length.
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.tee $_str_byte")
+        self._write("i32.const 0x80")
+        self._write("i32.and")
+        self._write("i32.eqz")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_str_byte")
+        self._write("i32.const 0xe0")
+        self._write("i32.and")
+        self._write("i32.const 0xc0")
+        self._write("i32.eq")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 2")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_str_byte")
+        self._write("i32.const 0xf0")
+        self._write("i32.and")
+        self._write("i32.const 0xe0")
+        self._write("i32.eq")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 3")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("i32.const 4")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $_str_end")
+        # pred(env, char_ptr, char_len)
+        self._write("local.get $_lam_fn_tmp")
+        self._write("i32.wrap_i64")
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_end")
+        self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        self._write("local.get $_alloc_tmp_result")
+        self._write("local.get $_str_count")
+        self._write("i64.extend_i32_s")
+        self._write("i64.store offset=8")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # advance the byte cursor by this code point's length and the
+        # code-point index by one.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_end")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write("local.get $_str_count")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_count")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
         self._write("local.get $_alloc_tmp_result")
         self._write(f"local.set ${dst}")
 

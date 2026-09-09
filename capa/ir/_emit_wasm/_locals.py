@@ -607,6 +607,14 @@ class _LocalsCollectionMixin:
                         # packing dance, _alloc_tmp for the data array,
                         # _m_tag as the element counter.
                         has_list_string = True
+                    if instr.method == "find_index" and recv_ty == "String":
+                        # find_index walks code points and calls a
+                        # (String) -> Bool closure per character, so it
+                        # needs the HOF closure scratch ($_lam_fn_tmp)
+                        # and the Option record ($_alloc_tmp_result)
+                        # the other Option-returning String methods use.
+                        has_list_hof = True
+                        has_optres_method = True
                     if instr.method == "split_once" and recv_ty == "String":
                         # split_once answers Option<(String, String)>:
                         # the Option record goes in $_alloc_tmp_result
