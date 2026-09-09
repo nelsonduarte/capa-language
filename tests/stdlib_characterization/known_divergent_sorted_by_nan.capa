@@ -3,10 +3,23 @@
 // largest finite value is inf, and inf - inf is NaN. Every ordering
 // comparison against NaN is false, so a comparator built from < and >
 // answers 0 for NaN against anything and is no longer a consistent
-// total order. The two Python paths (Timsort) print 1.0|nan|0.5|2.0|
-// and the Wasm merge sort prints 0.5|1.0|nan|2.0|: the same class as
-// the always-1 comparator program, reached through a value rather than
-// through the comparator's text.
+// total order.
+//
+// FIVE elements, NaN at index 1, and the arrangement matters. The
+// four-element version this fixture used to carry recorded only that
+// NaN MOVED, which reads as a cosmetic ordering question. At five
+// elements the real defect is visible: on the two Python paths the
+// CLEAN elements come out in the order 2.0, 1.0, 3.0, 4.0, which is
+// not sorted. One NaN silently destroys the ordering of data that has
+// nothing wrong with it, and the Wasm merge sort corrupts differently
+// (it happens not to corrupt on this input, which is itself the
+// divergence). A sort that returns unsorted clean data is not a weaker
+// guarantee, it is a false one.
+//
+// This stays DEFERRED because the comparator here is the USER's.
+// Where the COMPILER supplies the comparator (List.sorted) it supplies
+// a total one, so sorted() cannot reach this state at all; see
+// docs/stdlib.md and the sorted rows in list_methods.capa.
 
 fun main(stdio: Stdio)
     var big = 1.0
@@ -15,6 +28,6 @@ fun main(stdio: Stdio)
         big = big * 10.0
         i = i + 1
     let nan = big - big
-    let xs = [1.0, nan, 0.5, 2.0]
+    let xs = [2.0, nan, 3.0, 1.0, 4.0]
     let s = xs.sorted_by(fun (a, b) => if a < b then 0 - 1 else (if a > b then 1 else 0))
     stdio.println("${s.fold("", fun (acc, x) => acc + "${x}|")}")
