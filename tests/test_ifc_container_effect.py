@@ -102,6 +102,22 @@ _MUTATOR_PROGRAMS: dict = {
         "    for v in xs.to_list()\n"
         "        stdio.println(v)\n"
     ),
+    # Removal keyed on a secret, the Map sibling of ("Set", "remove"):
+    # which entry survives is decided by the secret, so the map the
+    # caller then reads depends on it.
+    ("Map", "remove"): (
+        "fun drop_one(m: Map<String, String>, v: String)\n"
+        "    m.remove(v)\n"
+        "fun main(env: Env, stdio: Stdio)\n"
+        "    var m: Map<String, String> = new_map()\n"
+        "    m.set(\"a\", \"1\")\n"
+        "    m.set(\"b\", \"2\")\n"
+        "    match env.get(\"API_KEY\")\n"
+        "        Some(k) -> drop_one(m, k)\n"
+        "        None -> drop_one(m, \"none\")\n"
+        "    for v in m.values()\n"
+        "        stdio.println(v)\n"
+    ),
     ("Map", "set"): (
         "fun stash(m: Map<String, String>, v: String)\n"
         "    m.set(\"k\", v)\n"

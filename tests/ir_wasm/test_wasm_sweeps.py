@@ -106,6 +106,7 @@ for _m, _e in [
 for _m, _e in [
     ("length", "m.length()"), ("get", 'm.get("k")'),
     ("set", 'm.set("k", 2)'), ("contains_key", 'm.contains_key("k")'),
+    ("remove", 'm.remove("k")'),
     ("keys", "m.keys()"), ("values", "m.values()"),
     ("pairs", "m.pairs()"), ("is_empty", "m.is_empty()"),
     ("filter", 'm.filter(fun (k: String, v: Int) -> Bool => v > 0)'),

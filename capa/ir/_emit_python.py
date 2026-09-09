@@ -943,6 +943,12 @@ class PythonEmitter:
         if m == "keys":   return f"CapaList({r}.keys())"
         if m == "values": return f"CapaList({r}.values())"
         if m == "pairs":  return f"CapaList({r}.items())"
+        if m == "remove":
+            # Option<V>: the removed value, or None_ when absent. MUTATES.
+            return (
+                f"(lambda _v: Some(_v) if _v is not None else None_)"
+                f"(_capa_map_remove({r}, {a[0]}))"
+            )
         if m == "filter":
             # Fresh map, insertion order preserved, receiver untouched.
             return f"_capa_map_filter({r}, {a[0]})"

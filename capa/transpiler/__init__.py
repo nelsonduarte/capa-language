@@ -88,6 +88,7 @@ from capa.runtime import (
     parse_json, to_json,
     _capa_iadd, _capa_isub, _capa_imul, _capa_idiv, _capa_shl, _capa_shr,
     _capa_find_index, _capa_list_get, _capa_lines, _capa_map_filter,
+    _capa_map_remove,
     _capa_split_once,
     _capa_substring,
     _capa_to_upper, _capa_to_lower,

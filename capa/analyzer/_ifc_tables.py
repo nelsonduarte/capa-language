@@ -129,6 +129,7 @@ _CONTAINER_MUTATORS: dict[tuple[str, str], set[int]] = {
     ("Set",  "add"):    {0},
     ("Set",  "remove"): {0},
     ("Map",  "set"):    {0, 1},
+    ("Map",  "remove"): {0},
 }
 
 # Lookup methods whose index / key argument selects which memory is
@@ -141,6 +142,10 @@ _CT_INDEX_METHODS: dict[tuple[str, str], set[int]] = {
     ("List",   "get"):          {0},
     ("Map",    "get"):          {0},
     ("Map",    "contains_key"): {0},
+    # Same linear key scan as Map.get, so the key decides which memory
+    # is walked and how far. Measured: the remove lowering calls
+    # $str_eq exactly as many times as the get lowering does.
+    ("Map",    "remove"):       {0},
     ("Set",    "contains"):     {0},
     ("String", "char_at"):      {0},
 }

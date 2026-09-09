@@ -248,6 +248,19 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("get",          fun(K, opt(V)),                                           []),
         ("set",          fun(K, V, TyUnit),                                        []),
         ("contains_key", fun(K, TyBool),                                           []),
+        # ``remove(k) -> Option<V>``: removes the entry for ``k`` and
+        # returns the value it held, or ``None`` when the key is
+        # absent. MUTATES the receiver, as ``set`` does; maps are
+        # reference-aliased on all three backends, so the removal is
+        # visible through every alias.
+        #
+        # It returns the removed VALUE, not the key: the caller supplied
+        # the key, so it carries no new information, while the value is
+        # the thing the caller cannot otherwise learn without a separate
+        # ``get`` that is not atomic with the removal. That is the same
+        # axis on which ``List.pop`` returns an Option and
+        # ``Set.remove`` returns Unit.
+        ("remove",       fun(K, opt(V)),                                           []),
         ("keys",         fun(lst(K)),                                              []),
         ("values",       fun(lst(V)),                                              []),
         ("pairs",        fun(lst(TyTuple((K, V)))),                                []),

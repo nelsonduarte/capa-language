@@ -471,6 +471,14 @@ class _LocalsCollectionMixin:
                         has_multi_impl_dispatch = True
                     if recv_ty.startswith("Map"):
                         has_map = True
+                        if instr.method == "remove":
+                            # remove answers Option<V>, so it needs the
+                            # Option record scratch the same way
+                            # List.pop does. Not redundant with the
+                            # Option-receiver arm: a program that
+                            # MATCHES on the removed value never has an
+                            # Option-typed receiver.
+                            has_optres_method = True
                         if instr.method == "filter":
                             # Map.filter invokes a (K, V) -> Bool
                             # closure per pair, so it needs the HOF

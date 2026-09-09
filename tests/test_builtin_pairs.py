@@ -96,7 +96,11 @@ _PAIRS: tuple[_Pair, ...] = (
     # Synonyms: both names must stay declared together.
     _complete(("JsonValue", "as_num"), ("JsonValue", "as_number")),
     # ---- the design's sixteen half-pairs, excused ------------------------
-    _excused([("Map", "set")], [("Map", "remove")], _STEP_4),
+    # Completed in increment 2. remove returns Option<V> where set
+    # returns Unit, on the same axis as List.push / List.pop: set is
+    # told both key and value, remove is told only the key and answers
+    # the value the caller could not otherwise learn atomically.
+    _complete(("Map", "set"), ("Map", "remove")),
     # Completed in increment 2. pop returns Option<T> while push returns
     # Unit, which is not an asymmetry: push is told what to add, pop is
     # not told what it removed. pop also collides with list.pop and is

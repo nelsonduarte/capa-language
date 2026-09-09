@@ -110,7 +110,9 @@ class _MapEmissionMixin:
         - keys(): allocate List<K> in insertion order (slice 5)
         - values(): allocate List<V> in insertion order (slice 5)
         - filter(pred): fresh Map<K, V> of the pairs satisfying
-          pred(k, v), in insertion order, receiver untouched"""
+          pred(k, v), in insertion order, receiver untouched
+        - remove(k): removes the entry and answers Option<V>, shifting
+          the tail down so insertion order survives"""
         recv = instr.receiver
         method = instr.method
         recv_ty = recv.ty
@@ -149,6 +151,9 @@ class _MapEmissionMixin:
             return
         if method == "values":
             self._emit_map_values(recv, value_ty, instr.dst)
+            return
+        if method == "remove":
+            self._emit_map_remove(recv, instr.args[0], key_ty, instr.dst)
             return
         if method == "filter":
             self._emit_map_filter(
@@ -358,6 +363,134 @@ class _MapEmissionMixin:
             f"Map key type {key_ty!r} not supported on the Wasm backend "
             f"(supported: String / Int / Bool / struct / sum / tuple)"
         )
+
+    def _emit_map_remove(
+        self, recv: Value, k: Value, key_ty: str, dst,
+    ) -> None:
+        """``m.remove(k) -> Option<V>``. Removes the entry for ``k`` and
+        answers the value it held, or ``None`` when the key is absent.
+        MUTATES the receiver.
+
+        The scan is the same linear key walk ``_emit_map_get`` runs,
+        through the same ``_emit_push_map_key_canonical`` /
+        ``_emit_compare_pair_key_to`` pair, so ``get`` and ``remove``
+        cannot disagree about which pair a key names.
+
+        On a hit it reads the value FIRST, then closes the gap by
+        shifting the tail one slot left with a single ``memory.copy`` of
+        ``(len - idx - 1) * 16`` bytes and decrements the length. The
+        shift is what keeps insertion order, which is the property
+        ``keys`` / ``values`` / ``pairs`` / ``filter`` all promise and
+        which the corpus diffs. ``memory.copy`` is defined for
+        overlapping regions, which this one is.
+
+        Order matters twice: the value is read before the shift (the
+        pair is still in place), and the length is decremented after it.
+        Reading after the shift would return the NEXT entry's value,
+        which is the defect the corpus's remove_middle row pins."""
+        if dst is None:
+            # A discarded remove must still MUTATE, so this cannot be
+            # the usual emit-nothing early return. Rather than duplicate
+            # the scan, run the full form into the scratch Option and
+            # simply not bind it: the record is dead, the mutation is not.
+            self._emit_map_remove_impl(recv, k, key_ty, None)
+            return
+        self._emit_map_remove_impl(recv, k, key_ty, dst)
+
+    def _emit_map_remove_impl(
+        self, recv: Value, k: Value, key_ty: str, dst,
+    ) -> None:
+        map_local = "_m_scrut"
+        idx_local = "_m_tag"
+        result_local = "_alloc_tmp_result"
+        pair_local = "_alloc_tmp_pair"
+        self._push_value(recv)
+        self._write(f"local.set ${map_local}")
+        self._emit_push_map_key_canonical(k, key_ty)
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write(f"local.set ${result_local}")
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._block_counter += 1
+        loop = f"$Mrm{self._block_counter}_loop"
+        exit_ = f"$Mrm{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # idx >= len -> miss.
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write("if")
+        self._indent += 1
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # pair_addr = data + idx * 16
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(f"local.set ${pair_local}")
+        self._emit_compare_pair_key_to(key_ty, pair_local)
+        self._write("if")
+        self._indent += 1
+        # Hit. Read the value BEFORE the shift moves the pair.
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.get ${pair_local}")
+        self._write(f"i64.load offset={_MAP_PAIR_VALUE_OFFSET}")
+        self._write(
+            f"i64.store offset="
+            f"{_OPTION_LAYOUT['variants']['Some'][1][0][0]}"
+        )
+        # Shift the tail left one slot: copy (len - idx - 1) pairs from
+        # pair_addr + 16 down to pair_addr. memory.copy handles overlap.
+        self._write(f"local.get ${pair_local}")
+        self._write(f"local.get ${pair_local}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.add")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.sub")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("memory.copy")
+        # len--
+        self._write(f"local.get ${map_local}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write(f"i32.store offset={_MAP_LEN_OFFSET}")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        if dst is not None:
+            self._write(f"local.get ${result_local}")
+            self._write(f"local.set ${dst}")
 
     def _emit_map_key_for_call(self, key_ty: str, pair_addr_local: str) -> None:
         """Push the pair's KEY at ``pair_addr_local`` in the operand

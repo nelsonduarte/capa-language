@@ -223,6 +223,14 @@ class _MethodsMixin:
             return f"CapaList({recv}.values())"
         if method == "pairs":
             return f"CapaList({recv}.items())"
+        if method == "remove":
+            # Option<V>: the removed value, or None_ when absent.
+            # MUTATES. The runtime helper owns the rule so both Python
+            # emitters and the Wasm pair-table walk cannot drift.
+            return (
+                f"(lambda _v: Some(_v) if _v is not None else None_)"
+                f"(_capa_map_remove({recv}, {args[0]}))"
+            )
         if method == "filter":
             # A FRESH map of the pairs satisfying pred(k, v), in the
             # receiver's insertion order. The runtime helper owns both

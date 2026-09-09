@@ -198,6 +198,7 @@ Hash map. Construct via `new_map()` with a required type annotation.
 | `get(k: K)` | `Option<V>` | Returns the value if the key exists |
 | `set(k: K, v: V)` | `()` | Insert/update (mutation) |
 | `contains_key(k: K)` | `Bool` | |
+| `remove(k: K)` | `Option<V>` | Remove the entry for `k` and return the value it held, or `None` if the key is absent (mutation). Surviving entries keep their insertion order. Returns the VALUE, not the key: the caller supplied the key, and a separate `get` before the removal would not be atomic with it. |
 | `keys()` | `List<K>` | |
 | `values()` | `List<V>` | |
 | `pairs()` | `List<(K, V)>` | Key/value pairs as tuples; destructure with `let (k, v) = pair` |

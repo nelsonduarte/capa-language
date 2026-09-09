@@ -326,3 +326,25 @@ def _capa_map_filter(m: dict, pred) -> dict:
     ``m``'s insertion order. The receiver is not modified.
     Byte-identical with the Wasm backend's ``_emit_map_filter``."""
     return {k: v for k, v in m.items() if pred(k, v)}
+
+
+# ``Map.remove(k)`` removes the entry for ``k`` and answers the value it
+# held, or ``None`` when the key is absent. MUTATES the receiver.
+#
+# It returns the VALUE and not the key, on the same axis that decides
+# ``List.pop`` and ``Set.remove``: the caller supplied the key, so the
+# key carries no new information, while the value is what the caller
+# cannot otherwise learn without a separate ``get`` that is not atomic
+# with the removal.
+#
+# The helper exists so "returns the value, None when absent, mutates in
+# place" is written once for both Python emitters, as _capa_lines and
+# _capa_split_once are.
+
+def _capa_map_remove(m: dict, k):
+    """The value ``m`` held for ``k``, removed, or ``None`` when absent.
+    Mutates ``m``. Byte-identical with the Wasm backend's
+    ``_emit_map_remove``."""
+    if k not in m:
+        return None
+    return m.pop(k)
