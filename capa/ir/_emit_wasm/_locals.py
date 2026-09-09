@@ -607,6 +607,14 @@ class _LocalsCollectionMixin:
                         # packing dance, _alloc_tmp for the data array,
                         # _m_tag as the element counter.
                         has_list_string = True
+                    if instr.method == "split_once" and recv_ty == "String":
+                        # split_once answers Option<(String, String)>:
+                        # the Option record goes in $_alloc_tmp_result
+                        # (as index_of / char_at do) and the two-slot
+                        # tuple record in $_alloc_tmp, both reached
+                        # through the same flags those methods use.
+                        has_optres_method = True
+                        has_list_string = True
                     if (instr.method in ("index_of", "char_at")
                             and recv_ty == "String"):
                         # D3 slice 4 (2026-05): index_of returns

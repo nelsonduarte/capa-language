@@ -165,6 +165,23 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("char_at",     fun(TyInt, opt(TyString)),                                 []),
         ("substring",   fun(TyInt, TyInt, TyString),                               []),
         ("index_of",    fun(TyString, opt(TyInt)),                                 []),
+        # ``split_once(sep) -> Option<(String, String)>``: the receiver
+        # cut at the FIRST occurrence of ``sep`` into the part before
+        # and the part after, with the separator itself in neither.
+        # ``None`` when ``sep`` does not occur, which is the only shape
+        # consistent with ``index_of`` answering ``Option<Int>`` for the
+        # same question.
+        #
+        # It exists because ``split`` answers a different question:
+        # ``"k=v=w".split("=")`` is three parts, while a key/value parse
+        # wants exactly two, ``("k", "v=w")``. Doing that with ``split``
+        # means rebuilding the tail, which is where the workaround gets
+        # its bugs.
+        #
+        # An empty separator is a usage error and aborts the program,
+        # matching ``split``, which traps on the same input on both
+        # backends rather than inventing an answer.
+        ("split_once",  fun(TyString, opt(TyTuple((TyString, TyString)))),         []),
         # ``lines() -> List<String>``: the receiver split on line
         # terminators, WITH the terminators removed, so a string that
         # ends in a newline does not yield a phantom empty last line.

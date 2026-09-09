@@ -261,3 +261,29 @@ def _capa_lines(s: str) -> list[str]:
     if start < n:
         out.append(s[start:n])
     return out
+
+
+# ``split_once(sep)`` cuts the receiver at the FIRST occurrence of
+# ``sep`` and answers the two sides without the separator, or ``None``
+# when ``sep`` does not occur. It exists because ``split`` answers a
+# different question: ``"k=v=w".split("=")`` is three parts where a
+# key/value parse wants two.
+#
+# The empty separator aborts, exactly as ``split`` already does on both
+# backends ("empty separator" / a Wasm trap), rather than inventing an
+# answer for a request that has none. Returning ``("", s)`` would be the
+# tempting invention and it is wrong for the same reason the
+# empty-needle ``replace`` policy exists: it silently turns a caller
+# mistake into a plausible-looking parse.
+
+def _capa_split_once(s: str, sep: str):
+    """``(before, after)`` at the first occurrence of ``sep``, or
+    ``None`` when absent. Raises ``ValueError`` on an empty separator,
+    matching ``split``. Byte-identical with the Wasm backend's
+    ``_emit_string_split_once``."""
+    if sep == "":
+        raise ValueError("empty separator")
+    i = s.find(sep)
+    if i < 0:
+        return None
+    return (s[:i], s[i + len(sep):])

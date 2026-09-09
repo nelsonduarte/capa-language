@@ -170,6 +170,9 @@ class _StringEmissionMixin:
         if method == "lines":
             self._emit_string_lines(recv, dst)
             return
+        if method == "split_once":
+            self._emit_string_split_once(recv, instr.args[0], dst)
+            return
         if method == "replace":
             self._emit_string_replace(recv, instr.args[0], instr.args[1], dst)
             return
@@ -1396,6 +1399,153 @@ class _StringEmissionMixin:
         self._indent -= 1
         self._write("end")
         # Bind dst.
+        self._write("local.get $_alloc_tmp_result")
+        self._write(f"local.set ${dst}")
+
+    def _emit_string_split_once(
+        self, recv: Value, sep: Value, dst,
+    ) -> None:
+        """``recv.split_once(sep) -> Option<(String, String)>``. Cuts
+        the receiver at the FIRST occurrence of ``sep`` and answers the
+        two sides with the separator in neither, or ``None`` when
+        ``sep`` does not occur.
+
+        The scan is the same left-to-right ``$str_eq`` walk
+        ``_emit_string_index_of`` runs, and stops at the same place, so
+        the two methods cannot disagree about where the first match is.
+        It does NOT translate the match offset to a code-point index the
+        way ``index_of`` must: the result here is a pair of SLICES of
+        the receiver, so byte offsets are what the packed
+        ``ptr | (len << 32)`` slots need and a code-point count would be
+        an extra walk with nothing to spend it on.
+
+        Both halves are slices INTO the receiver's buffer, allocating
+        nothing beyond the Option record and the 16-byte tuple. That is
+        sound for the same reason ``split``'s chunks are: Capa strings
+        are immutable, so a slice cannot observe a later write.
+
+        An empty separator traps via ``unreachable``, matching
+        ``split``, whose empty-separator trap exists so both backends
+        fail loud on the same invalid input rather than inventing an
+        answer (the Python side raises ValueError from
+        ``_capa_split_once``).
+
+        Layout, from the two existing sources rather than restated: the
+        Option record is ``_OPTION_LAYOUT`` (tag at 0, payload at 8),
+        and the tuple is the uniform 8-byte-per-slot record
+        ``_emit_make_tuple`` builds, so element 0 sits at offset 0 and
+        element 1 at offset 8."""
+        if dst is None:
+            return
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._push_string_value_as_ptr_len(sep)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        # Empty separator is a usage error on both backends.
+        self._write("local.get $_str_b_len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        # Allocate the Option<(String, String)> record up front.
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp_result")
+
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._block_counter += 1
+        outer = f"$Sso{self._block_counter}_outer"
+        loop = f"$Sso{self._block_counter}_loop"
+        scan_exit = f"$Sso{self._block_counter}_scan_exit"
+        self._write(f"block {outer}")
+        self._indent += 1
+        self._write(f"block {scan_exit}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if i + sep.len > recv.len: no match can fit, exit scan.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.get $_str_a_len")
+        self._write("i32.gt_s")
+        self._write(f"br_if {scan_exit}")
+        # str_eq(recv.ptr + i, sep.len, sep.ptr, sep.len)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        # Match at byte offset i. Build the tuple: element 0 is
+        # [0, i), element 1 is [i + sep.len, recv.len).
+        self._write("i32.const 16")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        # slot 0 = recv.ptr | (i << 32)
+        self._write("local.get $_alloc_tmp")
+        self._write("local.get $_str_a_ptr")
+        self._write("i64.extend_i32_u")
+        self._write("local.get $_str_i")
+        self._write("i64.extend_i32_u")
+        self._write("i64.const 32")
+        self._write("i64.shl")
+        self._write("i64.or")
+        self._write("i64.store offset=0")
+        # after_start = i + sep.len ; after_len = recv.len - after_start
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.set $_str_start")
+        # slot 1 = (recv.ptr + after_start) | (after_len << 32)
+        self._write("local.get $_alloc_tmp")
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_start")
+        self._write("i32.add")
+        self._write("i64.extend_i32_u")
+        self._write("local.get $_str_a_len")
+        self._write("local.get $_str_start")
+        self._write("i32.sub")
+        self._write("i64.extend_i32_u")
+        self._write("i64.const 32")
+        self._write("i64.shl")
+        self._write("i64.or")
+        self._write("i64.store offset=8")
+        # Some(tuple): tag 0, pointer payload at offset 8.
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        self._write("local.get $_alloc_tmp_result")
+        self._write("local.get $_alloc_tmp")
+        self._write("i64.extend_i32_u")
+        self._write("i64.store offset=8")
+        self._write(f"br {outer}")
+        self._indent -= 1
+        self._write("end")
+        # i++; continue.
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Not found: write None (tag = 1).
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._indent -= 1
+        self._write("end")
         self._write("local.get $_alloc_tmp_result")
         self._write(f"local.set ${dst}")
 

@@ -890,6 +890,13 @@ class PythonEmitter:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({r}.find({a[0]}))"
             )
+        if m == "split_once":
+            # Option<(String, String)> at the FIRST occurrence; the
+            # runtime helper owns the rule and the empty-separator abort.
+            return (
+                f"(lambda _p: Some(_p) if _p is not None else None_)"
+                f"(_capa_split_once({r}, {a[0]}))"
+            )
         if m == "lines":
             # CR LF / LF / lone CR, terminators STRIPPED. The runtime
             # helper is the oracle both Python backends and the Wasm

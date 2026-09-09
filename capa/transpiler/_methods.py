@@ -119,6 +119,17 @@ class _MethodsMixin:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({recv}.find({args[0]}))"
             )
+        if method == "split_once":
+            # Option<(String, String)> at the FIRST occurrence. The
+            # runtime helper owns the rule (including the empty-separator
+            # abort that split already has) so the two Python backends
+            # and the Wasm scan cannot drift. The one-shot lambda
+            # evaluates the receiver and separator exactly once even
+            # when either is a complex expression, as index_of does.
+            return (
+                f"(lambda _p: Some(_p) if _p is not None else None_)"
+                f"(_capa_split_once({recv}, {args[0]}))"
+            )
         if method == "lines":
             # Line terminators are CR LF, LF and a lone CR, and they
             # are STRIPPED. Routed through the runtime helper rather

@@ -146,14 +146,35 @@ _SHORT_CIRCUIT_COMPARE_OPS: frozenset[str] = frozenset({
 # String / List methods that short-circuit byte-by-byte against a
 # @secret operand, the method-call analogue of the comparison operators
 # above. ``starts_with`` / ``ends_with`` / ``contains`` early-exit at the
-# first mismatch; ``index_of`` scans for a match. Keyed
+# first mismatch; ``index_of`` and ``split_once`` scan for a match. Keyed
 # ``(TypeName, method)`` -> the 0-based argument positions whose @secret
 # label (or a @secret receiver) makes the call a timing oracle.
+#
+# MEMBERSHIP CRITERION, so this stops being an ad-hoc list: a String
+# method belongs here when its Wasm lowering CALLS ``$str_eq``, the
+# shared byte-comparison helper that exits at the first differing byte
+# and so reveals where two strings first differ (the compare oracle,
+# CWE-208). That is exactly what the shipped diagnostic describes, and
+# it is mechanically checkable by counting ``call $str_eq`` in the
+# emitted WAT of a one-call program.
+#
+# The criterion is NOT yet satisfied by every method that meets it:
+# ``String.split`` and ``String.replace`` also call ``$str_eq`` and are
+# NOT listed. That is a known fail-open, tracked by the separate
+# constant-time effort along with the other unlisted methods; it is not
+# counter-precedent for this table and must not be read as one. Nothing
+# here claims a listed method IS constant-time, only that omitting it
+# would remove a diagnostic the table already gives for the same
+# mechanism.
 _CT_SHORT_CIRCUIT_METHODS: dict[tuple[str, str], set[int]] = {
     ("String", "starts_with"): {0},
     ("String", "ends_with"):   {0},
     ("String", "contains"):    {0},
     ("String", "index_of"):    {0},
+    # Same scan as index_of, same helper, same oracle: it answers WHERE
+    # the separator first occurs. Measured: one ``call $str_eq``, the
+    # same count as index_of and contains.
+    ("String", "split_once"):  {0},
     ("List",   "contains"):    {0},
 }
 
