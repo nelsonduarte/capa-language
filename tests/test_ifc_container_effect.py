@@ -85,6 +85,23 @@ _MUTATOR_PROGRAMS: dict = {
         "    for v in xs.to_list()\n"
         "        stdio.println(v)\n"
     ),
+    # The REMOVAL direction: the callee decides WHICH element leaves,
+    # using a secret-derived key, and the caller then observes the set.
+    # Nothing secret is stored; the membership that remains is what
+    # depends on the secret.
+    ("Set", "remove"): (
+        "fun drop_one(xs: Set<String>, v: String)\n"
+        "    xs.remove(v)\n"
+        "fun main(env: Env, stdio: Stdio)\n"
+        "    var xs: Set<String> = new_set()\n"
+        "    xs.add(\"a\")\n"
+        "    xs.add(\"b\")\n"
+        "    match env.get(\"API_KEY\")\n"
+        "        Some(k) -> drop_one(xs, k)\n"
+        "        None -> drop_one(xs, \"none\")\n"
+        "    for v in xs.to_list()\n"
+        "        stdio.println(v)\n"
+    ),
     ("Map", "set"): (
         "fun stash(m: Map<String, String>, v: String)\n"
         "    m.set(\"k\", v)\n"
@@ -98,6 +115,67 @@ _MUTATOR_PROGRAMS: dict = {
         "        None -> stdio.println(\"empty\")\n"
     ),
 }
+
+
+class TestRemovalSelectsOnASecret(unittest.TestCase):
+    """The OUT direction of the container-mutator class.
+
+    ``_CONTAINER_MUTATORS`` is documented as catching a secret going
+    INTO a container. A removal whose ARGUMENT is a secret is the mirror
+    shape: nothing secret is stored, but which element leaves is decided
+    by the secret, so the container's observable ``length`` afterwards
+    depends on it. That is the same disclosure ``add`` is caught for,
+    reached from the other side.
+
+    MEASURED at main ``e84d08c``, before ``("Set", "remove")`` was in the
+    registry: the ``add`` half of this exact program warned on all three
+    backends and the ``remove`` half produced ZERO diagnostics. The
+    dependence is real, not theoretical: removing a present key gives
+    ``length`` 1 and removing an absent one gives 2.
+
+    This is the test the increment-2 adjudication asked for, and it is
+    written here rather than beside the new methods because the defect
+    is in a SHIPPED method: ``Map.remove`` merely made it visible by
+    being the next member of the same class.
+    """
+
+    _ADD = (
+        "fun main(stdio: Stdio)\n"
+        "    let k: @secret Int = 7\n"
+        "    var s = new_set()\n"
+        "    s.add(0)\n"
+        "    s.add(k)\n"
+        '    stdio.println("len=${s.length()}")\n'
+    )
+    _REMOVE = (
+        "fun main(stdio: Stdio)\n"
+        "    let k: @secret Int = 7\n"
+        "    var s = new_set()\n"
+        "    s.add(0)\n"
+        "    s.add(1)\n"
+        "    s.remove(k)\n"
+        '    stdio.println("len=${s.length()}")\n'
+    )
+
+    def test_secret_into_a_set_is_flagged(self):
+        # The control: the IN direction, which has always worked.
+        r = _analyze(self._ADD)
+        self.assertEqual(
+            len(_flow_warnings(r)), 1,
+            [w.message for w in r.warnings],
+        )
+
+    def test_removal_keyed_on_a_secret_is_flagged(self):
+        # The defect. RED on e84d08c with 0 warnings.
+        r = _analyze(self._REMOVE)
+        self.assertEqual(
+            len(_flow_warnings(r)), 1,
+            "a @secret argument decides WHICH element leaves the set, so "
+            "the set's observable length afterwards depends on the "
+            "secret; the removal must taint the container exactly as the "
+            "insertion does: "
+            + str([w.message for w in r.warnings]),
+        )
 
 
 class TestEveryMutatorIsCovered(unittest.TestCase):

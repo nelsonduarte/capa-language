@@ -75,6 +75,7 @@ for _m, _e in [
 
 for _m, _e in [
     ("length", "xs.length()"), ("push", "xs.push(4)"),
+    ("pop", "xs.pop()"),
     ("contains", "xs.contains(2)"),
     ("map", "xs.map(fun (a: Int) -> Int => a + 1)"),
     ("filter", "xs.filter(fun (a: Int) -> Bool => a > 1)"),

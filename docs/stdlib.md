@@ -89,6 +89,7 @@ infers the type from the first `push`.
 | `length()` | `Int` | Number of elements |
 | `is_empty()` | `Bool` | |
 | `push(x: T)` | `()` | Append at the end (mutation) |
+| `pop()` | `Option<T>` | Remove the LAST element and return it, or `None` on an empty list (mutation). Returns the removed value where `Set.remove` returns nothing, because `Set.remove(x)` is told what to remove and `pop()` is not. Lists are reference-aliased, so the removal is visible through every alias; reading with `last()` and then popping is NOT equivalent, because the pair is not atomic. |
 | `contains(x: T)` | `Bool` | |
 | `first()` | `Option<T>` | First element or `None` |
 | `last()` | `Option<T>` | Last element or `None` |

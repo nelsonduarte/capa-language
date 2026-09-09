@@ -97,11 +97,12 @@ _PAIRS: tuple[_Pair, ...] = (
     _complete(("JsonValue", "as_num"), ("JsonValue", "as_number")),
     # ---- the design's sixteen half-pairs, excused ------------------------
     _excused([("Map", "set")], [("Map", "remove")], _STEP_4),
-    _excused(
-        [("List", "push")], [("List", "pop")],
-        _STEP_4 + "; pop also collides with list.pop and must pass the "
-        "inherited-name quarantine in tests/test_method_emit_agreement.py",
-    ),
+    # Completed in increment 2. pop returns Option<T> while push returns
+    # Unit, which is not an asymmetry: push is told what to add, pop is
+    # not told what it removed. pop also collides with list.pop and is
+    # recorded in _QUARANTINED_COLLISIONS with an override that bypasses
+    # the builtin.
+    _complete(("List", "push"), ("List", "pop")),
     # Completed in increment 2: index_of asks "where is this substring",
     # find_index asks "where is the first character LIKE this", and both
     # answer Option<Int> over a code-point index.

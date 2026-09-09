@@ -55,6 +55,27 @@ class CapaList(list):
             return Some(self[i])
         return None_
 
+    def pop(self):
+        """Remove and return the LAST element as ``Option<T>``, or
+        ``None_`` on an empty list. MUTATES the receiver.
+
+        This override is MANDATORY, not stylistic. ``CapaList``
+        subclasses ``list``, which already has a ``pop``, so without it
+        an attribute lookup silently reaches ``builtins.list.pop`` and
+        returns a BARE element where the Capa surface promises an
+        ``Option`` (measured: ``'int' object has no attribute
+        'unwrap_or'`` at the first use), and raises ``IndexError`` on an
+        empty list where Capa promises ``None``. The inherited-name
+        quarantine guard in tests/test_method_emit_agreement.py exists
+        for exactly this shape and refuses the declaration until this
+        method is here.
+
+        Empty behaviour follows ``first`` / ``last`` / ``get``: an
+        Option, never a panic."""
+        if not self:
+            return None_
+        return Some(list.pop(self))
+
     def find(self, p):
         """First element matching the predicate, as ``Option<T>``."""
         for x in self:

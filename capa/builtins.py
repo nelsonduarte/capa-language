@@ -93,6 +93,22 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
     "List": [
         ("length",     fun(TyInt),                                                 []),
         ("push",       fun(T, TyUnit),                                             []),
+        # ``pop() -> Option<T>``: removes the LAST element and returns
+        # it, or ``None`` on an empty list. MUTATES the receiver, as
+        # ``push`` does and as every fresh-copy method in this table
+        # explicitly says it does not; lists are reference-aliased on
+        # all three backends, so the removal is visible through an
+        # alias exactly as a push is.
+        #
+        # It returns the removed value where ``Set.remove`` returns
+        # Unit, and the two are consistent rather than in tension: the
+        # axis is whether the removed value is NEW INFORMATION. For
+        # ``Set.remove(x)`` the caller supplied ``x``, so there is
+        # nothing to hand back. For ``pop()`` the caller did not name
+        # the element, so returning it is the only way to learn what it
+        # was. Reading it first with ``last()`` and then popping is not
+        # an equivalent, because the pair is not atomic under aliasing.
+        ("pop",        fun(opt(T)),                                                []),
         ("contains",   fun(T, TyBool),                                             []),
         ("map",        fun(fun(T, U), lst(U)),                                     ["U"]),
         ("filter",     fun(fun(T, TyBool), lst(T)),                                []),

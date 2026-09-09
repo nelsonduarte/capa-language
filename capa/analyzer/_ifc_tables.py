@@ -103,10 +103,32 @@ _SECRET_SOURCES: frozenset = frozenset({
 # the 0-based argument positions that carry data into the container.
 # This is the mutable-container analogue of the aggregate-literal
 # rule; together they stop a secret from being hidden in a collection.
+# The REMOVAL entries below are the same rule reached from the other
+# side, and the table's name should be read as "methods whose argument
+# makes the container depend on that argument", not only "methods that
+# put data in". Nothing secret is STORED by a removal, but which element
+# leaves is decided by the argument, so the container's observable
+# length (and its membership) afterwards depends on it. That is the same
+# disclosure the insertion entries exist for.
+#
+# ``Set.remove`` was MISSING here and the omission was live on main: the
+# add half of one program warned on all three backends while the remove
+# half produced zero diagnostics, with a real value dependence (removing
+# a present key gives length 1, an absent one 2). Found during increment
+# 2's adjudication; the guard is
+# tests/test_ifc_container_effect.py::TestRemovalSelectsOnASecret.
+#
+# A method with NO arguments cannot be listed here at all, because the
+# values are argument positions and every consumer indexes ``e.args[i]``.
+# ``List.pop`` is that shape: an entry for it could only be the empty
+# set, which is a no-op no test could detect. Its taint is handled by the
+# conservative whole-value join instead, measured: a value popped from a
+# secret-bearing list is itself secret.
 _CONTAINER_MUTATORS: dict[tuple[str, str], set[int]] = {
-    ("List", "push"): {0},
-    ("Set",  "add"):  {0},
-    ("Map",  "set"):  {0, 1},
+    ("List", "push"):   {0},
+    ("Set",  "add"):    {0},
+    ("Set",  "remove"): {0},
+    ("Map",  "set"):    {0, 1},
 }
 
 # Lookup methods whose index / key argument selects which memory is

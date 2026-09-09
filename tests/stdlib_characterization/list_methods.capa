@@ -27,3 +27,19 @@ fun main(stdio: Stdio)
     stdio.println("flat_map=${show(xs.flat_map(fun (x) => [x, x * 10]))}")
     let empty: List<Int> = []
     stdio.println("empty_length=${empty.length()} empty_is_empty=${empty.is_empty()} empty_first_none=${empty.first().is_none()} empty_sorted_len=${empty.sorted_by(fun (a, b) => 0).length()}")
+    // pop: removes the LAST element and returns it as Option<T>, or
+    // None on empty. The alias row is the mutation discriminator: a
+    // pop that returned a fresh list would leave alias_len at 3. The
+    // empty rows pin that popping an empty list answers None and
+    // leaves the length at 0 rather than driving it negative, which is
+    // what a decrement-before-read ordering would do.
+    var ps = [10, 20, 30]
+    let alias = ps
+    let got = ps.pop()
+    stdio.println("pop=${got.unwrap_or(0 - 1)} len_after=${ps.length()} alias_len=${alias.length()} alias_last=${alias.last().unwrap_or(0 - 1)}")
+    var pe: List<Int> = []
+    let none = pe.pop()
+    stdio.println("pop_empty_is_none=${none.is_none()} pop_empty_len=${pe.length()}")
+    var pd = [7, 8]
+    pd.pop()
+    stdio.println("pop_discarded_still_mutates=${pd.length()} pop_order=${show(pd)}")

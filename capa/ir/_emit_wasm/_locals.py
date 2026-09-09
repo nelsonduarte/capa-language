@@ -647,6 +647,29 @@ class _LocalsCollectionMixin:
                         # List<String>.push packs (ptr, len) via
                         # _alloc_tmp_i64.
                         has_list_string = True
+                    if (instr.method == "pop"
+                            and recv_ty.startswith("List")):
+                        # pop reads the last slot exactly as ``last``
+                        # does and builds an Option<T> in
+                        # $_alloc_tmp_result, with $_m_scrut holding the
+                        # list pointer across the read and the length
+                        # decrement.
+                        #
+                        # This arm is NOT redundant with the Option
+                        # receiver arm above, and the difference is
+                        # measured: a program that MATCHES on the popped
+                        # value instead of calling a method on it never
+                        # has an Option-typed receiver, so nothing else
+                        # sets has_optres_method and the emitted module
+                        # names an undeclared $_alloc_tmp_result. A
+                        # probe that writes ``xs.pop().unwrap_or(0)``
+                        # cannot see that, because unwrap_or IS an
+                        # Option receiver.
+                        has_optres_method = True
+                        has_list_method = True
+                        el = _element_type_of_list(recv_ty)
+                        if el == "String":
+                            has_list_string = True
                     if (instr.method in ("first", "last")
                             and recv_ty.startswith("List")):
                         # first / last build an Option<T> result in

@@ -78,6 +78,9 @@ class _ListEmissionMixin:
             self._emit_list_get(recv, instr.args[0], elem_size, elem_ty,
                                 instr.dst)
             return
+        if method == "pop":
+            self._emit_list_pop(recv, elem_size, elem_ty, instr.dst)
+            return
         if method in ("first", "last"):
             self._emit_list_first_last(
                 recv, method, elem_size, elem_ty, instr.dst,
@@ -648,6 +651,99 @@ class _ListEmissionMixin:
             self._write("i32.add")
         # first: address is just data_ptr (idx 0).
         self._emit_load_elem_store_option_payload(elem_ty)
+        self._indent -= 1
+        self._write("end")
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.set ${dst}")
+
+    def _emit_list_pop(
+        self, recv: Value, elem_size: int, elem_ty: str, dst,
+    ) -> None:
+        """``xs.pop() -> Option<T>``. Removes the LAST element and
+        returns it, or ``None`` on an empty list. MUTATES the receiver.
+
+        Reads exactly where ``last()`` reads, then decrements the
+        header's length. Nothing is written to the vacated slot and the
+        data array is not shrunk: the slot is beyond ``len`` and so is
+        unreachable through every read path (which all bound-check
+        against ``len``), and the next ``push`` overwrites it. That is
+        the same convention the grow path already relies on for the
+        slots between ``len`` and ``cap``.
+
+        The decrement happens only on the non-empty branch, so popping
+        an empty list leaves the length at 0 rather than driving it
+        negative. That is the one thing a naive "decrement then read"
+        ordering would get wrong, and it is what the empty-case corpus
+        row pins.
+
+        The Python oracle is ``CapaList.pop`` in capa/runtime/_list.py,
+        which must override ``list.pop`` for the same reason this arm
+        exists: the inherited one returns a bare element and raises on
+        empty."""
+        if dst is None:
+            # A discarded pop still has to MUTATE, so this is not the
+            # usual "no dst, emit nothing" early return: it must run the
+            # length decrement and skip only the Option construction.
+            list_local = "_m_scrut"
+            self._push_value(recv)
+            self._write(f"local.set ${list_local}")
+            self._write(f"local.get ${list_local}")
+            self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+            self._write("i32.eqz")
+            self._write("i32.eqz")
+            self._write("if")
+            self._indent += 1
+            self._write(f"local.get ${list_local}")
+            self._write(f"local.get ${list_local}")
+            self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+            self._write("i32.const 1")
+            self._write("i32.sub")
+            self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+            self._indent -= 1
+            self._write("end")
+            return
+        list_local = "_m_scrut"
+        result_local = "_alloc_tmp_result"
+        self._push_value(recv)
+        self._write(f"local.set ${list_local}")
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write(f"local.set ${result_local}")
+        # len == 0 -> None, and leave the length alone.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        # Payload from the last slot: data_ptr + (len - 1) * elem_size.
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_load_elem_store_option_payload(elem_ty)
+        # Shrink AFTER the read, so the element is still in range when
+        # it is loaded.
+        self._write(f"local.get ${list_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
         self._indent -= 1
         self._write("end")
         self._write(f"local.get ${result_local}")
