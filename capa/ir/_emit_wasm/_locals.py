@@ -471,6 +471,13 @@ class _LocalsCollectionMixin:
                         has_multi_impl_dispatch = True
                     if recv_ty.startswith("Map"):
                         has_map = True
+                        if instr.method == "filter":
+                            # Map.filter invokes a (K, V) -> Bool
+                            # closure per pair, so it needs the HOF
+                            # closure scratch ($_lam_fn_tmp) the List
+                            # HOFs already declare, on top of the map
+                            # scan scratch has_map gives it.
+                            has_list_hof = True
                         # Pointer-shape key (struct / sum / tuple)
                         # uses $_alloc_tmp_key_ptr as the canonical
                         # i32 key stash. Mirrors the $_alloc_tmp_key_i64

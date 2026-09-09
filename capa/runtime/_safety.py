@@ -309,3 +309,20 @@ def _capa_find_index(s: str, pred):
         if pred(c):
             return i
     return None
+
+
+# ``Map.filter(pred)`` answers a FRESH map of the pairs for which
+# ``pred(k, v)`` is true, in the receiver's insertion order, and never
+# mutates the receiver. Python ``dict`` preserves insertion order, and
+# the Wasm map is a pair table walked in insertion order, so both sides
+# agree on the order of the result without either having to sort.
+#
+# The helper exists so "fresh, not in place" and "key and value, not
+# key alone" are written once for both Python emitters, the same reason
+# _capa_lines and _capa_split_once do.
+
+def _capa_map_filter(m: dict, pred) -> dict:
+    """A fresh dict of ``m``'s pairs satisfying ``pred(k, v)``, in
+    ``m``'s insertion order. The receiver is not modified.
+    Byte-identical with the Wasm backend's ``_emit_map_filter``."""
+    return {k: v for k, v in m.items() if pred(k, v)}

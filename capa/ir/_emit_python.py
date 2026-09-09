@@ -943,6 +943,9 @@ class PythonEmitter:
         if m == "keys":   return f"CapaList({r}.keys())"
         if m == "values": return f"CapaList({r}.values())"
         if m == "pairs":  return f"CapaList({r}.items())"
+        if m == "filter":
+            # Fresh map, insertion order preserved, receiver untouched.
+            return f"_capa_map_filter({r}, {a[0]})"
         if m == "is_empty": return f"(len({r}) == 0)"
         return None
 

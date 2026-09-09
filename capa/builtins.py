@@ -236,6 +236,22 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("values",       fun(lst(V)),                                              []),
         ("pairs",        fun(lst(TyTuple((K, V)))),                                []),
         ("is_empty",     fun(TyBool),                                              []),
+        # ``filter(pred) -> Map<K, V>``: a FRESH map holding the pairs
+        # for which ``pred(k, v)`` is true, in the receiver's insertion
+        # order. Does NOT mutate the receiver, matching every other
+        # fresh-copy method in this table and unlike ``set``.
+        #
+        # The predicate takes the key AND the value because a Map pair
+        # is both, and a key-only predicate cannot express the common
+        # case (drop the entries whose value is stale). ``List.filter``
+        # takes the element for the same reason; the shapes agree once
+        # you accept that a Map's element is a pair.
+        #
+        # This is the first combinator attached to Map, and it is what
+        # makes the absence of a removal method survivable: the
+        # measured workaround downstream is to rebuild a map from
+        # ``pairs()``, which this replaces.
+        ("filter",       fun(fun(K, V, TyBool), TyName("Map", (K, V))),            []),
     ],
     "Set": [
         ("length",   fun(TyInt),                                                   []),

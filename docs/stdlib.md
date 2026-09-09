@@ -200,6 +200,7 @@ Hash map. Construct via `new_map()` with a required type annotation.
 | `keys()` | `List<K>` | |
 | `values()` | `List<V>` | |
 | `pairs()` | `List<(K, V)>` | Key/value pairs as tuples; destructure with `let (k, v) = pair` |
+| `filter(pred: (K, V) -> Bool)` | `Map<K, V>` | A FRESH map of the pairs for which `pred(k, v)` is true, in the receiver's insertion order. Does not mutate the receiver. The predicate takes the key and the value, because a `Map` entry is both. On the Wasm backend the receiver's type must be known: annotate the binding (`let m: Map<String, Float> = new_map()`) rather than relying on inference from a later `set`, which does not reach the receiver. |
 
 ```capa
 let m: Map<String, Int> = new_map()

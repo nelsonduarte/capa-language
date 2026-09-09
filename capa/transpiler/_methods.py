@@ -223,6 +223,12 @@ class _MethodsMixin:
             return f"CapaList({recv}.values())"
         if method == "pairs":
             return f"CapaList({recv}.items())"
+        if method == "filter":
+            # A FRESH map of the pairs satisfying pred(k, v), in the
+            # receiver's insertion order. The runtime helper owns both
+            # halves of that rule so the two Python emitters and the
+            # Wasm pair-table walk cannot drift.
+            return f"_capa_map_filter({recv}, {args[0]})"
         if method == "is_empty":
             return f"(len({recv}) == 0)"
         return f"{recv}.{_safe_ident(method)}({', '.join(args)})"

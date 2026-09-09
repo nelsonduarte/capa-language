@@ -108,7 +108,9 @@ class _MapEmissionMixin:
         - get(k): linear scan -> Option<V>
         - pairs(): allocate List<(K, V)> in insertion order
         - keys(): allocate List<K> in insertion order (slice 5)
-        - values(): allocate List<V> in insertion order (slice 5)"""
+        - values(): allocate List<V> in insertion order (slice 5)
+        - filter(pred): fresh Map<K, V> of the pairs satisfying
+          pred(k, v), in insertion order, receiver untouched"""
         recv = instr.receiver
         method = instr.method
         recv_ty = recv.ty
@@ -147,6 +149,11 @@ class _MapEmissionMixin:
             return
         if method == "values":
             self._emit_map_values(recv, value_ty, instr.dst)
+            return
+        if method == "filter":
+            self._emit_map_filter(
+                recv, instr.args[0], key_ty, value_ty, instr.dst,
+            )
             return
         raise WasmEmissionError(
             f"Map method {method!r} not yet supported on the Wasm backend"
@@ -351,6 +358,189 @@ class _MapEmissionMixin:
             f"Map key type {key_ty!r} not supported on the Wasm backend "
             f"(supported: String / Int / Bool / struct / sum / tuple)"
         )
+
+    def _emit_map_key_for_call(self, key_ty: str, pair_addr_local: str) -> None:
+        """Push the pair's KEY at ``pair_addr_local`` in the operand
+        shape ``_wasm_arg_tys_for(key_ty)`` describes, ready to be
+        passed to a closure.
+
+        The value half needs no equivalent: a map value lives in the
+        same uniform 8-byte slot a list element does, so
+        ``_emit_load_elem_for_call`` already handles it given the slot
+        address. A key does not, because the String key is stored as a
+        separate (ptr, len) pair at offsets 0 and 4 rather than packed
+        into one i64, so this is the one shape difference between the
+        two halves of a pair."""
+        self._reject_trait_map_key(key_ty)
+        if key_ty == "String":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_PTR_OFFSET}")
+            self._write(f"local.get ${pair_addr_local}")
+            self._write(f"i32.load offset={_MAP_PAIR_KEY_LEN_OFFSET}")
+            return
+        if key_ty == "Int":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i64.load offset=0")
+            return
+        if key_ty == "Float":
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i64.load offset=0")
+            self._write("f64.reinterpret_i64")
+            return
+        if key_ty == "Bool" or self._is_pointer_shape_ty(key_ty):
+            self._write(f"local.get ${pair_addr_local}")
+            self._write("i32.load offset=0")
+            return
+        raise WasmEmissionError(
+            f"Map.filter: cannot pass a Map<{key_ty}, _> key to a "
+            f"closure (no Wasm load sequence for that key type)"
+        )
+
+    def _emit_map_filter(
+        self, recv: Value, pred: Value, key_ty: str, value_ty: str, dst,
+    ) -> None:
+        """``m.filter(pred) -> Map<K, V>``. A FRESH map holding the
+        pairs for which ``pred(k, v)`` is true, in the receiver's
+        insertion order; the receiver is not touched.
+
+        The pair table is a flat array of uniform 16-byte slots in
+        insertion order, so filtering is a single forward walk that
+        copies a matching slot VERBATIM into the result's table. No key
+        comparison and no re-hashing are needed, because the receiver's
+        keys are already distinct: a subset of distinct keys is
+        distinct. That is why this does not go through
+        ``_emit_map_set``, which would re-scan the destination for every
+        pair and turn a linear copy into a quadratic one.
+
+        The result's table is sized to the receiver's LENGTH (at least
+        one slot), which is the tightest bound that cannot overflow: the
+        filtered map has at most as many pairs as the receiver.
+
+        The predicate goes through the shared closure-call ABI, the same
+        one List.filter uses; the key is pushed by
+        ``_emit_map_key_for_call`` and the value by the list emitter's
+        ``_emit_load_elem_for_call`` given the value slot's address,
+        because a map value and a list element share the uniform 8-byte
+        slot encoding.
+
+        Insertion order is preserved by construction (the walk is
+        forward and appends), which matches the Python backend, where
+        ``dict`` comprehension preserves it. That agreement is what the
+        characterization corpus diffs."""
+        if dst is None:
+            return
+        sig_key = self._closure_sig_key_for([key_ty, value_ty], "Bool")
+        if sig_key not in self._closure_sig_keys:
+            raise WasmEmissionError(
+                f"Map.filter: no closure registered with sig {sig_key!r} "
+                f"(key={key_ty!r}, value={value_ty!r})"
+            )
+        sig_idx = self._closure_sig_keys[sig_key]
+        map_local = "_m_scrut"
+        idx_local = "_m_tag"
+        out_count = "_alloc_tmp_newcap"
+        pair_local = "_alloc_tmp_pair"
+        # Stash receiver + predicate.
+        self._push_value(recv)
+        self._write(f"local.set ${map_local}")
+        self._push_value(pred)
+        self._write("local.set $_lam_fn_tmp")
+        # Result header. Capacity = max(receiver len, 1): the filtered
+        # map can never hold more pairs than the receiver, and a
+        # zero-byte data array would make a later ``set`` grow from 0.
+        self._write(f"i32.const {_MAP_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("local.tee $_alloc_tmp_key_i32")
+        self._write("i32.eqz")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_alloc_tmp_key_i32")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $_alloc_tmp_key_i32")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_alloc_tmp_key_i32")
+        self._write(f"i32.store offset={_MAP_CAP_OFFSET}")
+        self._write("local.get $_alloc_tmp_key_i32")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_MAP_DATA_OFFSET}")
+        # idx = 0, kept = 0
+        self._write("i32.const 0")
+        self._write(f"local.set ${idx_local}")
+        self._write("i32.const 0")
+        self._write(f"local.set ${out_count}")
+        self._block_counter += 1
+        loop = f"$Mfilter{self._block_counter}_loop"
+        exit_ = f"$Mfilter{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        self._write(f"local.get ${idx_local}")
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_LEN_OFFSET}")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # pair_addr = data + idx * 16
+        self._write(f"local.get ${map_local}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${idx_local}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(f"local.set ${pair_local}")
+        # pred(env, key, value)
+        self._write("local.get $_lam_fn_tmp")
+        self._write("i32.wrap_i64")
+        self._emit_map_key_for_call(key_ty, pair_local)
+        self._write(f"local.get ${pair_local}")
+        self._write(f"i32.const {_MAP_PAIR_VALUE_OFFSET}")
+        self._write("i32.add")
+        self._emit_load_elem_for_call(value_ty)
+        self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
+        self._write("if")
+        self._indent += 1
+        # Keep: copy the whole 16-byte slot verbatim to out[kept].
+        self._write(f"local.get ${dst}")
+        self._write(f"i32.load offset={_MAP_DATA_OFFSET}")
+        self._write(f"local.get ${out_count}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._write(f"local.get ${pair_local}")
+        self._write(f"i32.const {_MAP_PAIR_SIZE}")
+        self._write("memory.copy")
+        self._write(f"local.get ${out_count}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${out_count}")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"local.get ${idx_local}")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write(f"local.set ${idx_local}")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Write the kept count into the result header.
+        self._write(f"local.get ${dst}")
+        self._write(f"local.get ${out_count}")
+        self._write(f"i32.store offset={_MAP_LEN_OFFSET}")
 
     def _emit_map_pairs(
         self, recv: Value, key_ty: str, value_ty: str, dst,

@@ -16,3 +16,15 @@ fun main(stdio: Stdio)
     stdio.println("pairs=${m.pairs().fold("", fun (acc, p) => acc + "${p[0]}=${p[1]},")}")
     let e = new_map()
     stdio.println("empty_length=${e.length()} empty_is_empty=${e.is_empty()}")
+    // filter: a FRESH map of the pairs satisfying pred(k, v), in the
+    // receiver's insertion order. receiver_unchanged is the mutation
+    // discriminator; the pairs print is the ORDER discriminator, which
+    // would go red if either backend rebuilt the result in some other
+    // order. The predicate reads both halves so a key-only or
+    // value-only implementation cannot pass both rows.
+    let big = m.filter(fun (k, v) => v > 2)
+    stdio.println("filter_len=${big.length()} filter_pairs=${big.pairs().fold("", fun (acc, p) => acc + "${p[0]}=${p[1]},")}")
+    stdio.println("filter_receiver_unchanged=${m.pairs().fold("", fun (acc, p) => acc + "${p[0]}=${p[1]},")}")
+    let bykey = m.filter(fun (k, v) => k == "mid")
+    let nothing = m.filter(fun (k, v) => v > 99)
+    stdio.println("filter_by_key=${bykey.pairs().fold("", fun (acc, p) => acc + "${p[0]}=${p[1]},")} filter_empty=${nothing.length()} filter_empty_is_empty=${nothing.is_empty()}")

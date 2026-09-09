@@ -107,6 +107,7 @@ for _m, _e in [
     ("set", 'm.set("k", 2)'), ("contains_key", 'm.contains_key("k")'),
     ("keys", "m.keys()"), ("values", "m.values()"),
     ("pairs", "m.pairs()"), ("is_empty", "m.is_empty()"),
+    ("filter", 'm.filter(fun (k: String, v: Int) -> Bool => v > 0)'),
 ]:
     _recipe("Map", _m, [], _S_MAP, _e)
 

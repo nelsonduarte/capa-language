@@ -109,11 +109,11 @@ _PAIRS: tuple[_Pair, ...] = (
     _excused([("List", "find_index")], [("List", "index_of")], _STEP_7),
     _excused([("Set", "is_subset")], [("Set", "is_superset")], _STEP_7),
     _excused(
-        [("List", "map"), ("List", "filter"), ("List", "fold")],
-        [("Map", "map"), ("Map", "filter"), ("Map", "fold")],
-        "Map.filter is scheduled for step 4 (the Map.remove workaround needs "
-        "it); the design names map_values rather than map and no fold, so "
-        "those two stay excused until step 7 decides them",
+        [("List", "map"), ("List", "filter"), ("Map", "filter")],
+        [("Map", "map"), ("Map", "fold")],
+        "Map.filter landed in increment 2; the design names map_values "
+        "rather than map, and no fold, so those two stay excused until "
+        "step 7 decides them",
     ),
     _excused(
         [("List", "map"), ("List", "filter"), ("List", "fold")],
