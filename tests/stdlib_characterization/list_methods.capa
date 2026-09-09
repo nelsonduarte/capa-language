@@ -56,3 +56,17 @@ fun main(stdio: Stdio)
     let cs = ['c', 'a', 'b']
     stdio.println("char_sorted=${cs.sorted().fold("", fun (acc, c) => acc + c + "|")} char_min=${cs.min().unwrap_or('z')} char_max=${cs.max().unwrap_or('z')}")
     stdio.println("str_sorted=${["pear", "apple", "fig"].sorted().fold("", fun (acc, s) => acc + s + "|")}")
+    // NEGATIVE integers, and they are the point of this row. The sort
+    // compares Ints with a SIGNED comparison; an unsigned one reads
+    // -5 as a huge positive and sorts it after 3. Every other sorting
+    // row in this corpus used only positives, so flipping i64.le_s to
+    // i64.le_u in the Wasm comparator survived the whole suite while
+    // producing 1|2|3|-5|-1| on Wasm against -5|-1|1|2|3| on Python,
+    // with min=1 and max=-1. min and max are printed as well as sorted
+    // because they run the same comparison over a different loop.
+    let negs = [3, 0 - 5, 1, 0 - 1, 2]
+    stdio.println("neg_sorted=${show(negs.sorted())} neg_min=${negs.min().unwrap_or(0)} neg_max=${negs.max().unwrap_or(0)}")
+    // Negative Floats too: the Float comparison is a different branch
+    // of the same helper, with its own NaN handling on top.
+    let negf = [1.5, 0.0 - 2.5, 0.0 - 0.5, 3.5]
+    stdio.println("negf_sorted=${negf.sorted().fold("", fun (acc, x) => acc + "${x}|")} negf_min=${negf.min().unwrap_or(0.0)} negf_max=${negf.max().unwrap_or(0.0)}")
