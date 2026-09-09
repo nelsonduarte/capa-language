@@ -890,6 +890,12 @@ class PythonEmitter:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({r}.find({a[0]}))"
             )
+        if m == "lines":
+            # CR LF / LF / lone CR, terminators STRIPPED. The runtime
+            # helper is the oracle both Python backends and the Wasm
+            # byte scanner agree on; Python's ``str.splitlines()``
+            # recognises six more separators the Wasm scanner does not.
+            return f"CapaList(_capa_lines({r}))"
         if m == "bytes":
             # List<Int> of UTF-8 bytes (each 0..255). ``surrogatepass``
             # keeps a lone surrogate as its 3-byte WTF-8 form (matching

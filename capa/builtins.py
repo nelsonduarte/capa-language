@@ -165,6 +165,29 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("char_at",     fun(TyInt, opt(TyString)),                                 []),
         ("substring",   fun(TyInt, TyInt, TyString),                               []),
         ("index_of",    fun(TyString, opt(TyInt)),                                 []),
+        # ``lines() -> List<String>``: the receiver split on line
+        # terminators, WITH the terminators removed, so a string that
+        # ends in a newline does not yield a phantom empty last line.
+        # That phantom is exactly what makes splitting on a newline a
+        # workaround rather than a spelling of this method.
+        #
+        # A terminator is CR LF, LF, or a lone CR; CR LF is matched
+        # first, so a Windows-authored line does not keep a trailing
+        # CR. Deliberately NOT Python's ``splitlines()``, which also
+        # breaks on VT, FF, FS, GS, RS, NEL and the two Unicode
+        # separators: none of those is a line terminator on any
+        # platform Capa targets, and each would have to be recognised
+        # identically by the Wasm byte scanner, where they are
+        # multi-byte. Rust's ``str::lines`` recognises two terminators;
+        # the lone CR is added because it is the third spelling of one
+        # concept.
+        #
+        # The empty string yields ZERO lines; a string that is exactly
+        # one terminator yields ONE empty line. The result is
+        # byte-identical across the backends: see capa/runtime/
+        # _safety.py (``_capa_lines``, the oracle) and
+        # capa/ir/_emit_wasm/_strings.py (``_emit_string_lines``).
+        ("lines",       fun(lst(TyString)),                                        []),
         # ``bytes() -> List<Int>``: the receiver's UTF-8 bytes, each
         # element in 0..255. The inverse of the internal ``_capa_chr``
         # (Int -> String); the only public String -> bytes door, which

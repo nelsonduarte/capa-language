@@ -598,9 +598,14 @@ class _LocalsCollectionMixin:
                             "or_else", "map_err",
                         ):
                             has_list_hof = True
-                    if instr.method == "split" and recv_ty == "String":
-                        # split returns List<String>; uses _alloc_tmp_i64
-                        # for the per-chunk packing dance.
+                    if (instr.method in ("split", "lines")
+                            and recv_ty == "String"):
+                        # split / lines both return List<String> and
+                        # both push their chunks through
+                        # _emit_split_push_chunk, so they need the same
+                        # scratch: _alloc_tmp_i64 for the per-chunk
+                        # packing dance, _alloc_tmp for the data array,
+                        # _m_tag as the element counter.
                         has_list_string = True
                     if (instr.method in ("index_of", "char_at")
                             and recv_ty == "String"):

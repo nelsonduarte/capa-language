@@ -213,3 +213,51 @@ def _capa_to_lower(s: str) -> str:
     return "".join(
         chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s
     )
+
+
+# ``lines()`` splits on the three line terminators and STRIPS them, so a
+# file ending in a newline does not yield a phantom empty last line.
+# That is the whole reason the method exists: ``s.split("\n")`` leaves
+# the phantom, which is the workaround it replaces.
+#
+# The terminators are exactly ``\r\n``, ``\n`` and a lone ``\r``.
+# ``\r\n`` is matched before ``\n`` so a Windows line does not keep a
+# trailing ``\r``, which is the defect this helper exists to make
+# impossible to reintroduce on either backend.
+#
+# NOT Python's ``str.splitlines()``, deliberately: that also breaks on
+# ``\v \f \x1c \x1d \x1e \x85 \u2028 \u2029``, none of which is a line
+# terminator on any platform Capa targets, and every one of which would
+# have to be recognised identically by the Wasm byte scanner where they
+# are multi-byte. Three terminators is a rule the two backends can both
+# state exactly. Rust's ``str::lines`` recognises two (``\n``,
+# ``\r\n``); the lone ``\r`` is added because it is the third spelling
+# of the same concept and excluding it makes the rule harder to state
+# than to implement.
+#
+# The empty string yields ZERO lines, and a string that is exactly one
+# terminator yields ONE empty line.
+
+def _capa_lines(s: str) -> list[str]:
+    """The lines of ``s`` with their terminators removed. Terminators
+    are ``\r\n``, ``\n`` and ``\r``. Byte-identical with the Wasm
+    backend's ``$emit_string_lines``."""
+    out: list[str] = []
+    start = 0
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\r":
+            out.append(s[start:i])
+            i += 2 if i + 1 < n and s[i + 1] == "\n" else 1
+            start = i
+        elif c == "\n":
+            out.append(s[start:i])
+            i += 1
+            start = i
+        else:
+            i += 1
+    if start < n:
+        out.append(s[start:n])
+    return out

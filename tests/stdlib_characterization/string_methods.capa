@@ -20,3 +20,15 @@ fun main(stdio: Stdio)
     let bytes = "aé".bytes()
     stdio.println("bytes_len=${bytes.length()} bytes=${bytes.fold("", fun (acc, b) => acc + "${b},")}")
     stdio.println("unicode_length=${"abcé".length()} unicode_substring=${"abcé".substring(2, 4)}")
+    // lines(): terminators are CR LF, LF and a lone CR, and they are
+    // STRIPPED, so a trailing newline yields no phantom last element.
+    // The CRLF rows are the discriminator against the rejected
+    // "split on LF then drop one trailing empty" rule, which would
+    // leave a CR on every line (element lengths 2, not 1).
+    let lf = "\n"
+    let crlf = "\r\n"
+    let show_lines = fun (xs: List<String>) -> String => xs.fold("", fun (acc, x) => acc + "[" + x + "]")
+    stdio.println("lines_lf=${show_lines(("a" + lf + "b" + lf).lines())} lines_no_trail=${show_lines(("a" + lf + "b").lines())}")
+    stdio.println("lines_crlf=${show_lines(("a" + crlf + "b" + crlf).lines())} lines_cr=${show_lines(("a" + "\r" + "b").lines())}")
+    stdio.println("lines_empty=${"".lines().length()} lines_only_nl=${lf.lines().length()} lines_blank_mid=${show_lines(("a" + lf + lf + "b").lines())}")
+    stdio.println("lines_crlf_lens=${("a" + crlf + "b" + crlf).lines().fold("", fun (acc, x) => acc + "<" + "${x.length()}" + ">")}")

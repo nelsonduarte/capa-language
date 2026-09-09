@@ -68,6 +68,7 @@ for _m, _e in [
     ("replace", 's.replace("l", "L")'), ("is_empty", "s.is_empty()"),
     ("char_at", "s.char_at(0)"), ("substring", "s.substring(0, 2)"),
     ("index_of", 's.index_of("e")'), ("bytes", "s.bytes()"),
+    ("lines", "s.lines()"),
 ]:
     _recipe("String", _m, [], _S_STR, _e)
 

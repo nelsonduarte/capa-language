@@ -105,7 +105,7 @@ class _StringEmissionMixin:
 
         Methods supported: length, is_empty, contains, starts_with,
         ends_with, substring, to_upper, to_lower, trim, trim_start,
-        trim_end, split, replace, char_at, index_of. The last three
+        trim_end, split, lines, replace, char_at, index_of. The last three
         landed in slice 4 (2026-05); replace allocates a fresh buffer
         sized by an upfront occurrence count, char_at walks UTF-8
         codepoints to assemble an ``Option<String>``, and index_of
@@ -166,6 +166,9 @@ class _StringEmissionMixin:
             return
         if method == "split":
             self._emit_string_split(recv, instr.args[0], dst)
+            return
+        if method == "lines":
+            self._emit_string_lines(recv, dst)
             return
         if method == "replace":
             self._emit_string_replace(recv, instr.args[0], instr.args[1], dst)
@@ -756,6 +759,182 @@ class _StringEmissionMixin:
         # Trailing chunk [start, recv.len).
         self._emit_split_push_chunk(dst, start_local="_str_start",
                                     end_local="_str_a_len")
+
+        # Write final len into header.
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_m_tag")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+
+    def _emit_string_lines(self, recv: Value, dst: Optional[str]) -> None:
+        """``recv.lines() -> List<String>``. Each element is a line with
+        its terminator REMOVED; the result uses the same packed
+        ``ptr | (len << 32)`` slot layout as ``split``.
+
+        A terminator is CR LF, LF, or a lone CR, and CR LF is matched
+        BEFORE LF so a Windows line does not keep a trailing CR. That
+        ordering is the whole point of the method: the workaround it
+        replaces (splitting on LF) leaves the CR behind and leaves a
+        phantom empty element when the receiver ends in a newline.
+
+        Differences from ``_emit_string_split``, and each is why this is
+        a separate scan rather than a parameter of that one:
+          - the separator is one of three byte sequences, not one
+            caller-supplied string, so there is no ``$str_eq`` call and
+            no empty-separator trap;
+          - the trailing chunk is pushed only when the receiver does NOT
+            end in a terminator (``start < len``), which is exactly the
+            phantom-element suppression;
+          - the empty receiver therefore yields ZERO elements, where
+            ``split`` yields one empty element.
+
+        The oracle both Python backends run is ``_capa_lines`` in
+        capa/runtime/_safety.py; the two must agree byte for byte and
+        the characterization corpus diffs them.
+
+        Terminators are single bytes (0x0D / 0x0A) and never appear as a
+        continuation byte of a multi-byte UTF-8 code point (those are
+        all >= 0x80), so the byte-wise scan cannot split a code point.
+
+        Scratch: ``$_str_a_ptr`` / ``$_str_a_len`` (receiver),
+        ``$_str_i`` (scan index), ``$_str_start`` (line start),
+        ``$_str_byte`` (current byte), ``$_m_tag`` (element count), all
+        already declared by the ``has_string_method`` arm, plus
+        ``$_alloc_tmp`` and the ``$_str_new_*`` pair used by
+        ``_emit_split_push_chunk``."""
+        if dst is None:
+            return
+
+        # Save receiver (ptr, len).
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+
+        # Allocate list header + initial 16-slot data array, exactly as
+        # split does; _emit_split_push_chunk grows it from here.
+        initial_cap = 16
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"i32.const {initial_cap * 8}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        self._write(f"local.get ${dst}")
+        self._write(f"i32.const {initial_cap}")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._write("i32.const 0")
+        self._write("local.set $_str_start")
+        self._write("i32.const 0")
+        self._write("local.set $_m_tag")
+
+        self._block_counter += 1
+        loop = f"$Slines{self._block_counter}_loop"
+        exit_ = f"$Slines{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # while i < len
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # byte = recv[i]
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.set $_str_byte")
+        # if byte == 0x0D (CR)
+        self._write("local.get $_str_byte")
+        self._write("i32.const 13")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._emit_split_push_chunk(dst, start_local="_str_start",
+                                    end_local="_str_i")
+        # advance past CR, and past a following LF if there is one:
+        # i += (i + 1 < len && recv[i + 1] == 0x0A) ? 2 : 1
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.lt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 10")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $_str_i")
+        self._write("local.set $_str_start")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # else if byte == 0x0A (LF)
+        self._write("local.get $_str_byte")
+        self._write("i32.const 10")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._emit_split_push_chunk(dst, start_local="_str_start",
+                                    end_local="_str_i")
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write("local.get $_str_i")
+        self._write("local.set $_str_start")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+        # Trailing chunk [start, len), pushed ONLY when the receiver
+        # does not end in a terminator. This is the phantom-element
+        # suppression that distinguishes lines() from split(): after
+        # "a\n" the scan leaves start == len == 1 and nothing is
+        # pushed, so the result is one element, not two.
+        self._write("local.get $_str_start")
+        self._write("local.get $_str_a_len")
+        self._write("i32.lt_s")
+        self._write("if")
+        self._indent += 1
+        self._emit_split_push_chunk(dst, start_local="_str_start",
+                                    end_local="_str_a_len")
+        self._indent -= 1
+        self._write("end")
 
         # Write final len into header.
         self._write(f"local.get ${dst}")

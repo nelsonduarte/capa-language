@@ -119,6 +119,14 @@ class _MethodsMixin:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({recv}.find({args[0]}))"
             )
+        if method == "lines":
+            # Line terminators are CR LF, LF and a lone CR, and they
+            # are STRIPPED. Routed through the runtime helper rather
+            # than Python's ``str.splitlines()`` so the two backends
+            # recognise the same three terminators: ``splitlines()``
+            # also breaks on VT / FF / FS / GS / RS / NEL and the two
+            # Unicode separators, which the Wasm byte scanner does not.
+            return f"CapaList(_capa_lines({recv}))"
         if method == "bytes":
             # List<Int> of UTF-8 bytes (each 0..255). ``surrogatepass``
             # so a lone surrogate (which Python ``str`` can hold, e.g.

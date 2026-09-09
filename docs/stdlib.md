@@ -43,6 +43,7 @@ failure at the same input; neither wraps silently.
 | `starts_with(s: String)` | `Bool` | |
 | `ends_with(s: String)` | `Bool` | |
 | `split(sep: String)` | `List<String>` | Split by separator |
+| `lines()` | `List<String>` | The lines of the receiver, with their terminators removed. A terminator is `\r\n`, `\n`, or a lone `\r`; `\r\n` is matched first, so a Windows-authored line keeps no trailing `\r`. A trailing terminator yields NO phantom empty last element, which is what distinguishes this from `split("\n")`: `"a\nb\n".lines()` has 2 elements, `"a\nb\n".split("\n")` has 3. `"".lines()` is empty; `"\n".lines()` is one empty line. |
 | `replace(old: String, new: String)` | `String` | Replace every occurrence |
 | `char_at(i: Int)` | `Option<String>` | The single character (a one-codepoint `String`) at code-point index `i`, or `None` if `i` is negative or `>= length()`. |
 | `substring(start: Int, end: Int)` | `String` | The slice over the half-open code-point range `[start, end)`. Aborts the program if `start < 0`, `end < 0`, `start > end`, or `end > length()`; it never clamps or silently returns a shorter slice. `substring(i, i)` is the empty string. |
