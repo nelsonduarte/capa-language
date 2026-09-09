@@ -20,13 +20,22 @@ The set of tables is DISCOVERED, not listed. Every module of the
 holding AT LEAST ONE ``(str, str)`` key is a CANDIDATE, whichever
 analyzer module defines it.
 
-DISCOVERY IS FAIL-CLOSED (increment 2, pentest finding F1). It used to
-keep a container only if ALL its keys were pairs, so a table carrying
+DISCOVERY IS FAIL-CLOSED FOR MIXED-KEY TABLES (increment 2, pentest
+finding F1). It used to keep a container only if ALL its keys were
+pairs, so a table carrying real ``(owner, method)`` entries ALONGSIDE
 one non-pair key -- a ``"__schema__"`` marker, a three-tuple key --
 vanished from discovery entirely and its real entries stopped being
 checked with no diagnostic. That evasion is measured: a NEW table of
-that shape passed this module with zero reds. The rule is now stated
-once, in ``_classify_table``:
+that shape passed this module with zero reds, and now fails.
+
+Say MIXED precisely, because the rule below is a candidacy test and the
+boundary is exactly where its "at least one" lands. A table whose keys
+are ALL non-pairs has no pair key to make it a candidate, so it is not
+discovered at all; that shape is on the explicitly-open list further
+down rather than covered here. It is a narrower hole than the mixed one
+it replaces: a table with no ``(owner, method)`` key at all is not a
+table any consumer of this guard reads. The rule is stated once, in
+``_classify_table``:
 
     a module-level container in ``capa.analyzer`` holding at least one
     ``(str, str)`` key is a CANDIDATE; every candidate must be fully
@@ -41,7 +50,10 @@ That is the bound, stated: a table of the same shape defined OUTSIDE
 the package (the backends keep such tables for their own mappings) is
 not reached (pentest shape G11), neither is one nested as a VALUE
 inside another container (G2), nor one that is empty at import time and
-filled later (G5). Those three stay open and are tracked separately.
+filled later (G5), nor one whose keys are ALL non-pairs, which has no
+pair key to make it a candidate (measured: a table of only three-tuple
+keys passes this module). Those four stay open and are tracked
+separately.
 Discovery does scan ``list`` and ``tuple`` containers as well as
 ``dict`` / ``set`` / ``frozenset``, so a pair-keyed table in one of
 those shapes is at least SEEN; making its keys checkable key by key is
@@ -181,6 +193,55 @@ class TestIfcTableKeysAreDeclared(unittest.TestCase):
             "stopped being guarded; make the table fully pair-keyed, or "
             "move the non-pair data to its own container: "
             f"{unguardable}",
+        )
+
+    def test_ct_short_circuit_string_methods_all_call_str_eq(self):
+        """The constant-time compare-oracle table may only name String
+        methods whose lowering actually CALLS ``$str_eq``.
+
+        Two lists key on the same fact for different purposes:
+        ``capa.ir._emit_wasm._discovery.STR_EQ_CALLING_STRING_METHODS``
+        is what the emitted code does (and gates whether the helper is
+        emitted at all), while ``_CT_SHORT_CIRCUIT_METHODS`` is which of
+        those the checker refuses in a ``@constant_time`` function. They
+        are deliberately NOT the same set: ``split`` and ``replace``
+        call the helper and are not policed, a recorded fail-open the
+        separate constant-time effort owns.
+
+        So they cannot be folded into one source. What CAN be enforced
+        is the CONTAINMENT, and it is the half that fails OPEN if it
+        drifts: a String method listed as a compare oracle whose
+        lowering makes no ``$str_eq`` call is the table claiming a
+        mechanism the code does not have, and the diagnostic it emits
+        would name a side channel that is not there. The reverse
+        direction is the known fail-open and is asserted only as the
+        two names it is allowed to be, so it cannot grow silently
+        either.
+        """
+        from capa.ir._emit_wasm._discovery import (
+            STR_EQ_CALLING_STRING_METHODS,
+        )
+        from capa.analyzer._ifc_tables import _CT_SHORT_CIRCUIT_METHODS
+        listed = {
+            method for (owner, method) in _CT_SHORT_CIRCUIT_METHODS
+            if owner == "String"
+        }
+        self.assertLessEqual(
+            listed, STR_EQ_CALLING_STRING_METHODS,
+            "a String method is listed in _CT_SHORT_CIRCUIT_METHODS but "
+            "its lowering does not call $str_eq, so the compare-oracle "
+            "diagnostic it produces names a mechanism the emitted code "
+            "does not have. Either the lowering changed or the entry is "
+            "wrong: "
+            + str(sorted(listed - STR_EQ_CALLING_STRING_METHODS)),
+        )
+        self.assertEqual(
+            sorted(STR_EQ_CALLING_STRING_METHODS - listed),
+            ["replace", "split"],
+            "the set of $str_eq callers the constant-time table does "
+            "NOT police changed. That set is a recorded fail-open with "
+            "exactly two members; a new one means a method was added "
+            "with a compare oracle and no decision about it",
         )
 
     def test_every_key_names_a_declared_method(self):
