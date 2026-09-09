@@ -1164,6 +1164,14 @@ class _ExpressionsMixin:
             # Both operands must be compatible with the SAME member of
             # the ordered-type set; ``compatible`` is what admits a Char
             # against String and an unknown / flexible type anywhere.
+            #
+            # ``is_ordered_element`` is the one-operand form of exactly
+            # this test, and ``List.sorted`` / ``min`` / ``max`` call it
+            # so the methods and the operator cannot drift. The SAME
+            # member requirement is why this site still spells the
+            # conjunction out rather than calling the predicate twice:
+            # ``lt`` and ``rt`` must agree on WHICH member, which two
+            # independent one-operand calls would not enforce.
             if not any(
                 compatible(ordered, lt) and compatible(ordered, rt)
                 for ordered in ORDERED_TYPES

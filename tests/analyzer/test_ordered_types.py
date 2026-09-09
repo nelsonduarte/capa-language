@@ -119,6 +119,58 @@ class TestOrderingOperators(unittest.TestCase):
         )
 
 
+class TestPredicateAgreesWithTheOperator(unittest.TestCase):
+    """``is_ordered_element`` is what ``List.sorted`` / ``min`` / ``max``
+    consult, and it must accept exactly what the ``<`` family accepts on
+    two operands of the same type. If the two ever disagree, a program
+    could sort a list whose elements the operator refuses to compare, or
+    be refused a sort of elements it would happily compare.
+
+    Computed over every primitive by RUNNING the operator, never listed:
+    a second list of ordered type names is precisely what
+    ``ORDERED_TYPES`` exists to prevent, and this guard is what makes
+    the single source real rather than aspirational.
+
+    The Char row is the one that matters. ``Char`` is NOT a member of
+    ``ORDERED_TYPES``, yet the operator accepts it (a Char is compatible
+    with String) and every backend lowers the comparison. A predicate
+    written as name membership would pass every other row here and fail
+    this one.
+    """
+
+    def test_predicate_matches_the_operator_on_every_primitive(self):
+        from capa.typesys import is_ordered_element, TyName
+        for name in sorted(PRIMITIVE_NAMES):
+            with self.subTest(type=name):
+                operator_accepts = all(
+                    check(_compare(name, op)).ok for op in _ORDER_OPS
+                )
+                self.assertEqual(
+                    is_ordered_element(TyName(name)), operator_accepts,
+                    f"is_ordered_element and the ordering operator "
+                    f"disagree about {name}. They must not: the ordering "
+                    f"methods use the predicate and the user reads the "
+                    f"operator, so a disagreement is a surface that "
+                    f"contradicts itself",
+                )
+
+    def test_char_is_ordered_though_it_is_not_a_member(self):
+        # Pinned separately from the sweep above because it is the row a
+        # name-membership implementation gets wrong, and the sweep would
+        # not say WHICH row failed.
+        from capa.typesys import is_ordered_element, TyName
+        self.assertNotIn("Char", {ty.name for ty in ORDERED_TYPES})
+        self.assertTrue(is_ordered_element(TyName("Char")))
+
+    def test_a_bare_type_variable_is_not_ordered(self):
+        # Fail-CLOSED, and consistent with the operator, which already
+        # refuses ``a < b`` for two T's in a generic function. The
+        # opposite direction from TyUnknown, which is fail-OPEN.
+        from capa.typesys import is_ordered_element, TyVar, TyUnknown
+        self.assertFalse(is_ordered_element(TyVar("T")))
+        self.assertTrue(is_ordered_element(TyUnknown))
+
+
 class TestPermissiveOperands(unittest.TestCase):
     """``compatible(member, t)`` holds for a flexible inference variable
     and for ``TyUnknown`` whatever the member, so an operand of either

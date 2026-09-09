@@ -100,10 +100,22 @@ infers the type from the first `push`.
 | `find(p: Fun(T) -> Bool)` | `Option<T>` | First element matching `p` |
 | `find_index(p: Fun(T) -> Bool)` | `Option<Int>` | Index of first element matching `p` |
 | `sorted_by(cmp: Fun(T, T) -> Int)` | `List<T>` | Fresh sorted copy. `cmp(a, b)` returns negative / 0 / positive as in C's `qsort`. Stable. |
+| `sorted()` | `List<T>` | Fresh ascending copy, stable, receiver unchanged. The element type must be one the ordering operators accept: `Int`, `Float`, `String` or `Char`. For anything else (a `Bool`, a user struct) use `sorted_by` with your own comparator; the compiler says so in the error. |
+| `min()` | `Option<T>` | Smallest element, `None` on an empty list. Same order as `sorted()`, so `xs.min()` and `xs.sorted().first()` always agree. |
+| `max()` | `Option<T>` | Largest element, `None` on an empty list. |
 | `reverse()` | `List<T>` | Fresh list with the elements in reverse order. Does not mutate the receiver. |
 | `enumerate()` | `List<(Int, T)>` | Fresh list of `(index, element)` pairs, index 0-based, original order. |
 | `zip<U>(other: List<U>)` | `List<(T, U)>` | Fresh list pairing `self[i]` with `other[i]`, truncated to the shorter length. |
 | `flat_map<U>(f: Fun(T) -> List<U>)` | `List<U>` | Apply `f` to each element and concatenate the resulting lists in order. |
+
+`sorted()`, `min()` and `max()` order `Float` TOTALLY: `NaN` sorts
+after every number, and the clean elements keep their order around it.
+This matters because the obvious alternative is not merely unspecified:
+every comparison against `NaN` is false, so a sort built on `<` alone
+silently misplaces the NON-`NaN` elements too, and differently on
+different backends. `sorted_by` does NOT get this treatment: there the
+comparator is yours, and a comparator that is not a total order has
+undefined results by the same reasoning that applies to `qsort`.
 
 Index access: `xs[i]`. The index is bounds-checked at run time, not
 at compile time: `i < 0` or `i >= length()` aborts the program

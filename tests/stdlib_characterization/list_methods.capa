@@ -43,3 +43,16 @@ fun main(stdio: Stdio)
     var pd = [7, 8]
     pd.pop()
     stdio.println("pop_discarded_still_mutates=${pd.length()} pop_order=${show(pd)}")
+    // sorted / min / max: the COMPILER supplies the comparison, over a
+    // closed element set. The receiver row pins that sorted returns a
+    // fresh list. The duplicate 3 pins stability. min/max on the empty
+    // list answer None rather than panicking, following first/last/get.
+    stdio.println("sorted=${show(xs.sorted())} receiver_unchanged=${show(xs)}")
+    stdio.println("min=${xs.min().unwrap_or(0 - 1)} max=${xs.max().unwrap_or(0 - 1)} empty_min_none=${empty.min().is_none()} empty_max_none=${empty.max().is_none()}")
+    // Char sorts although Char is NOT a member of ORDERED_TYPES: the
+    // predicate consults the set through compatible, and a Char is
+    // compatible with String. A name-membership predicate would refuse
+    // this line, which is why it is here.
+    let cs = ['c', 'a', 'b']
+    stdio.println("char_sorted=${cs.sorted().fold("", fun (acc, c) => acc + c + "|")} char_min=${cs.min().unwrap_or('z')} char_max=${cs.max().unwrap_or('z')}")
+    stdio.println("str_sorted=${["pear", "apple", "fig"].sorted().fold("", fun (acc, s) => acc + s + "|")}")

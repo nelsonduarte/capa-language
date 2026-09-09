@@ -459,6 +459,32 @@ class _DiscoveryMixin:
                 return True
         return False
 
+    def _uses_compiler_string_sort(self, module: Module) -> bool:
+        """True if any ``sorted`` / ``min`` / ``max`` is called on a
+        ``List<String>`` or ``List<Char>``.
+
+        Those are the compiler-ordered methods, and over a String-shaped
+        element their comparison is ``call $str_cmp``, exactly as the
+        ``<`` operator's is. Without this gate the helper is emitted
+        only when the SOURCE contains a String comparison, and
+        ``xs.sorted()`` contains none: the comparison exists only in the
+        code the backend generates. Measured: omitting this gives
+        ``wasm-tools parse failed: unknown func: failed to find name
+        $str_cmp``, the same failure shape ``split_once`` hit against
+        ``$str_eq`` earlier in this increment.
+
+        Char is included because a Char is a one-code-point String and
+        shares its slot encoding and its comparison helper."""
+        for _fn, instr in walk_module(module):
+            if (isinstance(instr, MethodCall)
+                    and instr.method in ("sorted", "min", "max")):
+                recv_ty = instr.receiver.ty or ""
+                if recv_ty.startswith("List") and _element_type_of_list(
+                    recv_ty
+                ) in ("String", "Char"):
+                    return True
+        return False
+
     def _uses_string_concat(self, module: Module) -> bool:
         """True if any ``+`` BinOp has a String operand. These lower
         to a ``call $str_concat`` (see ``_emit_string_concat``), so

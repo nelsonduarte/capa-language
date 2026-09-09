@@ -85,6 +85,7 @@ for _m, _e in [
     ("find", "xs.find(fun (a: Int) -> Bool => a > 1)"),
     ("find_index", "xs.find_index(fun (a: Int) -> Bool => a > 1)"),
     ("sorted_by", "xs.sorted_by(fun (a: Int, b: Int) -> Int => a - b)"),
+    ("sorted", "xs.sorted()"), ("min", "xs.min()"), ("max", "xs.max()"),
     ("reverse", "xs.reverse()"), ("enumerate", "xs.enumerate()"),
     ("zip", "xs.zip(xs)"),
     ("flat_map", "xs.flat_map(fun (a: Int) -> List<Int> => [a])"),

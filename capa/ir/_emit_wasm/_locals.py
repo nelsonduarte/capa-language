@@ -701,6 +701,29 @@ class _LocalsCollectionMixin:
                         if el == "String":
                             has_list_string = True
                             has_string_method = True
+                    if (instr.method in ("sorted", "min", "max")
+                            and recv_ty.startswith("List")):
+                        # sorted reuses the sorted_by merge sort with a
+                        # compiler-supplied comparison, so it needs the
+                        # same $_srt_* block; min / max reuse the same
+                        # comparison over a single scan. The comparison
+                        # stashes its two operands per element shape,
+                        # and Float additionally needs the NaN flag.
+                        has_list_sorted_by = True
+                        has_list_method = True
+                        el = _element_type_of_list(recv_ty)
+                        if el == "String" or el == "Char":
+                            has_list_string = True
+                            has_string_method = True
+                            has_list_sorted_by_i64 = True
+                        elif el == "Float":
+                            has_list_sorted_by_f64 = True
+                        else:
+                            has_list_sorted_by_i64 = True
+                        if instr.method in ("min", "max"):
+                            # They answer Option<T>, so they need the
+                            # Option record scratch as List.pop does.
+                            has_optres_method = True
                     if (instr.method == "sorted_by"
                             and recv_ty.startswith("List")):
                         # sorted_by runs a bottom-up merge sort that
@@ -1150,6 +1173,10 @@ class _LocalsCollectionMixin:
             if has_list_sorted_by_f64:
                 out.setdefault("_srt_arg0_f64", "f64")
                 out.setdefault("_srt_arg1_f64", "f64")
+                # sorted() over Float needs one more i32: the "is the
+                # right operand NaN" flag its total comparison computes
+                # once and reads on both branches.
+                out.setdefault("_srt_tmp_nan", "i32")
             if has_list_sorted_by_i32:
                 out.setdefault("_srt_arg0_i32", "i32")
                 out.setdefault("_srt_arg1_i32", "i32")

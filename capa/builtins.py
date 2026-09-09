@@ -135,6 +135,35 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("enumerate",  fun(lst(TyTuple((TyInt, T)))),                              []),
         ("zip",        fun(lst(U), lst(TyTuple((T, U)))),                          ["U"]),
         ("flat_map",   fun(fun(T, lst(U)), lst(U)),                                ["U"]),
+        # Ordering over a CLOSED element set. ``sorted`` returns a fresh
+        # ascending list and does not mutate; ``min`` / ``max`` answer
+        # an ``Option`` so the empty list is a value, following
+        # ``first`` / ``last`` / ``get``.
+        #
+        # The element type must satisfy ``typesys.is_ordered_element``,
+        # which is the ONE-OPERAND form of the expression the ``<``
+        # family already evaluates, so these accept exactly what the
+        # operator accepts and there is no second list of ordered types
+        # anywhere. ``List<Char>`` sorts, because a Char is compatible
+        # with String; ``List<Bool>`` and a list of user structs do not,
+        # and the rejection names ``sorted_by`` as the escape hatch,
+        # since a user-supplied comparator is how an arbitrary element
+        # type is ordered.
+        #
+        # FLOAT AND NaN. The comparator these supply is TOTAL: NaN is
+        # detected (it is the only value not equal to itself) and sorts
+        # after every number. That is not a cosmetic choice about where
+        # NaN belongs. Without a total order a single NaN silently
+        # destroys the ordering of the CLEAN elements, differently on
+        # different backends, so the sort could return unsorted data
+        # that had nothing wrong with it. The deferred ``sorted_by``
+        # divergence is the same mechanism but NOT the same decision:
+        # there the USER supplies the comparator and the compiler
+        # declines to police it, here the COMPILER supplies it and
+        # would be shipping the defect itself.
+        ("sorted",     fun(lst(T)),                                                []),
+        ("min",        fun(opt(T)),                                                []),
+        ("max",        fun(opt(T)),                                                []),
     ],
     "Range": [
         # Range<T> is a lazy iterable produced by `a..b` and `a..=b`.

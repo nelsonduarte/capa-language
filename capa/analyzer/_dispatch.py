@@ -27,8 +27,19 @@ from typing import Optional
 from .. import capa_ast as A
 from ..typesys import (
     CAPABILITY_NAMES, Ty, TyFun, TyName, TyUnknown, TyVar,
-    instantiate, is_flexible, substitute, ty_str, unify,
+    instantiate, is_flexible, is_ordered_element, substitute, ty_str,
+    unify,
 )
+
+
+#: The List methods whose comparison the COMPILER supplies, so their
+#: element type must be one the compiler can order. ``sorted_by`` is
+#: deliberately absent: there the user supplies the comparison, which is
+#: exactly how an element type outside this set gets ordered, and the
+#: diagnostic below points at it.
+_COMPILER_ORDERED_METHODS: frozenset[str] = frozenset({
+    "sorted", "min", "max",
+})
 
 
 class _DispatchMixin:
@@ -665,6 +676,47 @@ class _DispatchMixin:
         )
         return ret_substituted
 
+
+    def _check_ordered_element(self, e: A.MethodCall, recv_ty) -> None:
+        """Refuse ``sorted`` / ``min`` / ``max`` on a List whose element
+        type the compiler cannot order.
+
+        The rule is ``typesys.is_ordered_element``, which is the
+        one-operand form of the expression the ``<`` family evaluates,
+        so these methods accept exactly what the operator accepts. There
+        is no second list of ordered types: the predicate consults
+        ``ORDERED_TYPES`` through ``compatible``, which is why
+        ``List<Char>`` is accepted even though Char is not a member.
+
+        Why this cannot be left to the lowering: ``sorted_by`` accepts
+        any element type because the USER supplies the comparison, and a
+        new method that simply reused that path would accept
+        ``[true, false].sorted()`` and then have nothing to compare
+        with. The diagnostic therefore names ``sorted_by`` as the door,
+        because for a Bool or a user struct that is genuinely the right
+        answer.
+
+        The failure directions are the predicate's, not this site's: an
+        unresolved element type passes (so inference is not broken
+        mid-flight) and a bare type variable does not (matching the
+        operator, which already refuses ``a < b`` for two ``T``s)."""
+        if e.method not in _COMPILER_ORDERED_METHODS:
+            return
+        if not isinstance(recv_ty, TyName) or recv_ty.name != "List":
+            return
+        if not recv_ty.args:
+            return
+        elem = recv_ty.args[0]
+        if is_ordered_element(elem):
+            return
+        self._err(
+            f"method {e.method!r}: List<{ty_str(elem)}> has no order the "
+            f"compiler can supply; {ty_str(elem)} is not accepted by the "
+            f"ordering operators either. Use sorted_by with your own "
+            f"comparator to order it.",
+            e.pos,
+        )
+
     def _check_method_call(self, e: A.MethodCall) -> Ty:
         from . import SymbolKind
 
@@ -765,6 +817,12 @@ class _DispatchMixin:
         # / index_of) on a @secret operand is a timing oracle, the
         # method-call analogue of ``==`` on a secret.
         self._check_ct_method_compare(e, recv_ty)
+
+        # The compiler-ordered methods accept a CLOSED element set: the
+        # one the ordering operators accept. Checked here, at dispatch,
+        # because inheriting ``sorted_by``'s permissiveness would accept
+        # ``[true, false].sorted()``, which has no comparison to make.
+        self._check_ordered_element(e, recv_ty)
 
         from . import SymbolKind
 
