@@ -6947,6 +6947,113 @@ class TestLinearIntoContainerParity(unittest.TestCase):
         self._assert_three_way(src)
 
 
+class TestCompilerOrderedRejectParity(unittest.TestCase):
+    """The ordered-element rule refuses UNIFORMLY on all three backends,
+    and the types it accepts run identically on all three.
+
+    Why this exists beside the analyzer-level pins in
+    ``tests/analyzer/test_ordered_types.py``: the DEFECT the rule guards
+    is cross-backend, not local. Established by construction, with the
+    rule deleted at dispatch:
+
+        program              check  py     ir     wasm
+        [true,false].sorted()  ok    ok     ok     REFUSE
+        List<P>.sorted()       ok    TypeError     REFUSE
+        [[1],[2]].sorted()     ok    ok     ok     REFUSE
+
+    So the failure mode is a three-backend divergence plus an unguarded
+    Python ``TypeError``, and an analyzer-only assertion pins the
+    MECHANISM without pinning the CONSEQUENCE. If the refusal were ever
+    moved out of the analyzer, or moved only partly (Python refuses,
+    Wasm does not), the analyzer pins alone would not notice.
+
+    There is only ONE site to touch, and the same construction shows it:
+    with the rule present every mode refuses because the analyzer
+    refuses first, so no backend independently rejects and none needs
+    its own arm. This class is a second WITNESS to one rule, not a
+    second implementation of it.
+
+    Follows ``TestLinearConditionalAliasRejectParity`` above, which
+    established this shape for the linear-type refusals."""
+
+    _STRUCT = "type P {\n    n: Int\n}\n"
+
+    def _assert_all_reject(self, src: str) -> None:
+        result = analyze(
+            Parser(Lexer(src).lex(), source=src).parse_module(), source=src,
+        )
+        self.assertFalse(
+            result.ok,
+            msg=f"analyzer accepted an unorderable sort:\n{src}",
+        )
+        joined = " ".join(e.message for e in result.errors)
+        self.assertIn("sorted_by", joined)
+        runners = [_run_python, _run_cir]
+        if _has_wasm_tools() and _has_wasmtime_py():
+            runners.append(_run_wasm)
+        for runner in runners:
+            with self.assertRaises(AssertionError):
+                runner(src)
+
+    def _assert_all_agree(self, src: str, expected: str) -> None:
+        self.assertEqual(_capture_stdout(lambda: _run_python(src)), expected)
+        self.assertEqual(_capture_stdout(lambda: _run_cir(src)), expected)
+        if _has_wasm_tools() and _has_wasmtime_py():
+            self.assertEqual(
+                _capture_stdout(lambda: _run_wasm(src)), expected,
+            )
+
+    def test_bool_elements_rejected_on_every_backend(self):
+        self._assert_all_reject(
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [true, false]\n"
+            "    let r = xs.sorted()\n"
+            '    stdio.println("done")\n'
+        )
+
+    def test_struct_elements_rejected_on_every_backend(self):
+        # The row that dies with a bare Python TypeError when the rule
+        # is gone, rather than merely diverging.
+        self._assert_all_reject(
+            self._STRUCT + "fun main(stdio: Stdio)\n"
+            "    let xs: List<P> = [P(n: 1), P(n: 2)]\n"
+            "    let r = xs.sorted()\n"
+            '    stdio.println("done")\n'
+        )
+
+    def test_nested_list_elements_rejected_on_every_backend(self):
+        self._assert_all_reject(
+            "fun main(stdio: Stdio)\n"
+            "    let xs = [[1], [2]]\n"
+            "    let r = xs.sorted()\n"
+            '    stdio.println("done")\n'
+        )
+
+    def test_min_and_max_reject_on_every_backend_too(self):
+        # min / max share the comparison but not the loop, so they are
+        # separate witnesses rather than the same one twice.
+        for method in ("min", "max"):
+            with self.subTest(method=method):
+                self._assert_all_reject(
+                    "fun main(stdio: Stdio)\n"
+                    "    let xs = [true, false]\n"
+                    f"    let r = xs.{method}()\n"
+                    '    stdio.println("done")\n'
+                )
+
+    def test_char_is_accepted_and_agrees_on_every_backend(self):
+        # The negative, and the row a name-membership predicate breaks:
+        # Char is not a member of ORDERED_TYPES yet sorts correctly
+        # everywhere. Asserting the OUTPUT, not just acceptance, so a
+        # backend that accepted and mis-sorted would be caught.
+        self._assert_all_agree(
+            "fun main(stdio: Stdio)\n"
+            "    let xs = ['c', 'a', 'b']\n"
+            '    stdio.println("${xs.sorted().fold("", fun (a, c) => a + c)}")\n',
+            "abc\n",
+        )
+
+
 class TestLinearConditionalAliasRejectParity(unittest.TestCase):
     """Finding 1: a linear/typestate value selected through an if/match
     EXPRESSION is refused UNIFORMLY on all three backends.

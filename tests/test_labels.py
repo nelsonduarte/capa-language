@@ -1439,6 +1439,27 @@ class TestConstantTime(unittest.TestCase):
             "makes _CT_SHORT_CIRCUIT_METHODS checkable",
         )
 
+    def test_split_once_oracle_is_caught_across_a_function_boundary(self):
+        # The table has TWO readers, established by construction:
+        # capa/analyzer/_ifc.py checks the call inline, and
+        # capa/analyzer/_ifc_summary.py carries the effect across a
+        # function boundary. The inline pin above exercises only the
+        # first. Measured, both depend on the same entry: deleting it
+        # drops this shape from 1 diagnostic to 0, exactly as it does
+        # the inline one.
+        r = self._analyze(
+            "fun helper(s: String, sep: String) -> Bool\n"
+            "    return s.split_once(sep).is_some()\n"
+            "\n"
+            "@constant_time()\n"
+            "fun parse(s: @secret String, sep: String) -> Bool\n"
+            "    return helper(s, sep)\n"
+        )
+        self.assertEqual(
+            len(self._ct_errors(r)), 1,
+            [e.message for e in r.errors],
+        )
+
     def test_map_remove_with_a_secret_key_rejected(self):
         # Increment 2. remove runs the same linear key scan get runs, so
         # the key decides which memory is walked and how far. Sibling of
