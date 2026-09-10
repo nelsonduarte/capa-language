@@ -32,6 +32,19 @@ WHAT THIS ASSERTS
   RECORDED as defects, never blessed as correct. Each test pins the exact
   divergence measured today and says what to do when it goes red because
   the backends now agree (promote the program to ``_AGREEING``).
+- ``TestKnownDivergentIsPinned``: every ``_KNOWN_DIVERGENT`` member is
+  actually pinned by one of those tests. Pentest finding F5: a program
+  could be added to the list with no pin at all, and the suite stayed
+  green (measured EXIT=0), so a divergence could be RECORDED without
+  anyone asserting what it is -- which is the whole point of the list.
+  The pins are read out of ``TestKnownDivergent``'s own source, so this
+  is not a second hand-kept list that could drift from the first.
+  The reverse direction (a pin left behind after a program is promoted
+  to ``_AGREEING``) deliberately gets NO guard here: it is already
+  caught three ways by tests that ship today -- the inventory test, the
+  agreement test, and the stale pin itself, which asserts the divergent
+  output and fails once the program agrees. A fourth mechanism for it
+  would be a mirror of knowledge that already has one owner.
 - ``TestCapabilitySurface``: the manifest's capability and obligation
   surface for every corpus program is exactly the Stdio the program
   declares, with no linear obligation. The manifest's ``calls`` list is
@@ -47,6 +60,7 @@ not a second runner.
 
 from __future__ import annotations
 
+import inspect
 import unittest
 from pathlib import Path
 
@@ -244,18 +258,38 @@ class TestKnownDivergent(unittest.TestCase):
     def test_sorted_by_nan_is_recorded_not_blessed(self):
         # The same class reached through a VALUE: NaN compares false
         # against everything, so a comparator built from < and > answers
-        # 0 for it against anything and stops being a total order; the
-        # two sorts then settle on different permutations exactly as for
-        # the always-1 comparator above.
+        # 0 for it against anything and stops being a total order.
+        #
+        # FIVE elements, not four, and the count is load-bearing. At
+        # four the outputs differ only in where NaN sits, which reads as
+        # a cosmetic ordering question and is what let this defect be
+        # discussed as one. At five the real damage shows: on the Python
+        # paths the CLEAN elements come out 2.0, 1.0, 3.0, 4.0, which is
+        # not sorted. The assertion below therefore pins the exact
+        # strings AND, separately, the fact that the non-NaN
+        # subsequence has lost its order, so a change that moved NaN but
+        # left the corruption cannot turn this green.
         src = _source("known_divergent_sorted_by_nan.capa")
         py, cir, wasm = _three_backend_outputs(src)
-        self.assertEqual(py, "1.0|nan|0.5|2.0|\n")
+        self.assertEqual(py, "2.0|nan|1.0|3.0|4.0|\n")
         self.assertEqual(cir, py)
         self.assertEqual(
-            wasm, "0.5|1.0|nan|2.0|\n",
+            wasm, "1.0|2.0|nan|3.0|4.0|\n",
             "the Wasm sorted_by output for a NaN element changed; if it now "
             "equals the Python output the divergence is fixed: promote the "
             "program to _AGREEING",
+        )
+        # What the divergence IS, asserted rather than left implicit.
+        clean = [
+            part for part in py.strip().split("|")
+            if part not in ("", "nan")
+        ]
+        self.assertNotEqual(
+            clean, sorted(clean, key=float),
+            "the Python paths no longer corrupt the order of the non-NaN "
+            "elements. That is the defect this program records, so if it "
+            "is gone the comparator or the sort has been fixed: re-measure "
+            "and promote, do not re-pin",
         )
 
     def test_generic_closure_param_is_recorded_not_blessed(self):
@@ -275,6 +309,51 @@ class TestKnownDivergent(unittest.TestCase):
             "the Wasm failure no longer names the un-emitted generic "
             "callee; if the program now runs, the defect is fixed: promote "
             "it to _AGREEING",
+        )
+
+
+class TestKnownDivergentIsPinned(unittest.TestCase):
+    """Pentest finding F5, the UNPINNED direction.
+
+    ``_KNOWN_DIVERGENT`` records a program as a defect; a
+    ``TestKnownDivergent`` method is what says WHAT the defect is.
+    Nothing tied the two together, so a fourth member could be listed
+    with no pin and the module stayed green: the divergence would be
+    excused from ``TestThreeBackendAgreement`` while being asserted
+    nowhere. That is a licence to silence a new cross-backend
+    disagreement by adding one line.
+
+    The pinned set is DERIVED from the source of the pin methods rather
+    than listed again here, so the two views cannot disagree. Note that
+    ``TestKnownDivergent`` skips without the Wasm toolchain, and this
+    check must NOT: whether a member is pinned is a property of the
+    test module, not of the host, so it runs everywhere.
+    """
+
+    @staticmethod
+    def _pinned_programs() -> set[str]:
+        """Every corpus filename named in the source of a
+        ``TestKnownDivergent`` pin method."""
+        pinned: set[str] = set()
+        for name in dir(TestKnownDivergent):
+            if not name.startswith("test_"):
+                continue
+            source = inspect.getsource(getattr(TestKnownDivergent, name))
+            pinned |= {
+                member for member in _KNOWN_DIVERGENT if member in source
+            }
+        return pinned
+
+    def test_every_known_divergent_program_has_a_pin(self):
+        unpinned = sorted(set(_KNOWN_DIVERGENT) - self._pinned_programs())
+        self.assertEqual(
+            unpinned, [],
+            "a program is listed in _KNOWN_DIVERGENT with no test in "
+            "TestKnownDivergent naming it, so its divergence is excused "
+            "from TestThreeBackendAgreement without anyone asserting "
+            "what the divergence IS. Add a pin method that names the "
+            "file and asserts today's exact per-backend output, or move "
+            f"the program to _AGREEING: {unpinned}",
         )
 
 

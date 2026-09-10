@@ -306,6 +306,13 @@ _PYTHON_BUILTIN: dict[str, type] = {
 #: collides, fails
 #: ``test_inherited_name_collisions_are_exactly_the_quarantined_ones``.
 _QUARANTINED_COLLISIONS = frozenset({
+    # ``list.pop`` returns a BARE element and raises IndexError when
+    # empty; the Capa surface promises ``Option<T>`` and ``None``.
+    # ``CapaList.pop`` overrides it. Measured before the override
+    # existed: the program ran and failed at the first USE with
+    # "'int' object has no attribute 'unwrap_or'", i.e. the wrong type
+    # travelled some distance before anything noticed.
+    ("List", "pop"),
     ("List", "reverse"),
     ("Map", "get"),
     ("Map", "keys"),

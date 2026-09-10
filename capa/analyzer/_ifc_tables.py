@@ -103,10 +103,33 @@ _SECRET_SOURCES: frozenset = frozenset({
 # the 0-based argument positions that carry data into the container.
 # This is the mutable-container analogue of the aggregate-literal
 # rule; together they stop a secret from being hidden in a collection.
+# The REMOVAL entries below are the same rule reached from the other
+# side, and the table's name should be read as "methods whose argument
+# makes the container depend on that argument", not only "methods that
+# put data in". Nothing secret is STORED by a removal, but which element
+# leaves is decided by the argument, so the container's observable
+# length (and its membership) afterwards depends on it. That is the same
+# disclosure the insertion entries exist for.
+#
+# ``Set.remove`` was MISSING here and the omission was live on main: the
+# add half of one program warned on all three backends while the remove
+# half produced zero diagnostics, with a real value dependence (removing
+# a present key gives length 1, an absent one 2). Found during increment
+# 2's adjudication; the guard is
+# tests/test_ifc_container_effect.py::TestRemovalSelectsOnASecret.
+#
+# A method with NO arguments cannot be listed here at all, because the
+# values are argument positions and every consumer indexes ``e.args[i]``.
+# ``List.pop`` is that shape: an entry for it could only be the empty
+# set, which is a no-op no test could detect. Its taint is handled by the
+# conservative whole-value join instead, measured: a value popped from a
+# secret-bearing list is itself secret.
 _CONTAINER_MUTATORS: dict[tuple[str, str], set[int]] = {
-    ("List", "push"): {0},
-    ("Set",  "add"):  {0},
-    ("Map",  "set"):  {0, 1},
+    ("List", "push"):   {0},
+    ("Set",  "add"):    {0},
+    ("Set",  "remove"): {0},
+    ("Map",  "set"):    {0, 1},
+    ("Map",  "remove"): {0},
 }
 
 # Lookup methods whose index / key argument selects which memory is
@@ -119,6 +142,10 @@ _CT_INDEX_METHODS: dict[tuple[str, str], set[int]] = {
     ("List",   "get"):          {0},
     ("Map",    "get"):          {0},
     ("Map",    "contains_key"): {0},
+    # Same linear key scan as Map.get, so the key decides which memory
+    # is walked and how far. Measured: the remove lowering calls
+    # $str_eq exactly as many times as the get lowering does.
+    ("Map",    "remove"):       {0},
     ("Set",    "contains"):     {0},
     ("String", "char_at"):      {0},
 }
@@ -146,14 +173,35 @@ _SHORT_CIRCUIT_COMPARE_OPS: frozenset[str] = frozenset({
 # String / List methods that short-circuit byte-by-byte against a
 # @secret operand, the method-call analogue of the comparison operators
 # above. ``starts_with`` / ``ends_with`` / ``contains`` early-exit at the
-# first mismatch; ``index_of`` scans for a match. Keyed
+# first mismatch; ``index_of`` and ``split_once`` scan for a match. Keyed
 # ``(TypeName, method)`` -> the 0-based argument positions whose @secret
 # label (or a @secret receiver) makes the call a timing oracle.
+#
+# MEMBERSHIP CRITERION, so this stops being an ad-hoc list: a String
+# method belongs here when its Wasm lowering CALLS ``$str_eq``, the
+# shared byte-comparison helper that exits at the first differing byte
+# and so reveals where two strings first differ (the compare oracle,
+# CWE-208). That is exactly what the shipped diagnostic describes, and
+# it is mechanically checkable by counting ``call $str_eq`` in the
+# emitted WAT of a one-call program.
+#
+# The criterion is NOT yet satisfied by every method that meets it:
+# ``String.split`` and ``String.replace`` also call ``$str_eq`` and are
+# NOT listed. That is a known fail-open, tracked by the separate
+# constant-time effort along with the other unlisted methods; it is not
+# counter-precedent for this table and must not be read as one. Nothing
+# here claims a listed method IS constant-time, only that omitting it
+# would remove a diagnostic the table already gives for the same
+# mechanism.
 _CT_SHORT_CIRCUIT_METHODS: dict[tuple[str, str], set[int]] = {
     ("String", "starts_with"): {0},
     ("String", "ends_with"):   {0},
     ("String", "contains"):    {0},
     ("String", "index_of"):    {0},
+    # Same scan as index_of, same helper, same oracle: it answers WHERE
+    # the separator first occurs. Measured: one ``call $str_eq``, the
+    # same count as index_of and contains.
+    ("String", "split_once"):  {0},
     ("List",   "contains"):    {0},
 }
 

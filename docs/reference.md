@@ -584,7 +584,7 @@ informally and cross-checked by that harness, not closed by proof.
 
 The `@constant_time()` function attribute requires that no `@secret`
 value influences the function's execution time (the CWE-208 side
-channel). Built on the same security labels, the analyzer rejects three
+channel). Built on the same security labels, the analyzer rejects four
 things inside a constant-time function:
 
 - **Control flow on a secret**: an `if` / `elif` / `while` /
@@ -593,13 +593,23 @@ things inside a constant-time function:
   secret.
 - **Memory access indexed by a secret**: `xs[secret]`,
   `list.get(secret)`, `map.get(secret)`, `map.contains_key(secret)`,
-  `set.contains(secret)`, and `str.char_at(secret)`. A data-dependent
-  access leaks the secret through cache timing (the classic
-  table-lookup attack).
+  `map.remove(secret)`, `set.contains(secret)`, and
+  `str.char_at(secret)`. A data-dependent access leaks the secret
+  through cache timing (the classic table-lookup attack).
 - **Variable-time arithmetic on a secret**: `/` and `%` when either
   operand is `@secret`. Division and modulo run on the CPU's
   variable-latency divider (integer `idiv`, float `divsd`), so their
   timing depends on the operand values.
+- **Short-circuiting comparison of a secret**: `==` / `!=` with a
+  `@secret` `String` or `List` operand, the ordering operators
+  (`<` `<=` `>` `>=`) on a `@secret` `String`, and the scanning
+  methods `str.starts_with`, `str.ends_with`, `str.contains`,
+  `str.index_of`, `str.split_once` and `list.contains` when the
+  receiver or the argument is `@secret`. These compare element by
+  element and stop at the first difference, so the time taken reveals
+  where two values first differ (the MAC / token / password compare
+  oracle). Scalar `Int` / `Float` comparison is fixed-latency and
+  stays legal.
 
 Add / subtract / multiply on secrets (fixed-latency) and branches on
 public data remain legal, so a branchless constant-time implementation

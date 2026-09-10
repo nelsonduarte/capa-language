@@ -93,6 +93,22 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
     "List": [
         ("length",     fun(TyInt),                                                 []),
         ("push",       fun(T, TyUnit),                                             []),
+        # ``pop() -> Option<T>``: removes the LAST element and returns
+        # it, or ``None`` on an empty list. MUTATES the receiver, as
+        # ``push`` does and as every fresh-copy method in this table
+        # explicitly says it does not; lists are reference-aliased on
+        # all three backends, so the removal is visible through an
+        # alias exactly as a push is.
+        #
+        # It returns the removed value where ``Set.remove`` returns
+        # Unit, and the two are consistent rather than in tension: the
+        # axis is whether the removed value is NEW INFORMATION. For
+        # ``Set.remove(x)`` the caller supplied ``x``, so there is
+        # nothing to hand back. For ``pop()`` the caller did not name
+        # the element, so returning it is the only way to learn what it
+        # was. Reading it first with ``last()`` and then popping is not
+        # an equivalent, because the pair is not atomic under aliasing.
+        ("pop",        fun(opt(T)),                                                []),
         ("contains",   fun(T, TyBool),                                             []),
         ("map",        fun(fun(T, U), lst(U)),                                     ["U"]),
         ("filter",     fun(fun(T, TyBool), lst(T)),                                []),
@@ -119,6 +135,35 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("enumerate",  fun(lst(TyTuple((TyInt, T)))),                              []),
         ("zip",        fun(lst(U), lst(TyTuple((T, U)))),                          ["U"]),
         ("flat_map",   fun(fun(T, lst(U)), lst(U)),                                ["U"]),
+        # Ordering over a CLOSED element set. ``sorted`` returns a fresh
+        # ascending list and does not mutate; ``min`` / ``max`` answer
+        # an ``Option`` so the empty list is a value, following
+        # ``first`` / ``last`` / ``get``.
+        #
+        # The element type must satisfy ``typesys.is_ordered_element``,
+        # which is the ONE-OPERAND form of the expression the ``<``
+        # family already evaluates, so these accept exactly what the
+        # operator accepts and there is no second list of ordered types
+        # anywhere. ``List<Char>`` sorts, because a Char is compatible
+        # with String; ``List<Bool>`` and a list of user structs do not,
+        # and the rejection names ``sorted_by`` as the escape hatch,
+        # since a user-supplied comparator is how an arbitrary element
+        # type is ordered.
+        #
+        # FLOAT AND NaN. The comparator these supply is TOTAL: NaN is
+        # detected (it is the only value not equal to itself) and sorts
+        # after every number. That is not a cosmetic choice about where
+        # NaN belongs. Without a total order a single NaN silently
+        # destroys the ordering of the CLEAN elements, differently on
+        # different backends, so the sort could return unsorted data
+        # that had nothing wrong with it. The deferred ``sorted_by``
+        # divergence is the same mechanism but NOT the same decision:
+        # there the USER supplies the comparator and the compiler
+        # declines to police it, here the COMPILER supplies it and
+        # would be shipping the defect itself.
+        ("sorted",     fun(lst(T)),                                                []),
+        ("min",        fun(opt(T)),                                                []),
+        ("max",        fun(opt(T)),                                                []),
     ],
     "Range": [
         # Range<T> is a lazy iterable produced by `a..b` and `a..=b`.
@@ -165,6 +210,60 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("char_at",     fun(TyInt, opt(TyString)),                                 []),
         ("substring",   fun(TyInt, TyInt, TyString),                               []),
         ("index_of",    fun(TyString, opt(TyInt)),                                 []),
+        # ``find_index(pred) -> Option<Int>``: the code-point index of
+        # the first character satisfying ``pred``, or ``None``. The
+        # predicate receives each character as a one-code-point
+        # ``String``, which is exactly what ``for c in s`` binds, so
+        # the two ways of walking a string agree on what a character
+        # is. Closes the half-pair with ``index_of``: that one asks
+        # "where is this substring", this one asks "where is the first
+        # character LIKE this", and ``List.find_index`` already spells
+        # the second question for lists with the same signature shape
+        # and the same first-match-wins order.
+        #
+        # The index is by code point, matching ``index_of`` /
+        # ``char_at`` / ``substring`` and never by byte.
+        ("find_index",  fun(fun(TyString, TyBool), opt(TyInt)),                    []),
+        # ``split_once(sep) -> Option<(String, String)>``: the receiver
+        # cut at the FIRST occurrence of ``sep`` into the part before
+        # and the part after, with the separator itself in neither.
+        # ``None`` when ``sep`` does not occur, which is the only shape
+        # consistent with ``index_of`` answering ``Option<Int>`` for the
+        # same question.
+        #
+        # It exists because ``split`` answers a different question:
+        # ``"k=v=w".split("=")`` is three parts, while a key/value parse
+        # wants exactly two, ``("k", "v=w")``. Doing that with ``split``
+        # means rebuilding the tail, which is where the workaround gets
+        # its bugs.
+        #
+        # An empty separator is a usage error and aborts the program,
+        # matching ``split``, which traps on the same input on both
+        # backends rather than inventing an answer.
+        ("split_once",  fun(TyString, opt(TyTuple((TyString, TyString)))),         []),
+        # ``lines() -> List<String>``: the receiver split on line
+        # terminators, WITH the terminators removed, so a string that
+        # ends in a newline does not yield a phantom empty last line.
+        # That phantom is exactly what makes splitting on a newline a
+        # workaround rather than a spelling of this method.
+        #
+        # A terminator is CR LF, LF, or a lone CR; CR LF is matched
+        # first, so a Windows-authored line does not keep a trailing
+        # CR. Deliberately NOT Python's ``splitlines()``, which also
+        # breaks on VT, FF, FS, GS, RS, NEL and the two Unicode
+        # separators: none of those is a line terminator on any
+        # platform Capa targets, and each would have to be recognised
+        # identically by the Wasm byte scanner, where they are
+        # multi-byte. Rust's ``str::lines`` recognises two terminators;
+        # the lone CR is added because it is the third spelling of one
+        # concept.
+        #
+        # The empty string yields ZERO lines; a string that is exactly
+        # one terminator yields ONE empty line. The result is
+        # byte-identical across the backends: see capa/runtime/
+        # _safety.py (``_capa_lines``, the oracle) and
+        # capa/ir/_emit_wasm/_strings.py (``_emit_string_lines``).
+        ("lines",       fun(lst(TyString)),                                        []),
         # ``bytes() -> List<Int>``: the receiver's UTF-8 bytes, each
         # element in 0..255. The inverse of the internal ``_capa_chr``
         # (Int -> String); the only public String -> bytes door, which
@@ -178,10 +277,39 @@ METHODS: dict[str, list[tuple[str, TyFun, list[str]]]] = {
         ("get",          fun(K, opt(V)),                                           []),
         ("set",          fun(K, V, TyUnit),                                        []),
         ("contains_key", fun(K, TyBool),                                           []),
+        # ``remove(k) -> Option<V>``: removes the entry for ``k`` and
+        # returns the value it held, or ``None`` when the key is
+        # absent. MUTATES the receiver, as ``set`` does; maps are
+        # reference-aliased on all three backends, so the removal is
+        # visible through every alias.
+        #
+        # It returns the removed VALUE, not the key: the caller supplied
+        # the key, so it carries no new information, while the value is
+        # the thing the caller cannot otherwise learn without a separate
+        # ``get`` that is not atomic with the removal. That is the same
+        # axis on which ``List.pop`` returns an Option and
+        # ``Set.remove`` returns Unit.
+        ("remove",       fun(K, opt(V)),                                           []),
         ("keys",         fun(lst(K)),                                              []),
         ("values",       fun(lst(V)),                                              []),
         ("pairs",        fun(lst(TyTuple((K, V)))),                                []),
         ("is_empty",     fun(TyBool),                                              []),
+        # ``filter(pred) -> Map<K, V>``: a FRESH map holding the pairs
+        # for which ``pred(k, v)`` is true, in the receiver's insertion
+        # order. Does NOT mutate the receiver, matching every other
+        # fresh-copy method in this table and unlike ``set``.
+        #
+        # The predicate takes the key AND the value because a Map pair
+        # is both, and a key-only predicate cannot express the common
+        # case (drop the entries whose value is stale). ``List.filter``
+        # takes the element for the same reason; the shapes agree once
+        # you accept that a Map's element is a pair.
+        #
+        # This is the first combinator attached to Map, and it is what
+        # makes the absence of a removal method survivable: the
+        # measured workaround downstream is to rebuild a map from
+        # ``pairs()``, which this replaces.
+        ("filter",       fun(fun(K, V, TyBool), TyName("Map", (K, V))),            []),
     ],
     "Set": [
         ("length",   fun(TyInt),                                                   []),

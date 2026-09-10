@@ -213,3 +213,138 @@ def _capa_to_lower(s: str) -> str:
     return "".join(
         chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s
     )
+
+
+# ``lines()`` splits on the three line terminators and STRIPS them, so a
+# file ending in a newline does not yield a phantom empty last line.
+# That is the whole reason the method exists: ``s.split("\n")`` leaves
+# the phantom, which is the workaround it replaces.
+#
+# The terminators are exactly ``\r\n``, ``\n`` and a lone ``\r``.
+# ``\r\n`` is matched before ``\n`` so a Windows line does not keep a
+# trailing ``\r``, which is the defect this helper exists to make
+# impossible to reintroduce on either backend.
+#
+# NOT Python's ``str.splitlines()``, deliberately: that also breaks on
+# ``\v \f \x1c \x1d \x1e \x85 \u2028 \u2029``, none of which is a line
+# terminator on any platform Capa targets, and every one of which would
+# have to be recognised identically by the Wasm byte scanner where they
+# are multi-byte. Three terminators is a rule the two backends can both
+# state exactly. Rust's ``str::lines`` recognises two (``\n``,
+# ``\r\n``); the lone ``\r`` is added because it is the third spelling
+# of the same concept and excluding it makes the rule harder to state
+# than to implement.
+#
+# The empty string yields ZERO lines, and a string that is exactly one
+# terminator yields ONE empty line.
+
+def _capa_lines(s: str) -> list[str]:
+    """The lines of ``s`` with their terminators removed. Terminators
+    are ``\r\n``, ``\n`` and ``\r``. Byte-identical with the Wasm
+    backend's ``$emit_string_lines``."""
+    out: list[str] = []
+    start = 0
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\r":
+            out.append(s[start:i])
+            i += 2 if i + 1 < n and s[i + 1] == "\n" else 1
+            start = i
+        elif c == "\n":
+            out.append(s[start:i])
+            i += 1
+            start = i
+        else:
+            i += 1
+    if start < n:
+        out.append(s[start:n])
+    return out
+
+
+# ``split_once(sep)`` cuts the receiver at the FIRST occurrence of
+# ``sep`` and answers the two sides without the separator, or ``None``
+# when ``sep`` does not occur. It exists because ``split`` answers a
+# different question: ``"k=v=w".split("=")`` is three parts where a
+# key/value parse wants two.
+#
+# The empty separator aborts, exactly as ``split`` already does on both
+# backends ("empty separator" / a Wasm trap), rather than inventing an
+# answer for a request that has none. Returning ``("", s)`` would be the
+# tempting invention and it is wrong for the same reason the
+# empty-needle ``replace`` policy exists: it silently turns a caller
+# mistake into a plausible-looking parse.
+
+def _capa_split_once(s: str, sep: str):
+    """``(before, after)`` at the first occurrence of ``sep``, or
+    ``None`` when absent. Raises ``ValueError`` on an empty separator,
+    matching ``split``. Byte-identical with the Wasm backend's
+    ``_emit_string_split_once``."""
+    if sep == "":
+        raise ValueError("empty separator")
+    i = s.find(sep)
+    if i < 0:
+        return None
+    return (s[:i], s[i + len(sep):])
+
+
+# ``find_index(pred)`` answers the CODE-POINT index of the first
+# character satisfying ``pred``, matching ``index_of`` / ``char_at`` /
+# ``substring``, which are all code-point indexed, and never a byte
+# offset. The predicate sees each character as a one-code-point string,
+# the same thing ``for c in s`` binds, so the two ways of walking a
+# string cannot disagree about what a character is.
+#
+# Python iteration over ``str`` is already per code point, so this is a
+# thin loop rather than a re-implementation; it exists as a helper so
+# the Option wrapping and the first-match-wins order are written once
+# for both Python emitters, exactly as _capa_lines is.
+
+def _capa_find_index(s: str, pred):
+    """The code-point index of the first character of ``s`` for which
+    ``pred`` is true, or ``None``. Byte-identical with the Wasm
+    backend's ``_emit_string_find_index``."""
+    for i, c in enumerate(s):
+        if pred(c):
+            return i
+    return None
+
+
+# ``Map.filter(pred)`` answers a FRESH map of the pairs for which
+# ``pred(k, v)`` is true, in the receiver's insertion order, and never
+# mutates the receiver. Python ``dict`` preserves insertion order, and
+# the Wasm map is a pair table walked in insertion order, so both sides
+# agree on the order of the result without either having to sort.
+#
+# The helper exists so "fresh, not in place" and "key and value, not
+# key alone" are written once for both Python emitters, the same reason
+# _capa_lines and _capa_split_once do.
+
+def _capa_map_filter(m: dict, pred) -> dict:
+    """A fresh dict of ``m``'s pairs satisfying ``pred(k, v)``, in
+    ``m``'s insertion order. The receiver is not modified.
+    Byte-identical with the Wasm backend's ``_emit_map_filter``."""
+    return {k: v for k, v in m.items() if pred(k, v)}
+
+
+# ``Map.remove(k)`` removes the entry for ``k`` and answers the value it
+# held, or ``None`` when the key is absent. MUTATES the receiver.
+#
+# It returns the VALUE and not the key, on the same axis that decides
+# ``List.pop`` and ``Set.remove``: the caller supplied the key, so the
+# key carries no new information, while the value is what the caller
+# cannot otherwise learn without a separate ``get`` that is not atomic
+# with the removal.
+#
+# The helper exists so "returns the value, None when absent, mutates in
+# place" is written once for both Python emitters, as _capa_lines and
+# _capa_split_once are.
+
+def _capa_map_remove(m: dict, k):
+    """The value ``m`` held for ``k``, removed, or ``None`` when absent.
+    Mutates ``m``. Byte-identical with the Wasm backend's
+    ``_emit_map_remove``."""
+    if k not in m:
+        return None
+    return m.pop(k)

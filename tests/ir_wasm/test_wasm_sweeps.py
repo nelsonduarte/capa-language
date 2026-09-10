@@ -68,11 +68,14 @@ for _m, _e in [
     ("replace", 's.replace("l", "L")'), ("is_empty", "s.is_empty()"),
     ("char_at", "s.char_at(0)"), ("substring", "s.substring(0, 2)"),
     ("index_of", 's.index_of("e")'), ("bytes", "s.bytes()"),
+    ("lines", "s.lines()"), ("split_once", 's.split_once("l")'),
+    ("find_index", 's.find_index(fun (c: String) -> Bool => c == "e")'),
 ]:
     _recipe("String", _m, [], _S_STR, _e)
 
 for _m, _e in [
     ("length", "xs.length()"), ("push", "xs.push(4)"),
+    ("pop", "xs.pop()"),
     ("contains", "xs.contains(2)"),
     ("map", "xs.map(fun (a: Int) -> Int => a + 1)"),
     ("filter", "xs.filter(fun (a: Int) -> Bool => a > 1)"),
@@ -82,6 +85,7 @@ for _m, _e in [
     ("find", "xs.find(fun (a: Int) -> Bool => a > 1)"),
     ("find_index", "xs.find_index(fun (a: Int) -> Bool => a > 1)"),
     ("sorted_by", "xs.sorted_by(fun (a: Int, b: Int) -> Int => a - b)"),
+    ("sorted", "xs.sorted()"), ("min", "xs.min()"), ("max", "xs.max()"),
     ("reverse", "xs.reverse()"), ("enumerate", "xs.enumerate()"),
     ("zip", "xs.zip(xs)"),
     ("flat_map", "xs.flat_map(fun (a: Int) -> List<Int> => [a])"),
@@ -103,8 +107,10 @@ for _m, _e in [
 for _m, _e in [
     ("length", "m.length()"), ("get", 'm.get("k")'),
     ("set", 'm.set("k", 2)'), ("contains_key", 'm.contains_key("k")'),
+    ("remove", 'm.remove("k")'),
     ("keys", "m.keys()"), ("values", "m.values()"),
     ("pairs", "m.pairs()"), ("is_empty", "m.is_empty()"),
+    ("filter", 'm.filter(fun (k: String, v: Int) -> Bool => v > 0)'),
 ]:
     _recipe("Map", _m, [], _S_MAP, _e)
 
@@ -390,6 +396,82 @@ def _build_discard_program(caps, setup, expr) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _method_returns_unit(ty: str, method: str) -> bool:
+    """True when ``ty.method`` returns Unit, so its result cannot be
+    bound. DERIVED from ``capa.builtins.METHODS``, never listed here: a
+    method whose return type changes must not need a second edit in this
+    file for the isolation sweep to keep exercising it correctly."""
+    from capa.builtins import METHODS
+    from capa.typesys import TyUnit
+    for name, fn_ty, _type_params in METHODS.get(ty, []):
+        if name == method:
+            return fn_ty.ret == TyUnit
+    raise AssertionError(f"{ty}.{method} is not declared in METHODS")
+
+
+def _build_isolation_program(ty, method, caps, setup, expr) -> str:
+    """A program that calls ``expr`` in a function containing NOTHING
+    else that could pre-declare its Wasm scratch locals.
+
+    Two differences from ``_build_discard_program``, and both are
+    load-bearing; each was measured against the enumerate defect below.
+
+    PLACEMENT. The scratch-local declaration pass runs per FUNCTION, so
+    a call sitting in the same function as its siblings has its scratch
+    declared by any of them that shares the family. The call therefore
+    gets a function of its own, and ``main`` only invokes it. Nothing
+    else goes in that function -- not even the ``stdio.println`` the
+    discard builder appends, because a capability call is a sibling too.
+
+    BINDING. The discard sweep DISCARDS the result, which is exactly
+    what it is for; but a discarded call emits no code that READS the
+    scratch. Measured: with the ``$_lz_*`` declaration broken, a
+    function whose only statement is a discarded ``xs.enumerate()``
+    still compiles (the emitted WAT names ``$_lz_n`` once, the
+    declaration alone), while binding the result and reading it names it
+    seven times and fails as it should. So the isolated call binds its
+    result and the result is returned, which also stops the lowerer from
+    treating the call as dead.
+
+    A Unit-returning method has no value to bind and stays discarded;
+    which methods those are is read from ``METHODS``, not listed.
+    """
+    if setup and setup[0] == "__JSON__":
+        # JsonValue needs a match to get a receiver at all, and both
+        # arms must agree in type, so the probe returns Bool and the
+        # error arm answers the same shape without calling anything.
+        return (
+            "fun probe() -> Bool\n"
+            '    match parse_json("1")\n'
+            "        Ok(j) ->\n"
+            f"            let r = {expr}\n"
+            "            return r == r\n"
+            "        Err(e) ->\n"
+            "            return false\n"
+            "\n"
+            "fun main(stdio: Stdio)\n"
+            "    let ok = probe()\n"
+            '    stdio.println("${ok}")\n'
+        )
+    args = ", ".join(c.split(":")[0].strip() for c in caps)
+    lines = [f"fun probe({', '.join(caps)})"]
+    lines.extend(f"    {s}" for s in setup)
+    if _method_returns_unit(ty, method):
+        # No value to bind: the call is the whole statement, exactly as
+        # the discard sweep spells it.
+        lines.append(f"    {expr}")
+    else:
+        lines.append(f"    let _r = {expr}")
+    lines.append("")
+    main_params = list(caps)
+    if "stdio: Stdio" not in main_params:
+        main_params.append("stdio: Stdio")
+    lines.append(f"fun main({', '.join(main_params)})")
+    lines.append(f"    probe({args})")
+    lines.append('    stdio.println("x")')
+    return "\n".join(lines) + "\n"
+
+
 class TestDiscardedCallSweepCoverage(unittest.TestCase):
     """The coverage half of the sweep: pure Python, no wasm tooling, so
     it runs on the no-wasm-extra CI job too."""
@@ -518,6 +600,87 @@ class TestDiscardedCallSweepValidates(unittest.TestCase):
                 self._assert_validates(
                     variant.src, variant.label, **variant.compile_kw,
                 )
+
+
+@unittest.skipUnless(
+    _has_wasm_tools() and _has_wasmtime_py(),
+    "wasm-tools and/or wasmtime-py not installed",
+)
+class TestScratchLocalIsolationSweep(unittest.TestCase):
+    """Every builtin method compiles when it is the ONLY method in its
+    function.
+
+    THE BLIND SPOT THIS CLOSES, and it is measured, not argued. The Wasm
+    spec makes a function declare all its locals up front, so
+    ``capa/ir/_emit_wasm/_locals.py`` pre-declares shared scratch names
+    under feature-flag disjunctions:
+
+        if has_list_reverse or has_list_enumerate_zip:
+            ... declare the $_lz_* family ...
+
+    Eleven scratch names have between two and seven declaring arms, so
+    dropping one arm is invisible whenever another fires. The pass runs
+    per FUNCTION, so "another fires" means "a sibling appears in the
+    SAME function", not merely somewhere in the program.
+
+    Every instrument we had put a method next to its siblings. The
+    characterization corpus is one program per owner, and
+    ``list_methods.capa`` calls ``reverse()`` on one line and
+    ``enumerate()`` on the next. The discard sweep above builds a single
+    ``main`` holding setup, call and print. So both declare the scratch
+    of the method under test through some OTHER method, and neither can
+    see an arm that only ever fires alongside a sibling.
+
+    MEASURED at the commit that added this test: drop
+    ``has_list_enumerate_zip`` from that disjunction and 479 wasm tests
+    plus the whole characterization module stay GREEN (EXIT=0), while a
+    program calling ``xs.enumerate()`` in a function of its own fails
+    with ``unknown local: failed to find name `$_lz_n```. A compiler
+    that could not compile ``enumerate`` passed the entire suite.
+
+    SINGLE SOURCE. This sweep reads ``_DISCARD_RECIPES``, the same
+    per-(owner, method) snippet table the discard sweep uses and whose
+    completeness against ``capa.builtins.METHODS`` is already enforced
+    by ``test_discard_recipes_cover_every_builtin``. A method added to
+    ``METHODS`` therefore enters THIS sweep by the same single act that
+    enters it into the discard sweep. There is no second list of methods
+    to keep in step, and no way to add a method that is swept for stack
+    balance but not for scratch isolation.
+
+    WHAT IT DOES NOT PROVE. Passing means no scratch local the method
+    needs is declared solely under another method's flag. It does not
+    prove the arm structure is minimal: an arm that is redundant with
+    another (``_locals.py`` line 1113 is one, recorded during this
+    increment) passes this sweep whether or not it is dropped, because
+    nothing then goes missing.
+    """
+
+    def test_every_builtin_method_compiles_in_its_own_function(self):
+        import wasmtime
+        for (ty, method), (caps, setup, expr) in sorted(
+            _DISCARD_RECIPES.items()
+        ):
+            with self.subTest(receiver=ty, method=method):
+                src = _build_isolation_program(ty, method, caps, setup, expr)
+                module, result = _parse_and_analyze_ok(src)
+                try:
+                    blob = compile_wasm(module, types=result.types)
+                except Exception as exc:  # noqa: BLE001 - want the reason
+                    self.fail(
+                        f"{ty}.{method} does not compile when it is the "
+                        f"only method in its function. A scratch local it "
+                        f"needs is declared only under some OTHER method's "
+                        f"flag in capa/ir/_emit_wasm/_locals.py, so it "
+                        f"works beside a sibling and breaks alone: {exc}\n"
+                        f"--- program ---\n{src}"
+                    )
+                try:
+                    wasmtime.Module(wasmtime.Engine(), blob)
+                except Exception as exc:  # noqa: BLE001
+                    self.fail(
+                        f"{ty}.{method} alone in its function produced an "
+                        f"INVALID module: {exc}\n--- program ---\n{src}"
+                    )
 
 
 # ----------------------------------------------------------------------

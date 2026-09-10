@@ -78,6 +78,9 @@ class _ListEmissionMixin:
             self._emit_list_get(recv, instr.args[0], elem_size, elem_ty,
                                 instr.dst)
             return
+        if method == "pop":
+            self._emit_list_pop(recv, elem_size, elem_ty, instr.dst)
+            return
         if method in ("first", "last"):
             self._emit_list_first_last(
                 recv, method, elem_size, elem_ty, instr.dst,
@@ -90,6 +93,19 @@ class _ListEmissionMixin:
             return
         if method == "sorted_by":
             self._emit_list_sorted_by(instr, elem_size, elem_ty)
+            return
+        if method == "sorted":
+            # The SAME merge sort, with the comparison supplied by the
+            # compiler rather than a closure, so stability and ordering
+            # are shared rather than reimplemented.
+            self._emit_list_sorted_by(
+                instr, elem_size, elem_ty, user_cmp=False,
+            )
+            return
+        if method in ("min", "max"):
+            self._emit_list_min_max(
+                instr, method, elem_size, elem_ty,
+            )
             return
         if method == "contains":
             # Pointer-shape elements (struct / sum / tuple / nested
@@ -653,6 +669,99 @@ class _ListEmissionMixin:
         self._write(f"local.get ${result_local}")
         self._write(f"local.set ${dst}")
 
+    def _emit_list_pop(
+        self, recv: Value, elem_size: int, elem_ty: str, dst,
+    ) -> None:
+        """``xs.pop() -> Option<T>``. Removes the LAST element and
+        returns it, or ``None`` on an empty list. MUTATES the receiver.
+
+        Reads exactly where ``last()`` reads, then decrements the
+        header's length. Nothing is written to the vacated slot and the
+        data array is not shrunk: the slot is beyond ``len`` and so is
+        unreachable through every read path (which all bound-check
+        against ``len``), and the next ``push`` overwrites it. That is
+        the same convention the grow path already relies on for the
+        slots between ``len`` and ``cap``.
+
+        The decrement happens only on the non-empty branch, so popping
+        an empty list leaves the length at 0 rather than driving it
+        negative. That is the one thing a naive "decrement then read"
+        ordering would get wrong, and it is what the empty-case corpus
+        row pins.
+
+        The Python oracle is ``CapaList.pop`` in capa/runtime/_list.py,
+        which must override ``list.pop`` for the same reason this arm
+        exists: the inherited one returns a bare element and raises on
+        empty."""
+        if dst is None:
+            # A discarded pop still has to MUTATE, so this is not the
+            # usual "no dst, emit nothing" early return: it must run the
+            # length decrement and skip only the Option construction.
+            list_local = "_m_scrut"
+            self._push_value(recv)
+            self._write(f"local.set ${list_local}")
+            self._write(f"local.get ${list_local}")
+            self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+            self._write("i32.eqz")
+            self._write("i32.eqz")
+            self._write("if")
+            self._indent += 1
+            self._write(f"local.get ${list_local}")
+            self._write(f"local.get ${list_local}")
+            self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+            self._write("i32.const 1")
+            self._write("i32.sub")
+            self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+            self._indent -= 1
+            self._write("end")
+            return
+        list_local = "_m_scrut"
+        result_local = "_alloc_tmp_result"
+        self._push_value(recv)
+        self._write(f"local.set ${list_local}")
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write(f"local.set ${result_local}")
+        # len == 0 -> None, and leave the length alone.
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write(f"local.get ${result_local}")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        # Payload from the last slot: data_ptr + (len - 1) * elem_size.
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write(f"i32.const {elem_size}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_load_elem_store_option_payload(elem_ty)
+        # Shrink AFTER the read, so the element is still in range when
+        # it is loaded.
+        self._write(f"local.get ${list_local}")
+        self._write(f"local.get ${list_local}")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("i32.const 1")
+        self._write("i32.sub")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"local.get ${result_local}")
+        self._write(f"local.set ${dst}")
+
     def _emit_list_find(
         self, instr: MethodCall, method: str, elem_size: int, elem_ty: str,
     ) -> None:
@@ -758,10 +867,19 @@ class _ListEmissionMixin:
 
     def _emit_list_sorted_by(
         self, instr: MethodCall, elem_size: int, elem_ty: str,
+        user_cmp: bool = True,
     ) -> None:
         """``xs.sorted_by(cmp) -> List<T>``: a NEW list sorted by the
         user comparator (``cmp(a, b)`` returns Int < 0 / 0 / > 0). The
         receiver is not mutated.
+
+        With ``user_cmp=False`` this is ``xs.sorted()``: the SAME merge
+        sort, driven by a comparison the compiler emits inline instead
+        of a closure call. Sharing the sort is the point. Stability,
+        the run-width schedule, the buffer ping-pong and the empty-list
+        handling are then identical by construction rather than by two
+        implementations agreeing, and ``sorted`` inherits the stability
+        ``sorted_by`` is already tested for.
 
         Stability: Python's ``sorted`` (Timsort) is stable, so equal-
         comparing elements keep their input order. We reproduce that
@@ -783,17 +901,19 @@ class _ListEmissionMixin:
         verbatim with ``memory.copy`` so the encoding is shape-
         agnostic; only the comparator call decodes the element."""
         recv = instr.receiver
-        cmp = instr.args[0]
+        cmp = instr.args[0] if user_cmp else None
         dst = instr.dst
         if dst is None:
             return
-        sig_key = self._closure_sig_key_for([elem_ty, elem_ty], "Int")
-        if sig_key not in self._closure_sig_keys:
-            raise WasmEmissionError(
-                f"List.sorted_by: no closure registered with sig "
-                f"{sig_key!r} (elem={elem_ty!r})"
-            )
-        sig_idx = self._closure_sig_keys[sig_key]
+        sig_idx = -1
+        if user_cmp:
+            sig_key = self._closure_sig_key_for([elem_ty, elem_ty], "Int")
+            if sig_key not in self._closure_sig_keys:
+                raise WasmEmissionError(
+                    f"List.sorted_by: no closure registered with sig "
+                    f"{sig_key!r} (elem={elem_ty!r})"
+                )
+            sig_idx = self._closure_sig_keys[sig_key]
         es = elem_size
         # Locals (all already declared by the sorted_by gate in
         # _collect_locals):
@@ -808,8 +928,9 @@ class _ListEmissionMixin:
         # Result header.
         self._push_value(recv)
         self._write("local.set $_m_scrut")
-        self._push_value(cmp)
-        self._write("local.set $_lam_fn_tmp")
+        if user_cmp:
+            self._push_value(cmp)
+            self._write("local.set $_lam_fn_tmp")
         self._write("local.get $_m_scrut")
         self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
         self._write("local.set $_srt_n")
@@ -935,9 +1056,16 @@ class _ListEmissionMixin:
         self._write("else")
         self._indent += 1
         # cmp(A[li], A[ri]) <= 0 ?  (left-biased -> stable)
-        self._emit_srt_cmp_call(sig_idx, elem_ty, es, "_srt_li", "_srt_ri")
-        self._write("i64.const 0")
-        self._write("i64.le_s")
+        if user_cmp:
+            self._emit_srt_cmp_call(
+                sig_idx, elem_ty, es, "_srt_li", "_srt_ri",
+            )
+            self._write("i64.const 0")
+            self._write("i64.le_s")
+        else:
+            # Compiler-supplied: leave "A[li] <= A[ri]" (i32 bool)
+            # directly, so no i64 round trip and no closure call.
+            self._emit_srt_total_le(elem_ty, es, "_srt_li", "_srt_ri")
         self._indent -= 1
         self._write("end")
         self._indent -= 1
@@ -1063,6 +1191,256 @@ class _ListEmissionMixin:
         # n bytes.
         self._write(f"i32.const {es}")
         self._write("memory.copy")
+
+    def _emit_list_min_max(
+        self, instr: MethodCall, method: str, elem_size: int, elem_ty: str,
+    ) -> None:
+        """``xs.min()`` / ``xs.max() -> Option<T>``, ``None`` on empty.
+
+        One linear pass holding the best index so far, using the SAME
+        ``_emit_srt_total_le`` comparison ``sorted`` uses, so
+        ``xs.min()`` and ``xs.sorted().first()`` cannot disagree, on any
+        input, including one containing NaN. That agreement is the
+        reason this is not a separate ``f64.lt`` scan.
+
+        The scan borrows ``$_srt_a`` as the data-array base and
+        ``$_srt_li`` / ``$_srt_ri`` as the two indices the comparison
+        reads, which is exactly the contract that helper documents.
+        Ties keep the EARLIER element (min takes a new candidate only
+        when it is strictly better), matching Python's ``min`` / ``max``
+        on the first extremum."""
+        recv = instr.receiver
+        dst = instr.dst
+        if dst is None:
+            return
+        es = elem_size
+        self._push_value(recv)
+        self._write("local.set $_m_scrut")
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_LEN_OFFSET}")
+        self._write("local.set $_srt_n")
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp_result")
+        self._write("local.get $_srt_n")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_m_scrut")
+        self._write(f"i32.load offset={_LIST_DATA_OFFSET}")
+        self._write("local.set $_srt_a")
+        # best = 0; i = 1
+        self._write("i32.const 0")
+        self._write("local.set $_srt_k")
+        self._write("i32.const 1")
+        self._write("local.set $_srt_i")
+        self._block_counter += 1
+        loop = f"$Lmm{self._block_counter}_loop"
+        exit_ = f"$Lmm{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        self._write("local.get $_srt_i")
+        self._write("local.get $_srt_n")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # For min: replace when A[i] <= A[best] is TRUE and the pair is
+        # not equal, which the strict form below expresses directly as
+        # "not (A[best] <= A[i])". For max: replace when A[best] <=
+        # A[i] and they differ, i.e. "not (A[i] <= A[best])". Using the
+        # negation of the same <= keeps ties on the EARLIER index.
+        if method == "min":
+            self._write("local.get $_srt_k")
+            self._write("local.set $_srt_li")
+            self._write("local.get $_srt_i")
+            self._write("local.set $_srt_ri")
+        else:
+            self._write("local.get $_srt_i")
+            self._write("local.set $_srt_li")
+            self._write("local.get $_srt_k")
+            self._write("local.set $_srt_ri")
+        self._emit_srt_total_le(elem_ty, es, "_srt_li", "_srt_ri")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_srt_i")
+        self._write("local.set $_srt_k")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $_srt_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_srt_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Some(A[best]).
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        self._write("local.get $_alloc_tmp_result")
+        self._write("local.get $_srt_a")
+        self._write("local.get $_srt_k")
+        self._write(f"i32.const {es}")
+        self._write("i32.mul")
+        self._write("i32.add")
+        self._emit_load_elem_store_option_payload(elem_ty)
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $_alloc_tmp_result")
+        self._write(f"local.set ${dst}")
+
+    def _emit_srt_total_le(
+        self, elem_ty: str, es: int, li_local: str, ri_local: str,
+    ) -> None:
+        """Leave ``A[$li] <= A[$ri]`` as an i32 boolean, under the TOTAL
+        order ``sorted`` / ``min`` / ``max`` promise. ``$_srt_a`` is the
+        source buffer for this pass.
+
+        The comparison is the compiler's, not a closure's, so the only
+        element types reaching here are those
+        ``typesys.is_ordered_element`` admits: Int, Float, String and
+        Char (a Char is a one-code-point String and shares its
+        encoding). The analyzer refuses everything else at the call
+        site, so an unexpected type here is a compiler bug and says so.
+
+        FLOAT IS THE INTERESTING CASE. ``f64.le`` is false whenever
+        either operand is NaN, which makes the merge's "take left"
+        predicate false in both directions and destroys the ordering of
+        the CLEAN elements around it. The rule implemented instead:
+        NaN ranks after every number, and NaN ties with NaN. Written
+        out, ``a <= b`` becomes
+
+            (a is NaN)  ->  (b is NaN)      NaN only precedes NaN
+            otherwise   ->  (b is NaN) or a <= b
+
+        which is total, and which the Python oracle ``_capa_total_key``
+        expresses as the pair ``(a != a, a)``. NaN is detected with
+        ``f64.ne`` against itself: the one value not equal to itself.
+
+        Left-biased on ties (``<=``, not ``<``) exactly as the user-
+        comparator merge is, so the sort stays stable and equal elements
+        keep their input order on both backends."""
+        def push_pair():
+            self._write("local.get $_srt_a")
+            self._write(f"local.get ${li_local}")
+            self._write(f"i32.const {es}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._emit_load_elem_for_call(elem_ty)
+
+        if elem_ty == "Int":
+            push_pair()
+            self._write("local.set $_srt_arg0_i64")
+            self._write("local.get $_srt_a")
+            self._write(f"local.get ${ri_local}")
+            self._write(f"i32.const {es}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._emit_load_elem_for_call(elem_ty)
+            self._write("local.set $_srt_arg1_i64")
+            self._write("local.get $_srt_arg0_i64")
+            self._write("local.get $_srt_arg1_i64")
+            self._write("i64.le_s")
+            return
+        if elem_ty == "Float":
+            push_pair()
+            self._write("local.set $_srt_arg0_f64")
+            self._write("local.get $_srt_a")
+            self._write(f"local.get ${ri_local}")
+            self._write(f"i32.const {es}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._emit_load_elem_for_call(elem_ty)
+            self._write("local.set $_srt_arg1_f64")
+            # b_is_nan = (b != b)
+            self._write("local.get $_srt_arg1_f64")
+            self._write("local.get $_srt_arg1_f64")
+            self._write("f64.ne")
+            self._write("local.set $_srt_tmp_nan")
+            # if a is NaN: result = b_is_nan
+            self._write("local.get $_srt_arg0_f64")
+            self._write("local.get $_srt_arg0_f64")
+            self._write("f64.ne")
+            self._write("if (result i32)")
+            self._indent += 1
+            self._write("local.get $_srt_tmp_nan")
+            self._indent -= 1
+            self._write("else")
+            self._indent += 1
+            # else: b_is_nan OR a <= b
+            self._write("local.get $_srt_tmp_nan")
+            self._write("local.get $_srt_arg0_f64")
+            self._write("local.get $_srt_arg1_f64")
+            self._write("f64.le")
+            self._write("i32.or")
+            self._indent -= 1
+            self._write("end")
+            return
+        if elem_ty in ("String", "Char"):
+            # $str_cmp answers -1 / 0 / 1 over the UTF-8 bytes, which is
+            # code-point order and is what String ``<`` already lowers
+            # to, so sorted() and the operator agree by construction.
+            #
+            # The two operands are unpacked DIRECTLY from their slots
+            # rather than through ``_emit_load_elem_for_call``, which
+            # would be the obvious reuse and is wrong here: that helper
+            # unpacks a String through ``$_str_a_ptr`` / ``$_str_a_len``,
+            # so loading the second operand overwrites the first and
+            # $str_cmp compares an element with itself. Measured before
+            # the fix: ["pear", "apple", "fig"].sorted() came back in
+            # input order on the Wasm backend while both Python paths
+            # sorted it. The i64 slot is unpacked into the dedicated
+            # $_srt_arg*_i64 stashes instead, which nothing else in the
+            # comparison touches.
+            self._write("local.get $_srt_a")
+            self._write(f"local.get ${li_local}")
+            self._write(f"i32.const {es}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._write("i64.load")
+            self._write("local.set $_srt_arg0_i64")
+            self._write("local.get $_srt_a")
+            self._write(f"local.get ${ri_local}")
+            self._write(f"i32.const {es}")
+            self._write("i32.mul")
+            self._write("i32.add")
+            self._write("i64.load")
+            self._write("local.set $_srt_arg1_i64")
+            # left (ptr, len) then right (ptr, len), unpacked from the
+            # packed ``ptr | (len << 32)`` slot encoding.
+            self._write("local.get $_srt_arg0_i64")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_srt_arg0_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_srt_arg1_i64")
+            self._write("i32.wrap_i64")
+            self._write("local.get $_srt_arg1_i64")
+            self._write("i64.const 32")
+            self._write("i64.shr_u")
+            self._write("i32.wrap_i64")
+            self._write("call $str_cmp")
+            self._write("i32.const 0")
+            self._write("i32.le_s")
+            return
+        raise WasmEmissionError(
+            f"List.sorted: element type {elem_ty!r} reached the "
+            f"compiler-supplied comparison, but the analyzer should "
+            f"have refused it at the call site "
+            f"(typesys.is_ordered_element). This is a compiler bug, "
+            f"not a program error."
+        )
 
     def _emit_srt_cmp_call(
         self, sig_idx: int, elem_ty: str, es: int,

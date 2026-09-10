@@ -119,6 +119,220 @@ class TestOrderingOperators(unittest.TestCase):
         )
 
 
+#: Element types the compiler-ordered methods must REFUSE, each with the
+#: Capa source that builds a list of it. Written out rather than derived
+#: because the point is to enumerate the shapes a user can reach, which
+#: is not a set the type system exposes: primitives it cannot order, a
+#: user struct, the four container shapes, Unit, and a bare type
+#: variable. Deriving it would mean asking the predicate, which is the
+#: thing under test.
+_REFUSED_ELEMENTS: tuple[tuple[str, str, str], ...] = (
+    ("Bool",            "Bool",            "[true, false]"),
+    # ANNOTATED, unlike the rest, and the annotation is load-bearing.
+    # A bare ``[P(n: 1), P(n: 2)]`` leaves the element type UNRESOLVED
+    # (``List<Unknown>``) at the method-call site, and the predicate is
+    # deliberately fail-OPEN on Unknown, so that call is accepted here
+    # and dies later. That is a pre-existing INFERENCE limitation and
+    # not this rule's: measured, the same unannotated shape already
+    # fails identically on main through ``sorted_by``, with wasm-tools
+    # reporting ``unknown func: $P``. Annotating gives the checker the
+    # type it needs, which is what this rule is responsible for. The
+    # unresolved shape is recorded in the increment report rather than
+    # asserted here, because asserting it would pin a defect that
+    # belongs to inference.
+    ("user struct",     "P",               "xs: List<P> = [P(n: 1), P(n: 2)]"),
+    ("List<Int>",       "List<Int>",       "[[1], [2]]"),
+    ("tuple",           "(Int, Int)",      "[(1, 2), (3, 4)]"),
+    ("Option<Int>",     "Option<Int>",     "[Some(1), None]"),
+    ("Map<String,Int>", "Map<String, Int>", "[new_map()]"),
+    ("Set<Int>",        "Set<Int>",        "[new_set()]"),
+)
+
+#: Element types they must ACCEPT: every member of the constant, plus
+#: Char, which is NOT a member and is exactly the row a name-membership
+#: predicate gets wrong.
+_ACCEPTED_ELEMENTS: tuple[tuple[str, str], ...] = (
+    ("Int",    "[3, 1, 2]"),
+    ("Float",  "[3.5, 1.5]"),
+    ("String", '["b", "a"]'),
+    ("Char",   "['b', 'a']"),
+)
+
+_ORDERED_METHODS = ("sorted", "min", "max")
+
+
+def _ordered_call(elem_src: str, method: str) -> str:
+    # An entry may carry its own annotated binding (``xs: T = ...``), as
+    # the user-struct row does; otherwise the literal is bound plainly
+    # and the checker infers the element type from it.
+    binding = (
+        elem_src if elem_src.startswith("xs:") else f"xs = {elem_src}"
+    )
+    return (
+        "type P {\n"
+        "    n: Int\n"
+        "}\n"
+        "\n"
+        "fun main(stdio: Stdio)\n"
+        f"    let {binding}\n"
+        f"    let r = xs.{method}()\n"
+        '    stdio.println("done")\n'
+    )
+
+
+class TestCompilerOrderedMethodsRefuseUnorderedElements(unittest.TestCase):
+    """``sorted`` / ``min`` / ``max`` supply their OWN comparison, so
+    they accept only element types the compiler can order. This is the
+    rule increment 2 exists to add, and until this class landed NOTHING
+    asserted it: deleting the ``_check_ordered_element`` call at
+    dispatch left all 5991 tests green.
+
+    What the deletion actually does, measured, is worth recording so the
+    stakes are legible: ``[true, false].sorted()`` then compiles on both
+    Python paths and FAILS on Wasm, where the emitter refuses the
+    element type it was promised would never arrive. It is a
+    three-backend divergence and an unguarded Python ``TypeError``, not
+    a soundness hole, but it is precisely the surface this increment was
+    built to close.
+
+    The diagnostic is asserted to name BOTH the offending element type
+    and ``sorted_by``. Naming the escape hatch is not decoration: for a
+    Bool or a user struct, supplying your own comparator IS the right
+    answer, and a rejection that does not say so tells the user the
+    language cannot do what it can.
+    """
+
+    def test_every_unordered_element_type_is_refused(self):
+        for label, _ty, src in _REFUSED_ELEMENTS:
+            for method in _ORDERED_METHODS:
+                with self.subTest(element=label, method=method):
+                    r = check(_ordered_call(src, method))
+                    self.assertFalse(
+                        r.ok,
+                        f"List<{label}>.{method}() was ACCEPTED; the "
+                        f"compiler has no comparison for {label}, so the "
+                        f"call would reach a backend with nothing to "
+                        f"compare (measured: the Python paths run and "
+                        f"the Wasm backend refuses)",
+                    )
+                    joined = " ".join(e.message for e in r.errors)
+                    self.assertIn(method, joined)
+                    self.assertIn(
+                        "sorted_by", joined,
+                        "the rejection must name sorted_by: supplying "
+                        "your own comparator is how this element type "
+                        "IS ordered, and a rejection that hides that "
+                        "reads as 'Capa cannot sort this'",
+                    )
+
+    def test_a_bare_type_variable_is_refused(self):
+        # Separate because it needs a generic function rather than a
+        # literal, and because it is the fail-CLOSED direction of the
+        # predicate: TyUnknown passes, TyVar does not.
+        src = (
+            "fun pick<T>(xs: List<T>) -> Option<T>\n"
+            "    return xs.min()\n"
+        )
+        r = check(src)
+        self.assertFalse(r.ok)
+        self.assertIn(
+            "sorted_by", " ".join(e.message for e in r.errors),
+        )
+
+    def test_every_ordered_element_type_is_accepted(self):
+        # The negative half: the rule must not over-reject. Char is the
+        # row that matters, since it is not a member of ORDERED_TYPES.
+        for label, src in _ACCEPTED_ELEMENTS:
+            for method in _ORDERED_METHODS:
+                with self.subTest(element=label, method=method):
+                    r = check(_ordered_call(src, method))
+                    self.assertTrue(
+                        r.ok,
+                        f"List<{label}>.{method}() was REFUSED: "
+                        + str([e.message for e in r.errors]),
+                    )
+
+    def test_sorted_by_stays_permissive_for_every_refused_element(self):
+        # sorted_by is the escape hatch the diagnostic points at, so it
+        # must keep accepting exactly what the compiler-ordered methods
+        # refuse. If this ever goes red the rejection message is a lie.
+        for label, ty, src in _REFUSED_ELEMENTS:
+            with self.subTest(element=label):
+                binding = (
+                    src if src.startswith("xs:") else f"xs = {src}"
+                )
+                prog = (
+                    "type P {\n"
+                    "    n: Int\n"
+                    "}\n"
+                    "\n"
+                    "fun main(stdio: Stdio)\n"
+                    f"    let {binding}\n"
+                    f"    let r = xs.sorted_by(fun (a: {ty}, b: {ty}) "
+                    "-> Int => 0)\n"
+                    '    stdio.println("done")\n'
+                )
+                r = check(prog)
+                self.assertTrue(
+                    r.ok,
+                    f"sorted_by no longer accepts List<{label}>, but the "
+                    f"sorted/min/max rejection tells users to reach for "
+                    f"it: " + str([e.message for e in r.errors]),
+                )
+
+
+class TestPredicateAgreesWithTheOperator(unittest.TestCase):
+    """``is_ordered_element`` is what ``List.sorted`` / ``min`` / ``max``
+    consult, and it must accept exactly what the ``<`` family accepts on
+    two operands of the same type. If the two ever disagree, a program
+    could sort a list whose elements the operator refuses to compare, or
+    be refused a sort of elements it would happily compare.
+
+    Computed over every primitive by RUNNING the operator, never listed:
+    a second list of ordered type names is precisely what
+    ``ORDERED_TYPES`` exists to prevent, and this guard is what makes
+    the single source real rather than aspirational.
+
+    The Char row is the one that matters. ``Char`` is NOT a member of
+    ``ORDERED_TYPES``, yet the operator accepts it (a Char is compatible
+    with String) and every backend lowers the comparison. A predicate
+    written as name membership would pass every other row here and fail
+    this one.
+    """
+
+    def test_predicate_matches_the_operator_on_every_primitive(self):
+        from capa.typesys import is_ordered_element, TyName
+        for name in sorted(PRIMITIVE_NAMES):
+            with self.subTest(type=name):
+                operator_accepts = all(
+                    check(_compare(name, op)).ok for op in _ORDER_OPS
+                )
+                self.assertEqual(
+                    is_ordered_element(TyName(name)), operator_accepts,
+                    f"is_ordered_element and the ordering operator "
+                    f"disagree about {name}. They must not: the ordering "
+                    f"methods use the predicate and the user reads the "
+                    f"operator, so a disagreement is a surface that "
+                    f"contradicts itself",
+                )
+
+    def test_char_is_ordered_though_it_is_not_a_member(self):
+        # Pinned separately from the sweep above because it is the row a
+        # name-membership implementation gets wrong, and the sweep would
+        # not say WHICH row failed.
+        from capa.typesys import is_ordered_element, TyName
+        self.assertNotIn("Char", {ty.name for ty in ORDERED_TYPES})
+        self.assertTrue(is_ordered_element(TyName("Char")))
+
+    def test_a_bare_type_variable_is_not_ordered(self):
+        # Fail-CLOSED, and consistent with the operator, which already
+        # refuses ``a < b`` for two T's in a generic function. The
+        # opposite direction from TyUnknown, which is fail-OPEN.
+        from capa.typesys import is_ordered_element, TyVar, TyUnknown
+        self.assertFalse(is_ordered_element(TyVar("T")))
+        self.assertTrue(is_ordered_element(TyUnknown))
+
+
 class TestPermissiveOperands(unittest.TestCase):
     """``compatible(member, t)`` holds for a flexible inference variable
     and for ``TyUnknown`` whatever the member, so an operand of either

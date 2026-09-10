@@ -890,6 +890,25 @@ class PythonEmitter:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({r}.find({a[0]}))"
             )
+        if m == "find_index":
+            # Option<Int>, code-point indexed, first match wins.
+            return (
+                f"(lambda _i: Some(_i) if _i is not None else None_)"
+                f"(_capa_find_index({r}, {a[0]}))"
+            )
+        if m == "split_once":
+            # Option<(String, String)> at the FIRST occurrence; the
+            # runtime helper owns the rule and the empty-separator abort.
+            return (
+                f"(lambda _p: Some(_p) if _p is not None else None_)"
+                f"(_capa_split_once({r}, {a[0]}))"
+            )
+        if m == "lines":
+            # CR LF / LF / lone CR, terminators STRIPPED. The runtime
+            # helper is the oracle both Python backends and the Wasm
+            # byte scanner agree on; Python's ``str.splitlines()``
+            # recognises six more separators the Wasm scanner does not.
+            return f"CapaList(_capa_lines({r}))"
         if m == "bytes":
             # List<Int> of UTF-8 bytes (each 0..255). ``surrogatepass``
             # keeps a lone surrogate as its 3-byte WTF-8 form (matching
@@ -924,6 +943,15 @@ class PythonEmitter:
         if m == "keys":   return f"CapaList({r}.keys())"
         if m == "values": return f"CapaList({r}.values())"
         if m == "pairs":  return f"CapaList({r}.items())"
+        if m == "remove":
+            # Option<V>: the removed value, or None_ when absent. MUTATES.
+            return (
+                f"(lambda _v: Some(_v) if _v is not None else None_)"
+                f"(_capa_map_remove({r}, {a[0]}))"
+            )
+        if m == "filter":
+            # Fresh map, insertion order preserved, receiver untouched.
+            return f"_capa_map_filter({r}, {a[0]})"
         if m == "is_empty": return f"(len({r}) == 0)"
         return None
 

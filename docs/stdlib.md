@@ -43,6 +43,9 @@ failure at the same input; neither wraps silently.
 | `starts_with(s: String)` | `Bool` | |
 | `ends_with(s: String)` | `Bool` | |
 | `split(sep: String)` | `List<String>` | Split by separator |
+| `find_index(pred: Fun(String) -> Bool)` | `Option<Int>` | `Some(i)` with the code-point index of the first character satisfying `pred`, or `None`. The predicate receives each character as a one-code-point `String`, the same thing `for c in s` binds. Where `index_of` asks "where is this substring", this asks "where is the first character like this". |
+| `split_once(sep: String)` | `Option<(String, String)>` | The receiver cut at the FIRST occurrence of `sep`, into the part before and the part after; the separator is in neither. `None` when `sep` does not occur. `"k=v=w".split_once("=")` is `Some(("k", "v=w"))`, where `split("=")` would give three parts. Aborts the program on an empty separator, exactly as `split` does. |
+| `lines()` | `List<String>` | The lines of the receiver, with their terminators removed. A terminator is `\r\n`, `\n`, or a lone `\r`; `\r\n` is matched first, so a Windows-authored line keeps no trailing `\r`. A trailing terminator yields NO phantom empty last element, which is what distinguishes this from `split("\n")`: `"a\nb\n".lines()` has 2 elements, `"a\nb\n".split("\n")` has 3. `"".lines()` is empty; `"\n".lines()` is one empty line. |
 | `replace(old: String, new: String)` | `String` | Replace every occurrence |
 | `char_at(i: Int)` | `Option<String>` | The single character (a one-codepoint `String`) at code-point index `i`, or `None` if `i` is negative or `>= length()`. |
 | `substring(start: Int, end: Int)` | `String` | The slice over the half-open code-point range `[start, end)`. Aborts the program if `start < 0`, `end < 0`, `start > end`, or `end > length()`; it never clamps or silently returns a shorter slice. `substring(i, i)` is the empty string. |
@@ -86,6 +89,7 @@ infers the type from the first `push`.
 | `length()` | `Int` | Number of elements |
 | `is_empty()` | `Bool` | |
 | `push(x: T)` | `()` | Append at the end (mutation) |
+| `pop()` | `Option<T>` | Remove the LAST element and return it, or `None` on an empty list (mutation). Returns the removed value where `Set.remove` returns nothing, because `Set.remove(x)` is told what to remove and `pop()` is not. Lists are reference-aliased, so the removal is visible through every alias; reading with `last()` and then popping is NOT equivalent, because the pair is not atomic. |
 | `contains(x: T)` | `Bool` | |
 | `first()` | `Option<T>` | First element or `None` |
 | `last()` | `Option<T>` | Last element or `None` |
@@ -96,10 +100,25 @@ infers the type from the first `push`.
 | `find(p: Fun(T) -> Bool)` | `Option<T>` | First element matching `p` |
 | `find_index(p: Fun(T) -> Bool)` | `Option<Int>` | Index of first element matching `p` |
 | `sorted_by(cmp: Fun(T, T) -> Int)` | `List<T>` | Fresh sorted copy. `cmp(a, b)` returns negative / 0 / positive as in C's `qsort`. Stable. |
+| `sorted()` | `List<T>` | Fresh ascending copy, stable, receiver unchanged. The element type must be one the ordering operators accept: `Int`, `Float`, `String` or `Char`. For anything else (a `Bool`, a user struct) use `sorted_by` with your own comparator; the compiler says so in the error. |
+| `min()` | `Option<T>` | Smallest element, `None` on an empty list. Same order as `sorted()`, so `xs.min()` and `xs.sorted().first()` always agree. |
+| `max()` | `Option<T>` | Largest element, `None` on an empty list. |
 | `reverse()` | `List<T>` | Fresh list with the elements in reverse order. Does not mutate the receiver. |
 | `enumerate()` | `List<(Int, T)>` | Fresh list of `(index, element)` pairs, index 0-based, original order. |
 | `zip<U>(other: List<U>)` | `List<(T, U)>` | Fresh list pairing `self[i]` with `other[i]`, truncated to the shorter length. |
 | `flat_map<U>(f: Fun(T) -> List<U>)` | `List<U>` | Apply `f` to each element and concatenate the resulting lists in order. |
+
+`sorted()`, `min()` and `max()` order `Float` TOTALLY: `NaN` sorts
+after every number, and the non-`NaN` elements still come out in
+ascending order around it. Consequently, when a `NaN` is present,
+`min()` answers the smallest real number and `max()` answers `NaN`,
+each agreeing with `sorted().first()` / `sorted().last()`.
+This matters because the obvious alternative is not merely unspecified:
+every comparison against `NaN` is false, so a sort built on `<` alone
+silently misplaces the NON-`NaN` elements too, and differently on
+different backends. `sorted_by` does NOT get this treatment: there the
+comparator is yours, and a comparator that is not a total order has
+undefined results by the same reasoning that applies to `qsort`.
 
 Index access: `xs[i]`. The index is bounds-checked at run time, not
 at compile time: `i < 0` or `i >= length()` aborts the program
@@ -168,9 +187,10 @@ the Python and Wasm backends.
 `map` / `filter` / `fold` and the indexed queries carry the same
 signatures and semantics as their `List` homonyms: `r.map(f)` means
 `r.to_list().map(f)`. The `List` methods **not** declared on `Range`
-are `sorted_by`, `reverse`, `enumerate`, `zip`, `flat_map` and the
-mutating `push`; calling one reports `type 'Range' has no method
-'<name>'`. Reach them through `to_list()`.
+are `sorted_by`, `sorted`, `min`, `max`, `reverse`, `enumerate`,
+`zip`, `flat_map` and the mutating `push` and `pop`; calling one
+reports `type 'Range' has no method '<name>'`. Reach them through
+`to_list()`.
 
 All twelve operate against the half-open `[start, stop)` interval
 (`stop = end + 1` for the inclusive `a..=b` form, `stop = end` for
@@ -194,9 +214,11 @@ Hash map. Construct via `new_map()` with a required type annotation.
 | `get(k: K)` | `Option<V>` | Returns the value if the key exists |
 | `set(k: K, v: V)` | `()` | Insert/update (mutation) |
 | `contains_key(k: K)` | `Bool` | |
+| `remove(k: K)` | `Option<V>` | Remove the entry for `k` and return the value it held, or `None` if the key is absent (mutation). Surviving entries keep their insertion order. Returns the VALUE, not the key: the caller supplied the key, and a separate `get` before the removal would not be atomic with it. |
 | `keys()` | `List<K>` | |
 | `values()` | `List<V>` | |
 | `pairs()` | `List<(K, V)>` | Key/value pairs as tuples; destructure with `let (k, v) = pair` |
+| `filter(pred: Fun(K, V) -> Bool)` | `Map<K, V>` | A FRESH map of the pairs for which `pred(k, v)` is true, in the receiver's insertion order. Does not mutate the receiver. The predicate takes the key and the value, because a `Map` entry is both. On the Wasm backend the receiver's type must be known: annotate the binding (`let m: Map<String, Float> = new_map()`) rather than relying on inference from a later `set`, which does not reach the receiver; when the types have not reached it, `--wasm` refuses the program with an error naming the closure signature it could not find (`Map.filter: no closure registered with sig ...`) rather than guessing, while the same program still runs on the Python backends. |
 
 ```capa
 let m: Map<String, Int> = new_map()

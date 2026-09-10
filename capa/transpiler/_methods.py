@@ -119,6 +119,33 @@ class _MethodsMixin:
                 f"(lambda _i: Some(_i) if _i >= 0 else None_)"
                 f"({recv}.find({args[0]}))"
             )
+        if method == "find_index":
+            # Option<Int>, code-point indexed, first match wins. The
+            # runtime helper owns the walk so both Python emitters and
+            # the Wasm UTF-8 scan answer the same index.
+            return (
+                f"(lambda _i: Some(_i) if _i is not None else None_)"
+                f"(_capa_find_index({recv}, {args[0]}))"
+            )
+        if method == "split_once":
+            # Option<(String, String)> at the FIRST occurrence. The
+            # runtime helper owns the rule (including the empty-separator
+            # abort that split already has) so the two Python backends
+            # and the Wasm scan cannot drift. The one-shot lambda
+            # evaluates the receiver and separator exactly once even
+            # when either is a complex expression, as index_of does.
+            return (
+                f"(lambda _p: Some(_p) if _p is not None else None_)"
+                f"(_capa_split_once({recv}, {args[0]}))"
+            )
+        if method == "lines":
+            # Line terminators are CR LF, LF and a lone CR, and they
+            # are STRIPPED. Routed through the runtime helper rather
+            # than Python's ``str.splitlines()`` so the two backends
+            # recognise the same three terminators: ``splitlines()``
+            # also breaks on VT / FF / FS / GS / RS / NEL and the two
+            # Unicode separators, which the Wasm byte scanner does not.
+            return f"CapaList(_capa_lines({recv}))"
         if method == "bytes":
             # List<Int> of UTF-8 bytes (each 0..255). ``surrogatepass``
             # so a lone surrogate (which Python ``str`` can hold, e.g.
@@ -196,6 +223,20 @@ class _MethodsMixin:
             return f"CapaList({recv}.values())"
         if method == "pairs":
             return f"CapaList({recv}.items())"
+        if method == "remove":
+            # Option<V>: the removed value, or None_ when absent.
+            # MUTATES. The runtime helper owns the rule so both Python
+            # emitters and the Wasm pair-table walk cannot drift.
+            return (
+                f"(lambda _v: Some(_v) if _v is not None else None_)"
+                f"(_capa_map_remove({recv}, {args[0]}))"
+            )
+        if method == "filter":
+            # A FRESH map of the pairs satisfying pred(k, v), in the
+            # receiver's insertion order. The runtime helper owns both
+            # halves of that rule so the two Python emitters and the
+            # Wasm pair-table walk cannot drift.
+            return f"_capa_map_filter({recv}, {args[0]})"
         if method == "is_empty":
             return f"(len({recv}) == 0)"
         return f"{recv}.{_safe_ident(method)}({', '.join(args)})"

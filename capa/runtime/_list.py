@@ -11,6 +11,38 @@ from __future__ import annotations
 from ._result import None_, Some
 
 
+def _capa_total_key(x):
+    """Sort key that makes the compiler-supplied ordering TOTAL, so
+    ``sorted`` / ``min`` / ``max`` cannot return a wrongly-ordered list.
+
+    Only Floats need it, and only because of NaN. Every comparison
+    against NaN is false, so a comparator built from ``<`` and ``>``
+    answers "equal" for NaN against everything and stops being a total
+    order; a sort given such a comparator does not merely misplace the
+    NaN, it silently misplaces CLEAN elements around it, and does so
+    differently under Timsort and under the Wasm merge sort. MEASURED:
+    ``[2.0, nan, 3.0, 1.0, 4.0]`` under a naive comparator comes out
+    ``2.0 nan 1.0 3.0 4.0`` on the Python paths, whose non-NaN
+    subsequence is not sorted.
+
+    The rule is: NaN ranks after every number, and everything else keeps
+    its natural order. Expressed as a ``(is_nan, value)`` pair so the
+    NaN group sorts last and, within either group, the ordinary
+    comparison decides. NaN values compare equal to each other under
+    this key, which is what makes the result deterministic: Python's
+    sort is stable, so equal-keyed NaNs keep their input order, and the
+    Wasm merge sort is written to match.
+
+    Non-Float elements take the fast path: ``x != x`` is False for every
+    Int, String and Char, so this is one comparison per element and no
+    behaviour change for them.
+
+    ``sorted_by`` is deliberately NOT routed through this. There the
+    comparator is the USER's, the compiler is declining to police it,
+    and its NaN divergence stays recorded as a known defect."""
+    return (x != x, x)
+
+
 class CapaList(list):
     """Subclass of ``list`` that exposes methods expected by the Capa
     checker: ``length``, ``push``, ``contains``, ``map``, ``filter``,
@@ -54,6 +86,53 @@ class CapaList(list):
         if 0 <= i < len(self):
             return Some(self[i])
         return None_
+
+    def pop(self):
+        """Remove and return the LAST element as ``Option<T>``, or
+        ``None_`` on an empty list. MUTATES the receiver.
+
+        This override is MANDATORY, not stylistic. ``CapaList``
+        subclasses ``list``, which already has a ``pop``, so without it
+        an attribute lookup silently reaches ``builtins.list.pop`` and
+        returns a BARE element where the Capa surface promises an
+        ``Option`` (measured: ``'int' object has no attribute
+        'unwrap_or'`` at the first use), and raises ``IndexError`` on an
+        empty list where Capa promises ``None``. The inherited-name
+        quarantine guard in tests/test_method_emit_agreement.py exists
+        for exactly this shape and refuses the declaration until this
+        method is here.
+
+        Empty behaviour follows ``first`` / ``last`` / ``get``: an
+        Option, never a panic."""
+        if not self:
+            return None_
+        return Some(list.pop(self))
+
+    def sorted(self):
+        """A fresh ascending ``CapaList``. Does not mutate.
+
+        The order is TOTAL even when the elements are Floats containing
+        NaN: ``_capa_total_key`` ranks NaN after every number. Without
+        that, one NaN silently destroys the ordering of the clean
+        elements, because every comparison against NaN is false and the
+        sort's assumptions stop holding. See ``_capa_total_key``."""
+        return CapaList(sorted(self, key=_capa_total_key))
+
+    def min(self):
+        """The smallest element as ``Option<T>``, ``None_`` when empty.
+        Uses the same total order ``sorted`` does, so
+        ``xs.min()`` and ``xs.sorted().first()`` agree on every input
+        including one containing NaN."""
+        if not self:
+            return None_
+        return Some(min(self, key=_capa_total_key))
+
+    def max(self):
+        """The largest element as ``Option<T>``, ``None_`` when empty.
+        Same total order as ``sorted`` / ``min``."""
+        if not self:
+            return None_
+        return Some(max(self, key=_capa_total_key))
 
     def find(self, p):
         """First element matching the predicate, as ``Option<T>``."""

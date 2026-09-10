@@ -471,6 +471,21 @@ class _LocalsCollectionMixin:
                         has_multi_impl_dispatch = True
                     if recv_ty.startswith("Map"):
                         has_map = True
+                        if instr.method == "remove":
+                            # remove answers Option<V>, so it needs the
+                            # Option record scratch the same way
+                            # List.pop does. Not redundant with the
+                            # Option-receiver arm: a program that
+                            # MATCHES on the removed value never has an
+                            # Option-typed receiver.
+                            has_optres_method = True
+                        if instr.method == "filter":
+                            # Map.filter invokes a (K, V) -> Bool
+                            # closure per pair, so it needs the HOF
+                            # closure scratch ($_lam_fn_tmp) the List
+                            # HOFs already declare, on top of the map
+                            # scan scratch has_map gives it.
+                            has_list_hof = True
                         # Pointer-shape key (struct / sum / tuple)
                         # uses $_alloc_tmp_key_ptr as the canonical
                         # i32 key stash. Mirrors the $_alloc_tmp_key_i64
@@ -598,9 +613,30 @@ class _LocalsCollectionMixin:
                             "or_else", "map_err",
                         ):
                             has_list_hof = True
-                    if instr.method == "split" and recv_ty == "String":
-                        # split returns List<String>; uses _alloc_tmp_i64
-                        # for the per-chunk packing dance.
+                    if (instr.method in ("split", "lines")
+                            and recv_ty == "String"):
+                        # split / lines both return List<String> and
+                        # both push their chunks through
+                        # _emit_split_push_chunk, so they need the same
+                        # scratch: _alloc_tmp_i64 for the per-chunk
+                        # packing dance, _alloc_tmp for the data array,
+                        # _m_tag as the element counter.
+                        has_list_string = True
+                    if instr.method == "find_index" and recv_ty == "String":
+                        # find_index walks code points and calls a
+                        # (String) -> Bool closure per character, so it
+                        # needs the HOF closure scratch ($_lam_fn_tmp)
+                        # and the Option record ($_alloc_tmp_result)
+                        # the other Option-returning String methods use.
+                        has_list_hof = True
+                        has_optres_method = True
+                    if instr.method == "split_once" and recv_ty == "String":
+                        # split_once answers Option<(String, String)>:
+                        # the Option record goes in $_alloc_tmp_result
+                        # (as index_of / char_at do) and the two-slot
+                        # tuple record in $_alloc_tmp, both reached
+                        # through the same flags those methods use.
+                        has_optres_method = True
                         has_list_string = True
                     if (instr.method in ("index_of", "char_at")
                             and recv_ty == "String"):
@@ -619,6 +655,29 @@ class _LocalsCollectionMixin:
                         # List<String>.push packs (ptr, len) via
                         # _alloc_tmp_i64.
                         has_list_string = True
+                    if (instr.method == "pop"
+                            and recv_ty.startswith("List")):
+                        # pop reads the last slot exactly as ``last``
+                        # does and builds an Option<T> in
+                        # $_alloc_tmp_result, with $_m_scrut holding the
+                        # list pointer across the read and the length
+                        # decrement.
+                        #
+                        # This arm is NOT redundant with the Option
+                        # receiver arm above, and the difference is
+                        # measured: a program that MATCHES on the popped
+                        # value instead of calling a method on it never
+                        # has an Option-typed receiver, so nothing else
+                        # sets has_optres_method and the emitted module
+                        # names an undeclared $_alloc_tmp_result. A
+                        # probe that writes ``xs.pop().unwrap_or(0)``
+                        # cannot see that, because unwrap_or IS an
+                        # Option receiver.
+                        has_optres_method = True
+                        has_list_method = True
+                        el = _element_type_of_list(recv_ty)
+                        if el == "String":
+                            has_list_string = True
                     if (instr.method in ("first", "last")
                             and recv_ty.startswith("List")):
                         # first / last build an Option<T> result in
@@ -642,6 +701,29 @@ class _LocalsCollectionMixin:
                         if el == "String":
                             has_list_string = True
                             has_string_method = True
+                    if (instr.method in ("sorted", "min", "max")
+                            and recv_ty.startswith("List")):
+                        # sorted reuses the sorted_by merge sort with a
+                        # compiler-supplied comparison, so it needs the
+                        # same $_srt_* block; min / max reuse the same
+                        # comparison over a single scan. The comparison
+                        # stashes its two operands per element shape,
+                        # and Float additionally needs the NaN flag.
+                        has_list_sorted_by = True
+                        has_list_method = True
+                        el = _element_type_of_list(recv_ty)
+                        if el == "String" or el == "Char":
+                            has_list_string = True
+                            has_string_method = True
+                            has_list_sorted_by_i64 = True
+                        elif el == "Float":
+                            has_list_sorted_by_f64 = True
+                        else:
+                            has_list_sorted_by_i64 = True
+                        if instr.method in ("min", "max"):
+                            # They answer Option<T>, so they need the
+                            # Option record scratch as List.pop does.
+                            has_optres_method = True
                     if (instr.method == "sorted_by"
                             and recv_ty.startswith("List")):
                         # sorted_by runs a bottom-up merge sort that
@@ -1091,6 +1173,10 @@ class _LocalsCollectionMixin:
             if has_list_sorted_by_f64:
                 out.setdefault("_srt_arg0_f64", "f64")
                 out.setdefault("_srt_arg1_f64", "f64")
+                # sorted() over Float needs one more i32: the "is the
+                # right operand NaN" flag its total comparison computes
+                # once and reads on both branches.
+                out.setdefault("_srt_tmp_nan", "i32")
             if has_list_sorted_by_i32:
                 out.setdefault("_srt_arg0_i32", "i32")
                 out.setdefault("_srt_arg1_i32", "i32")

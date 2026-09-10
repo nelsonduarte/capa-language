@@ -1401,6 +1401,77 @@ class TestConstantTime(unittest.TestCase):
         )
         self.assertTrue(self._ct_errors(r))
 
+    def test_string_split_once_on_a_secret_rejected(self):
+        # Increment 2. split_once runs the same first-match $str_eq scan
+        # index_of runs, so it is the same compare oracle: the timing
+        # says WHERE the separator first occurs in the secret. The
+        # membership criterion recorded beside _CT_SHORT_CIRCUIT_METHODS
+        # is "the lowering calls $str_eq", and split_once does, measured
+        # once per call exactly as index_of and contains do.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun parse(s: @secret String, sep: String) -> Bool\n"
+            "    return s.split_once(sep).is_some()\n"
+        )
+        self.assertEqual(
+            len(self._ct_errors(r)), 1,
+            [e.message for e in r.errors],
+        )
+        self.assertIn("split_once", self._ct_errors(r)[0].message)
+
+    def test_string_lines_on_a_secret_is_not_a_ct_violation(self):
+        # The NEGATIVE that keeps the criterion honest rather than
+        # letting the table grow by association. lines() splits on fixed
+        # terminator BYTES and never calls $str_eq (measured: zero calls
+        # in its lowering, against one for split_once), so it is not a
+        # compare oracle and must not be flagged. Without this pin,
+        # adding every new String method to the table would look
+        # equally correct.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun count(s: @secret String) -> Int\n"
+            "    return s.lines().length()\n"
+        )
+        self.assertEqual(
+            self._ct_errors(r), [],
+            "lines() was flagged as a timing oracle; its lowering makes "
+            "no $str_eq call, so flagging it breaks the criterion that "
+            "makes _CT_SHORT_CIRCUIT_METHODS checkable",
+        )
+
+    def test_split_once_oracle_is_caught_across_a_function_boundary(self):
+        # The table has TWO readers, established by construction:
+        # capa/analyzer/_ifc.py checks the call inline, and
+        # capa/analyzer/_ifc_summary.py carries the effect across a
+        # function boundary. The inline pin above exercises only the
+        # first. Measured, both depend on the same entry: deleting it
+        # drops this shape from 1 diagnostic to 0, exactly as it does
+        # the inline one.
+        r = self._analyze(
+            "fun helper(s: String, sep: String) -> Bool\n"
+            "    return s.split_once(sep).is_some()\n"
+            "\n"
+            "@constant_time()\n"
+            "fun parse(s: @secret String, sep: String) -> Bool\n"
+            "    return helper(s, sep)\n"
+        )
+        self.assertEqual(
+            len(self._ct_errors(r)), 1,
+            [e.message for e in r.errors],
+        )
+
+    def test_map_remove_with_a_secret_key_rejected(self):
+        # Increment 2. remove runs the same linear key scan get runs, so
+        # the key decides which memory is walked and how far. Sibling of
+        # test_map_get_with_secret_key_rejected above.
+        r = self._analyze(
+            "@constant_time()\n"
+            "fun drop(m: Map<Int, Int>, k: @secret Int) -> Bool\n"
+            "    return m.remove(k).is_some()\n"
+        )
+        self.assertTrue(self._ct_errors(r))
+        self.assertIn("remove", self._ct_errors(r)[0].message)
+
     def test_div_by_secret_rejected(self):
         # Division runs on the variable-latency divider: a secret
         # divisor leaks through timing (CWE-208).

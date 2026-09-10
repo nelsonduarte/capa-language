@@ -6,3 +6,21 @@ fun main(stdio: Stdio)
     let xs = [3.5, -0.0, 1.25, 0.0, 2.0, -1.5]
     let s = xs.sorted_by(fun (a, b) => if a < b then 0 - 1 else (if a > b then 1 else 0))
     stdio.println("${s.fold("", fun (acc, x) => acc + "${x}|")}")
+    // sorted() over Floats, INCLUDING NaN. The comparator here is the
+    // COMPILER's and it is TOTAL, so the clean elements come out in
+    // order and NaN ranks last, byte-identically on all three
+    // backends. Contrast known_divergent_sorted_by_nan.capa, where the
+    // comparator is the USER's, is not total, and the clean elements
+    // lose their order differently per backend. That contrast is the
+    // whole reason sorted() supplies its own comparison, so both
+    // programs must exist.
+    var big = 1.0
+    var i = 0
+    while i < 400
+        big = big * 10.0
+        i = i + 1
+    let nan = big - big
+    let withnan = [2.0, nan, 3.0, 1.0, 4.0]
+    stdio.println("sorted_nan=${withnan.sorted().fold("", fun (acc, x) => acc + "${x}|")}")
+    stdio.println("nan_min=${withnan.min().unwrap_or(0.0 - 1.0)} nan_max=${withnan.max().unwrap_or(0.0 - 1.0)}")
+    stdio.println("sorted_clean=${xs.sorted().fold("", fun (acc, x) => acc + "${x}|")}")

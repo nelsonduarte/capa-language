@@ -2,6 +2,15 @@
 // including the documented edge policies (ASCII-only case folding, the
 // empty-needle replace policy, code-point indexing, WTF-8 bytes).
 
+// Renders an Option<(String, String)> so split_once's two halves and
+// its None case are both visible in stdout on all three backends.
+fun show_pair(o: Option<(String, String)>) -> String
+    match o
+        Some(p) ->
+            let (x, y) = p
+            return "(" + x + "|" + y + ")"
+        None -> return "none"
+
 fun main(stdio: Stdio)
     let s = "  Hello, World  "
     let t = s.trim()
@@ -20,3 +29,29 @@ fun main(stdio: Stdio)
     let bytes = "aé".bytes()
     stdio.println("bytes_len=${bytes.length()} bytes=${bytes.fold("", fun (acc, b) => acc + "${b},")}")
     stdio.println("unicode_length=${"abcé".length()} unicode_substring=${"abcé".substring(2, 4)}")
+    // lines(): terminators are CR LF, LF and a lone CR, and they are
+    // STRIPPED, so a trailing newline yields no phantom last element.
+    // The CRLF rows are the discriminator against the rejected
+    // "split on LF then drop one trailing empty" rule, which would
+    // leave a CR on every line (element lengths 2, not 1).
+    let lf = "\n"
+    let crlf = "\r\n"
+    let show_lines = fun (xs: List<String>) -> String => xs.fold("", fun (acc, x) => acc + "[" + x + "]")
+    stdio.println("lines_lf=${show_lines(("a" + lf + "b" + lf).lines())} lines_no_trail=${show_lines(("a" + lf + "b").lines())}")
+    stdio.println("lines_crlf=${show_lines(("a" + crlf + "b" + crlf).lines())} lines_cr=${show_lines(("a" + "\r" + "b").lines())}")
+    stdio.println("lines_empty=${"".lines().length()} lines_only_nl=${lf.lines().length()} lines_blank_mid=${show_lines(("a" + lf + lf + "b").lines())}")
+    stdio.println("lines_crlf_lens=${("a" + crlf + "b" + crlf).lines().fold("", fun (acc, x) => acc + "<" + "${x.length()}" + ">")}")
+    // split_once: cut at the FIRST occurrence, separator in neither
+    // half, None when absent. The multi row discriminates against
+    // cutting at the LAST occurrence; the kvw row against reusing
+    // split, which gives three parts where a key/value parse wants two.
+    stdio.println("split_once_kvw=${show_pair("k=v=w".split_once("="))} split_once_absent=${show_pair("abc".split_once("x"))}")
+    stdio.println("split_once_lead=${show_pair("=a".split_once("="))} split_once_trail=${show_pair("a=".split_once("="))}")
+    stdio.println("split_once_multi=${show_pair("a::b::c".split_once("::"))} split_once_empty_recv=${show_pair("".split_once("="))}")
+    // find_index: code-point index of the first character matching the
+    // predicate, first match wins. The multibyte row is the
+    // discriminator against a BYTE offset, which index_of also had
+    // to be fixed for: 'b' is at byte 3 but code point 2.
+    stdio.println("find_index_l=${"hello".find_index(fun (c) => c == "l").unwrap_or(0 - 1)} find_index_absent=${"hello".find_index(fun (c) => c == "z").unwrap_or(0 - 1)}")
+    stdio.println("find_index_first=${"hello".find_index(fun (c) => c == "h").unwrap_or(0 - 1)} find_index_last=${"hello".find_index(fun (c) => c == "o").unwrap_or(0 - 1)}")
+    stdio.println("find_index_empty=${"".find_index(fun (c) => c == "a").unwrap_or(0 - 1)} find_index_multibyte=${"aébc".find_index(fun (c) => c == "b").unwrap_or(0 - 1)}")

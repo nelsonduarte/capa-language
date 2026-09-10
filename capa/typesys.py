@@ -148,6 +148,42 @@ PRIMITIVE_NAMES: frozenset[str] = frozenset({
 ORDERED_TYPES: tuple[TyName, ...] = (TyInt, TyFloat, TyString)
 
 
+def is_ordered_element(t: "Ty") -> bool:
+    """True when ``t`` is a type the compiler can put in order, i.e.
+    exactly what the ``<`` family accepts on both operands.
+
+    This is the ordering rule stated ONCE as a callable, so
+    ``List.sorted`` / ``min`` / ``max`` cannot drift from the operator
+    they are meant to agree with, and so nobody has to write a second
+    list of ordered type names. It is the same expression the operator
+    typing rule evaluates, with both operands being ``t``.
+
+    Consulting ``ORDERED_TYPES`` THROUGH ``compatible`` rather than by
+    name is the whole point, and the difference is not academic:
+    ``Char`` is NOT a member, yet ``'a' < 'b'`` is accepted and lowers
+    correctly on every backend, because a Char is compatible with
+    String. A name-membership test would silently refuse
+    ``List<Char>``, which the operators already order.
+
+    Fail directions, both inherited from ``compatible`` rather than
+    chosen here: an unresolved ``TyUnknown`` passes (fail-OPEN, as it
+    does at every other site, so inference is not broken for a
+    not-yet-resolved element), while a bare type variable ``T`` does
+    not (fail-CLOSED). Those are opposite and deliberate: the operator
+    already refuses ``a < b`` for two ``T``s in a generic function, so
+    refusing ``xs.sorted()`` there is consistent rather than a new
+    restriction.
+
+    Note the DIRECTION: ``compatible(ordered, t)``, not the symmetric
+    form. ``compatible`` is not symmetric, and Char is exactly where it
+    shows: ``compatible(String, Char)`` is True while
+    ``compatible(Char, String)`` is False. Requiring both would refuse
+    ``List<Char>``, which MEASURED sorts correctly on all three
+    backends today. This is the same one-directional test the operator
+    applies to each of its operands."""
+    return any(compatible(ordered, t) for ordered in ORDERED_TYPES)
+
+
 # Capabilities recognized by the system. They are opaque types, the v1
 # checker does not verify the methods called on them, but knows they exist
 # so parameters of type Stdio, Fs, etc. are accepted as annotations.

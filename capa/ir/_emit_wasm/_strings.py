@@ -105,7 +105,7 @@ class _StringEmissionMixin:
 
         Methods supported: length, is_empty, contains, starts_with,
         ends_with, substring, to_upper, to_lower, trim, trim_start,
-        trim_end, split, replace, char_at, index_of. The last three
+        trim_end, split, lines, replace, char_at, index_of. The last three
         landed in slice 4 (2026-05); replace allocates a fresh buffer
         sized by an upfront occurrence count, char_at walks UTF-8
         codepoints to assemble an ``Option<String>``, and index_of
@@ -166,6 +166,15 @@ class _StringEmissionMixin:
             return
         if method == "split":
             self._emit_string_split(recv, instr.args[0], dst)
+            return
+        if method == "lines":
+            self._emit_string_lines(recv, dst)
+            return
+        if method == "split_once":
+            self._emit_string_split_once(recv, instr.args[0], dst)
+            return
+        if method == "find_index":
+            self._emit_string_find_index(recv, instr.args[0], dst)
             return
         if method == "replace":
             self._emit_string_replace(recv, instr.args[0], instr.args[1], dst)
@@ -762,6 +771,182 @@ class _StringEmissionMixin:
         self._write("local.get $_m_tag")
         self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
 
+    def _emit_string_lines(self, recv: Value, dst: Optional[str]) -> None:
+        """``recv.lines() -> List<String>``. Each element is a line with
+        its terminator REMOVED; the result uses the same packed
+        ``ptr | (len << 32)`` slot layout as ``split``.
+
+        A terminator is CR LF, LF, or a lone CR, and CR LF is matched
+        BEFORE LF so a Windows line does not keep a trailing CR. That
+        ordering is the whole point of the method: the workaround it
+        replaces (splitting on LF) leaves the CR behind and leaves a
+        phantom empty element when the receiver ends in a newline.
+
+        Differences from ``_emit_string_split``, and each is why this is
+        a separate scan rather than a parameter of that one:
+          - the separator is one of three byte sequences, not one
+            caller-supplied string, so there is no ``$str_eq`` call and
+            no empty-separator trap;
+          - the trailing chunk is pushed only when the receiver does NOT
+            end in a terminator (``start < len``), which is exactly the
+            phantom-element suppression;
+          - the empty receiver therefore yields ZERO elements, where
+            ``split`` yields one empty element.
+
+        The oracle both Python backends run is ``_capa_lines`` in
+        capa/runtime/_safety.py; the two must agree byte for byte and
+        the characterization corpus diffs them.
+
+        Terminators are single bytes (0x0D / 0x0A) and never appear as a
+        continuation byte of a multi-byte UTF-8 code point (those are
+        all >= 0x80), so the byte-wise scan cannot split a code point.
+
+        Scratch: ``$_str_a_ptr`` / ``$_str_a_len`` (receiver),
+        ``$_str_i`` (scan index), ``$_str_start`` (line start),
+        ``$_str_byte`` (current byte), ``$_m_tag`` (element count), all
+        already declared by the ``has_string_method`` arm, plus
+        ``$_alloc_tmp`` and the ``$_str_new_*`` pair used by
+        ``_emit_split_push_chunk``."""
+        if dst is None:
+            return
+
+        # Save receiver (ptr, len).
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+
+        # Allocate list header + initial 16-slot data array, exactly as
+        # split does; _emit_split_push_chunk grows it from here.
+        initial_cap = 16
+        self._write(f"i32.const {_LIST_HEADER_SIZE}")
+        self._write("call $alloc")
+        self._write(f"local.set ${dst}")
+        self._write(f"i32.const {initial_cap * 8}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        self._write(f"local.get ${dst}")
+        self._write(f"i32.const {initial_cap}")
+        self._write(f"i32.store offset={_LIST_CAP_OFFSET}")
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_alloc_tmp")
+        self._write(f"i32.store offset={_LIST_DATA_OFFSET}")
+
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._write("i32.const 0")
+        self._write("local.set $_str_start")
+        self._write("i32.const 0")
+        self._write("local.set $_m_tag")
+
+        self._block_counter += 1
+        loop = f"$Slines{self._block_counter}_loop"
+        exit_ = f"$Slines{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # while i < len
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # byte = recv[i]
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.set $_str_byte")
+        # if byte == 0x0D (CR)
+        self._write("local.get $_str_byte")
+        self._write("i32.const 13")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._emit_split_push_chunk(dst, start_local="_str_start",
+                                    end_local="_str_i")
+        # advance past CR, and past a following LF if there is one:
+        # i += (i + 1 < len && recv[i + 1] == 0x0A) ? 2 : 1
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.lt_s")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("i32.const 10")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $_str_i")
+        self._write("local.set $_str_start")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        # else if byte == 0x0A (LF)
+        self._write("local.get $_str_byte")
+        self._write("i32.const 10")
+        self._write("i32.eq")
+        self._write("if")
+        self._indent += 1
+        self._emit_split_push_chunk(dst, start_local="_str_start",
+                                    end_local="_str_i")
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write("local.get $_str_i")
+        self._write("local.set $_str_start")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+
+        # Trailing chunk [start, len), pushed ONLY when the receiver
+        # does not end in a terminator. This is the phantom-element
+        # suppression that distinguishes lines() from split(): after
+        # "a\n" the scan leaves start == len == 1 and nothing is
+        # pushed, so the result is one element, not two.
+        self._write("local.get $_str_start")
+        self._write("local.get $_str_a_len")
+        self._write("i32.lt_s")
+        self._write("if")
+        self._indent += 1
+        self._emit_split_push_chunk(dst, start_local="_str_start",
+                                    end_local="_str_a_len")
+        self._indent -= 1
+        self._write("end")
+
+        # Write final len into header.
+        self._write(f"local.get ${dst}")
+        self._write("local.get $_m_tag")
+        self._write(f"i32.store offset={_LIST_LEN_OFFSET}")
+
     def _emit_split_push_chunk(
         self, dst: str, start_local: str, end_local: str,
     ) -> None:
@@ -1217,6 +1402,302 @@ class _StringEmissionMixin:
         self._indent -= 1
         self._write("end")
         # Bind dst.
+        self._write("local.get $_alloc_tmp_result")
+        self._write(f"local.set ${dst}")
+
+    def _emit_string_find_index(
+        self, recv: Value, pred: Value, dst,
+    ) -> None:
+        """``recv.find_index(pred) -> Option<Int>``. Walks the receiver
+        one CODE POINT at a time, calls ``pred`` with that code point as
+        a one-code-point String, and answers the index of the first
+        character for which it is true.
+
+        The index is a CODE-POINT index, not a byte offset, matching
+        ``index_of`` / ``char_at`` / ``substring``. The scan is bytewise
+        (it has to be) and the code-point counter is incremented once
+        per code point rather than derived afterwards, which is cheaper
+        than ``index_of``'s post-hoc recount and gives the same answer
+        because the walk visits each code point exactly once.
+
+        The UTF-8 leading-byte classification (``0xxxxxxx`` -> 1,
+        ``110xxxxx`` -> 2, ``1110xxxx`` -> 3, ``11110xxx`` -> 4) is the
+        same one ``_emit_for_string`` uses, so ``s.find_index(p)`` and
+        ``for c in s`` agree about what a character is. The element
+        handed to the predicate is a (ptr, len) VIEW into the receiver,
+        allocating nothing, exactly as the for-loop's binding is.
+
+        The closure is invoked through the shared closure-call ABI, so
+        this needs no new dispatch machinery: the predicate's
+        ``(String) -> Bool`` signature is registered by the same pass
+        that registers ``List<String>.find_index``'s, which is already
+        exercised. Empty receiver: the loop body never runs and the
+        result stays ``None``, matching the Python helper's empty
+        ``for``."""
+        if dst is None:
+            return
+        sig_key = self._closure_sig_key_for(["String"], "Bool")
+        if sig_key not in self._closure_sig_keys:
+            raise WasmEmissionError(
+                f"String.find_index: no closure registered with sig "
+                f"{sig_key!r}"
+            )
+        sig_idx = self._closure_sig_keys[sig_key]
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._push_value(pred)
+        self._write("local.set $_lam_fn_tmp")
+        # Option record, defaulted to None (tag 1).
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp_result")
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        # $_str_i = byte cursor, $_str_count = code-point index.
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._write("i32.const 0")
+        self._write("local.set $_str_count")
+        self._block_counter += 1
+        loop = f"$Sfi{self._block_counter}_loop"
+        exit_ = f"$Sfi{self._block_counter}_exit"
+        self._write(f"block {exit_}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_a_len")
+        self._write("i32.ge_s")
+        self._write(f"br_if {exit_}")
+        # Classify the leading byte into a code-point byte length.
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("i32.load8_u")
+        self._write("local.tee $_str_byte")
+        self._write("i32.const 0x80")
+        self._write("i32.and")
+        self._write("i32.eqz")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 1")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_str_byte")
+        self._write("i32.const 0xe0")
+        self._write("i32.and")
+        self._write("i32.const 0xc0")
+        self._write("i32.eq")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 2")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("local.get $_str_byte")
+        self._write("i32.const 0xf0")
+        self._write("i32.and")
+        self._write("i32.const 0xe0")
+        self._write("i32.eq")
+        self._write("if (result i32)")
+        self._indent += 1
+        self._write("i32.const 3")
+        self._indent -= 1
+        self._write("else")
+        self._indent += 1
+        self._write("i32.const 4")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.set $_str_end")
+        # pred(env, char_ptr, char_len)
+        self._write("local.get $_lam_fn_tmp")
+        self._write("i32.wrap_i64")
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_end")
+        self._emit_invoke_closure_inline(sig_idx, "_lam_fn_tmp")
+        self._write("if")
+        self._indent += 1
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        self._write("local.get $_alloc_tmp_result")
+        self._write("local.get $_str_count")
+        self._write("i64.extend_i32_s")
+        self._write("i64.store offset=8")
+        self._write(f"br {exit_}")
+        self._indent -= 1
+        self._write("end")
+        # advance the byte cursor by this code point's length and the
+        # code-point index by one.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_end")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write("local.get $_str_count")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_count")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        self._write("local.get $_alloc_tmp_result")
+        self._write(f"local.set ${dst}")
+
+    def _emit_string_split_once(
+        self, recv: Value, sep: Value, dst,
+    ) -> None:
+        """``recv.split_once(sep) -> Option<(String, String)>``. Cuts
+        the receiver at the FIRST occurrence of ``sep`` and answers the
+        two sides with the separator in neither, or ``None`` when
+        ``sep`` does not occur.
+
+        The scan is the same left-to-right ``$str_eq`` walk
+        ``_emit_string_index_of`` runs, and stops at the same place, so
+        the two methods cannot disagree about where the first match is.
+        It does NOT translate the match offset to a code-point index the
+        way ``index_of`` must: the result here is a pair of SLICES of
+        the receiver, so byte offsets are what the packed
+        ``ptr | (len << 32)`` slots need and a code-point count would be
+        an extra walk with nothing to spend it on.
+
+        Both halves are slices INTO the receiver's buffer, allocating
+        nothing beyond the Option record and the 16-byte tuple. That is
+        sound for the same reason ``split``'s chunks are: Capa strings
+        are immutable, so a slice cannot observe a later write.
+
+        An empty separator traps via ``unreachable``, matching
+        ``split``, whose empty-separator trap exists so both backends
+        fail loud on the same invalid input rather than inventing an
+        answer (the Python side raises ValueError from
+        ``_capa_split_once``).
+
+        Layout, from the two existing sources rather than restated: the
+        Option record is ``_OPTION_LAYOUT`` (tag at 0, payload at 8),
+        and the tuple is the uniform 8-byte-per-slot record
+        ``_emit_make_tuple`` builds, so element 0 sits at offset 0 and
+        element 1 at offset 8."""
+        if dst is None:
+            return
+        self._push_string_value_as_ptr_len(recv)
+        self._write("local.set $_str_a_len")
+        self._write("local.set $_str_a_ptr")
+        self._push_string_value_as_ptr_len(sep)
+        self._write("local.set $_str_b_len")
+        self._write("local.set $_str_b_ptr")
+        # Empty separator is a usage error on both backends.
+        self._write("local.get $_str_b_len")
+        self._write("i32.eqz")
+        self._write("if")
+        self._indent += 1
+        self._write("unreachable")
+        self._indent -= 1
+        self._write("end")
+        # Allocate the Option<(String, String)> record up front.
+        self._write(f"i32.const {_OPTION_LAYOUT['size']}")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp_result")
+
+        self._write("i32.const 0")
+        self._write("local.set $_str_i")
+        self._block_counter += 1
+        outer = f"$Sso{self._block_counter}_outer"
+        loop = f"$Sso{self._block_counter}_loop"
+        scan_exit = f"$Sso{self._block_counter}_scan_exit"
+        self._write(f"block {outer}")
+        self._indent += 1
+        self._write(f"block {scan_exit}")
+        self._indent += 1
+        self._write(f"loop {loop}")
+        self._indent += 1
+        # if i + sep.len > recv.len: no match can fit, exit scan.
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.get $_str_a_len")
+        self._write("i32.gt_s")
+        self._write(f"br_if {scan_exit}")
+        # str_eq(recv.ptr + i, sep.len, sep.ptr, sep.len)
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_i")
+        self._write("i32.add")
+        self._write("local.get $_str_b_len")
+        self._write("local.get $_str_b_ptr")
+        self._write("local.get $_str_b_len")
+        self._write("call $str_eq")
+        self._write("if")
+        self._indent += 1
+        # Match at byte offset i. Build the tuple: element 0 is
+        # [0, i), element 1 is [i + sep.len, recv.len).
+        self._write("i32.const 16")
+        self._write("call $alloc")
+        self._write("local.set $_alloc_tmp")
+        # slot 0 = recv.ptr | (i << 32)
+        self._write("local.get $_alloc_tmp")
+        self._write("local.get $_str_a_ptr")
+        self._write("i64.extend_i32_u")
+        self._write("local.get $_str_i")
+        self._write("i64.extend_i32_u")
+        self._write("i64.const 32")
+        self._write("i64.shl")
+        self._write("i64.or")
+        self._write("i64.store offset=0")
+        # after_start = i + sep.len ; after_len = recv.len - after_start
+        self._write("local.get $_str_i")
+        self._write("local.get $_str_b_len")
+        self._write("i32.add")
+        self._write("local.set $_str_start")
+        # slot 1 = (recv.ptr + after_start) | (after_len << 32)
+        self._write("local.get $_alloc_tmp")
+        self._write("local.get $_str_a_ptr")
+        self._write("local.get $_str_start")
+        self._write("i32.add")
+        self._write("i64.extend_i32_u")
+        self._write("local.get $_str_a_len")
+        self._write("local.get $_str_start")
+        self._write("i32.sub")
+        self._write("i64.extend_i32_u")
+        self._write("i64.const 32")
+        self._write("i64.shl")
+        self._write("i64.or")
+        self._write("i64.store offset=8")
+        # Some(tuple): tag 0, pointer payload at offset 8.
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 0")
+        self._write("i32.store")
+        self._write("local.get $_alloc_tmp_result")
+        self._write("local.get $_alloc_tmp")
+        self._write("i64.extend_i32_u")
+        self._write("i64.store offset=8")
+        self._write(f"br {outer}")
+        self._indent -= 1
+        self._write("end")
+        # i++; continue.
+        self._write("local.get $_str_i")
+        self._write("i32.const 1")
+        self._write("i32.add")
+        self._write("local.set $_str_i")
+        self._write(f"br {loop}")
+        self._indent -= 1
+        self._write("end")
+        self._indent -= 1
+        self._write("end")
+        # Not found: write None (tag = 1).
+        self._write("local.get $_alloc_tmp_result")
+        self._write("i32.const 1")
+        self._write("i32.store")
+        self._indent -= 1
+        self._write("end")
         self._write("local.get $_alloc_tmp_result")
         self._write(f"local.set ${dst}")
 

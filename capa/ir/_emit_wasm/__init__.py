@@ -1321,6 +1321,7 @@ class WasmEmitter(
                 # with no String ``+`` in the source.
                 self._emit_str_concat_function()
             if (self._uses_string_order_cmp(module)
+                    or self._uses_compiler_string_sort(module)
                     or self._wasi_fs_list_dir_needs_str_cmp()):
                 # Bug #2: String ``<`` / ``>`` / ``<=`` / ``>=`` lower
                 # to ``call $str_cmp`` (byte-by-byte UTF-8 ordering ==

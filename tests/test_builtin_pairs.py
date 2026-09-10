@@ -96,21 +96,29 @@ _PAIRS: tuple[_Pair, ...] = (
     # Synonyms: both names must stay declared together.
     _complete(("JsonValue", "as_num"), ("JsonValue", "as_number")),
     # ---- the design's sixteen half-pairs, excused ------------------------
-    _excused([("Map", "set")], [("Map", "remove")], _STEP_4),
-    _excused(
-        [("List", "push")], [("List", "pop")],
-        _STEP_4 + "; pop also collides with list.pop and must pass the "
-        "inherited-name quarantine in tests/test_method_emit_agreement.py",
-    ),
-    _excused([("String", "index_of")], [("String", "find_index")], _STEP_5),
+    # Completed in increment 2. remove returns Option<V> where set
+    # returns Unit, on the same axis as List.push / List.pop: set is
+    # told both key and value, remove is told only the key and answers
+    # the value the caller could not otherwise learn atomically.
+    _complete(("Map", "set"), ("Map", "remove")),
+    # Completed in increment 2. pop returns Option<T> while push returns
+    # Unit, which is not an asymmetry: push is told what to add, pop is
+    # not told what it removed. pop also collides with list.pop and is
+    # recorded in _QUARANTINED_COLLISIONS with an override that bypasses
+    # the builtin.
+    _complete(("List", "push"), ("List", "pop")),
+    # Completed in increment 2: index_of asks "where is this substring",
+    # find_index asks "where is the first character LIKE this", and both
+    # answer Option<Int> over a code-point index.
+    _complete(("String", "index_of"), ("String", "find_index")),
     _excused([("List", "find_index")], [("List", "index_of")], _STEP_7),
     _excused([("Set", "is_subset")], [("Set", "is_superset")], _STEP_7),
     _excused(
-        [("List", "map"), ("List", "filter"), ("List", "fold")],
-        [("Map", "map"), ("Map", "filter"), ("Map", "fold")],
-        "Map.filter is scheduled for step 4 (the Map.remove workaround needs "
-        "it); the design names map_values rather than map and no fold, so "
-        "those two stay excused until step 7 decides them",
+        [("List", "map"), ("List", "filter"), ("Map", "filter")],
+        [("Map", "map"), ("Map", "fold")],
+        "Map.filter landed in increment 2; the design names map_values "
+        "rather than map, and no fold, so those two stay excused until "
+        "step 7 decides them",
     ),
     _excused(
         [("List", "map"), ("List", "filter"), ("List", "fold")],

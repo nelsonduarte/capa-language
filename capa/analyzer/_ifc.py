@@ -88,6 +88,22 @@ _COMBINATOR_SPECS: dict[tuple[str, str], tuple[str, int, "int | None"]] = {
     ("Result", "map"):      ("transform", 0, None),
     ("Result", "and_then"): ("bind",      0, None),
     ("Result", "map_err"):  ("transform", 0, None),
+    # ``Map.filter`` (increment 2) is deliberately ABSENT, and the
+    # absence is measured rather than assumed. Map appears in neither
+    # this table nor ``_STRUCTURE_OPS``, so a Map-typed result falls
+    # back to the conservative whole-value join. MEASURED on
+    # ``m.filter(secret-dependent predicate).length()``: 1 warning with
+    # no entry, and 1 warning with an entry added, i.e. the entry buys
+    # no precision on the shape that would motivate it, because the
+    # structure query it is supposed to keep clean (``length``) is not
+    # a ``_STRUCTURE_OPS`` member for Map either. Adding the combinator
+    # entry ALONE would therefore be half a change: it needs the
+    # matching ``_STRUCTURE_OPS`` rows for Map, and that is a widening
+    # of the element-granular split to a new owner, which is a
+    # precision decision with its own blast radius rather than a
+    # by-product of adding a method. The failure direction here is
+    # fail-SAFE (a false positive, never a missed flow), so the method
+    # ships without it.
 }
 
 # Structure / shape queries that read only a container's STRUCTURE

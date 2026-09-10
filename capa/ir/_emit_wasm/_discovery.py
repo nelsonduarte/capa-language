@@ -103,6 +103,34 @@ def _pattern_str_literals(pat):
             yield from _pattern_str_literals(s)
 
 
+#: The ``String`` methods whose Wasm lowering emits a ``call $str_eq``.
+#: This is a PHYSICAL FACT about the emitted code, checkable by counting
+#: ``call $str_eq`` in the WAT of a one-call program, and it is the gate
+#: that decides whether the helper is emitted at all: a method missing
+#: here fails at compile time with ``unknown func: failed to find name
+#: $str_eq``.
+#:
+#: It is named rather than left inline because a SECOND table keys on
+#: the same fact for a different purpose. ``$str_eq`` exits at the first
+#: differing byte, so a caller of it is a compare oracle (CWE-208), and
+#: ``capa.analyzer._ifc_tables._CT_SHORT_CIRCUIT_METHODS`` lists the
+#: ones the constant-time checker refuses. The two lists are NOT the
+#: same set and must not be merged: this one is what the code does, that
+#: one is which of those the checker currently polices, and it is
+#: deliberately smaller (``split`` and ``replace`` are a recorded
+#: fail-open the separate constant-time effort owns).
+#:
+#: What CAN be enforced, and is, by
+#: ``tests/test_ifc_tables_declared.py``, is the containment: every
+#: String method the constant-time table calls a compare oracle must
+#: appear here, or the table is claiming a mechanism the lowering does
+#: not have. That catches the direction that fails OPEN.
+STR_EQ_CALLING_STRING_METHODS: frozenset[str] = frozenset({
+    "contains", "starts_with", "ends_with",
+    "index_of", "replace", "split", "split_once",
+})
+
+
 class _DiscoveryMixin:
     def _uses_heap_alloc(self, module: Module) -> bool:
         """Detect whether any function body contains an instruction
@@ -399,8 +427,7 @@ class _DiscoveryMixin:
                     if _map_key_type(recv_ty) == "String":
                         return True
                 if recv_ty == "String" and instr.method in (
-                    "contains", "starts_with", "ends_with",
-                    "index_of", "replace", "split",
+                    STR_EQ_CALLING_STRING_METHODS
                 ):
                     return True
                 # List<String>.contains compares the needle to
@@ -457,6 +484,32 @@ class _DiscoveryMixin:
                     and (instr.left.ty == "String"
                          or instr.right.ty == "String")):
                 return True
+        return False
+
+    def _uses_compiler_string_sort(self, module: Module) -> bool:
+        """True if any ``sorted`` / ``min`` / ``max`` is called on a
+        ``List<String>`` or ``List<Char>``.
+
+        Those are the compiler-ordered methods, and over a String-shaped
+        element their comparison is ``call $str_cmp``, exactly as the
+        ``<`` operator's is. Without this gate the helper is emitted
+        only when the SOURCE contains a String comparison, and
+        ``xs.sorted()`` contains none: the comparison exists only in the
+        code the backend generates. Measured: omitting this gives
+        ``wasm-tools parse failed: unknown func: failed to find name
+        $str_cmp``, the same failure shape ``split_once`` hit against
+        ``$str_eq`` earlier in this increment.
+
+        Char is included because a Char is a one-code-point String and
+        shares its slot encoding and its comparison helper."""
+        for _fn, instr in walk_module(module):
+            if (isinstance(instr, MethodCall)
+                    and instr.method in ("sorted", "min", "max")):
+                recv_ty = instr.receiver.ty or ""
+                if recv_ty.startswith("List") and _element_type_of_list(
+                    recv_ty
+                ) in ("String", "Char"):
+                    return True
         return False
 
     def _uses_string_concat(self, module: Module) -> bool:
