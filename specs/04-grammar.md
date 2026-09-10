@@ -93,13 +93,17 @@ and a `return expr` in its body is then a type error (`return: expected
 restrictions the **analyzer** enforces, not the parser.
 
 **Attributes.** The grammar accepts any identifier and any
-`key: "value"` pairs, but the analyzer restricts the v1 catalogue to
-**six**: `security`, `deprecated`, `audited`, `vex`, `strict_ifc`,
-`constant_time` (schema in
+`key: "value"` pairs, but the analyzer restricts the catalogue to
+**seven**: `security`, `deprecated`, `audited`, `vex`, `strict_ifc`,
+`constant_time`, `export` (schema in
 [`capa/analyzer/_items.py`](../capa/analyzer/_items.py) line 43,
 `_ATTRIBUTE_SCHEMA`). The first four carry documentation/supply-chain
-metadata; `strict_ifc` and `constant_time` are behavioural and are
-written without arguments (`@strict_ifc()`, `@constant_time()`). The
+metadata; `strict_ifc`, `constant_time` and `export` are behavioural
+and are written without arguments (`@strict_ifc()`, `@constant_time()`,
+`@export()`; `@export` marks a top-level function for the Wasm
+Component Model export surface, see
+[22-wasm-component-model-backend.md](22-wasm-component-model-backend.md)).
+The
 `@secret`/`@public` labels and the `declassify` operation are language
 constructs, distinct from these attributes. Attribute argument values
 must be string literals, so the metadata is statically inspectable.
