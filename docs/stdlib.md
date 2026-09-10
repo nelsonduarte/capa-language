@@ -43,7 +43,7 @@ failure at the same input; neither wraps silently.
 | `starts_with(s: String)` | `Bool` | |
 | `ends_with(s: String)` | `Bool` | |
 | `split(sep: String)` | `List<String>` | Split by separator |
-| `find_index(pred: (String) -> Bool)` | `Option<Int>` | `Some(i)` with the code-point index of the first character satisfying `pred`, or `None`. The predicate receives each character as a one-code-point `String`, the same thing `for c in s` binds. Where `index_of` asks "where is this substring", this asks "where is the first character like this". |
+| `find_index(pred: Fun(String) -> Bool)` | `Option<Int>` | `Some(i)` with the code-point index of the first character satisfying `pred`, or `None`. The predicate receives each character as a one-code-point `String`, the same thing `for c in s` binds. Where `index_of` asks "where is this substring", this asks "where is the first character like this". |
 | `split_once(sep: String)` | `Option<(String, String)>` | The receiver cut at the FIRST occurrence of `sep`, into the part before and the part after; the separator is in neither. `None` when `sep` does not occur. `"k=v=w".split_once("=")` is `Some(("k", "v=w"))`, where `split("=")` would give three parts. Aborts the program on an empty separator, exactly as `split` does. |
 | `lines()` | `List<String>` | The lines of the receiver, with their terminators removed. A terminator is `\r\n`, `\n`, or a lone `\r`; `\r\n` is matched first, so a Windows-authored line keeps no trailing `\r`. A trailing terminator yields NO phantom empty last element, which is what distinguishes this from `split("\n")`: `"a\nb\n".lines()` has 2 elements, `"a\nb\n".split("\n")` has 3. `"".lines()` is empty; `"\n".lines()` is one empty line. |
 | `replace(old: String, new: String)` | `String` | Replace every occurrence |
@@ -109,7 +109,10 @@ infers the type from the first `push`.
 | `flat_map<U>(f: Fun(T) -> List<U>)` | `List<U>` | Apply `f` to each element and concatenate the resulting lists in order. |
 
 `sorted()`, `min()` and `max()` order `Float` TOTALLY: `NaN` sorts
-after every number, and the clean elements keep their order around it.
+after every number, and the non-`NaN` elements still come out in
+ascending order around it. Consequently, when a `NaN` is present,
+`min()` answers the smallest real number and `max()` answers `NaN`,
+each agreeing with `sorted().first()` / `sorted().last()`.
 This matters because the obvious alternative is not merely unspecified:
 every comparison against `NaN` is false, so a sort built on `<` alone
 silently misplaces the NON-`NaN` elements too, and differently on
@@ -184,9 +187,10 @@ the Python and Wasm backends.
 `map` / `filter` / `fold` and the indexed queries carry the same
 signatures and semantics as their `List` homonyms: `r.map(f)` means
 `r.to_list().map(f)`. The `List` methods **not** declared on `Range`
-are `sorted_by`, `reverse`, `enumerate`, `zip`, `flat_map` and the
-mutating `push`; calling one reports `type 'Range' has no method
-'<name>'`. Reach them through `to_list()`.
+are `sorted_by`, `sorted`, `min`, `max`, `reverse`, `enumerate`,
+`zip`, `flat_map` and the mutating `push` and `pop`; calling one
+reports `type 'Range' has no method '<name>'`. Reach them through
+`to_list()`.
 
 All twelve operate against the half-open `[start, stop)` interval
 (`stop = end + 1` for the inclusive `a..=b` form, `stop = end` for
@@ -214,7 +218,7 @@ Hash map. Construct via `new_map()` with a required type annotation.
 | `keys()` | `List<K>` | |
 | `values()` | `List<V>` | |
 | `pairs()` | `List<(K, V)>` | Key/value pairs as tuples; destructure with `let (k, v) = pair` |
-| `filter(pred: (K, V) -> Bool)` | `Map<K, V>` | A FRESH map of the pairs for which `pred(k, v)` is true, in the receiver's insertion order. Does not mutate the receiver. The predicate takes the key and the value, because a `Map` entry is both. On the Wasm backend the receiver's type must be known: annotate the binding (`let m: Map<String, Float> = new_map()`) rather than relying on inference from a later `set`, which does not reach the receiver. |
+| `filter(pred: Fun(K, V) -> Bool)` | `Map<K, V>` | A FRESH map of the pairs for which `pred(k, v)` is true, in the receiver's insertion order. Does not mutate the receiver. The predicate takes the key and the value, because a `Map` entry is both. On the Wasm backend the receiver's type must be known: annotate the binding (`let m: Map<String, Float> = new_map()`) rather than relying on inference from a later `set`, which does not reach the receiver; when the types have not reached it, `--wasm` refuses the program with an error naming the closure signature it could not find (`Map.filter: no closure registered with sig ...`) rather than guessing, while the same program still runs on the Python backends. |
 
 ```capa
 let m: Map<String, Int> = new_map()

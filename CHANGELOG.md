@@ -11,6 +11,25 @@ breaking changes and the discipline is still being shaped.
 
 **Security / soundness (unreleased).**
 
+- *A `@secret` value used as the key of a container removal now taints the
+  container, matching the insertion direction.* `Set.remove(k)` with a
+  `@secret` `k` left the receiver public, although the set's observable
+  length and membership afterwards depend on the secret: the same program's
+  `add` half warned while its `remove` half was silent, on all three
+  backends. `("Set", "remove")` now joins `_CONTAINER_MUTATORS` in
+  [`capa/analyzer/_ifc_tables.py`](capa/analyzer/_ifc_tables.py), and the
+  new `Map.remove` enters the same table on declaration, so a later public
+  read of the container (and, for `Map.remove`, the returned value) is
+  reported like `push` / `add` / `set` always were. This is the standard
+  warn tier for explicit data flows (`warning: information-flow: a @secret
+  value reaches Stdio.println ...`, exit 0), not a hard error. Found during
+  this increment's adjudication; pinned RED-first by
+  `TestRemovalSelectsOnASecret` in
+  [`tests/test_ifc_container_effect.py`](tests/test_ifc_container_effect.py),
+  with the table-completeness guard turning red if the entry is deleted.
+  Zero newly-rejected programs across the 246-file example sweep and the
+  1338-file downstream sweep. Commits `06684e8`, `e9be05b`.
+
 - *A linear / typestate value packed into a struct FIELD (a CARRIER) is now a
   must-consume value, closing a silent double-free at `--check` (carrier /
   husk-reconsume class).* A struct that transitively owns a linear / typestate
@@ -244,6 +263,59 @@ breaking changes and the discipline is still being shaped.
 
 **Added (unreleased).**
 
+- *Nine standard-library methods: `List.pop`, `List.sorted`, `List.min`,
+  `List.max`, `Map.remove`, `Map.filter`, `String.lines`,
+  `String.split_once`, `String.find_index`.* All nine run byte-identically
+  on the three execution paths (`--run`, `--run --ir`, `--wasm --run`) and
+  are exercised by the characterization corpus under
+  [`tests/stdlib_characterization/`](tests/stdlib_characterization/).
+  The decided semantics:
+  - `List.pop() -> Option<T>` and `Map.remove(k) -> Option<V>` MUTATE the
+    receiver and return the removed value, `None` on the empty / absent
+    case. The removal is visible through every alias, like `push`.
+    `Set.remove` keeps returning `()`: the caller supplied the value, so
+    there is nothing new to return. The axis is written into
+    [`capa/builtins.py`](capa/builtins.py): whether the removed value is
+    information the caller does not already hold.
+  - `List.sorted()` (fresh, ascending, stable), `min()` and `max()` are
+    admitted only for element types the ordering operators accept:
+    `Int`, `Float`, `String`, and `Char` (through String compatibility);
+    the predicate consults the same `ORDERED_TYPES` set the operators use
+    ([`capa/typesys.py`](capa/typesys.py)). Any other element type is
+    refused at `--check` (`error: method 'sorted': List<Bool> has no
+    order the compiler can supply ... Use sorted_by with your own
+    comparator to order it`), identically on all three backends
+    ([`tests/test_ir_wasm_parity.py`](tests/test_ir_wasm_parity.py)
+    `TestCompilerOrderedRejectParity`). Empty `min` / `max` answer
+    `None`, following `first` / `last` / `get`.
+  - The compiler-supplied `Float` order is TOTAL: `NaN` ranks after every
+    number and the non-`NaN` elements still come out in ascending order,
+    byte-identically on the three backends. A non-total comparison
+    silently misplaces the non-`NaN` elements too, which is why the
+    compiler supplies the order here while `sorted_by` (where the USER
+    supplies the comparator, with its separately pinned known
+    divergence) is deliberately unchanged.
+  - `String.lines()` strips terminators (`\r\n`, `\n`, lone `\r`; `\r\n`
+    matched first) and yields no phantom empty last element;
+    `String.split_once(sep)` cuts at the FIRST occurrence and answers
+    `None` when `sep` is absent; `String.find_index(pred)` answers the
+    code-point index of the first character satisfying `pred`, never a
+    byte offset.
+  - Inside a `@constant_time()` function, `Map.remove` with a `@secret`
+    key and `String.split_once` on a `@secret` operand are now hard
+    errors, as new entries in the constant-time tables
+    ([`capa/analyzer/_ifc_tables.py`](capa/analyzer/_ifc_tables.py))
+    beside the sibling entries they scan like (`Map.get`,
+    `String.index_of`); pinned in
+    [`tests/test_labels.py`](tests/test_labels.py). This claims nothing
+    about any method BEING constant-time; it adds diagnostics for the
+    same mechanism the existing entries already flag.
+
+  Documented in [`docs/stdlib.md`](docs/stdlib.md) and
+  [`docs/reference.md`](docs/reference.md) section 6.5. Commits
+  `2096e45`, `d440410`, `8c4c15e`, `d2c9922`, `06684e8`, `e9be05b`,
+  `5364789`.
+
 - *The CycloneDX and SPDX SBOMs now carry the resolved `capa.toml`
   dependencies.* `capa --cyclonedx` (CycloneDX 1.6) and `capa --spdx`
   (SPDX 2.3) emit one component per resolved dependency, each with its name,
@@ -260,6 +332,29 @@ breaking changes and the discipline is still being shaped.
 
 **Fixed / test nets (unreleased).**
 
+- *The guard nets that came with the stdlib increment, each proven to bite
+  under a named mutation before landing.* Every builtin method must now
+  compile ALONE in its own function on the Wasm backend
+  (`TestScratchLocalIsolationSweep` in
+  [`tests/ir_wasm/test_wasm_sweeps.py`](tests/ir_wasm/test_wasm_sweeps.py)),
+  closing the masking class where a method's Wasm scratch locals were
+  declared only under a sibling method's flag and every corpus program
+  happened to call the sibling first. Every known-divergent
+  characterization program must carry a pin test
+  (`TestKnownDivergentIsPinned`), so a divergence can no longer be
+  recorded without asserting what it is. The IFC / constant-time table
+  discovery guard fails closed on a table with a non-pair key
+  ([`tests/test_ifc_tables_declared.py`](tests/test_ifc_tables_declared.py)),
+  and the constant-time short-circuit table's String entries are asserted
+  to call `$str_eq` in their emitted lowering, enforcing the recorded
+  membership criterion by measurement. The sorting corpus gained negative
+  integers (flipping the Wasm Int comparator to unsigned previously
+  survived the whole suite) and the NaN known-divergent pin now asserts
+  that the non-`NaN` elements lose their order under a non-total user
+  comparator, not merely that `NaN` lands somewhere unspecified; that
+  corruption of the clean elements is the reason `sorted()` supplies a
+  total order. Commits `8c4c3df`, `b95acb0`, `464d298`, `f4414a1`,
+  `6363891`, `e2d3801`, `df3d484`, `ee6ed3c`.
 - *The `--ir` backend no longer crashes on a `PatStruct` / `PatOr` match arm
   (audit OBS-1, disclosed-open at `1.32.0`).* The CIR Python pattern renderer
   raised `NotImplementedError` on a struct-destructuring or or-pattern in match
