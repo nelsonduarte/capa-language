@@ -2623,35 +2623,58 @@ class _IfcMixin:
         return None
 
     def _check_ifc_container_mutation(self, e: A.MethodCall, recv_ty) -> None:
-        """When a mutating method (``List.push`` / ``Set.add`` /
-        ``Map.set``) is called with a @secret argument, record that the
-        mutated container is @secret from here on, keyed on the
-        ``(root-binding, field-path)`` it lives at, so a later read of that
-        path does not launder the secret back to public. Without this,
-        ``let m = new_map(); m.set(k, secret); m.get(k)`` (or the
-        field-chain form ``bag.items.push(secret); bag.items.get(0)``)
-        would come out public on the read.
+        """When a state-mutating container method (any MEMBER of
+        ``_CONTAINER_MUTATORS``) makes the container depend on a secret,
+        record that the mutated container is @secret from here on, keyed
+        on the ``(root-binding, field-path)`` it lives at, so a later
+        read of that path does not launder the secret back to public.
+        Two directions feed the same record:
+
+        * DATA: a @secret argument in one of the member's taint
+          positions. Without this, ``let m = new_map(); m.set(k,
+          secret); m.get(k)`` (or the field-chain form
+          ``bag.items.push(secret); bag.items.get(0)``) would come out
+          public on the read.
+        * CONTROL (strict only): the mutation executes under a secret
+          pc, so WHETHER it happened encodes the secret in the
+          container's observable state (length / membership /
+          iteration) with entirely public arguments -- ``List.pop``
+          included, whose taint-index set is empty. The pc enters
+          through the shared ``_join_pc_if_strict`` seam, the same one
+          the scalar-assign and field-store implicit channels use, so
+          the default tier is untouched by construction.
+
+        The lookup tests MEMBERSHIP (``positions is not None``), never
+        truthiness: an empty index set is a real mutator, and the old
+        truthiness test is exactly how the no-argument member escaped.
 
         The receiver may be a plain identifier (``xs.push(secret)`` -> path
         ``()``) or an Ident-rooted field chain (``bag.items.push(secret)``
         -> path ``("items",)``; nested ``bag.a.b`` -> ``("a", "b")``). A
         receiver not rooted at a binding is left untracked (a disclosed
         residual, as before). The record is monotonic (join) and
-        branch-scoped, so it is sound under conditional / looping mutation."""
+        branch-scoped, so it is sound under conditional / looping mutation.
+
+        The read-gated channel this seeds guards SINK-observable reads
+        only: a consequence that ABORTS the program instead of reaching
+        a sink (a trap on a read of the unmutated shape) is outside the
+        gate's guarantee -- the strict tier's disclosed
+        termination-channel residual, pinned by
+        tests/analyzer/test_ifc_pc_container.py."""
         cap_name = getattr(recv_ty, "name", None)
         if cap_name is None:
             return
-        taint_args = _CONTAINER_MUTATORS.get((cap_name, e.method))
-        if not taint_args:
+        positions = _CONTAINER_MUTATORS.get((cap_name, e.method))
+        if positions is None:
             return
         target = self._container_mutation_key(e.receiver)
         if target is None:
             return
-        incoming = L.join_all(
+        incoming = self._join_pc_if_strict(L.join_all(
             self._label_of(e.args[idx])
-            for idx in taint_args
+            for idx in positions
             if idx < len(e.args)
-        )
+        ))
         if L.normalize(incoming) != L.SECRET:
             return
         # Record the taint in a SEPARATE, per-(binding, field-path),
@@ -2687,8 +2710,11 @@ class _IfcMixin:
         cap_name = getattr(recv_ty, "name", None)
         if cap_name is None:
             return
+        # MEMBERSHIP test, like every consumer of the classification; an
+        # empty index set (List.pop) iterates zero positions below, which
+        # is correct -- a no-argument mutator inserts nothing.
         positions = _CONTAINER_MUTATORS.get((cap_name, e.method))
-        if not positions:
+        if positions is None:
             return
         for idx in positions:
             if idx >= len(e.args):
@@ -2727,7 +2753,7 @@ class _IfcMixin:
         if cap_name is None:
             return
         positions = _CONTAINER_MUTATORS.get((cap_name, e.method))
-        if not positions:
+        if positions is None:
             return
         for idx in positions:
             if idx >= len(e.args):
@@ -2758,7 +2784,7 @@ class _IfcMixin:
         if cap_name is None:
             return
         positions = _CONTAINER_MUTATORS.get((cap_name, e.method))
-        if not positions:
+        if positions is None:
             return
         args = getattr(recv_ty, "args", ())
         for i in positions:
