@@ -192,6 +192,10 @@ _CONTAINER_NON_MUTATORS: frozenset[tuple[str, str]] = frozenset({
 # guard can refuse an entry filed under one of them, and so a NEW
 # non-capability owner (a future Deque / Queue) lands in the mutable
 # universe by default and must be classified before the build is green.
+# FAIL-OPEN direction: an owner wrongly added here AND to the registry
+# escapes the guard, so this set's exact value is pinned by an equality
+# test (tests/analyzer/test_ifc_pc_container.py) that states the
+# run-the-oracle-first obligation for any growth.
 _IMMUTABLE_VALUE_OWNERS: frozenset[str] = frozenset({
     "String", "Range", "Option", "Result", "JsonValue",
 })

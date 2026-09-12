@@ -509,6 +509,24 @@ class TestClassificationGuardFailsClosed(unittest.TestCase):
             f"a defect: {defects}",
         )
 
+    def test_the_immutable_exemption_is_exactly_the_oracle_backed_set(self):
+        """The exemption's one fail-open direction: an owner added to
+        the registry AND to ``_IMMUTABLE_VALUE_OWNERS`` in the same
+        stroke passes the guard silently, because exemption removes it
+        from the derived universe. This equality pin makes growing the
+        exemption a deliberate, visible edit of a test whose docstring
+        states the obligation: an owner may join this set only after
+        the by-construction mutator oracle has measured EVERY one of
+        its methods immutable (the run that backs the five below)."""
+        from capa.analyzer._ifc_tables import _IMMUTABLE_VALUE_OWNERS
+        self.assertEqual(
+            _IMMUTABLE_VALUE_OWNERS,
+            frozenset({"String", "Range", "Option", "Result", "JsonValue"}),
+            "the immutable-owner exemption changed; run the mutator "
+            "oracle over the new owner's full method surface before "
+            "widening this pin",
+        )
+
 
 def _run_capa(argv, src):
     """Run ``python -m capa <argv> <file>`` on a temp file holding
@@ -625,7 +643,13 @@ class TestFunValueResidualPinned(unittest.TestCase):
     A documented false NEGATIVE, never a false positive. These pins
     convert to RED-first tests the day the Fun-value increment (Sibling
     C of the design) lands; until then they make the boundary impossible
-    to move silently."""
+    to move silently.
+
+    Eleven faces: the six of the design plus the five the round-2
+    contest constructed (a Fun bound by name, carried in a Map, passed
+    through a returning HOF, carried in a tuple, aliased by a second
+    let). The enumeration is NOT claimed complete; it is the measured
+    boundary as of this increment."""
 
     FACES = {
         "let-bound Fun": (
@@ -703,6 +727,75 @@ class TestFunValueResidualPinned(unittest.TestCase):
             "        match fs.get(0)\n"
             "            Some(g) -> g()\n"
             "            None -> seen = 1\n"
+            '    stdio.println("len=${xs.length()}")\n'
+        ),
+        "Fun bound by name to a free function": (
+            "fun bump(xs: Set<String>)\n"
+            '    xs.add("extra")\n'
+            "\n"
+            "@strict_ifc()\n"
+            "fun main(env: Env, stdio: Stdio)\n"
+            "    var xs: Set<String> = new_set()\n"
+            '    xs.add("base")\n'
+            "    let f = bump\n"
+            '    let k = env.get("API_KEY").unwrap_or("none")\n'
+            '    if k.starts_with("s")\n'
+            "        f(xs)\n"
+            '    stdio.println("len=${xs.length()}")\n'
+        ),
+        "Fun carried in a Map": (
+            "@strict_ifc()\n"
+            "fun main(env: Env, stdio: Stdio)\n"
+            "    var xs: Set<String> = new_set()\n"
+            '    xs.add("base")\n'
+            "    var fm: Map<String, Fun() -> Unit> = new_map()\n"
+            '    fm.set("go", fun () => xs.add("extra"))\n'
+            "    var seen: Int = 0\n"
+            '    let k = env.get("API_KEY").unwrap_or("none")\n'
+            '    if k.starts_with("s")\n'
+            '        match fm.get("go")\n'
+            "            Some(g) -> g()\n"
+            "            None -> seen = 1\n"
+            '    stdio.println("len=${xs.length()}")\n'
+        ),
+        "Fun through a returning HOF": (
+            "fun pick(g: Fun() -> Unit) -> Fun() -> Unit\n"
+            "    return g\n"
+            "\n"
+            "@strict_ifc()\n"
+            "fun main(env: Env, stdio: Stdio)\n"
+            "    var xs: Set<String> = new_set()\n"
+            '    xs.add("base")\n'
+            '    let f = fun () => xs.add("extra")\n'
+            "    let h = pick(f)\n"
+            '    let k = env.get("API_KEY").unwrap_or("none")\n'
+            '    if k.starts_with("s")\n'
+            "        h()\n"
+            '    stdio.println("len=${xs.length()}")\n'
+        ),
+        "Fun carried in a tuple": (
+            "@strict_ifc()\n"
+            "fun main(env: Env, stdio: Stdio)\n"
+            "    var xs: Set<String> = new_set()\n"
+            '    xs.add("base")\n'
+            '    let t = (fun () => xs.add("extra"), 1)\n'
+            "    let (g, n) = t\n"
+            "    let _ = n\n"
+            '    let k = env.get("API_KEY").unwrap_or("none")\n'
+            '    if k.starts_with("s")\n'
+            "        g()\n"
+            '    stdio.println("len=${xs.length()}")\n'
+        ),
+        "Fun aliased by a second let": (
+            "@strict_ifc()\n"
+            "fun main(env: Env, stdio: Stdio)\n"
+            "    var xs: Set<String> = new_set()\n"
+            '    xs.add("base")\n'
+            '    let f = fun () => xs.add("extra")\n'
+            "    let g = f\n"
+            '    let k = env.get("API_KEY").unwrap_or("none")\n'
+            '    if k.starts_with("s")\n'
+            "        g()\n"
             '    stdio.println("len=${xs.length()}")\n'
         ),
     }
