@@ -635,183 +635,156 @@ class TestRebindImprecisionPinned(unittest.TestCase):
 
 
 class TestFunValueResidualPinned(unittest.TestCase):
-    """The Fun-value residual, DISCLOSED and PINNED: a container
-    mutation (or a sink call) reached through a Fun VALUE that was
-    defined under a public pc and invoked under a secret one is not
-    tracked -- the same first-class-function residual family already
-    disclosed for the sink direction (SECURITY.md, closure residuals).
-    A documented false NEGATIVE, never a false positive. These pins
-    convert to RED-first tests the day the Fun-value increment (Sibling
-    C of the design) lands; until then they make the boundary impossible
-    to move silently.
+    """The Fun-value residual (Sibling C of the design), pinned at class
+    level. The strict pc rule acts where a lambda's body is ANALYSED,
+    at its definition; a Fun VALUE invoked somewhere else is not
+    re-analysed under the pc of that invocation. This is the escaping /
+    aliased / higher-order / returned closure family SECURITY.md
+    already lists as an open residual, observed here for the container
+    channel too: a documented false NEGATIVE, never a false positive.
+    These pins convert to RED-first member tests the day the Fun-value
+    increment lands; until then they keep the boundary from moving
+    silently, face by face (a change that started refusing one carrier
+    and not another shows up as exactly that face).
 
-    Eleven faces: the six of the design plus the five the round-2
-    contest constructed (a Fun bound by name, carried in a Map, passed
-    through a returning HOF, carried in a tuple, aliased by a second
-    let). The enumeration is NOT claimed complete; it is the measured
-    boundary as of this increment."""
+    No face is written out. ``_program`` composes a CARRIER (the shape
+    the Fun travels through between its definition and its invocation;
+    ten are pinned) with a PAYLOAD (what the Fun does when invoked: a
+    container mutation, or a sink call) around the strict skeleton the
+    member tests use, and the eleven faces are every carrier on the
+    mutation payload plus the plainest carrier on the sink payload. The
+    enumeration is NOT claimed complete; it is the measured boundary as
+    of this increment."""
 
-    FACES = {
-        "let-bound Fun": (
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            '    let f = fun () => xs.add("extra")\n'
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        f()\n"
-            '    stdio.println("len=${xs.length()}")\n'
+    # The token a carrier fragment spells where the payload lands; the
+    # builder refuses a carrier that does not spell it exactly once.
+    _BODY = "<body>"
+
+    # carrier -> (declarations outside main, the lines that bind or carry
+    # the Fun before the guard, the lines that invoke it under the guard)
+    _CARRIERS = {
+        "let binding": (
+            (),
+            ("let f = fun () => <body>",),
+            ("f()",),
         ),
-        "sink sibling": (
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            '    let f = fun () => stdio.println("hi")\n'
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        f()\n"
+        "second let alias": (
+            (),
+            ("let f = fun () => <body>", "let g = f"),
+            ("g()",),
         ),
-        "Fun passed to a HOF": (
-            "fun apply(g: Fun() -> Unit)\n"
-            "    g()\n"
-            "\n"
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            '    let f = fun () => xs.add("extra")\n'
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        apply(f)\n"
-            '    stdio.println("len=${xs.length()}")\n'
+        "tuple element": (
+            (),
+            ("let t = (fun () => <body>, 1)", "let (g, n) = t", "let _ = n"),
+            ("g()",),
         ),
-        "Fun returned from a function": (
-            "fun make(xs: Set<String>) -> Fun() -> Unit\n"
-            '    return fun () => xs.add("extra")\n'
-            "\n"
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            "    let f = make(xs)\n"
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        f()\n"
-            '    stdio.println("len=${xs.length()}")\n'
+        "List element": (
+            (),
+            (
+                "var fs: List<Fun() -> Unit> = []",
+                "fs.push(fun () => <body>)",
+                "var seen: Int = 0",
+            ),
+            ("match fs.get(0)", "    Some(g) -> g()", "    None -> seen = 1"),
         ),
-        "Fun stored in a struct": (
-            "type Holder {\n"
-            "    act: Fun() -> Unit\n"
-            "}\n"
-            "\n"
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            '    let h = Holder(act: fun () => xs.add("extra"))\n'
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        h.act()\n"
-            '    stdio.println("len=${xs.length()}")\n'
+        "Map value": (
+            (),
+            (
+                "var fm: Map<String, Fun() -> Unit> = new_map()",
+                'fm.set("go", fun () => <body>)',
+                "var seen: Int = 0",
+            ),
+            ('match fm.get("go")', "    Some(g) -> g()", "    None -> seen = 1"),
         ),
-        "Fun stored in a list": (
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            "    var fs: List<Fun() -> Unit> = []\n"
-            '    fs.push(fun () => xs.add("extra"))\n'
-            "    var seen: Int = 0\n"
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        match fs.get(0)\n"
-            "            Some(g) -> g()\n"
-            "            None -> seen = 1\n"
-            '    stdio.println("len=${xs.length()}")\n'
+        "struct field": (
+            ("type Holder {", "    act: Fun() -> Unit", "}"),
+            ("let h = Holder(act: fun () => <body>)",),
+            ("h.act()",),
         ),
-        "Fun bound by name to a free function": (
-            "fun bump(xs: Set<String>)\n"
-            '    xs.add("extra")\n'
-            "\n"
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            "    let f = bump\n"
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        f(xs)\n"
-            '    stdio.println("len=${xs.length()}")\n'
+        "HOF argument": (
+            ("fun apply(g: Fun() -> Unit)", "    g()"),
+            ("let f = fun () => <body>",),
+            ("apply(f)",),
         ),
-        "Fun carried in a Map": (
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            "    var fm: Map<String, Fun() -> Unit> = new_map()\n"
-            '    fm.set("go", fun () => xs.add("extra"))\n'
-            "    var seen: Int = 0\n"
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            '        match fm.get("go")\n'
-            "            Some(g) -> g()\n"
-            "            None -> seen = 1\n"
-            '    stdio.println("len=${xs.length()}")\n'
+        "returning HOF": (
+            ("fun pick(g: Fun() -> Unit) -> Fun() -> Unit", "    return g"),
+            ("let f = fun () => <body>", "let h = pick(f)"),
+            ("h()",),
         ),
-        "Fun through a returning HOF": (
-            "fun pick(g: Fun() -> Unit) -> Fun() -> Unit\n"
-            "    return g\n"
-            "\n"
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            '    let f = fun () => xs.add("extra")\n'
-            "    let h = pick(f)\n"
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        h()\n"
-            '    stdio.println("len=${xs.length()}")\n'
+        "factory return": (
+            (
+                "fun make(xs: Set<String>) -> Fun() -> Unit",
+                "    return fun () => <body>",
+            ),
+            ("let f = make(xs)",),
+            ("f()",),
         ),
-        "Fun carried in a tuple": (
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            '    let t = (fun () => xs.add("extra"), 1)\n'
-            "    let (g, n) = t\n"
-            "    let _ = n\n"
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        g()\n"
-            '    stdio.println("len=${xs.length()}")\n'
-        ),
-        "Fun aliased by a second let": (
-            "@strict_ifc()\n"
-            "fun main(env: Env, stdio: Stdio)\n"
-            "    var xs: Set<String> = new_set()\n"
-            '    xs.add("base")\n'
-            '    let f = fun () => xs.add("extra")\n'
-            "    let g = f\n"
-            '    let k = env.get("API_KEY").unwrap_or("none")\n'
-            '    if k.starts_with("s")\n'
-            "        g()\n"
-            '    stdio.println("len=${xs.length()}")\n'
+        "named free function": (
+            ("fun bump(xs: Set<String>)", "    <body>"),
+            ("let f = bump",),
+            ("f(xs)",),
         ),
     }
 
+    # payload -> (the state seeded before the carrier, what the Fun does
+    # when invoked, the public observation after the guard)
+    _PAYLOADS = {
+        "container mutation": (
+            ("var xs: Set<String> = new_set()", 'xs.add("base")'),
+            'xs.add("extra")',
+            ('stdio.println("len=${xs.length()}")',),
+        ),
+        "sink call": ((), 'stdio.println("hi")', ()),
+    }
+
+    @classmethod
+    def faces(cls):
+        """The eleven pinned (carrier, payload) faces."""
+        return [(c, "container mutation") for c in cls._CARRIERS] + [
+            ("let binding", "sink call"),
+        ]
+
+    @classmethod
+    def _program(cls, carrier, payload):
+        decls, carry, invoke = cls._CARRIERS[carrier]
+        seed, body, observe = cls._PAYLOADS[payload]
+        lines = [
+            *decls,
+            *([""] if decls else []),
+            "@strict_ifc()",
+            "fun main(env: Env, stdio: Stdio)",
+            *("    " + line for line in seed),
+            *("    " + line for line in carry),
+            '    let k = env.get("API_KEY").unwrap_or("none")',
+            '    if k.starts_with("s")',
+            *("        " + line for line in invoke),
+            *("    " + line for line in observe),
+        ]
+        src = "\n".join(lines).replace(cls._BODY, body) + "\n"
+        if src.count(body) != 1:
+            raise ValueError(
+                f"carrier {carrier!r} must hand the payload to the Fun "
+                "exactly once; a face without its payload pins nothing"
+            )
+        return src
+
     def test_fun_value_faces_are_currently_unflagged(self):
-        for what, src in self.FACES.items():
-            with self.subTest(face=what):
-                r = check(src)
+        faces = self.faces()
+        self.assertEqual(
+            len(faces), 11,
+            "the pinned boundary changed size; a face that stops running "
+            "is the design's STOP condition, not a cleanup",
+        )
+        for carrier, payload in faces:
+            with self.subTest(carrier=carrier, payload=payload):
+                r = check(self._program(carrier, payload))
                 self.assertTrue(r.ok, [e.message for e in r.errors])
                 self.assertEqual(
                     _flow_errors(r), [],
-                    f"{what}: this residual pin records a KNOWN, "
-                    "disclosed false negative; if it now errors, the "
-                    "Fun-value increment landed and this converts to a "
-                    "member test: "
-                    + str([e.message for e in r.errors]),
+                    f"{carrier} / {payload}: this residual pin records a "
+                    "KNOWN, disclosed false negative; if it now errors, "
+                    "the Fun-value increment landed and this converts to "
+                    "a member test: " + str([e.message for e in r.errors]),
                 )
 
 
@@ -826,18 +799,19 @@ class TestTerminationResidualPinned(unittest.TestCase):
     panic rule covers for exactly one spelling. Converts to RED-first
     the day an abort-effect design lands."""
 
-    TRAP_SHAPE = (
-        "@strict_ifc()\n"
-        "fun main(env: Env, stdio: Stdio)\n"
-        "    var xs: List<Int> = []\n"
-        '    let k = env.get("API_KEY").unwrap_or("none")\n'
-        '    if k.starts_with("s")\n'
-        "        xs.push(1)\n"
-        "    let v = xs.get(0).unwrap()\n"
-        '    stdio.println("done")\n'
+    # The List.push member with its sink-observable read replaced by an
+    # aborting one: the read gate then has nothing to guard.
+    TRAP_SHAPE = M05_LIST_PUSH.replace(
+        '    stdio.println("len=${xs.length()}")\n',
+        "    let v = xs.get(1).unwrap()\n"
+        '    stdio.println("done")\n',
     )
 
     def test_trap_only_consequence_stays_accepted(self):
+        self.assertNotEqual(
+            self.TRAP_SHAPE, M05_LIST_PUSH,
+            "the derivation must have swapped the member's read",
+        )
         r = check(self.TRAP_SHAPE)
         self.assertTrue(r.ok, [e.message for e in r.errors])
         self.assertEqual(
