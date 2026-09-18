@@ -124,14 +124,14 @@ _SECRET_SOURCES: frozenset = frozenset({
 # The set is enumerated BY CONSTRUCTION, not by reading signatures: an
 # oracle called every List / Set / Map method under a secret-conditioned
 # branch and diffed the observable state across the two secret values
-# (.claude/IFC_PC_DESIGN_2.md section 2.3; a signature rule provably
-# fails here -- ``Map.remove`` returns ``Option<V>`` exactly like
-# ``List.pop`` and mutates, while ``List.reverse`` returns a ``List``
-# and does not). ``Set.remove`` (increment 2) and ``List.pop`` (this
-# fix) were each once missing from a hand-read version of this table
-# with a live three-backend leak behind the omission; the completeness
-# guard below (``container_classification_defects``) is what makes a
-# third omission a RED build instead of a silent fail-open.
+# (a signature rule provably fails here -- ``Map.remove`` returns
+# ``Option<V>`` exactly like ``List.pop`` and mutates, while
+# ``List.reverse`` returns a ``List`` and does not). ``Set.remove`` (an
+# earlier fix) and ``List.pop`` (this fix) were each once missing from
+# a hand-read version of this table with a live three-backend leak
+# behind the omission; the completeness guard below
+# (``container_classification_defects``) is what makes a third
+# omission a RED build instead of a silent fail-open.
 _CONTAINER_MUTATORS: dict[tuple[str, str], frozenset[int]] = {
     ("List", "push"):   frozenset({0}),
     ("List", "pop"):    frozenset(),

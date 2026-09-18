@@ -12,10 +12,9 @@ classification (``_ifc_tables._CONTAINER_MUTATORS``: MEMBERSHIP answers
 EMPTY set of argument positions that carry data in, so ``List.pop`` is a
 member with no taint arguments).
 
-Design: .claude/IFC_PC_DESIGN_2.md (Sibling A), as amended by
-.claude/IFC_PC_CONTEST_2.md. Every member test here was RED on main
-``1dc0d27`` (the analyzer accepted the program and it leaked at runtime)
-and is GREEN with the fix; the negatives were GREEN before and after.
+Every member test here was RED on main ``1dc0d27`` (the analyzer
+accepted the program and it leaked at runtime) and is GREEN with the
+fix; the negatives were GREEN before and after.
 """
 
 import json
@@ -434,8 +433,9 @@ class TestClassificationGuardFailsClosed(unittest.TestCase):
     def test_the_partition_covers_the_measured_surface(self):
         from capa.analyzer._ifc_tables import _CONTAINER_NON_MUTATORS
         # 6 measured mutators, 35 declared non-mutators, 41 methods over
-        # the three mutable owners: the by-construction enumeration of
-        # the design, pinned so a silent shrink of either set is loud.
+        # the three mutable owners: the by-construction enumeration
+        # behind the tables, pinned so a silent shrink of either set is
+        # loud.
         self.assertEqual(len(_CONTAINER_MUTATORS), 6)
         self.assertEqual(len(_CONTAINER_NON_MUTATORS), 35)
         self.assertEqual(
@@ -635,17 +635,16 @@ class TestRebindImprecisionPinned(unittest.TestCase):
 
 
 class TestFunValueResidualPinned(unittest.TestCase):
-    """The Fun-value residual (Sibling C of the design), pinned at class
-    level. The strict pc rule acts where a lambda's body is ANALYSED,
-    at its definition; a Fun VALUE invoked somewhere else is not
-    re-analysed under the pc of that invocation. This is the escaping /
-    aliased / higher-order / returned closure family SECURITY.md
-    already lists as an open residual, observed here for the container
-    channel too: a documented false NEGATIVE, never a false positive.
-    These pins convert to RED-first member tests the day the Fun-value
-    increment lands; until then they keep the boundary from moving
-    silently, face by face (a change that started refusing one carrier
-    and not another shows up as exactly that face).
+    """The Fun-value residual, pinned at class level. The strict pc
+    rule acts where a lambda's body is ANALYSED, at its definition; a
+    Fun VALUE invoked somewhere else is not re-analysed under the pc of
+    that invocation. This is the escaping / aliased / higher-order /
+    returned closure family SECURITY.md already lists as an open
+    residual, observed here for the container channel too: a documented
+    false NEGATIVE, never a false positive. These pins record the
+    boundary as measured; a change that starts refusing a face shows up
+    as exactly that face (one carrier and not another), and the face
+    then converts to a member test.
 
     No face is written out. ``_program`` composes a CARRIER (the shape
     the Fun travels through between its definition and its invocation;
@@ -654,7 +653,13 @@ class TestFunValueResidualPinned(unittest.TestCase):
     member tests use, and the eleven faces are every carrier on the
     mutation payload plus the plainest carrier on the sink payload. The
     enumeration is NOT claimed complete; it is the measured boundary as
-    of this increment."""
+    of this change.
+
+    Each payload is itself a refused program when executed DIRECTLY
+    under the guard with no carrier (``_direct_program``), which is
+    what makes a face's silence the carrier's doing: a payload the
+    analyzer could not see would keep every face accepted for the
+    wrong reason, and the direct form is where that shows."""
 
     # The token a carrier fragment spells where the payload lands; the
     # builder refuses a carrier that does not spell it exactly once.
@@ -744,9 +749,12 @@ class TestFunValueResidualPinned(unittest.TestCase):
             ("let binding", "sink call"),
         ]
 
+    # The carrier-less shape: the payload sits directly under the guard.
+    _NO_CARRIER = ((), (), (_BODY,))
+
     @classmethod
-    def _program(cls, carrier, payload):
-        decls, carry, invoke = cls._CARRIERS[carrier]
+    def _compose(cls, shape, payload, what):
+        decls, carry, invoke = shape
         seed, body, observe = cls._PAYLOADS[payload]
         lines = [
             *decls,
@@ -763,17 +771,28 @@ class TestFunValueResidualPinned(unittest.TestCase):
         src = "\n".join(lines).replace(cls._BODY, body) + "\n"
         if src.count(body) != 1:
             raise ValueError(
-                f"carrier {carrier!r} must hand the payload to the Fun "
-                "exactly once; a face without its payload pins nothing"
+                f"{what} must spell the payload exactly once; a program "
+                "without its payload pins nothing"
             )
         return src
+
+    @classmethod
+    def _program(cls, carrier, payload):
+        return cls._compose(
+            cls._CARRIERS[carrier], payload, f"carrier {carrier!r}",
+        )
+
+    @classmethod
+    def _direct_program(cls, payload):
+        """The payload executed under the guard with no carrier."""
+        return cls._compose(cls._NO_CARRIER, payload, "the direct form")
 
     def test_fun_value_faces_are_currently_unflagged(self):
         faces = self.faces()
         self.assertEqual(
             len(faces), 11,
             "the pinned boundary changed size; a face that stops running "
-            "is the design's STOP condition, not a cleanup",
+            "is a boundary move, not a cleanup",
         )
         for carrier, payload in faces:
             with self.subTest(carrier=carrier, payload=payload):
@@ -783,8 +802,33 @@ class TestFunValueResidualPinned(unittest.TestCase):
                     _flow_errors(r), [],
                     f"{carrier} / {payload}: this residual pin records a "
                     "KNOWN, disclosed false negative; if it now errors, "
-                    "the Fun-value increment landed and this converts to "
-                    "a member test: " + str([e.message for e in r.errors]),
+                    "the boundary moved; convert this face to a member "
+                    "test: " + str([e.message for e in r.errors]),
+                )
+
+    def test_direct_mutation_form_is_the_set_add_member(self):
+        """The faces differ from a refused member only by their carrier:
+        the mutation payload with no carrier is the ``Set.add`` member
+        byte for byte, so a face's silence is the carrier's doing."""
+        self.assertEqual(
+            self._direct_program("container mutation"), M01_SET_ADD,
+        )
+
+    def test_each_payload_is_refused_without_a_carrier(self):
+        """The vacuity net. A payload the analyzer could not see (an
+        observation that never reads the container, say) would keep all
+        eleven faces accepted while the pin recorded nothing; composed
+        directly under the guard, every payload must be a flow error.
+        Asserted on the flow errors rather than on ``r.ok``, which an
+        unrelated lint (an unused capability parameter) can also clear."""
+        for payload in self._PAYLOADS:
+            with self.subTest(payload=payload):
+                r = check(self._direct_program(payload))
+                self.assertGreaterEqual(
+                    len(_flow_errors(r)), 1,
+                    f"{payload}: refused with no carrier is what makes "
+                    "the carrier faces meaningful; got "
+                    + str([e.message for e in r.errors]),
                 )
 
 
@@ -796,8 +840,8 @@ class TestTerminationResidualPinned(unittest.TestCase):
     read of the unmutated shape) stays accepted, so a strict function's
     termination behaviour / exit status is outside the read gate's
     guarantee -- the same pre-existing strict-tier trap residual the
-    panic rule covers for exactly one spelling. Converts to RED-first
-    the day an abort-effect design lands."""
+    panic rule covers for exactly one spelling. A rejection here means
+    the read gate's guarantee changed; convert to a member test then."""
 
     # The List.push member with its sink-observable read replaced by an
     # aborting one: the read gate then has nothing to guard.

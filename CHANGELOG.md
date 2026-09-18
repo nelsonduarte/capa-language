@@ -17,13 +17,13 @@ breaking changes and the discipline is still being shaped.
   fail-closed completeness guard.* A `@strict_ifc()` function could encode a
   secret in the SHAPE of a `List` / `Set` / `Map` (its length, membership,
   or iteration) by mutating it with entirely public arguments inside an `if`
-  branch, a `match` arm, or a `while` body whose condition is secret
-  (however deeply nested), on a plain (`xs.add("extra")`) or field-rooted
-  (`b.items.add("extra")`) receiver, and then reading the container at a
-  public sink: `--check` accepted the program with zero diagnostics, it
-  printed `len=2` under one secret value and `len=1` under another,
-  identically on `--run`, `--run --ir` and `--run --wasm`, and `--manifest`
-  certified it with `unaudited_secret_sinks = []`. The scalar-assign and
+  branch, a `match` arm, or a `while` body whose condition is secret, on a
+  plain (`xs.add("extra")`) or field-rooted (`b.items.add("extra")`)
+  receiver, and then reading the container at a public sink: `--check`
+  accepted the program with zero diagnostics, it printed `len=2` under one
+  secret value and `len=1` under another, identically on `--run`,
+  `--run --ir` and `--run --wasm`, and `--manifest` certified it with
+  `unaudited_secret_sinks = []`. The scalar-assign and
   struct-field-store implicit channels already folded the pc through the
   strict join; the container-mutation record never consulted it, and
   `List.pop`, which mutates with no argument at all, was absent from a table
@@ -77,15 +77,24 @@ breaking changes and the discipline is still being shaped.
   control-direction witness for the state-only `pop`) and the declared-table
   guard in
   [`tests/test_ifc_tables_declared.py`](tests/test_ifc_tables_declared.py)
-  covering the new table key by key. Zero verdict change across the
-  246-file in-tree sweep and the 1338-file downstream sweep (1584 files,
-  base versus fix). No version change and no GHSA (Python-style cadence; a
-  security-fix advisory batches at the next stable release). Commits
-  `88102c4`, `cc75d63`, `8e8a082`, `62bc787`, `47ad2bf`.
+  covering the new table key by key. The 246-file in-tree sweep and the
+  1338-file downstream sweep (1584 files listed, 1557 loaded, base versus
+  fix, the same unloadable set on both trees) show zero verdict change
+  among the files loaded. No version change and no GHSA (Python-style
+  cadence; a security-fix advisory batches at the next stable release).
+  Commits `88102c4`, `cc75d63`, `8e8a082`, `c169b8d`, `16210be`.
 
-  Honest scope: the closed claim is the shapes enumerated above, in the
-  strict tier; the default tier deliberately does not enforce implicit
-  flows, as before. One accepted over-report is pinned rather than hidden
+  Honest scope: the closed claim is exactly the programs pinned by
+  `TestMutationUnderASecretPcIsRejected` in
+  [`tests/analyzer/test_ifc_pc_container.py`](tests/analyzer/test_ifc_pc_container.py),
+  in the strict tier: one mutator per member, executed under a
+  secret-conditioned `if`, nested `if`, `match` arm or `while` body, on a
+  plain or field-rooted receiver, read afterwards at a public sink in the
+  same function, with the guarded body holding nothing but the mutation
+  (one member performs it through a lambda defined and called in the
+  branch; the `while` member also advances its loop counter). The default
+  tier deliberately does not enforce implicit flows, as before. One
+  accepted over-report is pinned rather than hidden
   (`TestRebindImprecisionPinned`): a container mutated under a secret pc and
   then rebound to a fresh value stays rejected, the control-direction twin of
   the data direction's identical rebind warning on `main`; clearing it must

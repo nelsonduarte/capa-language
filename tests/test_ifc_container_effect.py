@@ -27,11 +27,9 @@ kinds of member: argument-carrying mutators, whose witness is the
 cross-function DATA-direction leak above, and STATE-ONLY mutators
 (``List.pop``, an empty index set), which have no argument for a secret
 to ride in. A state-only member's witness is the CONTROL direction: a
-strict-tier mutation under a secret pc, read afterwards
-(``_STATE_ONLY_MUTATOR_PROGRAMS``). Its cross-function form is the
-summary pass's pc composition (Sibling B of
-.claude/IFC_PC_DESIGN_2.md), a separate increment; the split between
-the two witness dicts is DERIVED from the registry's index sets, so a
+strict-tier mutation under a secret pc, read afterwards in the same
+function (``_STATE_ONLY_MUTATOR_PROGRAMS``); the split between the
+two witness dicts is DERIVED from the registry's index sets, so a
 member cannot be misfiled.
 """
 
