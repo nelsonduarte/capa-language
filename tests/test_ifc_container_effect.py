@@ -18,8 +18,19 @@ does: a warning by default, a hard error under ``@strict_ifc``.
 
 ``_MUTATOR_PROGRAMS`` below is keyed by the ``_CONTAINER_MUTATORS``
 registry entries, and ``test_every_registered_mutator_is_covered``
-asserts the two key sets are equal -- a mutator added to the registry
+asserts the key sets are equal -- a mutator added to the registry
 without a leak program here fails the suite.
+
+The registry now separates MEMBERSHIP (does this method mutate
+observable state?) from the taint-argument INDICES, so it carries two
+kinds of member: argument-carrying mutators, whose witness is the
+cross-function DATA-direction leak above, and STATE-ONLY mutators
+(``List.pop``, an empty index set), which have no argument for a secret
+to ride in. A state-only member's witness is the CONTROL direction: a
+strict-tier mutation under a secret pc, read afterwards in the same
+function (``_STATE_ONLY_MUTATOR_PROGRAMS``); the split between the
+two witness dicts is DERIVED from the registry's index sets, so a
+member cannot be misfiled.
 """
 
 import unittest
@@ -132,6 +143,26 @@ _MUTATOR_PROGRAMS: dict = {
     ),
 }
 
+# One leak program per STATE-ONLY mutator (an empty taint-index set in
+# the registry): no argument exists for a secret to ride in, so the
+# witness is the strict-tier CONTROL direction -- the mutation happens
+# under a secret pc and the container's observable state is read
+# afterwards. A hard error under ``@strict_ifc``; the default tier
+# keeps implicit flows out, exactly as the scalar implicit channel does.
+_STATE_ONLY_MUTATOR_PROGRAMS: dict = {
+    ("List", "pop"): (
+        "@strict_ifc()\n"
+        "fun main(env: Env, stdio: Stdio)\n"
+        "    var xs: List<Int> = []\n"
+        "    xs.push(1)\n"
+        "    xs.push(2)\n"
+        "    let k = env.get(\"API_KEY\").unwrap_or(\"none\")\n"
+        "    if k.starts_with(\"s\")\n"
+        "        let d = xs.pop()\n"
+        "    stdio.println(\"len=${xs.length()}\")\n"
+    ),
+}
+
 
 class TestRemovalSelectsOnASecret(unittest.TestCase):
     """The OUT direction of the container-mutator class.
@@ -197,13 +228,23 @@ class TestRemovalSelectsOnASecret(unittest.TestCase):
 class TestEveryMutatorIsCovered(unittest.TestCase):
     """The registry is the source of truth: a mutator added to
     ``_CONTAINER_MUTATORS`` without a leak program here fails, so a
-    future mutator cannot be introduced uncovered."""
+    future mutator cannot be introduced uncovered. Which witness dict a
+    member belongs in is DERIVED from its registry index set, so an
+    argument-carrying mutator cannot hide in the state-only dict (or
+    the reverse) either."""
 
     def test_every_registered_mutator_is_covered(self):
         self.assertEqual(
-            set(_MUTATOR_PROGRAMS), set(_CONTAINER_MUTATORS),
+            set(_MUTATOR_PROGRAMS),
+            {k for k, pos in _CONTAINER_MUTATORS.items() if pos},
             "add a callee-mutation leak program for every "
-            "_CONTAINER_MUTATORS entry",
+            "argument-carrying _CONTAINER_MUTATORS entry",
+        )
+        self.assertEqual(
+            set(_STATE_ONLY_MUTATOR_PROGRAMS),
+            {k for k, pos in _CONTAINER_MUTATORS.items() if not pos},
+            "add a strict pc-direction leak program for every "
+            "state-only (empty-index) _CONTAINER_MUTATORS entry",
         )
 
     def test_every_registered_mutator_leak_is_flagged(self):
@@ -214,6 +255,22 @@ class TestEveryMutatorIsCovered(unittest.TestCase):
                 self.assertEqual(
                     len(_flow_warnings(r)), 1,
                     [w.message for w in r.warnings],
+                )
+
+    def test_every_state_only_mutator_leak_is_flagged(self):
+        # The control-direction witness: a strict hard error, since the
+        # only thing the secret decides is whether the mutation ran.
+        for key, src in _STATE_ONLY_MUTATOR_PROGRAMS.items():
+            with self.subTest(mutator=key):
+                r = _analyze(src)
+                self.assertFalse(
+                    r.ok,
+                    f"{key}: the state-only member's strict pc-direction "
+                    "witness must be a hard error",
+                )
+                self.assertGreaterEqual(
+                    len(_flow_errors(r)), 1,
+                    [e.message for e in r.errors],
                 )
 
 

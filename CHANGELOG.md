@@ -11,6 +11,97 @@ breaking changes and the discipline is still being shaped.
 
 **Security / soundness (unreleased).**
 
+- *Under `@strict_ifc`, a container mutated under secret control now has
+  secret observable state, so a later public read of it is a flow error;
+  `List.pop` is covered through one mutator classification with a
+  fail-closed completeness guard.* A `@strict_ifc()` function could encode a
+  secret in the SHAPE of a `List` / `Set` / `Map` (its length, membership,
+  or iteration) by mutating it with entirely public arguments inside an `if`
+  branch, a `match` arm, or a `while` body whose condition is secret, on a
+  plain (`xs.add("extra")`) or field-rooted (`b.items.add("extra")`)
+  receiver, and then reading the container at a public sink: `--check`
+  accepted the program with zero diagnostics, it printed `len=2` under one
+  secret value and `len=1` under another, identically on `--run`,
+  `--run --ir` and `--run --wasm`, and `--manifest` certified it with
+  `unaudited_secret_sinks = []`. The scalar-assign and
+  struct-field-store implicit channels already folded the pc through the
+  strict join; the container-mutation record never consulted it, and
+  `List.pop`, which mutates with no argument at all, was absent from a table
+  keyed by argument positions. Two changes close it,
+  both in the analyzer. `_check_ifc_container_mutation` in
+  [`capa/analyzer/_ifc.py`](capa/analyzer/_ifc.py) now joins the current pc
+  through the same `_join_pc_if_strict` seam the scalar-assign and
+  field-store rules use before deciding whether the mutated container is
+  secret, so the record (keyed on the `(root-binding, field-path)` the
+  receiver lives at) is raised by the control direction exactly as it is by
+  a `@secret` argument. `_CONTAINER_MUTATORS` in
+  [`capa/analyzer/_ifc_tables.py`](capa/analyzer/_ifc_tables.py) becomes the
+  one mutator classification: MEMBERSHIP answers "does this method mutate
+  observable state?", the value is the possibly EMPTY set of taint-argument
+  positions, `("List", "pop")` is a member with the empty set, and no
+  consumer tests truthiness any more. The six mutators
+  (`List.push`, `List.pop`, `Set.add`, `Set.remove`, `Map.set`,
+  `Map.remove`) and the 35 declared non-mutators were enumerated by
+  construction (an oracle ran every `List` / `Set` / `Map` method under a
+  secret branch and diffed the observable state), and a fail-closed guard,
+  `container_classification_defects`, derives the mutable-owner universe
+  from the registry (every owner in `capa.builtins.METHODS` that is neither
+  a capability nor one of the five declared immutable value owners, the
+  latter pinned by an equality test) and turns RED for any method or new
+  owner declared in neither set, so a future container method cannot land
+  silently treated as a non-mutator. Tier: a hard error under `@strict_ifc`
+  only, reported at the public sink the read reaches with the existing
+  wording (`error: information-flow: a @secret value reaches Stdio.println
+  (argument 1), a public sink that sends data out of the program ...`, exit
+  1 on `--check` and on every `--run` spelling, and no manifest is emitted);
+  the default (warn) tier is untouched by construction and gains no
+  diagnostic (the same program without the attribute still compiles with
+  zero warnings, runs identically on the three backends, and its manifest is
+  byte-identical before and after). Analyzer-only, reject-only: a refused
+  program never reaches codegen, no golden moved, and the Python interpreter
+  and the Wasm Component Model backend stay byte-identical on accepted
+  programs. Pinned RED-first by
+  [`tests/analyzer/test_ifc_pc_container.py`](tests/analyzer/test_ifc_pc_container.py)
+  (`TestMutationUnderASecretPcIsRejected`: every member was accepted by
+  `--check` on main, and the `Set.add` and `List.pop` members were run on
+  all three backends and printed the secret-dependent length on each;
+  `TestMembershipIsSeparateFromIndices`: removing the `pop` entry silences
+  ONLY `pop`; `TestOnePcJoinSeam`: neutralising the join silences the
+  scalar, field-store and container directions together;
+  `TestLegitimateFormsStayAccepted`, with zero-warning assertions on the
+  default tier; `TestClassificationGuardFailsClosed`: a new method and a
+  new owner both RED; `TestRefusalWiredThroughEveryRunMode` and
+  `TestManifestAgreesWithTheAnalyzer`), with the covered-mutator guard in
+  [`tests/test_ifc_container_effect.py`](tests/test_ifc_container_effect.py)
+  now deriving its witness split from the registry's index sets (a strict
+  control-direction witness for the state-only `pop`) and the declared-table
+  guard in
+  [`tests/test_ifc_tables_declared.py`](tests/test_ifc_tables_declared.py)
+  covering the new table key by key. The 246-file in-tree sweep and the
+  1338-file downstream sweep (1584 files listed, 1557 loaded, base versus
+  fix, the same unloadable set on both trees) show zero verdict change
+  among the files loaded. No version change and no GHSA (Python-style
+  cadence; a security-fix advisory batches at the next stable release).
+  Commits `88102c4`, `cc75d63`, `8e8a082`, `c169b8d`, `16210be`.
+
+  Honest scope: the closed claim is exactly the programs pinned by
+  `TestMutationUnderASecretPcIsRejected` in
+  [`tests/analyzer/test_ifc_pc_container.py`](tests/analyzer/test_ifc_pc_container.py),
+  in the strict tier: one mutator per member, executed under a
+  secret-conditioned `if`, nested `if`, `match` arm or `while` body, on a
+  plain or field-rooted receiver, read afterwards at a public sink in the
+  same function, with the guarded body holding nothing but the mutation
+  (one member performs it through a lambda defined and called in the
+  branch; the `while` member also advances its loop counter). The default
+  tier deliberately does not enforce implicit flows, as before. One
+  accepted over-report is pinned rather than hidden
+  (`TestRebindImprecisionPinned`): a container mutated under a secret pc and
+  then rebound to a fresh value stays rejected, the control-direction twin of
+  the data direction's identical rebind warning on `main`; clearing it must
+  land in both directions at once. The container channel's residual families
+  already documented in [`SECURITY.md`](SECURITY.md) are unchanged by this
+  fix and stay open as documented.
+
 - *A `@secret` value used as the key of a container removal now taints the
   container, matching the insertion direction.* `Set.remove(k)` with a
   `@secret` `k` left the receiver public, although the set's observable

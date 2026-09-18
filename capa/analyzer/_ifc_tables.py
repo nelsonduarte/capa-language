@@ -95,42 +95,182 @@ _SECRET_SOURCES: frozenset = frozenset({
     ("Env", "get"),
 })
 
-# Mutating methods that can inject tainted data INTO a mutable
-# container. When called with a @secret argument in one of the listed
-# positions, the receiver container becomes @secret: a later read
-# (``get`` / ``contains`` / ``keys`` / iteration) would otherwise
-# launder the secret back to public. Keyed ``(TypeName, method)`` ->
-# the 0-based argument positions that carry data into the container.
-# This is the mutable-container analogue of the aggregate-literal
-# rule; together they stop a secret from being hidden in a collection.
-# The REMOVAL entries below are the same rule reached from the other
-# side, and the table's name should be read as "methods whose argument
-# makes the container depend on that argument", not only "methods that
-# put data in". Nothing secret is STORED by a removal, but which element
-# leaves is decided by the argument, so the container's observable
-# length (and its membership) afterwards depends on it. That is the same
-# disclosure the insertion entries exist for.
+# THE mutator classification: every method of a mutable built-in
+# container (List / Set / Map) that MUTATES the container's observable
+# state (length, membership, iteration). MEMBERSHIP answers "does this
+# method mutate observable state?"; the VALUE is the possibly EMPTY set
+# of 0-based argument positions that carry data into the container.
+# The two questions are deliberately separated because the domain has
+# three cases -- mutator with taint arguments, mutator without,
+# non-mutator -- and a table that only answered the argument question
+# lost every no-argument mutator: ``List.pop`` mutates the receiver
+# with no argument at all, so its entry is the empty set, and every
+# consumer must test MEMBERSHIP (``positions is not None``), never
+# truthiness (``if not positions``), or an empty-index member silently
+# degrades to a non-mutator.
 #
-# ``Set.remove`` was MISSING here and the omission was live on main: the
-# add half of one program warned on all three backends while the remove
-# half produced zero diagnostics, with a real value dependence (removing
-# a present key gives length 1, an absent one 2). Found during increment
-# 2's adjudication; the guard is
-# tests/test_ifc_container_effect.py::TestRemovalSelectsOnASecret.
+# Two consumers derive from this one classification so they cannot
+# drift: the DATA direction joins the labels at the listed indices (a
+# @secret argument taints the receiver, so a later read -- ``get`` /
+# ``contains`` / ``keys`` / iteration -- does not launder it back to
+# public; the removal entries are the same rule reached from the other
+# side: nothing secret is STORED by ``remove(k)``, but which element
+# leaves is decided by the argument). The CONTROL direction joins the
+# strict pc for EVERY member, empty-index ones included: under
+# ``@strict_ifc`` a mutation executed inside a secret-conditioned
+# branch makes the container's observable state secret from then on
+# (see ``_check_ifc_container_mutation``).
 #
-# A method with NO arguments cannot be listed here at all, because the
-# values are argument positions and every consumer indexes ``e.args[i]``.
-# ``List.pop`` is that shape: an entry for it could only be the empty
-# set, which is a no-op no test could detect. Its taint is handled by the
-# conservative whole-value join instead, measured: a value popped from a
-# secret-bearing list is itself secret.
-_CONTAINER_MUTATORS: dict[tuple[str, str], set[int]] = {
-    ("List", "push"):   {0},
-    ("Set",  "add"):    {0},
-    ("Set",  "remove"): {0},
-    ("Map",  "set"):    {0, 1},
-    ("Map",  "remove"): {0},
+# The set is enumerated BY CONSTRUCTION, not by reading signatures: an
+# oracle called every List / Set / Map method under a secret-conditioned
+# branch and diffed the observable state across the two secret values
+# (a signature rule provably fails here -- ``Map.remove`` returns
+# ``Option<V>`` exactly like ``List.pop`` and mutates, while
+# ``List.reverse`` returns a ``List`` and does not). ``Set.remove`` (an
+# earlier fix) and ``List.pop`` (this fix) were each once missing from
+# a hand-read version of this table with a live three-backend leak
+# behind the omission; the completeness guard below
+# (``container_classification_defects``) is what makes a third
+# omission a RED build instead of a silent fail-open.
+_CONTAINER_MUTATORS: dict[tuple[str, str], frozenset[int]] = {
+    ("List", "push"):   frozenset({0}),
+    ("List", "pop"):    frozenset(),
+    ("Set",  "add"):    frozenset({0}),
+    ("Set",  "remove"): frozenset({0}),
+    ("Map",  "set"):    frozenset({0, 1}),
+    ("Map",  "remove"): frozenset({0}),
 }
+
+# The DECLARED complement: every List / Set / Map method that does NOT
+# mutate the receiver's observable state (pure queries and fresh-value
+# transforms). Declared, never inferred, so the completeness guard can
+# fail CLOSED: a container method in NEITHER set is a defect, which is
+# the direction that would otherwise lose a rejection silently.
+_CONTAINER_NON_MUTATORS: frozenset[tuple[str, str]] = frozenset({
+    ("List", "length"),
+    ("List", "contains"),
+    ("List", "map"),
+    ("List", "filter"),
+    ("List", "fold"),
+    ("List", "is_empty"),
+    ("List", "first"),
+    ("List", "last"),
+    ("List", "get"),
+    ("List", "find"),
+    ("List", "find_index"),
+    ("List", "sorted_by"),
+    ("List", "reverse"),
+    ("List", "enumerate"),
+    ("List", "zip"),
+    ("List", "flat_map"),
+    ("List", "sorted"),
+    ("List", "min"),
+    ("List", "max"),
+    ("Set",  "length"),
+    ("Set",  "contains"),
+    ("Set",  "to_list"),
+    ("Set",  "is_empty"),
+    ("Set",  "union"),
+    ("Set",  "intersection"),
+    ("Set",  "difference"),
+    ("Set",  "is_subset"),
+    ("Map",  "length"),
+    ("Map",  "get"),
+    ("Map",  "contains_key"),
+    ("Map",  "keys"),
+    ("Map",  "values"),
+    ("Map",  "pairs"),
+    ("Map",  "is_empty"),
+    ("Map",  "filter"),
+})
+
+# Value-type owners whose every method returns a fresh value, measured
+# by the same by-construction oracle (String 19, Range 12 methods, plus
+# the Option / Result / JsonValue value owners): they carry no mutable
+# state a secret pc could mark, so they are out of the mutator
+# classification by construction, not by omission. Declared so the
+# guard can refuse an entry filed under one of them, and so a NEW
+# non-capability owner (a future Deque / Queue) lands in the mutable
+# universe by default and must be classified before the build is green.
+# FAIL-OPEN direction: an owner wrongly added here AND to the registry
+# escapes the guard, so this set's exact value is pinned by an equality
+# test (tests/analyzer/test_ifc_pc_container.py) that states the
+# run-the-oracle-first obligation for any growth.
+_IMMUTABLE_VALUE_OWNERS: frozenset[str] = frozenset({
+    "String", "Range", "Option", "Result", "JsonValue",
+})
+
+
+def container_classification_defects(methods=None) -> list[str]:
+    """The fail-closed completeness guard over the mutator
+    classification: every method of every MUTABLE value owner must be
+    declared in exactly one of ``_CONTAINER_MUTATORS`` /
+    ``_CONTAINER_NON_MUTATORS``, and no entry may name an owner outside
+    that universe. Returns a list of human-readable defects; an empty
+    list is the green state (tests/analyzer/test_ifc_pc_container.py
+    asserts it).
+
+    The universe is DERIVED, never hand-declared: every owner in
+    ``capa.builtins.METHODS`` that is not a capability (the registry's
+    own ``CAPABILITY_NAMES``) and not a declared immutable value owner
+    is a mutable owner whose methods need classifying. So a new METHOD
+    on List / Set / Map and a new mutable OWNER both fail closed here,
+    instead of being silently treated as non-mutators -- the direction
+    that loses a rejection. Capability methods are excluded by the
+    registry's capability set, not by this table: a capability's
+    observable state (filesystem marks, generator state, peer-visible
+    effects) is the separately disclosed effect-classification family,
+    not container state. Dead keys (an entry naming a method the
+    registry does not declare) are guarded by
+    tests/test_ifc_tables_declared.py and are not re-checked here.
+
+    ``methods`` defaults to the live registry; tests pass simulated
+    registries to prove both RED directions bite."""
+    # Function-local imports: this module is imported by both IFC
+    # passes at load time and must stay free of import-cycle risk.
+    from ..builtins import METHODS
+    from ..typesys import CAPABILITY_NAMES
+
+    if methods is None:
+        methods = METHODS
+    defects: list[str] = []
+    mutable_owners = {
+        owner for owner in methods
+        if owner not in CAPABILITY_NAMES
+        and owner not in _IMMUTABLE_VALUE_OWNERS
+    }
+    for owner in sorted(mutable_owners):
+        for name in sorted({m for (m, _sig, _extra) in methods[owner]}):
+            in_mut = (owner, name) in _CONTAINER_MUTATORS
+            in_non = (owner, name) in _CONTAINER_NON_MUTATORS
+            if in_mut and in_non:
+                defects.append(
+                    f"{owner}.{name} is declared BOTH a mutator and a "
+                    f"non-mutator; remove it from one set"
+                )
+            elif not in_mut and not in_non:
+                defects.append(
+                    f"{owner}.{name} is unclassified: declare it in "
+                    f"_CONTAINER_MUTATORS (with its taint-argument "
+                    f"positions, possibly the empty set) or in "
+                    f"_CONTAINER_NON_MUTATORS"
+                )
+    classified_owners = (
+        {o for (o, _m) in _CONTAINER_MUTATORS}
+        | {o for (o, _m) in _CONTAINER_NON_MUTATORS}
+    )
+    for owner in sorted(classified_owners - mutable_owners):
+        defects.append(
+            f"{owner} carries container-classification entries but is "
+            f"not a mutable value owner in the registry (capability and "
+            f"immutable-owner methods do not belong in these tables)"
+        )
+    for owner in sorted(_IMMUTABLE_VALUE_OWNERS - set(methods)):
+        defects.append(
+            f"{owner} is declared an immutable value owner but registers "
+            f"no methods; remove the stale declaration"
+        )
+    return defects
 
 # Lookup methods whose index / key argument selects which memory is
 # touched. In a ``@constant_time`` function (roadmap S4) a @secret in
