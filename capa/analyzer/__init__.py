@@ -682,6 +682,14 @@ class Analyzer(
         # cross the lambda's function boundary (both backends fail at
         # codegen otherwise).
         self._loop_depth: int = 0
+        # The innermost loop's suspended LINEAR state, keyed by exit kind:
+        # the consumed set of every branch that left the body by ``break``
+        # or ``continue``, parked by ``_suspend_linear_exit`` and merged
+        # by ``_check_loop`` at that kind's target (the loop head for a
+        # ``continue``, the loop exit for a ``break``). One frame per
+        # loop, installed and restored by ``_check_loop``; reset for a
+        # lambda body, which is a frame of its own.
+        self._lin_exits: dict[str, list[set[str]]] = {}
         # Observability of the loop label fixpoint (``_loop_label_fixpoint``):
         # the most passes any loop of this analysis needed and how many
         # loops hit the cap. Instance state, reset by ``analyze`` and

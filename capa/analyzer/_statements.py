@@ -750,15 +750,46 @@ class _StatementsMixin(_ExitSyntaxMixin):
         after the loop read. A ``continue`` skips the rest of one
         iteration, which the walker already governs within the body; a
         ``return`` leaves the frame, which the enclosing walker sees
-        through ``_paths``."""
+        through ``_paths``.
+
+        The linear state a branch suspended at a ``continue`` rejoins at
+        the loop head, so the next iteration sees the consume; the state
+        suspended at a ``break`` rejoins at the loop exit, so everything
+        after the loop sees it. The frame is this loop's own: an inner
+        loop never consumes what an outer body suspended, and the search
+        idiom (consume once, then leave) stays accepted."""
         self._loop_depth += 1
         saved_pc = self._pc_label
+        outer_frame = self._lin_exits
+        self._lin_exits = {}
+        before_consumed = set(self._consumed)
         try:
             exits = self._loop_label_fixpoint(speculative, pc_at_head)
+            self._rejoin_linear_exits("continue", before_consumed)
             real(L.join(pc_at_head, exits.get("break", L.PUBLIC)))
+            self._rejoin_linear_exits("break", before_consumed)
         finally:
+            self._lin_exits = outer_frame
             self._loop_depth -= 1
             self._pc_label = saved_pc
+
+    def _rejoin_linear_exits(self, kind: str, before_consumed: set) -> None:
+        """Merge the consumed sets suspended at ``kind`` in the current
+        loop's frame into the consumed set: what those branches consumed
+        beyond the loop's entry state is consumed at the kind's target."""
+        for suspended in self._lin_exits.get(kind, ()):
+            self._consumed |= suspended - before_consumed
+
+    def _suspend_linear_exit(self, block: A.Block) -> None:
+        """THE ONE place a diverging branch's linear state is parked by
+        exit kind for the enclosing loop's frame: a branch ending in
+        ``break`` or ``continue`` does not reach the merge after its
+        ``if`` / ``match``, but it does reach the loop's exit or head. A
+        ``return`` branch reaches nothing else in this frame and is not
+        suspended."""
+        kind = self._jump_kind(block.stmts[-1]) if block.stmts else None
+        if kind in ("break", "continue"):
+            self._lin_exits.setdefault(kind, []).append(set(self._consumed))
 
     def _check_if(self, s: A.IfStmt) -> None:
         from ._expressions import _block_diverges
@@ -777,7 +808,10 @@ class _StatementsMixin(_ExitSyntaxMixin):
         # ``_consumed`` set cannot flow past the if because the
         # path itself does not reach the merge point. Matches the
         # divergence treatment match-arm type-unification already
-        # uses (see _check_match_expr).
+        # uses (see _check_match_expr). A ``break`` / ``continue``
+        # branch's set is not lost, though: it is suspended by exit
+        # kind for the enclosing loop, which merges it at the loop
+        # exit / head (``_suspend_linear_exit``).
         before = set(self._consumed)
         branch_results: list[set[str]] = []
         # Roadmap S1: track each non-diverging branch's surviving
@@ -831,6 +865,8 @@ class _StatementsMixin(_ExitSyntaxMixin):
             branch_live.append(dict(self._live_linear))
             branch_field_moved.append(set(self._linear_field_moved))
             branch_ct.append(self._container_taint)
+        else:
+            self._suspend_linear_exit(s.then_block)
 
         for cond, blk in s.elif_arms:
             self._consumed = set(before)
@@ -853,6 +889,8 @@ class _StatementsMixin(_ExitSyntaxMixin):
                 branch_live.append(dict(self._live_linear))
                 branch_field_moved.append(set(self._linear_field_moved))
                 branch_ct.append(self._container_taint)
+            else:
+                self._suspend_linear_exit(blk)
 
         if s.else_block is not None:
             self._consumed = set(before)
@@ -866,6 +904,8 @@ class _StatementsMixin(_ExitSyntaxMixin):
                 branch_live.append(dict(self._live_linear))
                 branch_field_moved.append(set(self._linear_field_moved))
                 branch_ct.append(self._container_taint)
+            else:
+                self._suspend_linear_exit(s.else_block)
         else:
             # No else: the all-conditions-false path falls
             # through and consumes nothing additional.

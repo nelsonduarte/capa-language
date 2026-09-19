@@ -182,6 +182,8 @@ class _ExpressionsMixin:
         # there reports "break outside of a loop"), restore on exit.
         prev_loop_depth = self._loop_depth
         self._loop_depth = 0
+        prev_lin_exits = self._lin_exits
+        self._lin_exits = {}
 
         # Body: single expression (its type is the return type)
         # or an indented block (return statements are checked
@@ -255,6 +257,7 @@ class _ExpressionsMixin:
         self._lambda_local_names_stack.pop()
         self._lambda_ast_stack.pop()
         self._loop_depth = prev_loop_depth
+        self._lin_exits = prev_lin_exits
         self._consumed = prev_consumed
         self._pop_scope()
 
@@ -580,12 +583,17 @@ class _ExpressionsMixin:
             # ``_consumed`` set must not flow past the match. Same
             # principle the type-side unification uses: a divergent
             # arm contributes ``None`` to ``arm_types``; here it
-            # simply does not contribute to ``branch_results``.
+            # simply does not contribute to ``branch_results``. A
+            # ``break`` / ``continue`` arm's set is suspended by exit
+            # kind for the enclosing loop instead, exactly as an
+            # ``if`` branch's is (``_suspend_linear_exit``).
             if not arm_diverges:
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
                 branch_field_moved.append(set(self._linear_field_moved))
                 branch_ct.append(self._container_taint)
+            else:
+                self._suspend_linear_exit(arm.body)
 
         # Restore the pc-label raised for the arm bodies (S2.implicit).
         self._pc_label = saved_pc
