@@ -942,38 +942,20 @@ class _StatementsMixin(_ExitSyntaxMixin):
         # baseline stands (nothing reached the merge).
         self._container_merge(before_ct, branch_ct)
 
-    def _quiet_label(self, e: A.Expr) -> str:
-        """Re-check ``e`` for its LABEL only, discarding the diagnostics
-        the check emits and any consume it records: the recorded label
-        of an expression is a cache, so a value that became secret since
-        the last check is seen only by re-checking. Used where the
-        check's diagnostics and effects belong to another, real,
-        evaluation of the same expression."""
-        errors, warnings = len(self.errors), len(self.warnings)
-        consumed = set(self._consumed)
-        try:
-            self._check_expr(e)
-        finally:
-            del self.errors[errors:]
-            del self.warnings[warnings:]
-            self._consumed = consumed
-        return self._label_of(e)
-
     def _check_while(self, s: A.WhileStmt) -> None:
         # Roadmap S2.implicit: the body runs under a pc raised by the
         # controlling condition, and the condition is re-evaluated on
-        # every iteration, so its label is part of the loop's fixpoint
-        # state: each speculative pass re-reads it quietly and joins it
-        # into the body pc (a value the body makes secret makes the
-        # iteration count secret). The condition's own diagnostics (its
-        # type, the constant-time rule, a sink reached through it) belong
-        # to the real pass, evaluated once under the stabilised labels and
-        # the entry pc.
+        # every iteration, so its label is part of the loop's state: it
+        # is evaluated ONCE, by the real pass, AFTER the fixpoint has
+        # stabilised the labels the body writes, and its label is joined
+        # into the body pc there (a value the body makes secret makes the
+        # iteration count secret). That one evaluation carries the
+        # condition's diagnostics (its type, the constant-time rule, a
+        # sink reached through it), under the entry pc. The speculative
+        # passes walk the body alone: a label the condition would raise
+        # in them is raised by the real pass, whose pc subsumes every
+        # in-body effect of the condition being secret.
         entry_pc = self._pc_label
-
-        def speculative():
-            self._pc_label = L.join(self._pc_label, self._quiet_label(s.cond))
-            return self._check_block(s.body)
 
         def real(head_pc):
             self._pc_label = entry_pc
@@ -991,7 +973,7 @@ class _StatementsMixin(_ExitSyntaxMixin):
             self._pc_label = L.join(head_pc, self._label_of(s.cond))
             return self._check_block(s.body)
 
-        self._check_loop(entry_pc, speculative, real)
+        self._check_loop(entry_pc, lambda: self._check_block(s.body), real)
 
     def _check_for(self, s: A.ForStmt) -> None:
         iter_ty = self._check_expr(s.iter)
