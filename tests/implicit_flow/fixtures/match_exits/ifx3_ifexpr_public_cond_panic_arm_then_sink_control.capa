@@ -1,0 +1,6 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    let p = 1
+    let x = if p == 2 then panic("no") else ()
+    stdio.println("after")

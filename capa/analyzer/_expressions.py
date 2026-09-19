@@ -468,9 +468,10 @@ class _ExpressionsMixin:
         Exhaustiveness is checked when the scrutinee has a sum
         type.
 
-        Arms whose body diverges (ends in ``return``, ``break``,
-        ``continue``) do not contribute to the match's result
-        type: the divergent control flow leaves the match
+        Arms whose block body leaves (ends in ``return``, ``break``,
+        ``continue`` or a bare ``panic``, the one exit test
+        ``_block_leaves`` answers) do not contribute to the match's
+        result type: the divergent control flow leaves the match
         without producing a value, so unification against other
         arms is unsound. ``arm_types`` carries ``None`` for
         divergent arms and the actual type otherwise.
@@ -553,7 +554,7 @@ class _ExpressionsMixin:
                 # here: the statement carrying this match recomputes its
                 # paths, arms included, for the enclosing body.
                 self._check_stmt_seq(arm.body.stmts)
-                if _block_diverges(arm.body):
+                if self._block_leaves(arm.body):
                     arm_types.append(None)
                     arm_diverges = True
                 elif (
@@ -1621,13 +1622,3 @@ def _arm_value(body):
     return body
 
 
-def _block_diverges(block: "A.Block") -> bool:
-    """True if the block's last statement is divergent (``return``,
-    ``break``, or ``continue``). Used by the match-arm checker to
-    treat divergent block-bodied arms as not contributing to the
-    match's result type.
-    """
-    if not block.stmts:
-        return False
-    last = block.stmts[-1]
-    return isinstance(last, (A.ReturnStmt, A.BreakStmt, A.ContinueStmt))

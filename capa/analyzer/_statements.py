@@ -792,7 +792,6 @@ class _StatementsMixin(_ExitSyntaxMixin):
             self._lin_exits.setdefault(kind, []).append(set(self._consumed))
 
     def _check_if(self, s: A.IfStmt) -> None:
-        from ._expressions import _block_diverges
         cond_ty = self._check_expr(s.cond)
         if not compatible(TyBool, cond_ty):
             self._err(
@@ -803,15 +802,14 @@ class _StatementsMixin(_ExitSyntaxMixin):
         self._ct_reject(self._label_of(s.cond), s.cond.pos, "an if-condition")
         # Flow analysis: snapshot ``_consumed`` before each branch
         # and take the conservative union after. Branches whose
-        # body diverges (ends in ``return`` / ``break`` /
-        # ``continue``) are excluded from the merge -- their
-        # ``_consumed`` set cannot flow past the if because the
-        # path itself does not reach the merge point. Matches the
-        # divergence treatment match-arm type-unification already
-        # uses (see _check_match_expr). A ``break`` / ``continue``
-        # branch's set is not lost, though: it is suspended by exit
-        # kind for the enclosing loop, which merges it at the loop
-        # exit / head (``_suspend_linear_exit``).
+        # body leaves (ends in ``return`` / ``break`` / ``continue``
+        # / a bare ``panic``: the one exit test ``_block_leaves``
+        # answers, shared with the match-arm gate) are excluded from
+        # the merge -- their ``_consumed`` set cannot flow past the if
+        # because the path itself does not reach the merge point. A
+        # ``break`` / ``continue`` branch's set is not lost, though: it
+        # is suspended by exit kind for the enclosing loop, which
+        # merges it at the loop exit / head (``_suspend_linear_exit``).
         before = set(self._consumed)
         branch_results: list[set[str]] = []
         # Roadmap S1: track each non-diverging branch's surviving
@@ -860,7 +858,7 @@ class _StatementsMixin(_ExitSyntaxMixin):
         self._pc_label = acc_pc
         self._container_isolate(before_ct)
         self._check_block(s.then_block)
-        if not _block_diverges(s.then_block):
+        if not self._block_leaves(s.then_block):
             branch_results.append(self._consumed)
             branch_live.append(dict(self._live_linear))
             branch_field_moved.append(set(self._linear_field_moved))
@@ -884,7 +882,7 @@ class _StatementsMixin(_ExitSyntaxMixin):
             self._pc_label = acc_pc
             self._container_isolate(before_ct)
             self._check_block(blk)
-            if not _block_diverges(blk):
+            if not self._block_leaves(blk):
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
                 branch_field_moved.append(set(self._linear_field_moved))
@@ -899,7 +897,7 @@ class _StatementsMixin(_ExitSyntaxMixin):
             self._pc_label = acc_pc
             self._container_isolate(before_ct)
             self._check_block(s.else_block)
-            if not _block_diverges(s.else_block):
+            if not self._block_leaves(s.else_block):
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
                 branch_field_moved.append(set(self._linear_field_moved))
@@ -951,14 +949,16 @@ class _StatementsMixin(_ExitSyntaxMixin):
         # into the body pc there (a value the body makes secret makes the
         # iteration count secret). That one evaluation carries the
         # condition's diagnostics (its type, the constant-time rule, a
-        # sink reached through it), under the entry pc. The speculative
-        # passes walk the body alone: a label the condition would raise
-        # in them is raised by the real pass, whose pc subsumes every
-        # in-body effect of the condition being secret.
-        entry_pc = self._pc_label
-
+        # sink reached through it). It runs under the HEAD pc the loop
+        # rule assigns to everything the iteration count governs (the
+        # entry pc joined with the stabilised ``break`` label): the
+        # condition executes once per iteration plus once, so a sink it
+        # calls leaks the iteration count exactly as one in the body does.
+        # The speculative passes walk the body alone: a label the
+        # condition would raise in them is raised by the real pass, whose
+        # pc subsumes every in-body effect of the condition being secret.
         def real(head_pc):
-            self._pc_label = entry_pc
+            self._pc_label = head_pc
             cty = self._check_expr(s.cond)
             if not compatible(TyBool, cty):
                 self._err(
@@ -973,7 +973,7 @@ class _StatementsMixin(_ExitSyntaxMixin):
             self._pc_label = L.join(head_pc, self._label_of(s.cond))
             return self._check_block(s.body)
 
-        self._check_loop(entry_pc, lambda: self._check_block(s.body), real)
+        self._check_loop(self._pc_label, lambda: self._check_block(s.body), real)
 
     def _check_for(self, s: A.ForStmt) -> None:
         iter_ty = self._check_expr(s.iter)

@@ -70,16 +70,28 @@ class _ExitSyntaxMixin:
     def _jump_kind(self, node):
         """The kind of an unconditional exit: a ``return`` / ``break`` /
         ``continue`` statement, or a call of the builtin ``panic`` (which
-        leaves the frame). ``None`` for anything else."""
+        leaves the frame), as an expression or as a bare statement.
+        ``None`` for anything else, including a ``?`` / ``Try`` early
+        return, which is not a recognised exit form (a disclosed
+        residual: a branch that leaves through ``?`` reads as one that
+        terminates normally)."""
         if isinstance(node, A.ReturnStmt):
             return "return"
         if isinstance(node, A.BreakStmt):
             return "break"
         if isinstance(node, A.ContinueStmt):
             return "continue"
+        if isinstance(node, A.ExprStmt):
+            return self._jump_kind(node.expr)
         if self._is_panic_call(node):
             return "return"
         return None
+
+    def _block_leaves(self, block) -> bool:
+        """True when a block's last statement is a jump (or a builtin
+        ``panic``), so the block reaches no merge point after it: the
+        one test the branch merges and the linear suspension share."""
+        return bool(block.stmts) and self._jump_kind(block.stmts[-1]) is not None
 
     def _is_panic_call(self, e) -> bool:
         """True if ``e`` is a call to the built-in ``panic`` (a divergent

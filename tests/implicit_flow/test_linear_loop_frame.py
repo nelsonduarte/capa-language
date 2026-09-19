@@ -62,8 +62,21 @@ class LinearLoopExits(unittest.TestCase):
         "b06_break_consume_then_use_after_loop_no_sibling": REFUSE,
     }
 
+    #: A ``return`` branch, or a branch ending in a bare ``panic``, reaches
+    #: nothing else in the frame: its consume is neither the loop exit's
+    #: nor the next iteration's, and it is excluded from the merge after
+    #: its ``if`` by the same exit test the suspension asks.
+    RETURN_BRANCH = {
+        "lret1_return_branch_consume_then_consume_after_loop_valid": ACCEPT,
+        "lret2_return_branch_consume_then_use_next_iteration_valid": ACCEPT,
+        "lret3_panic_branch_consume_then_consume_after_loop_valid": ACCEPT,
+    }
+
     def test_table(self):
         assert_table(self, "linear", self.TABLE, ifc_only=False)
+
+    def test_return_branch_is_not_suspended(self):
+        assert_table(self, "linear", self.RETURN_BRANCH, ifc_only=False)
 
 
 class PerLoopFrame(unittest.TestCase):

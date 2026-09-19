@@ -69,8 +69,21 @@ class ExitKinds(unittest.TestCase):
         "panic_arm": REFUSE,
     }
 
+    #: A ``panic`` in an ``if``-EXPRESSION branch under a secret condition
+    #: is an exit of the statement carrying the expression: the panic under
+    #: a secret pc AND the sink after it are both refused.
+    IF_EXPRESSION = {
+        "ifx1_ifexpr_secret_cond_panic_arm_then_sink": REFUSE,
+        "ifx3_ifexpr_public_cond_panic_arm_then_sink_control": ACCEPT,
+    }
+
     def test_table(self):
         assert_table(self, "exit_kinds", self.TABLE)
+
+    def test_if_expression_panic_arm(self):
+        assert_table(self, "match_exits", self.IF_EXPRESSION)
+        r = check_fixture("match_exits", "ifx1_ifexpr_secret_cond_panic_arm_then_sink")
+        self.assertEqual(len(r.errors), 2, [e.message for e in r.errors])
 
 
 class NestedUnderPublicGuards(unittest.TestCase):
@@ -121,6 +134,9 @@ class NestedUnderPublicGuards(unittest.TestCase):
         "fpn03_pub_if_secret_match_all_arms_return_sink_after": ACCEPT,
         "fpn04_pub_if_secret_if_one_returns_sink_after": REFUSE,
         "fpn05_secret_if_both_return_then_dead_sink": REFUSE,
+        # A dead statement after an all-paths-exiting inner if: the outer
+        # branch still terminates on no path, so the sink after stays public.
+        "mayn1_pub_if_secret_if_both_return_then_dead_stmt_sink_after": ACCEPT,
         "gap01_else_arm_secret_return": REFUSE,
         "gap02_elif_arm_secret_return": REFUSE,
         "gap03_elif_cond_secret_return": REFUSE,
@@ -228,10 +244,17 @@ class ControllingExpression(unittest.TestCase):
     is part of the loop's fixpoint state: a chain that raises the condition
     after N iterations makes the iteration count secret. The condition's
     diagnostics are the REAL pass's, emitted once under the stabilised
-    labels and the entry pc: a sink reached through a helper called in the
-    condition (``lq*``) and a constant-time branch on the condition
-    (``ctw*``) are refused when the chain raises it, and a condition secret
-    at entry reports exactly what it did before (the controls).
+    labels: a sink reached through a helper called in the condition
+    (``lq*``) and a constant-time branch on the condition (``ctw*``) are
+    refused when the chain raises it, and a condition secret at entry
+    reports exactly what it did before (the controls).
+
+    The condition also EXECUTES once per iteration plus once, so it runs
+    under the pc the loop rule assigns to the iteration count: the entry pc
+    joined with the stabilised ``break`` label, not the condition's own
+    label. A public sink called from the condition with a secret-conditioned
+    ``break`` in the body therefore leaks how many times the condition ran
+    (``wcb*``); a public ``break`` or a secret ``continue`` does not.
 
     ``lcw2`` (a ``for`` whose iterated container is pushed under a secret
     pc in the body) is a DISCLOSED residual of this class: the iterable is
@@ -257,10 +280,23 @@ class ControllingExpression(unittest.TestCase):
         "ctw6_ct_len_compare_alone": ACCEPT,
     }
 
+    #: The condition's execution count, governed by the head pc.
+    CONDITION_EXECUTION = {
+        "wcb0_cond_sink_helper_secret_break_in_body": REFUSE,
+        "wcb1_cond_sink_helper_loopcarried_secret_break": REFUSE,
+        "wcb2_cond_sink_direct_secret_break": REFUSE,
+        "wcb5_cond_sink_helper_secret_break_in_match_arm": REFUSE,
+        "wcb3_control_cond_sink_public_break": ACCEPT,
+        "wcb4_control_cond_sink_secret_continue_only": ACCEPT,
+    }
+
     DISCLOSED = {"lcw2_for_over_list_mutated_in_body": ACCEPT}
 
     def test_table(self):
         assert_table(self, "loop_condition", self.TABLE)
+
+    def test_condition_execution_count(self):
+        assert_table(self, "loop_condition", self.CONDITION_EXECUTION)
 
     def test_disclosed_residual(self):
         assert_table(self, "loop_condition", self.DISCLOSED)
@@ -344,6 +380,11 @@ class MatchArmExits(unittest.TestCase):
         "p14_compare": REFUSE,
         "p15_expr_stmt_binop": REFUSE,
         "r04_binop_rhs_sink_in_body_before": REFUSE,
+        # The jumping match sits in an if-EXPRESSION branch: the
+        # if-expression's condition is the guard the arm's exit is under.
+        "ifx6_ifexpr_secret_cond_else_match_break_itercount": REFUSE,
+        "ifx8_ifexpr_secret_cond_then_match_break_itercount": REFUSE,
+        "ifx7_ifexpr_public_cond_else_match_break_control": ACCEPT,
     }
 
     #: An exit taken under a pc raised EARLIER in the same body: the break
@@ -442,9 +483,10 @@ class Negatives(unittest.TestCase):
 
 class SpeculativePassSeam(unittest.TestCase):
     """State a speculative loop pass must not leak into the real pass: the
-    diagnostic dedup sets (a capability packed in a container inside a loop
-    body is reported once, not lost) and the deferred empty-container
-    reads (reported once, not once per fixpoint pass)."""
+    diagnostic dedup sets (a capability or a linear value packed in a
+    container inside a loop body is reported once, not lost) and the
+    deferred empty-container reads (reported once, not once per fixpoint
+    pass)."""
 
     def _errors(self, name):
         return [e.message for e in check_fixture("dedup_seam", name).errors]
@@ -470,9 +512,20 @@ class SpeculativePassSeam(unittest.TestCase):
                 errs = self._errors(name)
                 self.assertEqual(len(errs), 2, errs)
 
+    def test_linear_in_container_inside_a_loop_is_refused(self):
+        for name in (
+            "ldd07_linear_in_list_expr_position_in_for_body",
+            "ldd08_linear_in_list_expr_position_in_while_body",
+        ):
+            with self.subTest(program=name):
+                errs = self._errors(name)
+                self.assertEqual(len(errs), 1, errs)
+                self.assertIn("container of single-owner values", errs[0])
+
     def test_flat_forms_unchanged(self):
         self.assertEqual(len(self._errors("dd01_cap_in_list_flat")), 2)
         self.assertEqual(len(self._errors("dd06_cap_in_list_expr_position_flat")), 1)
+        self.assertEqual(len(self._errors("ldd06_linear_in_list_expr_position_flat")), 1)
 
     def test_deferred_element_read_is_reported_once(self):
         elem = "cannot determine the element type"

@@ -927,8 +927,8 @@ class TestMatchDivergenceCF1(unittest.TestCase):
         ``match`` whose arm diverges via the ``?`` / ``Try`` operator is
         not recognized as a divergence and stays accepted (it leaks). If
         this ever flips to a rejection, the ``Try`` extension has landed:
-        update the exit-syntax note in ``capa/analyzer/_statements.py``
-        and this pin."""
+        update the ``_jump_kind`` docstring in
+        ``capa/analyzer/_exit_syntax.py`` and this pin."""
         _module, result = self._analyze(_MATCH_TRY_DIVERGENCE_RESIDUAL)
         self.assertTrue(
             result.ok,
