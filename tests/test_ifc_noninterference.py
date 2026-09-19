@@ -726,8 +726,9 @@ class TestIfcNoninterference(unittest.TestCase):
 # the ``panic`` and nested-arm shapes (whose non-diverging sibling needs
 # a Unit-typed block body so an arm-type mismatch does not mask the IFC
 # check), the two accept controls (which must stay accepted and run to a
-# fixed public output), and the disclosed-open residuals (a deeper-nested
-# match, and an arm that diverges via the ``?`` / ``Try`` operator).
+# fixed public output), the once-disclosed deeper-nested match (now
+# rejected), and the disclosed-open residual (an arm that diverges via
+# the ``?`` / ``Try`` operator).
 
 # A ``match`` whose secret-conditioned diverging arm is a ``panic``,
 # whose sibling is a Unit-typed block so the arms unify to Unit; each is
@@ -809,13 +810,13 @@ fun main(stdio: Stdio, env: Env)
 ''',
 }
 
-# Disclosed-open residual: a ``MatchExpr`` nested DEEPER than the
-# directly-carried value (here as a call argument) is not inspected,
-# consistent with the top-level-only inspection the if / elif path
-# already uses. This shape leaks (the secret arm-guard decides whether
-# the program panics before the sink) yet is currently ACCEPTED. Pinned
-# so a future change that closes the residual updates this deliberately.
-_MATCH_DEEPER_NESTED_RESIDUAL = '''fun take(u: Unit) -> Int
+# A ``MatchExpr`` nested DEEPER than the directly-carried value (here as
+# a call argument) whose arm diverges under a secret guard: the secret
+# decides whether the program panics before the sink. Once a disclosed
+# residual (the divergence detector inspected only directly-carried
+# matches); the statement walker now finds a diverging match wherever it
+# sits in an expression, so this is REFUSED.
+_MATCH_DEEPER_NESTED_CLOSED = '''fun take(u: Unit) -> Int
     return 0
 
 @strict_ifc()
@@ -828,14 +829,14 @@ fun main(stdio: Stdio, env: Env)
 
 # Disclosed-open residual: a directly-carried secret-scrutinee ``match``
 # whose arm diverges via the ``?`` / ``Try`` operator. ``Try`` is a
-# first-class early return, but the divergence detector recognizes only
-# syntactic forms (panic / return / break / continue / nested match /
-# if-expr), NOT the ``A.Try`` node, so this leaks: whether the ``?`` arm
-# early-returns (hence whether the sink after runs) depends on the secret
-# scrutinee, yet it is currently ACCEPTED. Pre-existing and symmetric
-# with the if / while / for path, which does not recognize ``Try``
-# either; deferred, not a regression of the C-F1 fix. Pinned so the
-# extension that handles ``Try`` flips this deliberately.
+# first-class early return, but the statement walker's exit syntax
+# recognizes only the jump statements, a builtin ``panic`` and a nested
+# match / if-expression, NOT the ``A.Try`` node, so this leaks: whether
+# the ``?`` arm early-returns (hence whether the sink after runs) depends
+# on the secret scrutinee, yet it is currently ACCEPTED. Pre-existing and
+# symmetric with the if / while / for path, which does not recognize
+# ``Try`` either; deferred. Pinned so the extension that handles ``Try``
+# flips this deliberately.
 _MATCH_TRY_DIVERGENCE_RESIDUAL = '''fun always_err() -> Result<Int, String>
     return Err("boom")
 
@@ -903,20 +904,22 @@ class TestMatchDivergenceCF1(unittest.TestCase):
                 self.assertEqual(out_a, out_b)
                 self.assertEqual(out_a, "fixed\n")
 
-    def test_deeper_nested_match_residual_is_accepted(self):
-        """PIN (disclosed residual): a diverging ``match`` nested deeper
-        than the directly-carried value is not inspected and stays
-        accepted. If this ever flips to a rejection, close the residual
-        note in ``capa/analyzer/_statements.py`` and update this pin."""
-        _module, result = self._analyze(_MATCH_DEEPER_NESTED_RESIDUAL)
-        self.assertTrue(
+    def test_deeper_nested_match_is_rejected(self):
+        """A diverging ``match`` nested deeper than the directly-carried
+        value (a call argument) is inspected like a directly-carried one:
+        the sink after it runs under the secret arm guard's pc."""
+        _module, result = self._analyze(_MATCH_DEEPER_NESTED_CLOSED)
+        self.assertFalse(
             result.ok,
             msg=(
-                "the disclosed deeper-nested-match residual is no longer "
-                "accepted; update the residual note and this pin:\n"
-                f"{textwrap.indent(_MATCH_DEEPER_NESTED_RESIDUAL, '    ')}\n"
-                f"errors: {[e.message for e in result.errors]}"
+                "a diverging match nested in a call argument is accepted "
+                "again:\n"
+                f"{textwrap.indent(_MATCH_DEEPER_NESTED_CLOSED, '    ')}"
             ),
+        )
+        self.assertTrue(
+            any("secret control flow" in e.message for e in result.errors),
+            [e.message for e in result.errors],
         )
 
     def test_try_divergence_match_residual_is_accepted(self):
@@ -924,8 +927,8 @@ class TestMatchDivergenceCF1(unittest.TestCase):
         ``match`` whose arm diverges via the ``?`` / ``Try`` operator is
         not recognized as a divergence and stays accepted (it leaks). If
         this ever flips to a rejection, the ``Try`` extension has landed:
-        update the residual note in ``capa/analyzer/_statements.py`` and
-        this pin."""
+        update the exit-syntax note in ``capa/analyzer/_statements.py``
+        and this pin."""
         _module, result = self._analyze(_MATCH_TRY_DIVERGENCE_RESIDUAL)
         self.assertTrue(
             result.ok,

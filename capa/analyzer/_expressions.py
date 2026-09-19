@@ -194,8 +194,11 @@ class _ExpressionsMixin:
                 decl_ret_block = TyUnit
             prev_ret = self.current_return_type
             self.current_return_type = decl_ret_block
-            for stmt in e.body.stmts:
-                self._check_stmt(stmt)
+            # The body is a body position, walked by THE walker. Its
+            # exit map is discarded: a lambda is a frame of its own, and
+            # a definition executes nothing, so no exit inside it can
+            # govern the definition's successors.
+            self._check_stmt_seq(e.body.stmts)
             self.current_return_type = prev_ret
             ret_ty: Ty = decl_ret_block
         else:
@@ -542,8 +545,11 @@ class _ExpressionsMixin:
                     )
             arm_diverges = False
             if isinstance(arm.body, A.Block):
-                for stmt in arm.body.stmts:
-                    self._check_stmt(stmt)
+                # A body position, walked by THE walker (the arm's own
+                # scope was pushed above). Its exit map is not consumed
+                # here: the statement carrying this match recomputes its
+                # paths, arms included, for the enclosing body.
+                self._check_stmt_seq(arm.body.stmts)
                 if _block_diverges(arm.body):
                     arm_types.append(None)
                     arm_diverges = True

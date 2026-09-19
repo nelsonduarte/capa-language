@@ -337,6 +337,12 @@ class AnalysisResult:
     # PURELY OBSERVATIONAL: recording it does not change any warn-or-error
     # decision or the IFC checking logic.
     unaudited_secret_sinks: dict = field(default_factory=dict)
+    # The loop label fixpoint's observability for this analysis: the most
+    # speculative passes any loop needed before its labels stabilised,
+    # and how many loops hit the pass cap (which fails closed). An overrun
+    # is a defect of the analysis, not of the program; the tests assert 0.
+    fixpoint_max_passes: int = 0
+    fixpoint_overruns: int = 0
 
     @property
     def ok(self) -> bool:
@@ -676,6 +682,13 @@ class Analyzer(
         # cross the lambda's function boundary (both backends fail at
         # codegen otherwise).
         self._loop_depth: int = 0
+        # Observability of the loop label fixpoint (``_loop_label_fixpoint``):
+        # the most passes any loop of this analysis needed and how many
+        # loops hit the cap. Instance state, reset by ``analyze`` and
+        # surfaced on the result, so a count never leaks between analyses
+        # in one process and a reader cannot look at the wrong class.
+        self.fixpoint_max_passes: int = 0
+        self.fixpoint_overruns: int = 0
         # ids of ``MatchExpr`` nodes that appear in statement position
         # (a bare ``match`` whose value is discarded). Populated by
         # ``_check_stmt`` before it descends, consulted by the
@@ -824,6 +837,8 @@ class Analyzer(
     # ===========================================================
 
     def analyze(self, module: A.Module) -> AnalysisResult:
+        self.fixpoint_max_passes = 0
+        self.fixpoint_overruns = 0
         # Pre-populate global scope with primitives and capabilities.
         self._install_builtins()
         # Roadmap S3: record typestate declarations (name -> ordered
@@ -924,6 +939,8 @@ class Analyzer(
             unaudited_secret_sinks={
                 k: list(v) for k, v in self._unaudited_secret_sinks.items()
             },
+            fixpoint_max_passes=self.fixpoint_max_passes,
+            fixpoint_overruns=self.fixpoint_overruns,
         )
 
     # ===========================================================
