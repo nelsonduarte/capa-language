@@ -1,0 +1,12 @@
+@strict_ifc()
+fun leak(flag: Bool, stdio: Stdio)
+    var i: Int = 0
+    var carried: Bool = false
+    while i < 3
+        i = i + 1
+        if carried
+            continue
+        stdio.println("reached")
+        carried = flag
+fun main(stdio: Stdio)
+    leak(true, stdio)

@@ -1,0 +1,9 @@
+@strict_ifc()
+fun leak(token: @secret Bool, stdio: Stdio)
+    match 1
+        _ ->
+            if token
+                return
+            stdio.println("reached")
+fun main(stdio: Stdio)
+    leak(true, stdio)

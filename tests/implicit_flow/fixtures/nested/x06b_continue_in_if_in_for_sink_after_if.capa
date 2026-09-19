@@ -1,0 +1,8 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    for i in 0..3
+        if i >= 0
+            if k.starts_with("s")
+                continue
+        stdio.println("reached")

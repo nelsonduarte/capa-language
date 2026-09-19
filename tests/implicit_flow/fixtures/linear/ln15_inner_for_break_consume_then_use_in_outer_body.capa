@@ -1,0 +1,11 @@
+fun adoptar(consume stdio: Stdio)
+    stdio.println("consumed")
+fun main(stdio: Stdio)
+    var i: Int = 0
+    while i < 2
+        i = i + 1
+        for x in 0..3
+            if x == 1
+                adoptar(stdio)
+                break
+        stdio.println("after inner")

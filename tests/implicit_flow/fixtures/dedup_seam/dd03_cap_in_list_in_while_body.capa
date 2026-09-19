@@ -1,0 +1,6 @@
+fun main(stdio: Stdio)
+    var i: Int = 0
+    while i < 2
+        i = i + 1
+        let xs = [stdio]
+    stdio.println("x")

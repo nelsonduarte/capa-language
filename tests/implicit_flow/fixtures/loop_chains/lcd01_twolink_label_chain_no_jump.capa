@@ -1,0 +1,9 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var x: Int = 0
+    var y: Int = 0
+    for i in 0..3
+        x = y
+        y = if k.starts_with("s") then 1 else 0
+    stdio.println("x=${x}")

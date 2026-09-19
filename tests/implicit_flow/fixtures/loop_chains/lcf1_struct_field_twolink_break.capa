@@ -1,0 +1,17 @@
+type Pt {
+    a: Bool,
+    b: Bool
+}
+
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var p: Pt = Pt { a: false, b: false }
+    var n: Int = 0
+    for i in 0..5
+        n = n + 1
+        if p.a
+            break
+        p.a = p.b
+        p.b = k.starts_with("s")
+    stdio.println("n=${n}")

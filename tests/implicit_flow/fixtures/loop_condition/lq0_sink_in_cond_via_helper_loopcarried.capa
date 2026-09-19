@@ -1,0 +1,11 @@
+fun probe(stdio: Stdio, v: Bool) -> Bool
+    stdio.println("v=${v}")
+    return v
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var c1: Bool = false
+    var n: Int = 0
+    while not probe(stdio, c1) and n < 5
+        n = n + 1
+        c1 = k.starts_with("s")

@@ -1,0 +1,10 @@
+fun peek(stdio: Stdio)
+    stdio.println("peek")
+fun main(stdio: Stdio)
+    var i: Int = 0
+    while i < 3
+        i = i + 1
+        if i == 1
+            peek(stdio)
+            break
+    stdio.println("after")

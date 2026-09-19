@@ -1,0 +1,4 @@
+fun main(stdio: Stdio)
+    for i in 0..2
+        let t = (stdio, 1)
+    stdio.println("x")

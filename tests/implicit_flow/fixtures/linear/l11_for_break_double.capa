@@ -1,0 +1,8 @@
+fun adoptar(consume stdio: Stdio)
+    stdio.println("consumed")
+fun main(stdio: Stdio, xs: List<Int>)
+    for x in xs
+        if x == 1
+            adoptar(stdio)
+            break
+    adoptar(stdio)

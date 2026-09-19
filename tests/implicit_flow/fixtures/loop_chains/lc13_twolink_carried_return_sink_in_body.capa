@@ -1,0 +1,11 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var c1: Bool = false
+    var c2: Bool = false
+    for i in 0..5
+        if c2
+            return
+        stdio.println("reached")
+        c2 = c1
+        c1 = k.starts_with("s")

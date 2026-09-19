@@ -1,0 +1,13 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var i: Int = 0
+    while i < 3
+        i = i + 1
+        if k.starts_with("s")
+            break
+        for j in 0..2
+            if k.starts_with("s")
+                continue
+            stdio.println("inner")
+        stdio.println("outer")

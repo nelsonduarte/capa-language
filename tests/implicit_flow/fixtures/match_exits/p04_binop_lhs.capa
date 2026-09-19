@@ -1,0 +1,15 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var n: Int = 0
+    var r: Int = 0
+    var b: Bool = false
+    var lst: List<Int> = []
+    for i in 0..5
+        n = n + 1
+        r = match k.starts_with("s")
+            v0 if v0 ->
+                break
+            _ ->
+                0 + 1
+    stdio.println("n=${n}")

@@ -1,0 +1,9 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    let f = fun () -> Unit =>
+        for j in 0..3
+            if k.starts_with("s")
+                break
+        stdio.println("after inner loop in lambda")
+    f()

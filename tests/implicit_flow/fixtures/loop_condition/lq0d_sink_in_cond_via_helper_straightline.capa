@@ -1,0 +1,9 @@
+fun probe(stdio: Stdio, v: Bool) -> Bool
+    stdio.println("v=${v}")
+    return v
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var c1: Bool = false
+    c1 = k.starts_with("s")
+    let _r = probe(stdio, c1)

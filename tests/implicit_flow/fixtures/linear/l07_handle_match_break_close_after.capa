@@ -1,0 +1,17 @@
+linear type Handle { id: Int }
+fun open() -> Handle
+    return Handle { id: 1 }
+fun close(consume h: Handle) -> Unit
+    return ()
+fun main(stdio: Stdio)
+    let h = open()
+    var i: Int = 0
+    while i < 3
+        i = i + 1
+        match i == 1
+            true ->
+                close(h)
+                break
+            false -> i = i
+    close(h)
+    stdio.println("end")

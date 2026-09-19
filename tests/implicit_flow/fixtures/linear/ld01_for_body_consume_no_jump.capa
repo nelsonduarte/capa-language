@@ -1,0 +1,5 @@
+fun adoptar(consume stdio: Stdio)
+    stdio.println("consumed")
+fun main(stdio: Stdio)
+    for i in 0..3
+        adoptar(stdio)

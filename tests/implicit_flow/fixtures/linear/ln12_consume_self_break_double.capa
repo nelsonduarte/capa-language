@@ -1,0 +1,19 @@
+typestate Door { id: Int }
+    Open
+    Closed
+impl Door[Closed]
+    fun open_it(consume self) -> Door[Open]
+        return become(self, Open)
+fun discard(consume d: Door[Open])
+    return
+fun main(stdio: Stdio)
+    let d = Door[Closed] { id: 1 }
+    var i: Int = 0
+    while i < 3
+        i = i + 1
+        if i == 1
+            let o = d.open_it()
+            discard(o)
+            break
+    let o2 = d.open_it()
+    discard(o2)
