@@ -19,6 +19,9 @@ exercises it:
   derived from the AST dataclasses and must each have a refused member;
 - there is ONE statement walker: every call of the statement dispatcher in
   the analyzer package is inside it;
+- there is ONE exit enumeration: no rule outside the exit-syntax module
+  names a jump class, so no site can grow a private second opinion about
+  what leaves a block;
 - the fixpoint's per-analysis counters are surfaced on the result, read 0
   overruns on every pin, and read more than 0 when the cap is forced low.
 """
@@ -311,7 +314,103 @@ class WalkerIdentityGuard(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------
-# Guard 5: the fixpoint counters
+# Guard 5: one exit enumeration
+# ---------------------------------------------------------------------
+
+#: The AST classes that ARE an exit form. Written here, not imported from
+#: the analyzer, so a class added to the analyzer's own list and to no
+#: reference set is still checked.
+_JUMP_CLASSES = {"ReturnStmt", "BreakStmt", "ContinueStmt"}
+
+#: The places allowed to reason about the exit forms AS A SET: the
+#: exit-syntax module, which answers the question, and the walker's own
+#: per-shape dispatcher and its exhaustiveness table, which route a
+#: statement to its checker and ask nothing about leaving.
+_ALLOWED_SET_SITES = {
+    "_statements.py:_check_stmt",
+    "_statements.py:<module>",
+}
+_EXIT_SYNTAX_MODULE = "_exit_syntax.py"
+
+
+def _jump_class_set_sites():
+    """``file.py:function`` for every place in the analyzer package that
+    names MORE THAN ONE of the jump classes.
+
+    Naming one of them is ordinary work (a ``return``'s value is read at
+    several sites, and its type is annotated). Naming SEVERAL is a claim
+    about which forms leave a block: that is the enumeration, and it has
+    one home."""
+    out = {}
+    for path in sorted(ANALYZER_DIR.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        owner = {}
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in ast.walk(fn):
+                    owner.setdefault(id(node), fn.name)
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Attribute)
+                    and node.attr in _JUMP_CLASSES):
+                continue
+            site = f"{path.name}:{owner.get(id(node), '<module>')}"
+            out.setdefault(site, set()).add(node.attr)
+    return {site: kinds for site, kinds in out.items() if len(kinds) > 1}
+
+
+class ExitEnumerationGuard(unittest.TestCase):
+    """There is ONE enumeration of the forms that leave a block.
+
+    Every rule that asks "does this block or statement leave, and by
+    which kind" (the implicit-flow pc, the linear suspension, the branch
+    merge, the arm typing of a ``match``, the falls-through check of a
+    declared return type) asks ``_exit_syntax``. A second, private test
+    re-introduced at any of those sites is a hand-synced copy that can
+    silently disagree and that no verdict pin need notice, so a site that
+    reasons about the jump classes as a SET fails here."""
+
+    def test_the_exit_forms_are_enumerated_in_one_module(self):
+        sites = _jump_class_set_sites()
+        self.assertTrue(sites, "the derivation found nothing")
+        stray = {
+            site: sorted(kinds) for site, kinds in sites.items()
+            if not site.startswith(_EXIT_SYNTAX_MODULE)
+            and site not in _ALLOWED_SET_SITES
+        }
+        self.assertEqual(stray, {}, f"a second exit enumeration: {stray}")
+
+    def test_every_allowance_is_still_a_real_site(self):
+        # An allowance nobody uses is a stale exemption that would hide
+        # the next copy: it has to name a site the derivation finds.
+        sites = set(_jump_class_set_sites())
+        self.assertEqual(_ALLOWED_SET_SITES - sites, set())
+
+    def test_the_seam_answers_every_consumer(self):
+        # The four questions, asked of one analyzer on one program, so a
+        # consumer that stopped routing through the seam shows up as a
+        # disagreement rather than as a silent second opinion.
+        source = (
+            "fun f(c: Bool) -> Int\n"
+            "    if c\n"
+            "        return 1\n"
+            "    else\n"
+            '        panic("no")\n'
+        )
+        module = _parse(source)
+        an = Analyzer(source=source)
+        result = an.analyze(module)
+        self.assertEqual([e.message for e in result.errors], [])
+        fn = next(n for n in walk(module) if isinstance(n, A.FunDecl))
+        self.assertFalse(an._paths(fn.body, an._ALL_KINDS).may_normal)
+        then_block = next(
+            n for n in walk(module) if isinstance(n, A.IfStmt)
+        ).then_block
+        self.assertTrue(an._block_leaves(then_block))
+        self.assertEqual(an._jump_kind(then_block.stmts[-1]), "return")
+
+
+# ---------------------------------------------------------------------
+# Guard 6: the fixpoint counters
 # ---------------------------------------------------------------------
 
 class FixpointCounters(unittest.TestCase):

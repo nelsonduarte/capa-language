@@ -10,6 +10,10 @@ non-diverging branches must) therefore let the same value be consumed
 twice: once in the jumping branch and once after the loop or on the next
 iteration.
 
+A ``while`` CONDITION is part of the same picture: it runs once per
+iteration, before the body, so a consume it performs is a consume the
+next evaluation and the body both see.
+
 The suspended consumed sets are keyed by exit kind and kept in a frame
 PER LOOP, so an inner loop consumes only what its own body suspended and
 an outer loop's ``break`` branch is not pre-marked at the inner loop's exit
@@ -72,11 +76,58 @@ class LinearLoopExits(unittest.TestCase):
         "lret3_panic_branch_consume_then_consume_after_loop_valid": ACCEPT,
     }
 
+    #: Every ARM POSITION that merges through the one exit test, with a
+    #: branch that ends in a bare ``panic``: the ``if`` then-branch, the
+    #: ``else`` branch, an ``elif`` branch and a ``match`` arm, outside a
+    #: loop (``lret3`` is the in-loop form). A panic-ending branch
+    #: reaches no merge, so its consume is not the merge's; the control
+    #: ends the same branch in a plain call, which DOES reach the merge,
+    #: so the consume after it is a double consume.
+    PANIC_BRANCH_POSITIONS = {
+        "lret4_panic_branch_in_if_consume_then_consume_after_valid": ACCEPT,
+        "lret5_panic_branch_in_else_consume_then_consume_after_valid": ACCEPT,
+        "lret6_panic_branch_in_elif_consume_then_consume_after_valid": ACCEPT,
+        "lret7_panic_branch_in_match_arm_consume_then_consume_after_valid": ACCEPT,
+        "lret8_control_nonexit_branch_consume_then_consume_after": REFUSE,
+    }
+
     def test_table(self):
         assert_table(self, "linear", self.TABLE, ifc_only=False)
 
     def test_return_branch_is_not_suspended(self):
         assert_table(self, "linear", self.RETURN_BRANCH, ifc_only=False)
+
+    def test_panic_branch_at_every_arm_position(self):
+        assert_table(self, "linear", self.PANIC_BRANCH_POSITIONS, ifc_only=False)
+
+
+class ControllingExpressionConsume(unittest.TestCase):
+    """A ``while`` CONDITION is re-evaluated on every iteration, so a
+    linear value it consumes is consumed for the next evaluation of the
+    condition, for the body, and for everything after the loop: the same
+    rule a consume in the body obeys, because the speculative passes
+    evaluate the condition in the order the loop runs it. A ``for``
+    ITERABLE is evaluated once, before the loop, so a consume there is a
+    single consume and stays accepted."""
+
+    TABLE = {
+        "wcl1_while_cond_consume_then_read_after_loop": REFUSE,
+        "wcl2_while_cond_consume_with_break_in_body": REFUSE,
+        "wcl6_while_cond_consume_then_consume_after_loop": REFUSE,
+        "wcl4_control_while_body_consume": REFUSE,
+        "wcl8_control_for_iterable_consume_evaluated_once": ACCEPT,
+    }
+
+    def test_table(self):
+        assert_table(self, "linear", self.TABLE, ifc_only=False)
+
+    def test_the_condition_consume_is_reported_once_at_the_condition(self):
+        # One diagnostic, at the condition, naming the re-consume: the
+        # speculative pass's copy is truncated with the pass.
+        r = check_fixture("linear", "wcl1_while_cond_consume_then_read_after_loop")
+        errs = [e for e in r.errors if "consumed earlier" in e.message]
+        self.assertEqual(len(errs), 1, [e.message for e in r.errors])
+        self.assertEqual(errs[0].pos.line, 9, [e.message for e in r.errors])
 
 
 class PerLoopFrame(unittest.TestCase):

@@ -1,0 +1,8 @@
+fun f(c: Bool) -> Int
+    if c
+        return 1
+    else
+        panic("no")
+fun main(stdio: Stdio)
+    let _x = f(true)
+    stdio.println("ok")

@@ -1,0 +1,5 @@
+fun f() -> Int
+    panic("no")
+fun main(stdio: Stdio)
+    let _x = 1
+    stdio.println("ok")

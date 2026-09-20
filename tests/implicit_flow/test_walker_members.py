@@ -4,15 +4,17 @@ Under ``@strict_ifc`` a statement that can leave its body early (``return``
 / ``break`` / ``continue`` / a bare ``panic``) under a secret condition makes
 every later statement of that body, and of every enclosing body the exit
 can leave, run only when the secret said "do not leave"; a public sink there
-leaks that bit by its mere execution. A secret-conditioned ``break`` also
-makes a loop's iteration count secret, so a sink BEFORE it in the body, and
-a counter incremented in the body, leak too.
+leaks that bit by its mere execution. A secret-conditioned exit that ENDS
+the loop (a ``break``, or a ``return`` leaving the whole frame) also makes
+the loop's iteration count secret, so a sink BEFORE it in the body, and a
+counter incremented in the body, leak too.
 
 The analyzer answers this with ONE statement walker that carries the
 normal-termination label along every body (the pc of statement i+1 is the
 label under which statement i terminated normally), ONE loop rule (a
-``continue`` merges at the loop head, a ``break`` at the loop exit and makes
-the iteration count secret, only a ``return`` escapes), and ONE label
+``continue`` merges at the loop head; a ``break`` merges at the loop exit
+and a ``return`` escapes the frame, and both END the loop, so either one
+taken under a secret guard makes the iteration count secret), and ONE label
 fixpoint per loop that re-walks the body until nothing the next iteration
 can read has changed (the binding labels, the container-mutation channel,
 the loop's controlling expression, the exit map).
@@ -55,7 +57,12 @@ class ExitKinds(unittest.TestCase):
     """One refused member per EXIT KIND, in both loop forms where the kind
     is loop-bound: ``break`` (the iteration count), ``continue`` (the rest
     of the body), ``return`` (the rest of the frame), and a bare ``panic``
-    in a match arm (modelled as ``return``)."""
+    in a match arm (modelled as ``return``).
+
+    "This block leaves" is ONE question with one answer, so the answer is
+    read at every site that asks it: the information-flow rules, the merge
+    of a branch's linear state, the typing of a ``match``'s arms and the
+    falls-through check of a function body that declares a return type."""
 
     TABLE = {
         "p01_while_itercount": REFUSE,
@@ -77,6 +84,21 @@ class ExitKinds(unittest.TestCase):
         "ifx3_ifexpr_public_cond_panic_arm_then_sink_control": ACCEPT,
     }
 
+    #: The SAME exit test everywhere a block can end: a block arm that
+    #: ends in ``panic`` reaches no merge, so its TYPE does not have to
+    #: agree with the other arms of the ``match`` that carries it, and
+    #: a function body that ends in ``panic`` falls through on no path,
+    #: so a declared return type is satisfied. The refused members are
+    #: the information-flow side: the panic exit under a secret guard
+    #: makes the statements after it secret.
+    PANIC_ENDS_A_BLOCK = {
+        "panic_arm_typing_match_block_arm_ends_in_panic": ACCEPT,
+        "panic_ending_function_body_declares_a_return_type": ACCEPT,
+        "panic_ending_branch_function_declares_a_return_type": ACCEPT,
+        "panic_arm_secret_scrutinee_sink_after": REFUSE,
+        "panic_branch_in_loop_body_sink_after": REFUSE,
+    }
+
     def test_table(self):
         assert_table(self, "exit_kinds", self.TABLE)
 
@@ -84,6 +106,22 @@ class ExitKinds(unittest.TestCase):
         assert_table(self, "match_exits", self.IF_EXPRESSION)
         r = check_fixture("match_exits", "ifx1_ifexpr_secret_cond_panic_arm_then_sink")
         self.assertEqual(len(r.errors), 2, [e.message for e in r.errors])
+
+    def test_panic_ends_a_block_everywhere(self):
+        assert_table(self, "exit_kinds", self.PANIC_ENDS_A_BLOCK, ifc_only=False)
+        # The refused members carry only information-flow errors, not a
+        # typing error beside them: the panic under the secret guard, the
+        # sink after it, and, in the loop form, the counter the secret
+        # iteration count made secret.
+        for name, total in (
+            ("panic_arm_secret_scrutinee_sink_after", 2),
+            ("panic_branch_in_loop_body_sink_after", 3),
+        ):
+            with self.subTest(program=name):
+                r = check_fixture("exit_kinds", name)
+                messages = [e.message for e in r.errors]
+                self.assertEqual(len(r.errors), total, messages)
+                self.assertEqual(len(ifc_errors(r)), total, messages)
 
 
 class NestedUnderPublicGuards(unittest.TestCase):
@@ -166,12 +204,31 @@ class NestedUnderPublicGuards(unittest.TestCase):
         "lc08_loopcarried_continue_sink_after": REFUSE,
     }
 
+    #: A sink BEFORE a secret-conditioned exit that ENDS THE LOOP: the
+    #: sink runs once per iteration until the exit fires, so its
+    #: execution count is the iteration count, which the secret decides.
+    #: A ``return`` ends the loop exactly as a ``break`` does, in both
+    #: loop forms, spelled as an ``if`` or as a ``match`` arm, and at
+    #: any nesting depth (the inner loop's ``return`` also ends the
+    #: outer one). The control places the same sink AFTER the exit,
+    #: where the body norm already covers it.
+    SINK_BEFORE_A_LOOP_ENDING_EXIT = {
+        "wcr1_while_sink_before_secret_return_itercount": REFUSE,
+        "wcr4_for_sink_before_secret_return_itercount": REFUSE,
+        "wcr6_while_sink_before_secret_return_in_match_arm": REFUSE,
+        "wcr11_outer_sink_before_inner_while_secret_return": REFUSE,
+        "wcr7_while_sink_after_secret_return_control": REFUSE,
+    }
+
     #: A ``?`` / ``Try`` early return is not a recognised exit form; the
     #: program is ACCEPTED and the residual is disclosed, not closed.
     DISCLOSED = {"gap19_try_under_pub_if": ACCEPT}
 
     def test_table(self):
         assert_table(self, "nested", self.TABLE)
+
+    def test_sink_before_a_loop_ending_exit(self):
+        assert_table(self, "nested", self.SINK_BEFORE_A_LOOP_ENDING_EXIT)
 
     def test_disclosed_residual(self):
         assert_table(self, "nested", self.DISCLOSED)
@@ -215,8 +272,31 @@ class LoopCarriedChains(unittest.TestCase):
         "lcs3_twolink_chain_no_exit_sink": ACCEPT,
     }
 
+    #: The head pc governs the SPECULATIVE passes too, not only the real
+    #: one: a variable or a container written under it is secret for the
+    #: NEXT iteration, so a sink that reads it earlier in the body carries
+    #: the value error beside the control-flow one. The control writes the
+    #: same variable under the same head pc with no sink reading it.
+    HEAD_PC_IN_THE_SPECULATIVE_PASSES = {
+        "lch1_head_pc_raises_a_var_read_next_iteration": REFUSE,
+        "lch2_head_pc_raises_a_container_read_next_iteration": REFUSE,
+        "lch3_control_head_pc_raise_guards_no_sink": ACCEPT,
+    }
+
     def test_table(self):
         assert_table(self, "loop_chains", self.TABLE)
+
+    def test_the_head_pc_governs_every_pass(self):
+        assert_table(self, "loop_chains", self.HEAD_PC_IN_THE_SPECULATIVE_PASSES)
+        # Two errors, not one: the value the head pc made secret reaches
+        # the sink, AND the sink runs under secret control flow.
+        for name in (
+            "lch1_head_pc_raises_a_var_read_next_iteration",
+            "lch2_head_pc_raises_a_container_read_next_iteration",
+        ):
+            with self.subTest(program=name):
+                r = check_fixture("loop_chains", name)
+                self.assertEqual(len(r.errors), 2, [e.message for e in r.errors])
 
 
 class ContainerMutationChannel(unittest.TestCase):
@@ -251,10 +331,13 @@ class ControllingExpression(unittest.TestCase):
 
     The condition also EXECUTES once per iteration plus once, so it runs
     under the pc the loop rule assigns to the iteration count: the entry pc
-    joined with the stabilised ``break`` label, not the condition's own
-    label. A public sink called from the condition with a secret-conditioned
-    ``break`` in the body therefore leaks how many times the condition ran
-    (``wcb*``); a public ``break`` or a secret ``continue`` does not.
+    joined with the stabilised label of every exit kind that ENDS the loop,
+    not the condition's own label. A public sink called from the condition
+    with a secret-conditioned ``break``, or a secret-conditioned ``return``
+    from the body, therefore leaks how many times the condition ran
+    (``wcb*``, ``wcr2``); a public exit of either kind, or a secret
+    ``continue``, does not. Whatever the condition DOES also happens under
+    that pc: a container it mutates becomes secret (``wcm1``).
 
     ``lcw2`` (a ``for`` whose iterated container is pushed under a secret
     pc in the body) is a DISCLOSED residual of this class: the iterable is
@@ -280,14 +363,31 @@ class ControllingExpression(unittest.TestCase):
         "ctw6_ct_len_compare_alone": ACCEPT,
     }
 
-    #: The condition's execution count, governed by the head pc.
+    #: The condition's execution count, governed by the head pc. Both
+    #: exit kinds that END the loop raise it: a ``break`` (``wcb*``) and
+    #: a ``return`` from the body (``wcr2``). A public exit of either
+    #: kind, and a ``continue`` (which skips an iteration without
+    #: changing how many there are), leave it public.
     CONDITION_EXECUTION = {
         "wcb0_cond_sink_helper_secret_break_in_body": REFUSE,
         "wcb1_cond_sink_helper_loopcarried_secret_break": REFUSE,
         "wcb2_cond_sink_direct_secret_break": REFUSE,
         "wcb5_cond_sink_helper_secret_break_in_match_arm": REFUSE,
+        "wcr2_cond_sink_helper_secret_return_in_body": REFUSE,
         "wcb3_control_cond_sink_public_break": ACCEPT,
         "wcb4_control_cond_sink_secret_continue_only": ACCEPT,
+        "wcr3_control_cond_sink_public_return": ACCEPT,
+    }
+
+    #: A container MUTATED by the condition is mutated once per
+    #: evaluation, so under a head pc the iteration count made secret the
+    #: mutation is a secret one and a later structure query reads a
+    #: secret length. The controls mutate the same container under a
+    #: public ``break`` and under a secret ``continue``.
+    CONDITION_MUTATION = {
+        "wcm1_cond_mutation_secret_break_length_after": REFUSE,
+        "wcm3_control_cond_mutation_public_break": ACCEPT,
+        "wcm4_control_cond_mutation_secret_continue_only": ACCEPT,
     }
 
     DISCLOSED = {"lcw2_for_over_list_mutated_in_body": ACCEPT}
@@ -297,6 +397,9 @@ class ControllingExpression(unittest.TestCase):
 
     def test_condition_execution_count(self):
         assert_table(self, "loop_condition", self.CONDITION_EXECUTION)
+
+    def test_condition_mutation_under_the_head_pc(self):
+        assert_table(self, "loop_condition", self.CONDITION_MUTATION)
 
     def test_disclosed_residual(self):
         assert_table(self, "loop_condition", self.DISCLOSED)

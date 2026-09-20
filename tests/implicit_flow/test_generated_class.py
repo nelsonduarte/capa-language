@@ -2,13 +2,16 @@
 
 ``_generated`` states the rule once and emits the cross product of exit
 kind, enclosing-construct chain, sink position and branching arm with the
-verdict the rule predicts. Four corpora are scored here, in BOTH directions
-(a member accepted is a leak, a negative refused is a false alarm):
+verdict the rule predicts. The sink position has three values, because a
+sink placed BEFORE the exit leaks or not according to whether it sits
+inside the loop the exit ENDS. Four corpora are scored here, in BOTH
+directions (a member accepted is a leak, a negative refused is a false
+alarm):
 
-- depth 2, one arm per level:              146 programs
-- depth 3, one arm per level:              652 programs
-- depth 2, every arm per level (uniform):  342 programs
-- depth 2, two branching levels, mixed:    156 programs
+- depth 2, one arm per level:              219 programs
+- depth 3, one arm per level:              978 programs
+- depth 2, every arm per level (uniform):  513 programs
+- depth 2, two branching levels, mixed:    234 programs
 
 The verdict is the ONLY thing scored, and only under the harness's
 preconditions: an empty corpus, a wrong compiler, or a refusal that carries
@@ -36,23 +39,23 @@ def _score(tc, corpus, expected_size):
 
 
 class GeneratedDepth2(unittest.TestCase):
-    def test_146(self):
-        _score(self, G.generate(2, arm_axis=False), 146)
+    def test_219(self):
+        _score(self, G.generate(2, arm_axis=False), 219)
 
 
 class GeneratedDepth3(unittest.TestCase):
-    def test_652(self):
-        _score(self, G.generate(3, arm_axis=False), 652)
+    def test_978(self):
+        _score(self, G.generate(3, arm_axis=False), 978)
 
 
 class GeneratedArmAxis(unittest.TestCase):
-    def test_342(self):
-        _score(self, G.generate(2, arm_axis=True), 342)
+    def test_513(self):
+        _score(self, G.generate(2, arm_axis=True), 513)
 
 
 class GeneratedMixedArms(unittest.TestCase):
-    def test_156(self):
-        _score(self, G.generate_mixed(), 156)
+    def test_234(self):
+        _score(self, G.generate_mixed(), 234)
 
 
 class ScorerPreconditions(unittest.TestCase):
@@ -71,6 +74,18 @@ class ScorerPreconditions(unittest.TestCase):
     def test_the_rule_has_both_verdicts_at_every_depth(self):
         for corpus in (G.generate(2, False), G.generate(2, True), G.generate_mixed()):
             self.assertEqual({v for _, _, v in corpus}, {ACCEPT, REFUSE})
+
+    def test_every_sink_position_carries_both_verdicts(self):
+        # A position whose predicate collapsed to one verdict would score
+        # a full mark while testing nothing, so each of the three has to
+        # produce members AND negatives.
+        seen = {}
+        for name, _, want in G.generate(2, arm_axis=True):
+            seen.setdefault(G.position_of(name), set()).add(want)
+        self.assertEqual(set(seen), set(G.SINKS), seen)
+        for position, verdicts in seen.items():
+            with self.subTest(position=position):
+                self.assertEqual(verdicts, {ACCEPT, REFUSE})
 
 
 if __name__ == "__main__":

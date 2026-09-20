@@ -1,0 +1,11 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var n: Int = 0
+    var lst: List<Int> = []
+    while n < 9
+        n = n + 1
+        stdio.println("len=${lst.length()}")
+        lst.push(n)
+        if k.starts_with("s")
+            break

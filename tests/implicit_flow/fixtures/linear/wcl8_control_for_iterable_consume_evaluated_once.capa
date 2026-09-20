@@ -1,0 +1,11 @@
+linear type Handle { id: Int }
+fun open() -> Handle
+    return Handle { id: 1 }
+fun take(consume h: Handle) -> List<Int>
+    return [1, 2]
+fun main(stdio: Stdio)
+    let h = open()
+    var n: Int = 0
+    for i in take(h)
+        n = n + 1
+    stdio.println("n=${n}")
