@@ -1,0 +1,7 @@
+fun main(stdio: Stdio)
+    var n: Int = 0
+    var i: Int = 0
+    while i < 2
+        i = i + 1
+        n = n + [stdio].length()
+    stdio.println("n=${n}")

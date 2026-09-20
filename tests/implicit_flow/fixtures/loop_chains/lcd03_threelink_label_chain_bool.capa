@@ -1,0 +1,12 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var x: Bool = false
+    var y: Bool = false
+    var z: Bool = false
+    for i in 0..4
+        x = y
+        y = z
+        z = k.starts_with("s")
+    if x
+        stdio.println("x")

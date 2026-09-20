@@ -182,6 +182,8 @@ class _ExpressionsMixin:
         # there reports "break outside of a loop"), restore on exit.
         prev_loop_depth = self._loop_depth
         self._loop_depth = 0
+        prev_lin_exits = self._lin_exits
+        self._lin_exits = {}
 
         # Body: single expression (its type is the return type)
         # or an indented block (return statements are checked
@@ -194,8 +196,11 @@ class _ExpressionsMixin:
                 decl_ret_block = TyUnit
             prev_ret = self.current_return_type
             self.current_return_type = decl_ret_block
-            for stmt in e.body.stmts:
-                self._check_stmt(stmt)
+            # The body is a body position, walked by THE walker. Its
+            # exit map is discarded: a lambda is a frame of its own, and
+            # a definition executes nothing, so no exit inside it can
+            # govern the definition's successors.
+            self._check_stmt_seq(e.body.stmts)
             self.current_return_type = prev_ret
             ret_ty: Ty = decl_ret_block
         else:
@@ -252,6 +257,7 @@ class _ExpressionsMixin:
         self._lambda_local_names_stack.pop()
         self._lambda_ast_stack.pop()
         self._loop_depth = prev_loop_depth
+        self._lin_exits = prev_lin_exits
         self._consumed = prev_consumed
         self._pop_scope()
 
@@ -462,9 +468,10 @@ class _ExpressionsMixin:
         Exhaustiveness is checked when the scrutinee has a sum
         type.
 
-        Arms whose body diverges (ends in ``return``, ``break``,
-        ``continue``) do not contribute to the match's result
-        type: the divergent control flow leaves the match
+        Arms whose block body leaves (ends in ``return``, ``break``,
+        ``continue`` or a bare ``panic``, the one exit test
+        ``_block_leaves`` answers) do not contribute to the match's
+        result type: the divergent control flow leaves the match
         without producing a value, so unification against other
         arms is unsound. ``arm_types`` carries ``None`` for
         divergent arms and the actual type otherwise.
@@ -542,9 +549,12 @@ class _ExpressionsMixin:
                     )
             arm_diverges = False
             if isinstance(arm.body, A.Block):
-                for stmt in arm.body.stmts:
-                    self._check_stmt(stmt)
-                if _block_diverges(arm.body):
+                # A body position, walked by THE walker (the arm's own
+                # scope was pushed above). Its exit map is not consumed
+                # here: the statement carrying this match recomputes its
+                # paths, arms included, for the enclosing body.
+                self._check_stmt_seq(arm.body.stmts)
+                if self._block_leaves(arm.body):
                     arm_types.append(None)
                     arm_diverges = True
                 elif (
@@ -574,12 +584,17 @@ class _ExpressionsMixin:
             # ``_consumed`` set must not flow past the match. Same
             # principle the type-side unification uses: a divergent
             # arm contributes ``None`` to ``arm_types``; here it
-            # simply does not contribute to ``branch_results``.
+            # simply does not contribute to ``branch_results``. A
+            # ``break`` / ``continue`` arm's set is suspended by exit
+            # kind for the enclosing loop instead, exactly as an
+            # ``if`` branch's is (``_suspend_linear_exit``).
             if not arm_diverges:
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
                 branch_field_moved.append(set(self._linear_field_moved))
                 branch_ct.append(self._container_taint)
+            else:
+                self._suspend_linear_exit(arm.body)
 
         # Restore the pc-label raised for the arm bodies (S2.implicit).
         self._pc_label = saved_pc
@@ -1607,13 +1622,3 @@ def _arm_value(body):
     return body
 
 
-def _block_diverges(block: "A.Block") -> bool:
-    """True if the block's last statement is divergent (``return``,
-    ``break``, or ``continue``). Used by the match-arm checker to
-    treat divergent block-bodied arms as not contributing to the
-    match's result type.
-    """
-    if not block.stmts:
-        return False
-    last = block.stmts[-1]
-    return isinstance(last, (A.ReturnStmt, A.BreakStmt, A.ContinueStmt))

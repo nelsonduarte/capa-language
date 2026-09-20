@@ -2093,6 +2093,68 @@ class _IfcMixin:
     # place); only ``if`` / ``elif`` / ``else`` and ``match`` arms need the
     # explicit isolate-then-merge.
 
+    # ---- the label channels a loop fixpoint observes -------------
+    #
+    # A loop body is walked speculatively until nothing the next
+    # iteration can read has changed. What it can read is exactly the
+    # label-bearing state this module writes and a speculative pass does
+    # not revert: declared ONCE below, by owner, and read by
+    # ``_label_channels``, whose body iterates the declaration, so a
+    # channel is observed iff it is declared. A guard test derives the
+    # label-bearing writes from the package source and asserts they equal
+    # this declaration plus the exclusions, each of which carries its
+    # reason; a runtime test mutates every declared channel and asserts
+    # the snapshot moves.
+
+    #: ``(owner, name)``: a ``binding`` channel is an attribute of every
+    #: Symbol in scope, an ``analyzer`` channel an attribute of ``self``.
+    _LABEL_CHANNELS = (
+        ("binding", "label"),
+        ("binding", "field_labels"),
+        ("binding", "container_split"),
+        ("analyzer", "_container_taint"),
+    )
+
+    #: Label-bearing attributes the package writes that are NOT fixpoint
+    #: state, with the reason each is out.
+    _LABEL_CHANNEL_EXCLUSIONS = {
+        "_expr_labels": "keyed by expression node and overwritten on every pass",
+        "_expr_base_labels": "keyed by expression node and overwritten on every pass",
+        "_expr_field_labels": "keyed by expression node and overwritten on every pass",
+        "_container_split": "keyed by expression node and overwritten on every pass",
+        "_lambda_capture_labels": "keyed by lambda node and overwritten on every pass",
+        "_lambda_result_labels": "keyed by lambda node and overwritten on every pass",
+        "_pc_label": "set by the fixpoint before every pass and restored by the loop",
+        "struct_field_labels": "written when declarations are collected, before any body walk",
+    }
+
+    def _label_channels(self) -> tuple:
+        """An opaque, comparable snapshot of every channel in
+        ``_LABEL_CHANNELS``: the binding channels of every Symbol visible
+        through the scope chain (labels live on ``Scope.symbols``, not on
+        ``self.bindings``) and the analyzer channels. The loop fixpoint
+        compares two of these; it never enumerates label locations
+        itself."""
+        binding_channels = [n for o, n in self._LABEL_CHANNELS if o == "binding"]
+        analyzer_channels = [n for o, n in self._LABEL_CHANNELS if o == "analyzer"]
+        rows = []
+        scope, depth = self.scope, 0
+        while scope is not None:
+            for name, sym in scope.symbols.items():
+                rows.append((depth, name) + tuple(
+                    _freeze_channel(getattr(sym, ch, None)) for ch in binding_channels
+                ))
+            scope = scope.parent
+            depth += 1
+        rows.sort()
+        return (
+            tuple(rows),
+            tuple(
+                (ch, _freeze_channel(getattr(self, ch, None)))
+                for ch in analyzer_channels
+            ),
+        )
+
     def _container_taint_map(self) -> dict:
         ct = getattr(self, "_container_taint", None)
         if ct is None:
@@ -4034,6 +4096,22 @@ class _IfcMixin:
             self._raise_whole_value_label(member, L.SECRET)
             if getattr(member, "field_labels", None) is not None:
                 self._escaped_struct_syms.add(id(member))
+
+
+def _freeze_channel(value):
+    """A hashable, comparable rendering of a label channel's value: a
+    label normalises, a map (a per-field map, the container-taint table)
+    becomes its sorted items, a tuple (a container split) maps through,
+    and an absent value equals an empty one."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return L.normalize(value)
+    if isinstance(value, dict):
+        return tuple(sorted((repr(k), _freeze_channel(v)) for k, v in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_channel(v) for v in value)
+    return repr(value)
 
 
 def _deepcopy_field_map(node):

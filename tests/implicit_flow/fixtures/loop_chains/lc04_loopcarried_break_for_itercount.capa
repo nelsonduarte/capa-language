@@ -1,0 +1,11 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var n: Int = 0
+    var carried: Bool = false
+    for i in 0..3
+        n = n + 1
+        if carried
+            break
+        carried = k.starts_with("s")
+    stdio.println("n=${n}")

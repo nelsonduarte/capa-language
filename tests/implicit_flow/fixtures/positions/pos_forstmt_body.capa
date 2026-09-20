@@ -1,0 +1,8 @@
+@strict_ifc()
+fun leak(token: @secret Bool, stdio: Stdio, xs: List<Int>)
+    for _i in xs
+        if token
+            continue
+        stdio.println("reached")
+fun main(stdio: Stdio)
+    leak(true, stdio, [1, 2, 3])

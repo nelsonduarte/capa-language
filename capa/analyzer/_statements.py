@@ -1,7 +1,7 @@
 """Statement-level checking mixin.
 
-Implements ``_check_block`` and ``_check_stmt`` plus the
-per-shape checkers:
+Implements ``_check_stmt_seq`` (the ONE statement walker) and
+``_check_stmt`` plus the per-shape checkers:
 
 - ``_check_let`` / ``_check_var``: binding introductions with
   inference and capability-flow exceptions for call-returned
@@ -10,13 +10,21 @@ per-shape checkers:
   (immutable ``let``s, constants, and parameters cannot be
   reassigned).
 - ``_check_if``: branch-aware ``_consumed`` snapshot + merge.
-- ``_check_while``, ``_check_for``: two-pass dry-run / real-run
-  analysis so capabilities consumed in body iteration N are
-  flagged as consumed before iteration N+1 sees them.
+- ``_check_while``, ``_check_for``: both route through ``_check_loop``,
+  the ONE loop rule, and ``_loop_label_fixpoint``, the ONE seam that
+  re-walks a loop body speculatively until the labels the next
+  iteration can read have stabilised, before the real pass.
 - ``_check_return``: validate the return value against the
   current function's expected return type.
 - ``_snapshot_for_dry_run`` / ``_restore_after_dry_run``: the
-  flow-analysis bookkeeping the loop checkers rely on.
+  flow-analysis bookkeeping a speculative pass relies on.
+
+The implicit-flow discipline (strict tier) lives in the walker: after
+each statement the pc for the next one is the enclosing pc joined with
+the normal-termination label of the statements so far (Myers' path
+labels), so a public sink after a secret-conditioned early exit is
+checked under a secret pc. ``_paths`` computes that label, and the
+exit-kind map the loop rule consumes, syntactically over the AST.
 
 The mixin assumes ``self`` has the analyzer state set up and
 pulls helpers from the other mixins (``_check_expr``,
@@ -33,6 +41,7 @@ from ..typesys import (
     Ty, TyBool, TyName, TyString, TyUnit, TyUnknown,
     compatible, ty_str,
 )
+from ._exit_syntax import _NO_PATHS, _ExitSyntaxMixin
 
 
 #: The AST statement kinds ``_check_stmt`` dispatches on, one per
@@ -47,225 +56,44 @@ CHECKED_STMT_KINDS = frozenset({
 })
 
 
-class _StatementsMixin:
-    def _check_block(self, block: A.Block) -> None:
+class _StatementsMixin(_ExitSyntaxMixin):
+    def _check_stmt_seq(self, stmts) -> dict:
+        """THE ONE statement walker. Every body position (a function
+        body, a loop body, an ``if`` branch, a match arm, a lambda body)
+        routes its statements through here.
+
+        Checks ``stmts`` in order. In the strict tier the pc under which
+        statement i+1 is checked is the enclosing pc joined with the
+        normal-termination label of statements 0..i (Myers: the correct
+        pc for the second statement is the normal path label of the
+        first), so a statement after a secret-conditioned early exit runs
+        under a secret pc, however deep the exit sits. Returns the body's
+        exit map (kind -> label) for the CALLER to consume at each kind's
+        target: a loop reads ``break``; nothing else reads it, because an
+        enclosing body recomputes its own paths through ``_paths``. The
+        pc is restored on the way out: a body's raise is scoped to the
+        body, and the pc after a construct is its enclosing walker's
+        business."""
+        base_pc = self._pc_label
+        acc = _NO_PATHS
+        try:
+            for stmt in stmts:
+                self._check_stmt(stmt)
+                if getattr(self, "_strict_ifc", False):
+                    acc = acc.then(self._paths(stmt, self._ALL_KINDS))
+                    self._pc_label = L.join(base_pc, acc.norm)
+            return acc.exits
+        finally:
+            self._pc_label = base_pc
+
+    def _check_block(self, block: A.Block) -> dict:
+        """Walk a block in its own binding scope; the exit map is handed
+        to the caller (see ``_check_stmt_seq``)."""
         self._push_scope()
-        for stmt in block.stmts:
-            self._check_stmt(stmt)
-            # Roadmap S2.implicit (strict only): a divergence (return /
-            # break / continue / panic) that runs under a secret pc makes
-            # the fall-through control-dependent on the secret -- reaching
-            # the statements AFTER it reveals that the divergence did NOT
-            # fire (audit 2026-06-17). ``var x = "y"; if secret > 0:
-            # return; sink("leak")`` leaks the predicate bit through the
-            # sink's mere execution. The per-statement pc raises and
-            # restores around its own body, so we re-raise the ENCLOSING
-            # block's pc here for the remaining statements. Monotonic
-            # (never lowers); strict-only, so the default tier is
-            # unchanged.
-            if getattr(self, "_strict_ifc", False):
-                secret_div = self._secret_conditioned_divergence(stmt)
-                if secret_div is not None:
-                    self._pc_label = L.join(self._pc_label, secret_div)
-        self._pop_scope()
-
-    def _secret_conditioned_divergence(self, stmt: A.Stmt):
-        """The pc-label under which ``stmt`` could DIVERGE (return / break
-        / continue / panic) out of the enclosing block when that
-        divergence is conditioned on a @secret value, or ``None`` when
-        ``stmt`` carries no such secret-conditioned divergence. Strict-only
-        helper for ``_check_block``'s post-statement pc raise.
-
-        Covers the conditional shapes that can host an early divergence:
-        an ``if`` (any branch ending in return / break / continue, or a
-        bare ``panic(...)`` statement), a ``while`` / ``for`` whose body
-        diverges, and a ``match`` (statement OR value position) with an
-        arm that diverges via a SYNTACTICALLY-RECOGNIZED form. The
-        returned label is the join of the guarding condition labels; only
-        a @secret guard raises the block pc.
-
-        The ``match`` case extends advisory 2026-06-17 finding B3, which
-        installed this mechanism for if / while / for but overlooked
-        ``match``: a secret-conditioned divergence inside a match arm did
-        not raise the enclosing block's pc, so a following public sink
-        leaked the same predicate bit the if / while / for path already
-        guards against. This is the same single mechanism, not a parallel
-        one.
-
-        Divergence is detected SYNTACTICALLY only: the recognized forms
-        are a ``panic(...)`` call, a ``return`` / ``break`` / ``continue``
-        statement, and a nested ``match`` / if-expression that itself so
-        diverges (see ``_expr_may_diverge`` / ``_block_has_divergence``).
-        Anything the analyzer cannot see as one of those forms is a
-        DISCLOSED-OPEN residual it does NOT catch:
-
-        1. A ``MatchExpr`` nested DEEPER than a directly-carried value
-           (``f(match ...)``, ``match ... + 1``) is not inspected,
-           consistent with the top-level-only inspection the if / elif
-           path already uses. See ``_controlling_match``.
-        2. An arm that diverges via the ``?`` / ``Try`` operator
-           (``expr?``). ``Try`` is a first-class early return, but the
-           ``A.Try`` node is not one of the recognized forms above, so a
-           directly-carried secret-scrutinee match whose arm early-returns
-           via ``?`` check-passes and leaks. Pre-existing and symmetric
-           with the if / while / for path (which does not recognize
-           ``Try`` either); deferred, not a regression of this fix.
-        3. An arm that calls a VOID helper which always ``panic``s (or
-           otherwise never returns). This is interprocedural divergence;
-           the strict analysis does not track a callee's divergence, so
-           the call reads as an ordinary non-diverging statement.
-
-        "Any arm may diverge" throughout means "via a
-        syntactically-recognized form"; residuals 2 and 3 are outside
-        that scope and are left open here by choice."""
-        m = self._controlling_match(stmt)
-        if m is not None:
-            # ``ctrl`` is an UPPER BOUND on the true control label, not
-            # the exact one: it raises whenever ANY guard is secret and
-            # ANY arm may diverge via a syntactically-recognized form,
-            # even when the diverging arm is public-selected and the
-            # secret guard sits on a non-diverging arm. (Divergence that
-            # is not syntactically recognized -- a ``?`` / ``Try`` arm, a
-            # void helper that always panics -- is a disclosed-open
-            # residual; see the docstring.) This over-approximation is
-            # inherited verbatim from the shipped if / elif path (which
-            # joins all branch-condition labels and asks whether ANY
-            # branch diverges) and is the sound direction: it can only
-            # raise the pc, never lower it.
-            ctrl = L.join_all(
-                [self._label_of(m.scrutinee)]
-                + [self._label_of(a.guard) for a in m.arms if a.guard is not None]
-            )
-            if L.normalize(ctrl) != L.SECRET:
-                return None
-            if self._match_has_diverging_arm(m):
-                return ctrl
-            return None
-        if isinstance(stmt, A.IfStmt):
-            guards = [stmt.cond] + [c for c, _ in stmt.elif_arms]
-            guard_label = L.join_all(self._label_of(c) for c in guards)
-            if L.normalize(guard_label) != L.SECRET:
-                return None
-            arms = (
-                [stmt.then_block]
-                + [b for _, b in stmt.elif_arms]
-                + ([stmt.else_block] if stmt.else_block is not None else [])
-            )
-            if any(self._block_has_divergence(b) for b in arms):
-                return guard_label
-            return None
-        if isinstance(stmt, (A.WhileStmt, A.ForStmt)):
-            ctrl = stmt.cond if isinstance(stmt, A.WhileStmt) else stmt.iter
-            ctrl_label = self._label_of(ctrl)
-            if L.normalize(ctrl_label) != L.SECRET:
-                return None
-            if self._block_has_divergence(stmt.body):
-                return ctrl_label
-            return None
-        return None
-
-    def _block_has_divergence(self, block) -> bool:
-        """True if ``block`` contains a divergence (return / break /
-        continue, or a bare ``panic(...)`` call statement) on some path.
-        Conservative: any nested occurrence counts, since reaching past
-        the enclosing branch reveals the divergence did not fire."""
-        if block is None:
-            return False
-        for st in block.stmts:
-            if isinstance(st, (A.ReturnStmt, A.BreakStmt, A.ContinueStmt)):
-                return True
-            if isinstance(st, A.ExprStmt) and self._is_panic_call(st.expr):
-                return True
-            # A ``match`` with a diverging arm (statement OR value
-            # position) diverges on some path just as an ``if`` branch
-            # does; catching it here closes a diverging match nested
-            # inside an if / while / for body (extends advisory
-            # 2026-06-17 B3 to match).
-            mm = self._controlling_match(st)
-            if mm is not None and self._match_has_diverging_arm(mm):
-                return True
-            if isinstance(st, A.IfStmt):
-                arms = (
-                    [st.then_block]
-                    + [b for _, b in st.elif_arms]
-                    + ([st.else_block] if st.else_block is not None else [])
-                )
-                if any(self._block_has_divergence(b) for b in arms):
-                    return True
-            if isinstance(st, (A.WhileStmt, A.ForStmt)):
-                if self._block_has_divergence(st.body):
-                    return True
-        return False
-
-    def _is_panic_call(self, e) -> bool:
-        """True if ``e`` is a call to the built-in ``panic`` (a divergent
-        abort that writes to stderr). Mirrors ``_is_declassify_call``'s
-        builtin-position guard so a user function named ``panic`` is not
-        treated as divergent here."""
-        from ..builtins import BUILTIN_POS
-        if not isinstance(e, A.Call):
-            return False
-        if not isinstance(e.callee, A.Ident) or e.callee.name != "panic":
-            return False
-        sym = self.bindings.get(id(e.callee))
-        return sym is not None and sym.pos == BUILTIN_POS
-
-    def _controlling_match(self, stmt):
-        """The ``MatchExpr`` DIRECTLY carried by ``stmt``, or ``None``.
-
-        A match reaches a statement in exactly these top-level positions:
-        a bare statement (``ExprStmt.expr``), the RHS of a binding
-        (``LetStmt`` / ``VarStmt`` / ``AssignStmt`` ``.value``), or a
-        returned value (``ReturnStmt.value``). Only the DIRECTLY-carried
-        match is returned, matching the top-level-only inspection the
-        if / elif divergence path already performs -- a ``MatchExpr``
-        nested deeper (``f(match ...)``, ``match ... + 1``) is a
-        disclosed, un-closed residual (see
-        ``_secret_conditioned_divergence``)."""
-        if isinstance(stmt, A.ExprStmt):
-            return stmt.expr if isinstance(stmt.expr, A.MatchExpr) else None
-        if isinstance(stmt, (A.LetStmt, A.VarStmt, A.AssignStmt)):
-            return stmt.value if isinstance(stmt.value, A.MatchExpr) else None
-        if isinstance(stmt, A.ReturnStmt):
-            return (
-                stmt.value
-                if stmt.value is not None and isinstance(stmt.value, A.MatchExpr)
-                else None
-            )
-        return None
-
-    def _expr_may_diverge(self, e) -> bool:
-        """True if evaluating ``e`` may diverge (panic / return / break /
-        continue) on SOME path. Mutually recursive with
-        ``_match_has_diverging_arm`` and terminating (the AST is finite).
-
-        May-diverge (some path), NOT all-paths: an all-paths formulation
-        was proven unsound -- it misses a partial-divergence nested arm
-        (a match arm whose body diverges on one sub-arm but not another
-        still makes reaching past the enclosing match reveal which
-        sub-arm ran)."""
-        if self._is_panic_call(e):
-            return True
-        if isinstance(e, A.MatchExpr):
-            return self._match_has_diverging_arm(e)
-        if isinstance(e, A.IfExpr):
-            return (
-                self._expr_may_diverge(e.then_expr)
-                or self._expr_may_diverge(e.else_expr)
-            )
-        return False
-
-    def _arm_body_may_diverge(self, body) -> bool:
-        """True if a match-arm body may diverge. A ``Block`` body reuses
-        the statement-level ``_block_has_divergence``; an ``Expr`` body
-        (single-line arm) uses ``_expr_may_diverge``."""
-        if isinstance(body, A.Block):
-            return self._block_has_divergence(body)
-        return self._expr_may_diverge(body)
-
-    def _match_has_diverging_arm(self, m) -> bool:
-        """True if any arm of ``m`` may diverge on some path."""
-        return any(self._arm_body_may_diverge(a.body) for a in m.arms)
+        try:
+            return self._check_stmt_seq(block.stmts)
+        finally:
+            self._pop_scope()
 
     def _check_stmt(self, stmt: A.Stmt) -> None:
         if isinstance(stmt, A.LetStmt):
@@ -817,28 +645,44 @@ class _StatementsMixin:
         if isinstance(s.target, A.FieldAccess):
             self._ifc_field_store(s.target, s.value)
 
+    #: The diagnostic de-duplication sets: a node id recorded here is not
+    #: reported a second time. They ride the speculative-pass seam below
+    #: because a diagnostic first emitted in a speculative pass is
+    #: truncated with the pass; if its id stayed recorded, the real pass
+    #: would skip it and the diagnostic would be lost.
+    _DEDUP_SETS = (
+        "_cap_container_reported",
+        "_linear_container_reported",
+        "_linear_conditional_reported",
+    )
+
     def _snapshot_for_dry_run(self) -> dict:
-        """Capture mutable analyzer state before a speculative
-        pass. Used by loop analysis: we run the body once
-        silently to discover which caps will be consumed, then
-        replay the run for real after pre-marking those caps."""
+        """Capture the state a SPECULATIVE pass must not leak into the
+        real pass: the consumed set, the diagnostics, the bindings and
+        types added, the diagnostic de-duplication marks, and the
+        deferred empty-container reads (keyed by a per-pass fresh type
+        variable, so a stale key would report once per pass). What is
+        deliberately NOT captured is the fixpoint state: the binding
+        labels and the container-mutation channel rise monotonically
+        across passes, which is what a speculative pass is for."""
         return {
-            "consumed": self._consumed.copy(),
+            "consumed": set(self._consumed),
             "errors_len": len(self.errors),
             "warnings_len": len(self.warnings),
             "bindings_keys": set(self.bindings.keys()),
             "types_keys": set(self.types.keys()),
+            "dedup": {n: set(getattr(self, n)) for n in self._DEDUP_SETS},
+            "deferred_elem_reads": set(self._deferred_elem_reads),
         }
 
     def _restore_after_dry_run(self, snap: dict) -> None:
         """Reverse :meth:`_snapshot_for_dry_run`. Added bindings /
-        types are removed by key; new errors are truncated;
-        ``_consumed`` reverts."""
+        types / deferred reads are removed by key; new errors and
+        warnings are truncated (the real pass is the single source of
+        each diagnostic); ``_consumed`` and the de-duplication sets
+        revert."""
         self._consumed = snap["consumed"]
         self.errors = self.errors[: snap["errors_len"]]
-        # Drop any IFC warnings emitted during the speculative pass so
-        # the real pass below is the single source of each diagnostic
-        # (otherwise a sink in a loop body warns twice).
         self.warnings = self.warnings[: snap["warnings_len"]]
         for k in list(self.bindings.keys()):
             if k not in snap["bindings_keys"]:
@@ -846,9 +690,111 @@ class _StatementsMixin:
         for k in list(self.types.keys()):
             if k not in snap["types_keys"]:
                 del self.types[k]
+        for name, marks in snap["dedup"].items():
+            setattr(self, name, marks)
+        for k in list(self._deferred_elem_reads):
+            if k not in snap["deferred_elem_reads"]:
+                del self._deferred_elem_reads[k]
+
+    #: A safety net only: the termination argument is the two-point label
+    #: lattice (every channel rises monotonically, so the passes settle in
+    #: links + O(1) trips). Reaching the cap is a DEFECT: it is counted on
+    #: the result so a test can assert it never fires, and it fails CLOSED.
+    _FIXPOINT_CAP = 64
+
+    def _loop_label_fixpoint(self, run_body, pc_at_head) -> dict:
+        """THE ONE seam for loop label stabilisation.
+
+        ``run_body`` performs one speculative walk of the loop body under
+        the current pc and returns its exit map. This repeats it, each
+        pass under the head pc of ``pc_at_head`` and the exit map seen so
+        far (:meth:`_loop_head_pc`, the one source of that join), until
+        neither the label channels (``_label_channels``, the label
+        store's own enumeration) nor the accumulated exit map change, and
+        returns the stable exit map. Every pass is reverted through
+        ``_restore_after_dry_run`` except the fixpoint state
+        itself; the consumed set a pass discovers is accumulated across
+        passes and re-applied, so the linear discipline sees every
+        consume the body performs. When the cap is hit every exit kind
+        is reported secret: an unstabilised program is never accepted."""
+        exits: dict = {}
+        consumed_seen: set = set()
+        passes = 0
+        while True:
+            before = (self._label_channels(), self._exits_fingerprint(exits))
+            snap = self._snapshot_for_dry_run()
+            self._pc_label = self._loop_head_pc(pc_at_head, exits)
+            new_exits = run_body()
+            passes += 1
+            for kind, label in new_exits.items():
+                exits[kind] = L.join(exits.get(kind), label)
+            consumed_seen |= self._consumed - snap["consumed"]
+            self._restore_after_dry_run(snap)
+            self._consumed |= consumed_seen
+            after = (self._label_channels(), self._exits_fingerprint(exits))
+            self.fixpoint_max_passes = max(self.fixpoint_max_passes, passes)
+            if after == before:
+                return exits
+            if passes >= self._FIXPOINT_CAP:
+                self.fixpoint_overruns += 1
+                return {kind: L.SECRET for kind in self._ALL_KINDS}
+
+    def _check_loop(self, pc_at_head, speculative, real) -> None:
+        """THE ONE loop rule, shared by ``while`` and ``for``.
+
+        ``speculative`` walks the body once for the fixpoint and ``real``
+        walks it for the real pass under the head pc
+        :meth:`_loop_head_pc` derives from the stabilised exit map. An
+        exit that ENDS the loop changes how many times the body runs, so
+        its label raises the head pc, governing the whole body (a counter
+        incremented in it becomes secret) and, through the body's labels,
+        whatever the statements after the loop read. Both kinds end it: a
+        ``break`` leaves the loop, and a ``return`` leaves the frame the
+        loop is in (the enclosing walker sees that exit through
+        ``_paths`` as well, for the statements after the loop). A
+        ``continue`` skips the rest of one iteration without changing how
+        many there are, which the walker already governs within the body.
+
+        The linear state a branch suspended at a ``continue`` rejoins at
+        the loop head, so the next iteration sees the consume; the state
+        suspended at a ``break`` rejoins at the loop exit, so everything
+        after the loop sees it. The frame is this loop's own: an inner
+        loop never consumes what an outer body suspended, and the search
+        idiom (consume once, then leave) stays accepted."""
+        self._loop_depth += 1
+        saved_pc = self._pc_label
+        outer_frame = self._lin_exits
+        self._lin_exits = {}
+        before_consumed = set(self._consumed)
+        try:
+            exits = self._loop_label_fixpoint(speculative, pc_at_head)
+            self._rejoin_linear_exits("continue", before_consumed)
+            real(self._loop_head_pc(pc_at_head, exits))
+            self._rejoin_linear_exits("break", before_consumed)
+        finally:
+            self._lin_exits = outer_frame
+            self._loop_depth -= 1
+            self._pc_label = saved_pc
+
+    def _rejoin_linear_exits(self, kind: str, before_consumed: set) -> None:
+        """Merge the consumed sets suspended at ``kind`` in the current
+        loop's frame into the consumed set: what those branches consumed
+        beyond the loop's entry state is consumed at the kind's target."""
+        for suspended in self._lin_exits.get(kind, ()):
+            self._consumed |= suspended - before_consumed
+
+    def _suspend_linear_exit(self, block: A.Block) -> None:
+        """THE ONE place a diverging branch's linear state is parked by
+        exit kind for the enclosing loop's frame: a branch ending in
+        ``break`` or ``continue`` does not reach the merge after its
+        ``if`` / ``match``, but it does reach the loop's exit or head. A
+        ``return`` branch reaches nothing else in this frame and is not
+        suspended."""
+        kind = self._jump_kind(block.stmts[-1]) if block.stmts else None
+        if kind in ("break", "continue"):
+            self._lin_exits.setdefault(kind, []).append(set(self._consumed))
 
     def _check_if(self, s: A.IfStmt) -> None:
-        from ._expressions import _block_diverges
         cond_ty = self._check_expr(s.cond)
         if not compatible(TyBool, cond_ty):
             self._err(
@@ -859,12 +805,14 @@ class _StatementsMixin:
         self._ct_reject(self._label_of(s.cond), s.cond.pos, "an if-condition")
         # Flow analysis: snapshot ``_consumed`` before each branch
         # and take the conservative union after. Branches whose
-        # body diverges (ends in ``return`` / ``break`` /
-        # ``continue``) are excluded from the merge -- their
-        # ``_consumed`` set cannot flow past the if because the
-        # path itself does not reach the merge point. Matches the
-        # divergence treatment match-arm type-unification already
-        # uses (see _check_match_expr).
+        # body leaves (ends in ``return`` / ``break`` / ``continue``
+        # / a bare ``panic``: the one exit test ``_block_leaves``
+        # answers, shared with the match-arm gate) are excluded from
+        # the merge -- their ``_consumed`` set cannot flow past the if
+        # because the path itself does not reach the merge point. A
+        # ``break`` / ``continue`` branch's set is not lost, though: it
+        # is suspended by exit kind for the enclosing loop, which
+        # merges it at the loop exit / head (``_suspend_linear_exit``).
         before = set(self._consumed)
         branch_results: list[set[str]] = []
         # Roadmap S1: track each non-diverging branch's surviving
@@ -913,11 +861,13 @@ class _StatementsMixin:
         self._pc_label = acc_pc
         self._container_isolate(before_ct)
         self._check_block(s.then_block)
-        if not _block_diverges(s.then_block):
+        if not self._block_leaves(s.then_block):
             branch_results.append(self._consumed)
             branch_live.append(dict(self._live_linear))
             branch_field_moved.append(set(self._linear_field_moved))
             branch_ct.append(self._container_taint)
+        else:
+            self._suspend_linear_exit(s.then_block)
 
         for cond, blk in s.elif_arms:
             self._consumed = set(before)
@@ -935,11 +885,13 @@ class _StatementsMixin:
             self._pc_label = acc_pc
             self._container_isolate(before_ct)
             self._check_block(blk)
-            if not _block_diverges(blk):
+            if not self._block_leaves(blk):
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
                 branch_field_moved.append(set(self._linear_field_moved))
                 branch_ct.append(self._container_taint)
+            else:
+                self._suspend_linear_exit(blk)
 
         if s.else_block is not None:
             self._consumed = set(before)
@@ -948,11 +900,13 @@ class _StatementsMixin:
             self._pc_label = acc_pc
             self._container_isolate(before_ct)
             self._check_block(s.else_block)
-            if not _block_diverges(s.else_block):
+            if not self._block_leaves(s.else_block):
                 branch_results.append(self._consumed)
                 branch_live.append(dict(self._live_linear))
                 branch_field_moved.append(set(self._linear_field_moved))
                 branch_ct.append(self._container_taint)
+            else:
+                self._suspend_linear_exit(s.else_block)
         else:
             # No else: the all-conditions-false path falls
             # through and consumes nothing additional.
@@ -990,42 +944,48 @@ class _StatementsMixin:
         self._container_merge(before_ct, branch_ct)
 
     def _check_while(self, s: A.WhileStmt) -> None:
-        cty = self._check_expr(s.cond)
-        if not compatible(TyBool, cty):
-            self._err(
-                f"while condition must be Bool, got {ty_str(cty)}",
-                s.cond.pos,
-            )
-        # Roadmap S4: a @constant_time function cannot loop on a secret
-        # (the iteration count would leak it).
-        self._ct_reject(self._label_of(s.cond), s.cond.pos, "a while-condition")
-        # Roadmap S2.implicit: the loop body runs under a pc raised by
-        # the controlling condition -- whether (and how many times) the
-        # body executes depends on ``cond``, so a public sink inside a
-        # secret-conditioned loop leaks the same one bit an ``if`` would.
-        # ``_pc_raise`` joins the condition's label into pc and returns
-        # the previous value; restore it in the ``finally`` so the raise
-        # scopes only to the loop body (no pc leak into later statements).
-        # Harmless to the default tier: the implicit-sink clause it feeds
-        # is itself strict-gated.
-        saved_pc = self._pc_raise(s.cond)
-        # Two-pass fixed-point flow analysis. Pass 1 (dry-run):
-        # visit the body silently to discover which caps will be
-        # consumed. Pass 2 (real): pre-mark those caps and run
-        # the body for real, so use-after-consume across loop
-        # iterations is caught in a single static analysis.
-        self._loop_depth += 1
-        try:
-            snap = self._snapshot_for_dry_run()
-            self._check_block(s.body)
-            consumed_in_body = self._consumed - snap["consumed"]
-            self._restore_after_dry_run(snap)
+        # Roadmap S2.implicit: the body runs under a pc raised by the
+        # controlling condition, and the condition is re-evaluated on
+        # every iteration, so its label is part of the loop's state. Its
+        # DIAGNOSTICS are the real pass's, emitted once, AFTER the
+        # fixpoint has stabilised the labels the body writes (its type,
+        # the constant-time rule, a sink reached through it), and its
+        # label is joined into the body pc there (a value the body makes
+        # secret makes the iteration count secret). That evaluation runs
+        # under the HEAD pc the loop rule assigns to everything the
+        # iteration count governs: the condition executes once per
+        # iteration plus once, so a sink it calls, or a container it
+        # mutates, leaks the iteration count exactly as one in the body
+        # does.
+        #
+        # The speculative passes evaluate the condition BEFORE the body,
+        # in the order the loop runs them, so what the condition does to
+        # the flow state on the next iteration is seen: a linear value it
+        # consumes is consumed for every later evaluation of it and for
+        # the body, exactly as a consume in the body is. Their
+        # diagnostics are truncated with the pass, so each one is still
+        # reported once, by the real pass.
+        def speculative():
+            self._check_expr(s.cond)
+            return self._check_block(s.body)
 
-            self._consumed |= consumed_in_body
-            self._check_block(s.body)
-        finally:
-            self._loop_depth -= 1
-            self._pc_label = saved_pc
+        def real(head_pc):
+            self._pc_label = head_pc
+            cty = self._check_expr(s.cond)
+            if not compatible(TyBool, cty):
+                self._err(
+                    f"while condition must be Bool, got {ty_str(cty)}",
+                    s.cond.pos,
+                )
+            # Roadmap S4: a @constant_time function cannot loop on a
+            # secret (the iteration count would leak it).
+            self._ct_reject(
+                self._label_of(s.cond), s.cond.pos, "a while-condition",
+            )
+            self._pc_label = L.join(head_pc, self._label_of(s.cond))
+            return self._check_block(s.body)
+
+        self._check_loop(self._pc_label, speculative, real)
 
     def _check_for(self, s: A.ForStmt) -> None:
         iter_ty = self._check_expr(s.iter)
@@ -1110,32 +1070,32 @@ class _StatementsMixin:
         # a pc raised by the collection expression's label. A secret
         # collection makes a public sink in the body an implicit leak
         # (the iteration count reveals information about the secret).
-        # Restored in the ``finally`` so the raise scopes to the body
-        # only; strict-gated downstream, so the default tier is unaffected.
+        # The iterable is evaluated ONCE, before the loop, so its label
+        # is read once here and is not part of the fixpoint state (unlike
+        # a ``while`` condition). Restored in the ``finally`` so the raise
+        # scopes to the body only; strict-gated downstream, so the default
+        # tier is unaffected.
         saved_pc = self._pc_raise(s.iter)
         self._reject_nested_struct_in_binding(s.pattern)
-        # Same two-pass dry-run / real-run dance as ``_check_while``.
-        self._loop_depth += 1
-        try:
-            snap = self._snapshot_for_dry_run()
-            self._push_scope()
-            self._bind_pattern(s.pattern, elem_ty, mutable=False, init_expr=s.iter)
-            self._label_pattern_binds(s.pattern, iter_label, elem_ty)
-            for stmt in s.body.stmts:
-                self._check_stmt(stmt)
-            self._pop_scope()
-            consumed_in_body = self._consumed - snap["consumed"]
-            self._restore_after_dry_run(snap)
 
-            self._consumed |= consumed_in_body
+        def walk():
             self._push_scope()
-            self._bind_pattern(s.pattern, elem_ty, mutable=False, init_expr=s.iter)
-            self._label_pattern_binds(s.pattern, iter_label, elem_ty)
-            for stmt in s.body.stmts:
-                self._check_stmt(stmt)
-            self._pop_scope()
+            try:
+                self._bind_pattern(
+                    s.pattern, elem_ty, mutable=False, init_expr=s.iter,
+                )
+                self._label_pattern_binds(s.pattern, iter_label, elem_ty)
+                return self._check_stmt_seq(s.body.stmts)
+            finally:
+                self._pop_scope()
+
+        def real(head_pc):
+            self._pc_label = head_pc
+            return walk()
+
+        try:
+            self._check_loop(self._pc_label, walk, real)
         finally:
-            self._loop_depth -= 1
             self._pc_label = saved_pc
 
     def _check_return(self, s: A.ReturnStmt) -> None:

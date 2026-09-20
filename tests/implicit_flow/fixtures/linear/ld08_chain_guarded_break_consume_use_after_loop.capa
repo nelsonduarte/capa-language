@@ -1,0 +1,14 @@
+fun adoptar(consume stdio: Stdio)
+    stdio.println("consumed")
+fun main(stdio: Stdio)
+    var i: Int = 0
+    var c1: Bool = false
+    var c2: Bool = false
+    while i < 5
+        i = i + 1
+        if c2
+            adoptar(stdio)
+            break
+        c2 = c1
+        c1 = true
+    stdio.println("after")

@@ -1,0 +1,16 @@
+linear type Handle { id: Int }
+fun open() -> Handle
+    return Handle { id: 1 }
+fun close(consume h: Handle) -> Unit
+    return ()
+fun main(stdio: Stdio)
+    let h = open()
+    let c = 1
+    match c
+        2 ->
+            close(h)
+            panic("never")
+        _ ->
+            let _b = 2
+    close(h)
+    stdio.println("end")

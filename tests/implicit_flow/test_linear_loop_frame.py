@@ -1,0 +1,193 @@
+"""The linear discipline across loop exits: exit-keyed, one frame per loop.
+
+A branch that consumes a capability / linear value and then ``break``s
+does not reach the merge after its ``if``, but it DOES reach the loop's
+exit: the value is consumed for everything after the loop. A branch that
+``continue``s reaches the loop's head: the value is consumed for the next
+iteration. Only a ``return`` branch reaches nothing else in the frame.
+Discarding the branch's consumed set at the ``if`` (as the merge of
+non-diverging branches must) therefore let the same value be consumed
+twice: once in the jumping branch and once after the loop or on the next
+iteration.
+
+A ``while`` CONDITION is part of the same picture: it runs once per
+iteration, before the body, so a consume it performs is a consume the
+next evaluation and the body both see.
+
+The suspended consumed sets are keyed by exit kind and kept in a frame
+PER LOOP, so an inner loop consumes only what its own body suspended and
+an outer loop's ``break`` branch is not pre-marked at the inner loop's exit
+(the ``ln01`` / ``ln02`` / ``b02`` / ``b05`` false positives of a flat
+frame). The search idiom (consume once, then leave) stays accepted.
+"""
+
+import unittest
+
+from tests.implicit_flow._harness import ACCEPT, REFUSE, assert_table, check_fixture
+
+
+class LinearLoopExits(unittest.TestCase):
+    """Double consumes through ``break`` / ``continue``, and the valid
+    idioms that must stay accepted."""
+
+    TABLE = {
+        "l01_break_double": REFUSE,
+        "l02b_nojump_double": REFUSE,
+        "l02c_continue_double": REFUSE,
+        "l03_handle_close_break_close_after": REFUSE,
+        "l04b_handle_close_continue_close_after": REFUSE,
+        "l09_while_true_close_break_idiom": REFUSE,
+        "l10_search_idiom": ACCEPT,
+        "l11_for_break_double": REFUSE,
+        "ln03_consume_break_one_branch_sink_continue_other": ACCEPT,
+        "ln04_search_idiom_for": ACCEPT,
+        "ln05_nested_if_break_double": REFUSE,
+        "ln06_linear_var_close_reassign_continue": ACCEPT,
+        "ln11_typestate_consume_break_double": REFUSE,
+        "ln12_consume_self_break_double": REFUSE,
+        "ln13_cap_by_reference_in_break_branch_use_after": ACCEPT,
+        "ln14_consume_continue_branch_use_next_iteration": REFUSE,
+        "ln15_inner_for_break_consume_then_use_in_outer_body": REFUSE,
+        "ln16_consume_break_then_use_in_dead_tail_after_break": REFUSE,
+        "ln17_elif_break_consume_double": REFUSE,
+        "ln18_else_continue_consume_double": REFUSE,
+        "ld01_for_body_consume_no_jump": REFUSE,
+        "ld02_while_body_consume_no_jump": REFUSE,
+        "ld03_consume_continue_reexec_no_use": REFUSE,
+        "ld04_consume_break_only": ACCEPT,
+        "ld05_consume_before_loop_then_break_branch_consume": REFUSE,
+        "ld06_chain_guarded_consume_then_use_in_body": REFUSE,
+        "ld07_chain_guarded_break_consume_no_use": ACCEPT,
+        "ld08_chain_guarded_break_consume_use_after_loop": REFUSE,
+        "ld11_chain_guarded_continue_consume_use_next_iteration": REFUSE,
+        "ld12_consume_in_else_of_break_branch_if": ACCEPT,
+        "b01_break_consume_then_sibling_loop_after_then_use": REFUSE,
+        "b04_outer_continue_consume_inner_loop_then_use": REFUSE,
+        "b06_break_consume_then_use_after_loop_no_sibling": REFUSE,
+    }
+
+    #: A ``return`` branch, or a branch ending in a bare ``panic``, reaches
+    #: nothing else in the frame: its consume is neither the loop exit's
+    #: nor the next iteration's, and it is excluded from the merge after
+    #: its ``if`` by the same exit test the suspension asks.
+    RETURN_BRANCH = {
+        "lret1_return_branch_consume_then_consume_after_loop_valid": ACCEPT,
+        "lret2_return_branch_consume_then_use_next_iteration_valid": ACCEPT,
+        "lret3_panic_branch_consume_then_consume_after_loop_valid": ACCEPT,
+    }
+
+    #: Every ARM POSITION that merges through the one exit test, with a
+    #: branch that ends in a bare ``panic``: the ``if`` then-branch, the
+    #: ``else`` branch, an ``elif`` branch and a ``match`` arm, outside a
+    #: loop (``lret3`` is the in-loop form). A panic-ending branch
+    #: reaches no merge, so its consume is not the merge's; the control
+    #: ends the same branch in a plain call, which DOES reach the merge,
+    #: so the consume after it is a double consume.
+    PANIC_BRANCH_POSITIONS = {
+        "lret4_panic_branch_in_if_consume_then_consume_after_valid": ACCEPT,
+        "lret5_panic_branch_in_else_consume_then_consume_after_valid": ACCEPT,
+        "lret6_panic_branch_in_elif_consume_then_consume_after_valid": ACCEPT,
+        "lret7_panic_branch_in_match_arm_consume_then_consume_after_valid": ACCEPT,
+        "lret8_control_nonexit_branch_consume_then_consume_after": REFUSE,
+    }
+
+    def test_table(self):
+        assert_table(self, "linear", self.TABLE, ifc_only=False)
+
+    def test_return_branch_is_not_suspended(self):
+        assert_table(self, "linear", self.RETURN_BRANCH, ifc_only=False)
+
+    def test_panic_branch_at_every_arm_position(self):
+        assert_table(self, "linear", self.PANIC_BRANCH_POSITIONS, ifc_only=False)
+
+
+class ControllingExpressionConsume(unittest.TestCase):
+    """A ``while`` CONDITION is re-evaluated on every iteration, so a
+    linear value it consumes is consumed for the next evaluation of the
+    condition, for the body, and for everything after the loop: the same
+    rule a consume in the body obeys, because the speculative passes
+    evaluate the condition in the order the loop runs it. A ``for``
+    ITERABLE is evaluated once, before the loop, so a consume there is a
+    single consume and stays accepted."""
+
+    TABLE = {
+        "wcl1_while_cond_consume_then_read_after_loop": REFUSE,
+        "wcl2_while_cond_consume_with_break_in_body": REFUSE,
+        "wcl6_while_cond_consume_then_consume_after_loop": REFUSE,
+        "wcl4_control_while_body_consume": REFUSE,
+        "wcl8_control_for_iterable_consume_evaluated_once": ACCEPT,
+    }
+
+    def test_table(self):
+        assert_table(self, "linear", self.TABLE, ifc_only=False)
+
+    def test_a_use_after_the_loop_is_reported_beside_the_condition(self):
+        # ``wcl6`` consumes in the condition AND again after the loop, so
+        # it carries exactly two diagnostics, at those two sites: the
+        # condition's re-consume is a real error and reporting it must
+        # not swallow or duplicate the one after the loop.
+        r = check_fixture("linear", "wcl6_while_cond_consume_then_consume_after_loop")
+        errs = [e for e in r.errors if "consumed earlier" in e.message]
+        self.assertEqual(
+            [e.pos.line for e in errs], [9, 11],
+            [f"{e.pos.line}: {e.message}" for e in r.errors],
+        )
+        self.assertEqual(len(r.errors), 2, [e.message for e in r.errors])
+
+    def test_the_condition_consume_is_reported_once_at_the_condition(self):
+        # One diagnostic, at the condition, naming the re-consume: the
+        # speculative pass's copy is truncated with the pass.
+        r = check_fixture("linear", "wcl1_while_cond_consume_then_read_after_loop")
+        errs = [e for e in r.errors if "consumed earlier" in e.message]
+        self.assertEqual(len(errs), 1, [e.message for e in r.errors])
+        self.assertEqual(errs[0].pos.line, 9, [e.message for e in r.errors])
+
+
+class PerLoopFrame(unittest.TestCase):
+    """An outer loop's ``break``-branch consume followed by an UNRELATED
+    inner loop: the inner loop must not consume the outer loop's suspended
+    state at its own exit. Every program here is valid and runs cleanly."""
+
+    TABLE = {
+        "ln01_outer_break_consume_inner_while_then_use": ACCEPT,
+        "ln02_outer_break_consume_inner_for_then_use": ACCEPT,
+        "ln02b_outer_break_consume_inner_loop_no_use_after": ACCEPT,
+        "b02_three_levels_outer_break_consume_inner_two_loops": ACCEPT,
+        "b03_matcharm_break_consume_inner_loop_then_use": ACCEPT,
+        "b05_for_outer_break_consume_inner_for_then_use": ACCEPT,
+        "ld09_break_branch_consume_then_stmt_then_break_inner_loop": ACCEPT,
+        "ld10_chain_guarded_break_consume_inner_loop_then_use": ACCEPT,
+    }
+
+    def test_table(self):
+        assert_table(self, "linear", self.TABLE, ifc_only=False)
+
+
+class MatchArmSpelling(unittest.TestCase):
+    """The same rule at the match-arm gate: a match arm that consumes and
+    ``break``s is the ``if``-branch program in another spelling, and the
+    two spellings get one verdict because both gates suspend through the
+    one seam."""
+
+    TABLE = {
+        "l07_matcharm_break": REFUSE,
+        "l07_handle_match_break_close_after": REFUSE,
+    }
+
+    def test_table(self):
+        assert_table(self, "linear", self.TABLE, ifc_only=False)
+
+
+class ErrorPosition(unittest.TestCase):
+    """A refusal names the SECOND consume, never the consume that ends a
+    ``break`` branch of a loop that is not itself inside a loop."""
+
+    def test_break_branch_consume_is_not_the_reported_site(self):
+        r = check_fixture("linear", "l01_break_double")
+        self.assertFalse(r.ok)
+        lines = sorted(e.pos.line for e in r.errors if "consumed earlier" in e.message)
+        self.assertEqual(lines, [10], [e.message for e in r.errors])
+
+
+if __name__ == "__main__":
+    unittest.main()

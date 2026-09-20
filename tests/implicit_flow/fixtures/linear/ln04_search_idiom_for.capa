@@ -1,0 +1,7 @@
+fun adoptar(consume stdio: Stdio)
+    stdio.println("consumed")
+fun main(stdio: Stdio)
+    for x in 0..3
+        if x == 2
+            adoptar(stdio)
+            break

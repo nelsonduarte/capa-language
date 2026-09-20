@@ -1,0 +1,10 @@
+@strict_ifc()
+fun leak(flag: Bool, stdio: Stdio)
+    var i: Int = 0
+    while i < 3
+        i = i + 1
+        if flag
+            continue
+        stdio.println("reached")
+fun main(stdio: Stdio)
+    leak(true, stdio)

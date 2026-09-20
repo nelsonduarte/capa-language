@@ -1,0 +1,16 @@
+@strict_ifc()
+fun count(env: Env, stdio: Stdio) -> Int
+    let k = env.get("API_KEY").unwrap_or("none")
+    var n: Int = 0
+    for i in 0..5
+        n = n + 1
+        if n < 5
+            return match k.starts_with("s")
+                v0 if v0 ->
+                    break
+                _ ->
+                    continue
+    stdio.println("n=${n}")
+    return n
+fun main(env: Env, stdio: Stdio)
+    let _n = count(env, stdio)

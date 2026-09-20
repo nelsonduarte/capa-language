@@ -1,0 +1,9 @@
+fun main(stdio: Stdio)
+    let n = 2
+    let x: Int = match n
+        1 ->
+            stdio.println("one")
+            panic("bad")
+        _ ->
+            5
+    stdio.println("x=${x}")

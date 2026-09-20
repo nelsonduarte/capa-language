@@ -1,0 +1,13 @@
+fun adoptar(consume stdio: Stdio)
+    stdio.println("consumed")
+fun main(stdio: Stdio)
+    var i: Int = 0
+    while i < 3
+        i = i + 1
+        if i == 1
+            adoptar(stdio)
+            continue
+        var j: Int = 0
+        while j < 2
+            j = j + 1
+        stdio.println("still")

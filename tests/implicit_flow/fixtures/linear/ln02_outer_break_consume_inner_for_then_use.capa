@@ -1,0 +1,12 @@
+fun adoptar(consume stdio: Stdio)
+    stdio.println("consumed")
+fun main(stdio: Stdio)
+    var i: Int = 0
+    while i < 3
+        i = i + 1
+        if i == 5
+            adoptar(stdio)
+            break
+        for j in 0..2
+            let _z = j
+        stdio.println("still")

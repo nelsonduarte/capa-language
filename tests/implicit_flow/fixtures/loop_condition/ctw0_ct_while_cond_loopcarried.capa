@@ -1,0 +1,12 @@
+@constant_time()
+fun tally(env: Env) -> Int
+    let k = env.get("API_KEY").unwrap_or("none")
+    var c1: Bool = false
+    var n: Int = 0
+    while not c1 and n < 5
+        n = n + 1
+        c1 = k.length() > 8
+    return n
+fun main(env: Env, stdio: Stdio)
+    let r = tally(env)
+    stdio.println("r=${r}")

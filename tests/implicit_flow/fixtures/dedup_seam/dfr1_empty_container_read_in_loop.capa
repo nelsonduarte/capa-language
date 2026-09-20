@@ -1,0 +1,5 @@
+fun main(stdio: Stdio)
+    for i in 0..3
+        var x = []
+        let y = x[0]
+    stdio.println("done")

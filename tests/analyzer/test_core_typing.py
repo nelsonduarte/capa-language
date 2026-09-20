@@ -1185,6 +1185,31 @@ class TestReturnOnAllPaths(unittest.TestCase):
             errs,
         )
 
+    def test_an_ill_formed_jump_does_not_cascade_into_this_check(self):
+        # A ``break`` / ``continue`` at function top level is already
+        # rejected on its own terms, and it does leave the body, so the
+        # falls-through check must not add a second, misleading error
+        # beside it: the reported set is exactly one error per ill-formed
+        # jump. The bodies below are the one-jump and the two-jump
+        # (if / else) shapes of that class.
+        for source, jumps in (
+            ("fun f(c: Bool) -> Int\n    break\n", ["break outside of a loop"]),
+            ("fun f(c: Bool) -> Int\n    continue\n",
+             ["continue outside of a loop"]),
+            ("fun f(c: Bool) -> Int\n    if c\n        break\n"
+             "    else\n        continue\n",
+             ["break outside of a loop", "continue outside of a loop"]),
+        ):
+            with self.subTest(source=source):
+                errs = errors_of(source)
+                self.assertEqual(len(errs), len(jumps), errs)
+                for want in jumps:
+                    self.assertTrue(any(want in e for e in errs), errs)
+                self.assertFalse(
+                    any("not every path ends in `return`" in e for e in errs),
+                    errs,
+                )
+
     def test_return_match_is_accepted(self):
         # The idiomatic shape: ``return match scrut { ... }``.
         # The match's value flows through the explicit return.

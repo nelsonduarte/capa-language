@@ -1,0 +1,9 @@
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    let p: Int = 1
+    for i in 0..3
+        if p == 1
+            if i == 1
+                break
+        stdio.println("reached")

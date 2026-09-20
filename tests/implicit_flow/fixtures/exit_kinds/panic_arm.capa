@@ -1,0 +1,9 @@
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let s = env.get("SECRET0").unwrap_or("d")
+    let n = 1
+    match n
+        _ if s.length() > 0 -> if true then panic("a") else panic("b")
+        _ ->
+            let _z = 0
+    stdio.println("leak")
