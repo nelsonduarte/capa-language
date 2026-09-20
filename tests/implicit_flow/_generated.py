@@ -21,9 +21,16 @@ THE RULE (stated once; the tests reference it and never restate it):
   leaves the whole frame. A ``continue`` does not: it skips the rest of
   one iteration without changing how many there are.
 
+  Every loop this module synthesises runs ``TRIP_COUNT`` times, so a
+  member at that position really does run its sink a different number of
+  times under a secret key than under a public one. At a trip count of
+  one the verdict would be right and the leak unobservable, which is a
+  corpus that cannot tell a correct rule from one that over-rejects.
+
 AXES, taken as a FULL CROSS PRODUCT (this is what makes it an enumeration):
 
-  kind   in {return, break, continue}
+  kind   in KINDS, the kinds that end a loop plus the one that does not,
+           declared once for the package in ``_loop_ending``
   chain  = every tuple of length 0..depth over {if, match, while, for,
            lambda}: the constructs between the sink's body and the exit,
            OUTERMOST first
@@ -35,26 +42,39 @@ AXES, taken as a FULL CROSS PRODUCT (this is what makes it an enumeration):
            ``elif`` exists only on ``if``, ``guard`` only on ``match``)
 
 :func:`generate` emits the cross product for one depth with the arm axis
-applied uniformly to every branching level (depth 2: 146 programs without
-the arm axis, 342 with it; depth 3 without it: 652). :func:`generate_mixed`
+applied uniformly to every branching level (depth 2: 219 programs without
+the arm axis, 513 with it; depth 3 without it: 978). :func:`generate_mixed`
 emits the depth-2 programs whose two branching levels take DIFFERENT arms,
-which the uniform product does not contain (156). Every program carries
-its expected verdict, computed by the rule above as a predicate.
+which the uniform product does not contain (234). Every program carries
+its expected verdict, computed by the rule above as a predicate, and
+``test_generated_class`` asserts each of those four sizes, so a change to
+an axis that silently shrinks a corpus fails rather than scoring less.
 """
 
 from __future__ import annotations
 
 import itertools
 
-KINDS = ("return", "break", "continue")
+from tests.implicit_flow._loop_ending import (
+    LOOP_ENDING_KINDS, NON_ENDING_KINDS,
+)
+
+#: Every kind by which a statement can leave a body: the loop-ending ones
+#: (``LOOP_ENDING_KINDS``, which the rule below reads) and the one that is
+#: not. Built from the two declared halves so this cross product and the
+#: head-pc pins enumerate the same kinds.
+KINDS = tuple(sorted(LOOP_ENDING_KINDS + NON_ENDING_KINDS))
 WRAP = ("if", "match", "while", "for", "lambda")
 ARMS = ("then", "else", "elif", "guard")
 SINKS = ("after", "before", "before_in_loop")
 LOOPS = ("while", "for")
-#: The kinds that END the loop they are taken in, so the iteration count
-#: (and with it the execution count of everything earlier in the body)
-#: depends on their guard. A ``continue`` is not one of them.
-LOOP_ENDING = ("break", "return")
+#: How many times a synthesised chain loop runs. It has to be more than
+#: one: at a trip count of 1 a sink inside the loop runs exactly once
+#: whether the exit fires or not, so the member is verdict-correct but
+#: its leak cannot be observed at runtime, and a rule that over-rejected
+#: this position would score the same as the right one. Each synthesised
+#: loop also carries its OWN counter, so an enclosing wrap re-enters it.
+TRIP_COUNT = 3
 
 REFUSE = "REFUSE"
 ACCEPT = "ACCEPT"
@@ -94,9 +114,15 @@ def _wrap(inner, construct, level, arm):
             + _indent(["_ ->"]) + _indent(["let _w = 0"], 2)
         )
     if construct == "while":
-        return ["while q < 1", "    q = q + 1"] + _indent(inner)
+        # Its own counter, so an outer wrap re-enters this loop rather
+        # than finding a shared counter already past its bound.
+        return [
+            f"var q{level}: Int = 0",
+            f"while q{level} < {TRIP_COUNT}",
+            f"    q{level} = q{level} + 1",
+        ] + _indent(inner)
     if construct == "for":
-        return [f"for z{level} in 0..1"] + _indent(inner)
+        return [f"for z{level} in 0..{TRIP_COUNT}"] + _indent(inner)
     if construct == "lambda":
         return ["let _f = fun () -> Unit =>"] + _indent(inner) + ["_f()"]
     raise AssertionError(construct)
@@ -126,7 +152,8 @@ def expect(kind, chain, sink):
         # The sink sits inside the innermost loop the exit is in, ahead
         # of it: refused exactly when that exit ENDS that loop.
         return REFUSE if (
-            kind in LOOP_ENDING and not _lambda_below_the_innermost_loop(chain)
+            kind in LOOP_ENDING_KINDS
+            and not _lambda_below_the_innermost_loop(chain)
         ) else ACCEPT
     if sink == "before":
         # The sink sits in the OUTERMOST body, ahead of the whole chain,
@@ -178,13 +205,12 @@ def _build(kind, chain, sink, arms):
     # iteration count for the sink to leak.
     needs_loop = kind in ("break", "continue") or sink == "before_in_loop"
     if needs_loop and not _loop_between(chain):
-        body = ["for z0 in 0..3"] + _indent(body)
+        body = [f"for z0 in 0..{TRIP_COUNT}"] + _indent(body)
     head = [
         "@strict_ifc()",
         "fun main(env: Env, stdio: Stdio)",
         '    let k = env.get("API_KEY").unwrap_or("none")',
         "    let p: Int = 1",
-        "    var q: Int = 0",
     ]
     return "\n".join(head + _indent(body)) + "\n"
 

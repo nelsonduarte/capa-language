@@ -121,6 +121,19 @@ class ControllingExpressionConsume(unittest.TestCase):
     def test_table(self):
         assert_table(self, "linear", self.TABLE, ifc_only=False)
 
+    def test_a_use_after_the_loop_is_reported_beside_the_condition(self):
+        # ``wcl6`` consumes in the condition AND again after the loop, so
+        # it carries exactly two diagnostics, at those two sites: the
+        # condition's re-consume is a real error and reporting it must
+        # not swallow or duplicate the one after the loop.
+        r = check_fixture("linear", "wcl6_while_cond_consume_then_consume_after_loop")
+        errs = [e for e in r.errors if "consumed earlier" in e.message]
+        self.assertEqual(
+            [e.pos.line for e in errs], [9, 11],
+            [f"{e.pos.line}: {e.message}" for e in r.errors],
+        )
+        self.assertEqual(len(r.errors), 2, [e.message for e in r.errors])
+
     def test_the_condition_consume_is_reported_once_at_the_condition(self):
         # One diagnostic, at the condition, naming the re-consume: the
         # speculative pass's copy is truncated with the pass.

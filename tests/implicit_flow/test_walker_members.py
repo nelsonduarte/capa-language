@@ -1,4 +1,4 @@
-"""Verdict pins for the implicit-flow discipline, one table per class.
+"""Verdict pins for the implicit-flow discipline, one test case per class.
 
 Under ``@strict_ifc`` a statement that can leave its body early (``return``
 / ``break`` / ``continue`` / a bare ``panic``) under a secret condition makes
@@ -19,16 +19,25 @@ fixpoint per loop that re-walks the body until nothing the next iteration
 can read has changed (the binding labels, the container-mutation channel,
 the loop's controlling expression, the exit map).
 
-Each table below is one CLASS of member programs plus the negatives that
-bound it. The tables were RED on the two-pass analyzer this walker replaced
-for every member marked with a leak in its name, and the negatives were
-GREEN before and after.
+Each test case below is one CLASS of member programs plus the negatives
+that bound it, scored from a table of fixture names or, where the rule is
+quantified over a set, from members BUILT once per element of that set so
+a new element extends the net instead of leaving a hole. The tables were
+RED on the two-pass analyzer this walker replaced for every member marked
+with a leak in its name, and the negatives were GREEN before and after.
 """
 
 import unittest
 
+import capa
+
 from tests.implicit_flow._harness import (
-    ACCEPT, REFUSE, assert_table, check_fixture, ifc_errors,
+    ACCEPT, REFUSE, assert_table, assert_verdict, check_fixture, check_source,
+    ifc_errors, provenance_ok, value_errors,
+)
+from tests.implicit_flow._loop_ending import (
+    LOOP_ENDING_KINDS, NON_ENDING_KINDS, head_pc_members, head_pc_negatives,
+    sink_before_programs,
 )
 
 
@@ -204,31 +213,12 @@ class NestedUnderPublicGuards(unittest.TestCase):
         "lc08_loopcarried_continue_sink_after": REFUSE,
     }
 
-    #: A sink BEFORE a secret-conditioned exit that ENDS THE LOOP: the
-    #: sink runs once per iteration until the exit fires, so its
-    #: execution count is the iteration count, which the secret decides.
-    #: A ``return`` ends the loop exactly as a ``break`` does, in both
-    #: loop forms, spelled as an ``if`` or as a ``match`` arm, and at
-    #: any nesting depth (the inner loop's ``return`` also ends the
-    #: outer one). The control places the same sink AFTER the exit,
-    #: where the body norm already covers it.
-    SINK_BEFORE_A_LOOP_ENDING_EXIT = {
-        "wcr1_while_sink_before_secret_return_itercount": REFUSE,
-        "wcr4_for_sink_before_secret_return_itercount": REFUSE,
-        "wcr6_while_sink_before_secret_return_in_match_arm": REFUSE,
-        "wcr11_outer_sink_before_inner_while_secret_return": REFUSE,
-        "wcr7_while_sink_after_secret_return_control": REFUSE,
-    }
-
     #: A ``?`` / ``Try`` early return is not a recognised exit form; the
     #: program is ACCEPTED and the residual is disclosed, not closed.
     DISCLOSED = {"gap19_try_under_pub_if": ACCEPT}
 
     def test_table(self):
         assert_table(self, "nested", self.TABLE)
-
-    def test_sink_before_a_loop_ending_exit(self):
-        assert_table(self, "nested", self.SINK_BEFORE_A_LOOP_ENDING_EXIT)
 
     def test_disclosed_residual(self):
         assert_table(self, "nested", self.DISCLOSED)
@@ -272,31 +262,90 @@ class LoopCarriedChains(unittest.TestCase):
         "lcs3_twolink_chain_no_exit_sink": ACCEPT,
     }
 
-    #: The head pc governs the SPECULATIVE passes too, not only the real
-    #: one: a variable or a container written under it is secret for the
-    #: NEXT iteration, so a sink that reads it earlier in the body carries
-    #: the value error beside the control-flow one. The control writes the
-    #: same variable under the same head pc with no sink reading it.
-    HEAD_PC_IN_THE_SPECULATIVE_PASSES = {
-        "lch1_head_pc_raises_a_var_read_next_iteration": REFUSE,
-        "lch2_head_pc_raises_a_container_read_next_iteration": REFUSE,
-        "lch3_control_head_pc_raise_guards_no_sink": ACCEPT,
-    }
-
     def test_table(self):
         assert_table(self, "loop_chains", self.TABLE)
 
-    def test_the_head_pc_governs_every_pass(self):
-        assert_table(self, "loop_chains", self.HEAD_PC_IN_THE_SPECULATIVE_PASSES)
-        # Two errors, not one: the value the head pc made secret reaches
-        # the sink, AND the sink runs under secret control flow.
-        for name in (
-            "lch1_head_pc_raises_a_var_read_next_iteration",
-            "lch2_head_pc_raises_a_container_read_next_iteration",
-        ):
+
+class HeadPcOverEveryLoopEndingKind(unittest.TestCase):
+    """The loop's head pc, scored ONCE PER KIND that ends a loop.
+
+    The head pc joins the label of EVERY exit kind that ends the loop,
+    because each of them decides how many iterations there are, and it
+    governs the speculative passes as well as the real one: a variable or
+    a container written under it is secret for the NEXT iteration, so a
+    sink reading it earlier in the body reports a secret VALUE beside the
+    control-flow error, and a container the ``while`` condition mutates is
+    mutated a secret number of times.
+
+    The same pc decides how many times a sink placed AHEAD of the exit in
+    the loop's body runs, so that position is scored per kind too, with
+    the shape whose exit sits in an INNER loop refused only for the kinds
+    that leave the whole frame.
+
+    Every program here is built by ``_loop_ending`` from one shape per
+    channel applied to every kind of the set, so a kind added to the set
+    is pinned by construction rather than by remembering to write its
+    fixtures. That matters for a defect a verdict alone cannot see: a
+    pass that reads the seam for one kind and hand-writes the join for
+    another still refuses the program and loses only that kind's VALUE
+    diagnostic, which is why the value error is counted and not just the
+    verdict.
+
+    The negatives bound the rule from the other side: the same shapes
+    spelled with a kind that does NOT end the loop, the same shapes under
+    a PUBLIC guard, and the same write with no sink reading it, all
+    accepted for every kind."""
+
+    def test_every_loop_ending_kind_raises_the_head_pc(self):
+        self.assertTrue(provenance_ok(), f"wrong compiler: {capa.__file__}")
+        members = list(head_pc_members())
+        self.assertEqual(
+            {name.split("_")[1] for name, _ in members},
+            set(LOOP_ENDING_KINDS),
+            "a declared loop-ending kind has no member",
+        )
+        for name, source in members:
             with self.subTest(program=name):
-                r = check_fixture("loop_chains", name)
-                self.assertEqual(len(r.errors), 2, [e.message for e in r.errors])
+                result = check_source(source)
+                assert_verdict(self, name, result, REFUSE)
+                # The VALUE error, not only the control-flow one: it is
+                # the half a desynced pass drops.
+                self.assertEqual(
+                    len(value_errors(result)), 1,
+                    [e.message for e in result.errors],
+                )
+
+    def test_the_sink_before_the_exit_leaks_exactly_the_ending_kinds(self):
+        # The sink AHEAD of the exit runs once per iteration, so its
+        # execution count is the iteration count. Each shape is built once
+        # per kind and refused exactly when that kind ends the loop the
+        # sink sits in, which for a sink in the body OUTSIDE the exit's
+        # loop is only the frame-leaving kinds.
+        programs = list(sink_before_programs())
+        self.assertEqual(
+            {name.split("_")[1] for name, _, _ in programs},
+            set(LOOP_ENDING_KINDS) | set(NON_ENDING_KINDS),
+            "a declared kind has no sink-before program",
+        )
+        self.assertEqual(
+            {verdict for _, _, verdict in programs}, {ACCEPT, REFUSE},
+            "the position collapsed to one verdict",
+        )
+        for name, source, want in programs:
+            with self.subTest(program=name):
+                assert_verdict(self, name, check_source(source), want)
+
+    def test_the_negatives_of_every_kind_stay_accepted(self):
+        negatives = list(head_pc_negatives())
+        self.assertTrue(negatives, "empty negative set")
+        self.assertEqual(
+            {name.split("_")[1] for name, _ in negatives},
+            set(LOOP_ENDING_KINDS) | set(NON_ENDING_KINDS),
+            "a declared kind has no negative",
+        )
+        for name, source in negatives:
+            with self.subTest(program=name):
+                assert_verdict(self, name, check_source(source), ACCEPT)
 
 
 class ContainerMutationChannel(unittest.TestCase):
@@ -337,7 +386,9 @@ class ControllingExpression(unittest.TestCase):
     from the body, therefore leaks how many times the condition ran
     (``wcb*``, ``wcr2``); a public exit of either kind, or a secret
     ``continue``, does not. Whatever the condition DOES also happens under
-    that pc: a container it mutates becomes secret (``wcm1``).
+    that pc: a container it mutates becomes secret, which
+    ``HeadPcOverEveryLoopEndingKind`` scores for every kind that ends a
+    loop.
 
     ``lcw2`` (a ``for`` whose iterated container is pushed under a secret
     pc in the body) is a DISCLOSED residual of this class: the iterable is
@@ -379,17 +430,6 @@ class ControllingExpression(unittest.TestCase):
         "wcr3_control_cond_sink_public_return": ACCEPT,
     }
 
-    #: A container MUTATED by the condition is mutated once per
-    #: evaluation, so under a head pc the iteration count made secret the
-    #: mutation is a secret one and a later structure query reads a
-    #: secret length. The controls mutate the same container under a
-    #: public ``break`` and under a secret ``continue``.
-    CONDITION_MUTATION = {
-        "wcm1_cond_mutation_secret_break_length_after": REFUSE,
-        "wcm3_control_cond_mutation_public_break": ACCEPT,
-        "wcm4_control_cond_mutation_secret_continue_only": ACCEPT,
-    }
-
     DISCLOSED = {"lcw2_for_over_list_mutated_in_body": ACCEPT}
 
     def test_table(self):
@@ -397,9 +437,6 @@ class ControllingExpression(unittest.TestCase):
 
     def test_condition_execution_count(self):
         assert_table(self, "loop_condition", self.CONDITION_EXECUTION)
-
-    def test_condition_mutation_under_the_head_pc(self):
-        assert_table(self, "loop_condition", self.CONDITION_MUTATION)
 
     def test_disclosed_residual(self):
         assert_table(self, "loop_condition", self.DISCLOSED)

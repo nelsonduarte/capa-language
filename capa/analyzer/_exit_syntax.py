@@ -5,8 +5,8 @@ node was checked: by which kinds can this node leave the body it sits
 in, under which guards, and what is its normal-termination label (Myers'
 path labels). ``_paths`` is the ONE traversal that answers them; the
 walker in ``_statements.py`` folds its answers along a body with
-``_Paths.then`` (the one sequencing rule) and the loop rule reads the
-``break`` entry of the folded exit map.
+``_Paths.then`` (the one sequencing rule) and the loop rule reads, through
+``_loop_head_pc``, the entry of every kind that ENDS a loop.
 
 Write-pure, not pure: these methods write no analyzer state, but they
 READ the labels the checker recorded for expressions (``_label_of``)

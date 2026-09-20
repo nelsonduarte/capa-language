@@ -40,6 +40,13 @@ _IFC_ERROR = re.compile(
     re.I,
 )
 
+#: The VALUE half of the discipline: a secret VALUE reaching a public sink,
+#: as opposed to the sink merely running under secret control flow. The two
+#: are reported separately, and a rule that raises a label without raising
+#: the pc (or the reverse) drops exactly one of them, so a pin that needs
+#: to see the label move counts these rather than all the errors.
+_VALUE_ERROR = re.compile(r"a @secret value reaches")
+
 
 def provenance_ok() -> bool:
     """True when the imported ``capa`` is the package of THIS repository."""
@@ -73,6 +80,11 @@ def ifc_errors(result: AnalysisResult) -> list:
 
 def other_errors(result: AnalysisResult) -> list:
     return [e for e in result.errors if not _IFC_ERROR.search(e.message)]
+
+
+def value_errors(result: AnalysisResult) -> list:
+    """The errors reporting a secret VALUE at a public sink."""
+    return [e for e in result.errors if _VALUE_ERROR.search(e.message)]
 
 
 def assert_verdict(tc, name: str, result: AnalysisResult, want: str,

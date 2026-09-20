@@ -19,9 +19,17 @@ exercises it:
   derived from the AST dataclasses and must each have a refused member;
 - there is ONE statement walker: every call of the statement dispatcher in
   the analyzer package is inside it;
-- there is ONE exit enumeration: no rule outside the exit-syntax module
-  names a jump class, so no site can grow a private second opinion about
-  what leaves a block;
+- there is ONE exit enumeration: inside the analyzer package, no site
+  outside the exit-syntax module reasons about the jump classes AS A SET,
+  so no rule there can grow a private second opinion about what leaves a
+  block. Naming ONE class is ordinary work and is not checked, and the
+  scope is the analyzer package: modules that render or lower a statement
+  name several classes to choose a syntax, which is not a claim about
+  leaving a block;
+- the exit kinds that END a loop, declared for the test package in
+  ``_loop_ending`` so the head-pc pins can enumerate them, are the set the
+  walker's head-pc rule quantifies over, so a kind added to one and not
+  the other fails here instead of leaving the new kind unpinned;
 - the fixpoint's per-analysis counters are surfaced on the result, read 0
   overruns on every pin, and read more than 0 when the cap is forced low.
 """
@@ -34,6 +42,7 @@ from unittest import mock
 from capa import Lexer, Parser, analyze
 from capa import capa_ast as A
 from capa.analyzer import Analyzer, Symbol, SymbolKind
+from capa.analyzer._exit_syntax import _ExitSyntaxMixin
 from capa.analyzer._ifc import _IfcMixin
 from capa.builtins import BUILTIN_POS
 from capa.capa_ast._walk import children, walk
@@ -41,6 +50,7 @@ from capa.tokens import Pos
 from capa.typesys import TyInt
 
 from tests.implicit_flow._harness import FIXTURES, REPO, check_fixture, provenance_ok
+from tests.implicit_flow._loop_ending import LOOP_ENDING_KINDS, NON_ENDING_KINDS
 
 ANALYZER_DIR = REPO / "capa" / "analyzer"
 
@@ -366,8 +376,18 @@ class ExitEnumerationGuard(unittest.TestCase):
     merge, the arm typing of a ``match``, the falls-through check of a
     declared return type) asks ``_exit_syntax``. A second, private test
     re-introduced at any of those sites is a hand-synced copy that can
-    silently disagree and that no verdict pin need notice, so a site that
-    reasons about the jump classes as a SET fails here."""
+    silently disagree and that no verdict pin need notice.
+
+    What is checked, exactly: a site INSIDE ``capa/analyzer`` that names
+    MORE THAN ONE jump class, outside the exit-syntax module and the two
+    allowances, fails. Naming one class is ordinary work (a ``return``'s
+    value is read at several sites) and passes. The scope is the analyzer
+    package because that is where the question is asked; sites elsewhere
+    that name several classes choose a rendering or a lowering, not
+    whether a block is left. A site that reaches the same second opinion
+    without naming the classes together (three one-name helpers, an
+    attribute fetched by name) is outside this derivation's reach and is
+    covered by the behavioural pins instead."""
 
     def test_the_exit_forms_are_enumerated_in_one_module(self):
         sites = _jump_class_set_sites()
@@ -457,6 +477,39 @@ class FixpointCounters(unittest.TestCase):
         with mock.patch.object(Analyzer, "_FIXPOINT_CAP", 2):
             r = check_fixture("loop_chains", "lc19_eightlink_break")
         self.assertFalse(r.ok)
+
+
+# ---------------------------------------------------------------------
+# Guard 7: the loop-ending kind set
+# ---------------------------------------------------------------------
+
+class LoopEndingKindGuard(unittest.TestCase):
+    """The kind set the head-pc pins enumerate is the one the walker uses.
+
+    The pins score programs that differ only in the exit kind a loop ends
+    by, built from the set ``_loop_ending`` declares. Declaring it there
+    rather than importing it from the compiler keeps the expectation
+    independent of the implementation it scores, and this guard is what
+    makes that safe: a kind added to the walker's ``_LOOP_ENDING_KINDS``
+    and not to the test package's set would otherwise be a hole in the
+    net exactly where a new kind needs one, and a kind added to the test
+    package alone would score a rule the walker does not have."""
+
+    def test_the_declared_set_is_the_walker_set(self):
+        self.assertEqual(
+            set(LOOP_ENDING_KINDS), set(_ExitSyntaxMixin._LOOP_ENDING_KINDS),
+        )
+
+    def test_the_two_halves_partition_the_exit_kinds(self):
+        # Every kind that can leave a body either ends a loop or does not,
+        # so a kind added to the walker with no side chosen fails here.
+        self.assertEqual(
+            set(LOOP_ENDING_KINDS) | set(NON_ENDING_KINDS),
+            set(_ExitSyntaxMixin._ALL_KINDS),
+        )
+        self.assertEqual(
+            set(LOOP_ENDING_KINDS) & set(NON_ENDING_KINDS), set(),
+        )
 
 
 if __name__ == "__main__":
