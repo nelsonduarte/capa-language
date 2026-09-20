@@ -707,11 +707,12 @@ class _StatementsMixin(_ExitSyntaxMixin):
 
         ``run_body`` performs one speculative walk of the loop body under
         the current pc and returns its exit map. This repeats it, each
-        pass under ``pc_at_head`` joined with the ``break`` label seen so
-        far, until neither the label channels (``_label_channels``, the
-        label store's own enumeration) nor the accumulated exit map
-        change, and returns the stable exit map. Every pass is reverted
-        through ``_restore_after_dry_run`` except the fixpoint state
+        pass under the head pc of ``pc_at_head`` and the exit map seen so
+        far (:meth:`_loop_head_pc`, the one source of that join), until
+        neither the label channels (``_label_channels``, the label
+        store's own enumeration) nor the accumulated exit map change, and
+        returns the stable exit map. Every pass is reverted through
+        ``_restore_after_dry_run`` except the fixpoint state
         itself; the consumed set a pass discovers is accumulated across
         passes and re-applied, so the linear discipline sees every
         consume the body performs. When the cap is hit every exit kind
@@ -722,7 +723,7 @@ class _StatementsMixin(_ExitSyntaxMixin):
         while True:
             before = (self._label_channels(), self._exits_fingerprint(exits))
             snap = self._snapshot_for_dry_run()
-            self._pc_label = L.join(pc_at_head, exits.get("break", L.PUBLIC))
+            self._pc_label = self._loop_head_pc(pc_at_head, exits)
             new_exits = run_body()
             passes += 1
             for kind, label in new_exits.items():
@@ -742,15 +743,17 @@ class _StatementsMixin(_ExitSyntaxMixin):
         """THE ONE loop rule, shared by ``while`` and ``for``.
 
         ``speculative`` walks the body once for the fixpoint and ``real``
-        walks it for the real pass under the head pc it is given. Only a
-        ``break`` changes how many times the body runs, so only the
-        ``break`` label of the stabilised exit map raises the head pc,
-        governing the whole body (a counter incremented in it becomes
-        secret) and, through the body's labels, whatever the statements
-        after the loop read. A ``continue`` skips the rest of one
-        iteration, which the walker already governs within the body; a
-        ``return`` leaves the frame, which the enclosing walker sees
-        through ``_paths``.
+        walks it for the real pass under the head pc
+        :meth:`_loop_head_pc` derives from the stabilised exit map. An
+        exit that ENDS the loop changes how many times the body runs, so
+        its label raises the head pc, governing the whole body (a counter
+        incremented in it becomes secret) and, through the body's labels,
+        whatever the statements after the loop read. Both kinds end it: a
+        ``break`` leaves the loop, and a ``return`` leaves the frame the
+        loop is in (the enclosing walker sees that exit through
+        ``_paths`` as well, for the statements after the loop). A
+        ``continue`` skips the rest of one iteration without changing how
+        many there are, which the walker already governs within the body.
 
         The linear state a branch suspended at a ``continue`` rejoins at
         the loop head, so the next iteration sees the consume; the state
@@ -766,7 +769,7 @@ class _StatementsMixin(_ExitSyntaxMixin):
         try:
             exits = self._loop_label_fixpoint(speculative, pc_at_head)
             self._rejoin_linear_exits("continue", before_consumed)
-            real(L.join(pc_at_head, exits.get("break", L.PUBLIC)))
+            real(self._loop_head_pc(pc_at_head, exits))
             self._rejoin_linear_exits("break", before_consumed)
         finally:
             self._lin_exits = outer_frame
@@ -943,20 +946,29 @@ class _StatementsMixin(_ExitSyntaxMixin):
     def _check_while(self, s: A.WhileStmt) -> None:
         # Roadmap S2.implicit: the body runs under a pc raised by the
         # controlling condition, and the condition is re-evaluated on
-        # every iteration, so its label is part of the loop's state: it
-        # is evaluated ONCE, by the real pass, AFTER the fixpoint has
-        # stabilised the labels the body writes, and its label is joined
-        # into the body pc there (a value the body makes secret makes the
-        # iteration count secret). That one evaluation carries the
-        # condition's diagnostics (its type, the constant-time rule, a
-        # sink reached through it). It runs under the HEAD pc the loop
-        # rule assigns to everything the iteration count governs (the
-        # entry pc joined with the stabilised ``break`` label): the
-        # condition executes once per iteration plus once, so a sink it
-        # calls leaks the iteration count exactly as one in the body does.
-        # The speculative passes walk the body alone: a label the
-        # condition would raise in them is raised by the real pass, whose
-        # pc subsumes every in-body effect of the condition being secret.
+        # every iteration, so its label is part of the loop's state. Its
+        # DIAGNOSTICS are the real pass's, emitted once, AFTER the
+        # fixpoint has stabilised the labels the body writes (its type,
+        # the constant-time rule, a sink reached through it), and its
+        # label is joined into the body pc there (a value the body makes
+        # secret makes the iteration count secret). That evaluation runs
+        # under the HEAD pc the loop rule assigns to everything the
+        # iteration count governs: the condition executes once per
+        # iteration plus once, so a sink it calls, or a container it
+        # mutates, leaks the iteration count exactly as one in the body
+        # does.
+        #
+        # The speculative passes evaluate the condition BEFORE the body,
+        # in the order the loop runs them, so what the condition does to
+        # the flow state on the next iteration is seen: a linear value it
+        # consumes is consumed for every later evaluation of it and for
+        # the body, exactly as a consume in the body is. Their
+        # diagnostics are truncated with the pass, so each one is still
+        # reported once, by the real pass.
+        def speculative():
+            self._check_expr(s.cond)
+            return self._check_block(s.body)
+
         def real(head_pc):
             self._pc_label = head_pc
             cty = self._check_expr(s.cond)
@@ -973,7 +985,7 @@ class _StatementsMixin(_ExitSyntaxMixin):
             self._pc_label = L.join(head_pc, self._label_of(s.cond))
             return self._check_block(s.body)
 
-        self._check_loop(self._pc_label, lambda: self._check_block(s.body), real)
+        self._check_loop(self._pc_label, speculative, real)
 
     def _check_for(self, s: A.ForStmt) -> None:
         iter_ty = self._check_expr(s.iter)

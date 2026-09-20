@@ -8,7 +8,9 @@ module again to check each item's body:
 - ``_check_const``: verify the const's RHS matches its declared
   type.
 - ``_check_fun``: enter the parameter scope, check the body,
-  enforce the "capability parameter must be used" rule.
+  enforce the "capability parameter must be used" rule, and
+  reject a declared return type whose body can fall through
+  (asked of ``_paths``, the one exit enumeration).
 - ``_check_impl``: validate the impl target / trait references,
   then descend into each method.
 - ``_check_function_attributes``: validate ``@security`` /
@@ -439,14 +441,21 @@ class _ItemsMixin:
         # lambda class is handled per-binding by ``_enclosing_scope_local``.
         self._check_module_shadow_divergence(fn)
 
-        # If the function declares a non-Unit return type, every
-        # code path must end in ``return``. A function that just
+        # If the function declares a non-Unit return type, no code path
+        # through the body may fall off its end. A function that just
         # has ``"hello"`` as its last statement when declared
         # ``-> String`` would otherwise compile cleanly and silently
         # return None at runtime, producing a None where a String
         # was promised. Caught here so the user sees a precise
         # message instead of a downstream type confusion.
-        if ret is not TyUnit and not _block_always_returns(fn.body):
+        #
+        # "Does this body terminate normally" is the walker's own
+        # question, answered by ``_paths``: the ONE enumeration of the
+        # forms that leave a block, so a body ending in ``panic`` (which
+        # leaves the frame and reaches no caller) satisfies the declared
+        # return type, and a new exit form is recognised here the moment
+        # it is recognised there.
+        if ret is not TyUnit and self._paths(fn.body, self._ALL_KINDS).may_normal:
             # Point at the function's name (or the body's open
             # position when the name span is unavailable) so the
             # caret lands somewhere visible in the editor.
@@ -787,60 +796,3 @@ class _ItemsMixin:
 
         self._pop_type_params()
         self.self_type = prev_self
-
-
-def _block_always_returns(block) -> bool:
-    """True iff every code path through block ends in a
-    return. Used to flag a non-Unit-returning function whose
-    body could fall through without producing a value.
-
-    The check is conservative on purpose: a block whose last
-    statement is a return is fine; an if whose then and
-    else (plus every elif) branches all always-return is
-    fine; an exhaustive match whose every arm-body always-
-    returns is fine. Anything else returns False even when a
-    more sophisticated flow analysis could prove return; the
-    fix is to add a trailing return (which is harmless) or
-    restructure.
-    """
-    from .. import capa_ast as A
-    if not block.stmts:
-        return False
-    return _stmt_always_returns(block.stmts[-1])
-
-
-def _stmt_always_returns(s) -> bool:
-    from .. import capa_ast as A
-    if isinstance(s, A.ReturnStmt):
-        return True
-    if isinstance(s, A.IfStmt):
-        # Without an else branch, control may fall through.
-        if s.else_block is None:
-            return False
-        for _cond, blk in s.elif_arms:
-            if not _block_always_returns(blk):
-                return False
-        return (
-            _block_always_returns(s.then_block)
-            and _block_always_returns(s.else_block)
-        )
-    if isinstance(s, A.ExprStmt) and isinstance(s.expr, A.MatchExpr):
-        for arm in s.expr.arms:
-            if not _arm_always_returns(arm):
-                return False
-        # The analyser's exhaustiveness pass runs elsewhere; if it
-        # did not flag the match, the arms cover the scrutinee.
-        return True
-    return False
-
-
-def _arm_always_returns(arm) -> bool:
-    from .. import capa_ast as A
-    body = arm.body
-    if isinstance(body, A.Block):
-        return _block_always_returns(body)
-    # Single-expression arm body (no explicit return). Could only
-    # satisfy "always returns" via an early-return expression,
-    # which Capa does not have. Conservative: False.
-    return False
-

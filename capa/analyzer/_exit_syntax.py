@@ -66,6 +66,25 @@ class _ExitSyntaxMixin:
     #: The only kind that leaves a loop body for the enclosing body: a
     #: loop consumes its own ``break`` / ``continue``.
     _RETURN_KIND = frozenset({"return"})
+    #: The kinds that END a loop, so the guards they are taken under
+    #: decide HOW MANY TIMES the body and the controlling expression run:
+    #: a ``break`` leaves the loop and a ``return`` leaves the whole
+    #: frame, which ends the loop with it. A ``continue`` skips the rest
+    #: of one iteration without changing how many there are, so it is not
+    #: here. Declared once and read only through :meth:`_loop_head_pc`.
+    _LOOP_ENDING_KINDS = frozenset({"break", "return"})
+
+    def _loop_head_pc(self, pc_at_head, exits: dict) -> str:
+        """THE ONE head pc of a loop: the pc at the loop's head joined
+        with the label of every exit kind that ENDS the loop
+        (``_LOOP_ENDING_KINDS``) in ``exits``. Everything whose number of
+        executions the loop decides runs under it: the body, the counter
+        a body statement increments, a container the loop mutates, and a
+        ``while``'s controlling expression."""
+        label = pc_at_head
+        for kind in sorted(self._LOOP_ENDING_KINDS):
+            label = L.join(label, exits.get(kind, L.PUBLIC))
+        return label
 
     def _jump_kind(self, node):
         """The kind of an unconditional exit: a ``return`` / ``break`` /
