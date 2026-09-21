@@ -36,7 +36,7 @@ from tests.implicit_flow._harness import (
     ifc_errors, provenance_ok, value_errors,
 )
 from tests.implicit_flow._loop_ending import (
-    LOOP_ENDING_KINDS, NON_ENDING_KINDS, head_pc_members, head_pc_negatives,
+    EXIT_FORMS, LOOP_ENDING_FORMS, head_pc_members, head_pc_negatives,
     sink_before_programs,
 )
 
@@ -204,6 +204,7 @@ class NestedUnderPublicGuards(unittest.TestCase):
         "gap16b_sibling_else_sink_then_after_sink": REFUSE,
         "gap17_pub_else_also_exits": REFUSE,
         "gap18_panic_nested_under_pub_if": REFUSE,
+        "gap19_try_under_pub_if": REFUSE,
         "gap24_member_with_public_stmts_around": REFUSE,
         "gap25_deep_else_chain": REFUSE,
         "gap26_secret_if_with_else_both_arms_nonexit_then_nested_exit": REFUSE,
@@ -213,15 +214,8 @@ class NestedUnderPublicGuards(unittest.TestCase):
         "lc08_loopcarried_continue_sink_after": REFUSE,
     }
 
-    #: A ``?`` / ``Try`` early return is not a recognised exit form; the
-    #: program is ACCEPTED and the residual is disclosed, not closed.
-    DISCLOSED = {"gap19_try_under_pub_if": ACCEPT}
-
     def test_table(self):
         assert_table(self, "nested", self.TABLE)
-
-    def test_disclosed_residual(self):
-        assert_table(self, "nested", self.DISCLOSED)
 
 
 class LoopCarriedChains(unittest.TestCase):
@@ -266,8 +260,8 @@ class LoopCarriedChains(unittest.TestCase):
         assert_table(self, "loop_chains", self.TABLE)
 
 
-class HeadPcOverEveryLoopEndingKind(unittest.TestCase):
-    """The loop's head pc, scored ONCE PER KIND that ends a loop.
+class HeadPcOverEveryLoopEndingForm(unittest.TestCase):
+    """The loop's head pc, scored ONCE PER FORM that ends a loop.
 
     The head pc joins the label of EVERY exit kind that ends the loop,
     because each of them decides how many iterations there are, and it
@@ -278,31 +272,38 @@ class HeadPcOverEveryLoopEndingKind(unittest.TestCase):
     mutated a secret number of times.
 
     The same pc decides how many times a sink placed AHEAD of the exit in
-    the loop's body runs, so that position is scored per kind too, with
-    the shape whose exit sits in an INNER loop refused only for the kinds
+    the loop's body runs, so that position is scored per form too, with
+    the shape whose exit sits in an INNER loop refused only for the forms
     that leave the whole frame.
 
+    Scored per FORM and not per kind: the head-pc rule quantifies over
+    kinds, but a program has to SPELL the exit, and one kind has more than
+    one spelling. The ``return`` kind is taken both by the keyword under
+    an enclosing guard and by a ``?``, whose secret dependence is the
+    label of its own operand and which no keyword can express. A net
+    parameterised by the kind name scores the first spelling only, and its
+    kind-set guard stays green while the second is unreachable.
+
     Every program here is built by ``_loop_ending`` from one shape per
-    channel applied to every kind of the set, so a kind added to the set
-    is pinned by construction rather than by remembering to write its
-    fixtures. That matters for a defect a verdict alone cannot see: a
-    pass that reads the seam for one kind and hand-writes the join for
-    another still refuses the program and loses only that kind's VALUE
-    diagnostic, which is why the value error is counted and not just the
-    verdict.
+    channel applied to every form, so a form added there is pinned by
+    construction rather than by remembering to write its fixtures. That
+    matters for a defect a verdict alone cannot see: a pass that reads the
+    seam for one form and hand-writes the join for another still refuses
+    the program and loses only that form's VALUE diagnostic, which is why
+    the value error is counted and not just the verdict.
 
     The negatives bound the rule from the other side: the same shapes
-    spelled with a kind that does NOT end the loop, the same shapes under
-    a PUBLIC guard, and the same write with no sink reading it, all
-    accepted for every kind."""
+    spelled with a form that does NOT end the loop, the same shapes with
+    the secret dependence removed, and the same write with no sink reading
+    it, all accepted for every form."""
 
-    def test_every_loop_ending_kind_raises_the_head_pc(self):
+    def test_every_loop_ending_form_raises_the_head_pc(self):
         self.assertTrue(provenance_ok(), f"wrong compiler: {capa.__file__}")
         members = list(head_pc_members())
         self.assertEqual(
             {name.split("_")[1] for name, _ in members},
-            set(LOOP_ENDING_KINDS),
-            "a declared loop-ending kind has no member",
+            {form.name for form in LOOP_ENDING_FORMS},
+            "a declared loop-ending form has no member",
         )
         for name, source in members:
             with self.subTest(program=name):
@@ -315,17 +316,17 @@ class HeadPcOverEveryLoopEndingKind(unittest.TestCase):
                     [e.message for e in result.errors],
                 )
 
-    def test_the_sink_before_the_exit_leaks_exactly_the_ending_kinds(self):
+    def test_the_sink_before_the_exit_leaks_exactly_the_ending_forms(self):
         # The sink AHEAD of the exit runs once per iteration, so its
         # execution count is the iteration count. Each shape is built once
-        # per kind and refused exactly when that kind ends the loop the
+        # per form and refused exactly when that form ends the loop the
         # sink sits in, which for a sink in the body OUTSIDE the exit's
-        # loop is only the frame-leaving kinds.
+        # loop is only the frame-leaving forms.
         programs = list(sink_before_programs())
         self.assertEqual(
             {name.split("_")[1] for name, _, _ in programs},
-            set(LOOP_ENDING_KINDS) | set(NON_ENDING_KINDS),
-            "a declared kind has no sink-before program",
+            {form.name for form in EXIT_FORMS},
+            "a declared form has no sink-before program",
         )
         self.assertEqual(
             {verdict for _, _, verdict in programs}, {ACCEPT, REFUSE},
@@ -335,13 +336,13 @@ class HeadPcOverEveryLoopEndingKind(unittest.TestCase):
             with self.subTest(program=name):
                 assert_verdict(self, name, check_source(source), want)
 
-    def test_the_negatives_of_every_kind_stay_accepted(self):
+    def test_the_negatives_of_every_form_stay_accepted(self):
         negatives = list(head_pc_negatives())
         self.assertTrue(negatives, "empty negative set")
         self.assertEqual(
             {name.split("_")[1] for name, _ in negatives},
-            set(LOOP_ENDING_KINDS) | set(NON_ENDING_KINDS),
-            "a declared kind has no negative",
+            {form.name for form in EXIT_FORMS},
+            "a declared form has no negative",
         )
         for name, source in negatives:
             with self.subTest(program=name):
@@ -619,6 +620,124 @@ class Negatives(unittest.TestCase):
 
     def test_table(self):
         assert_table(self, "negatives", self.TABLE)
+
+
+class TryExitForm(unittest.TestCase):
+    """The ``?`` operator as an exit form, at every expression position.
+
+    A ``?`` leaves the enclosing frame when its operand is an ``Err`` (or
+    a ``None``), so it ends a loop the way a ``return`` does. It differs
+    from every other exit form in WHERE its secret dependence comes from:
+    a ``return`` statement is unconditional and depends on the secret only
+    through an enclosing guard, while a ``?`` is an expression that
+    depends on the label of its own operand and needs no guard at all.
+    The walker therefore reaches it as an expression, which is why the
+    positions below are members: a ``?`` can sit anywhere an expression
+    can, and every one of these ends the loop the sink runs in.
+
+    Each member was scored against a runtime oracle before being used as
+    one: stripped of the annotation and run under two keys, each prints
+    its sink a different number of times on the legacy, ``--ir`` and
+    ``--wasm`` backends, so the refusal answers a real difference in
+    observable behaviour and not a syntactic guess.
+
+    The negatives bound the rule. A PUBLIC operand is the discriminating
+    one: it makes the rule label-sensitive rather than blind to the
+    syntax, and it runs its sink the same number of times under every
+    key. A ``?`` INSIDE a lambda body returns from the LAMBDA, so it does
+    not end an enclosing loop; a ``?`` applied to a lambda CALL does, and
+    ``tf11`` pins that direction so the boundary is read as being about
+    where the ``?`` is and not about the presence of a lambda."""
+
+    #: One member per expression position a ``?`` can occupy, each with
+    #: the sink AHEAD of it in the loop body, so how many times the sink
+    #: runs is how many iterations there are.
+    TABLE = {
+        "tf01_interpolation_embedded_sink_before": REFUSE,
+        "tf02_interpolation_bare_sink_before": REFUSE,
+        "tf03_bare_expression_statement_sink_before": REFUSE,
+        "tf04_binop_operand_sink_before": REFUSE,
+        "tf05_call_argument_sink_before": REFUSE,
+        "tf06_index_subject_sink_before": REFUSE,
+        "tf07_list_literal_element_sink_before": REFUSE,
+        "tf08_match_scrutinee_sink_before": REFUSE,
+        "tf09_assignment_source_sink_before": REFUSE,
+        "tf10_if_condition_sink_before": REFUSE,
+        "tf11_try_on_a_lambda_call_sink_before": REFUSE,
+    }
+
+    NEGATIVES = {
+        "tn01_public_operand_stays_accepted": ACCEPT,
+        "tn02_secret_try_with_no_sink": ACCEPT,
+        "tn03_try_inside_a_lambda_in_the_loop": ACCEPT,
+        "tn04_not_strict_stays_accepted": ACCEPT,
+    }
+
+    #: A loop ended by an abort the program never spells: an operation
+    #: whose failure depends on a secret (here a division whose divisor is
+    #: zero only under one key) stops the loop, so how many times the sink
+    #: ahead of it runs is that secret. The walker reasons about the exits
+    #: a body SPELLS, so no exit is attributed to the arithmetic and the
+    #: program is ACCEPTED, while stripped of the annotation it prints its
+    #: sink once under one key and five times under another on the legacy,
+    #: ``--ir`` and ``--wasm`` backends. Pinned as ACCEPTED so the
+    #: residual is disclosed rather than implied to be covered, and so a
+    #: change that closes it flips this deliberately.
+    DISCLOSED = {"td01_secret_dependent_abort_ends_the_loop": ACCEPT}
+
+    def test_every_position_is_a_member(self):
+        assert_table(self, "exit_forms", self.TABLE)
+
+    def test_the_negatives_stay_accepted(self):
+        assert_table(self, "exit_forms", self.NEGATIVES)
+
+    def test_disclosed_residual(self):
+        assert_table(self, "exit_forms", self.DISCLOSED)
+
+    def test_the_declared_return_type_rule_is_unmoved(self):
+        # A ``?`` MAY leave and MAY continue, so a body whose last
+        # statement is one does NOT end in a return: a function declaring
+        # a return type still falls through, and that is a compile error.
+        # Treating the ``?`` as an unconditional exit instead would
+        # silence this, and the program would then be accepted and print
+        # nothing at runtime where an error is correct.
+        source = (
+            "fun may(k: String) -> Result<Int, String>\n"
+            '    if k.starts_with("s")\n'
+            '        return Err("no")\n'
+            "    return Ok(1)\n"
+            "\n"
+            "fun f(k: String) -> Result<Int, String>\n"
+            "    let v = may(k)?\n"
+        )
+        result = check_source(source)
+        self.assertFalse(
+            result.ok,
+            "a body ending in `?` does not end in a return, so a declared "
+            "return type must still be refused",
+        )
+        self.assertTrue(
+            any("not every path ends in" in e.message for e in result.errors),
+            [e.message for e in result.errors],
+        )
+
+    def test_match_arm_typing_is_unmoved(self):
+        # The sibling connection: an arm carrying a ``?`` still terminates
+        # normally, so the arms unify and the program is accepted.
+        source = (
+            "fun may(k: String) -> Result<Int, String>\n"
+            '    if k.starts_with("s")\n'
+            '        return Err("no")\n'
+            "    return Ok(1)\n"
+            "\n"
+            "fun f(k: String) -> Result<Int, String>\n"
+            "    let v = match k.length()\n"
+            "        0 -> may(k)?\n"
+            "        _ -> 1\n"
+            "    return Ok(v)\n"
+        )
+        result = check_source(source)
+        self.assertTrue(result.ok, [e.message for e in result.errors])
 
 
 class SpeculativePassSeam(unittest.TestCase):

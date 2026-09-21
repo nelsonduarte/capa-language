@@ -727,8 +727,8 @@ class TestIfcNoninterference(unittest.TestCase):
 # a Unit-typed block body so an arm-type mismatch does not mask the IFC
 # check), the two accept controls (which must stay accepted and run to a
 # fixed public output), the once-disclosed deeper-nested match (now
-# rejected), and the disclosed-open residual (an arm that diverges via
-# the ``?`` / ``Try`` operator).
+# rejected), and the arm that diverges via the ``?`` / ``Try`` operator
+# (also rejected).
 
 # A ``match`` whose secret-conditioned diverging arm is a ``panic``,
 # whose sibling is a Unit-typed block so the arms unify to Unit; each is
@@ -827,17 +827,13 @@ fun main(stdio: Stdio, env: Env)
     stdio.println("leak")
 '''
 
-# Disclosed-open residual: a directly-carried secret-scrutinee ``match``
-# whose arm diverges via the ``?`` / ``Try`` operator. ``Try`` is a
-# first-class early return, but the statement walker's exit syntax
-# recognizes only the jump statements, a builtin ``panic`` and a nested
-# match / if-expression, NOT the ``A.Try`` node, so this leaks: whether
-# the ``?`` arm early-returns (hence whether the sink after runs) depends
-# on the secret scrutinee, yet it is currently ACCEPTED. Pre-existing and
-# symmetric with the if / while / for path, which does not recognize
-# ``Try`` either; deferred. Pinned so the extension that handles ``Try``
-# flips this deliberately.
-_MATCH_TRY_DIVERGENCE_RESIDUAL = '''fun always_err() -> Result<Int, String>
+# A directly-carried secret-scrutinee ``match`` whose arm diverges via the
+# ``?`` / ``Try`` operator. The statement walker's exit syntax reaches a
+# ``?`` wherever it sits in an expression and takes its exit under the
+# label of its own operand, so whether the arm early-returns (hence
+# whether the sink after runs) is secret and the program is REJECTED,
+# symmetric with the if / while / for path.
+_MATCH_TRY_DIVERGENCE_REJECTED = '''fun always_err() -> Result<Int, String>
     return Err("boom")
 
 @strict_ifc()
@@ -922,21 +918,25 @@ class TestMatchDivergenceCF1(unittest.TestCase):
             [e.message for e in result.errors],
         )
 
-    def test_try_divergence_match_residual_is_accepted(self):
-        """PIN (disclosed residual): a directly-carried secret-scrutinee
-        ``match`` whose arm diverges via the ``?`` / ``Try`` operator is
-        not recognized as a divergence and stays accepted (it leaks). If
-        this ever flips to a rejection, the ``Try`` extension has landed:
-        update the ``_jump_kind`` docstring in
-        ``capa/analyzer/_exit_syntax.py`` and this pin."""
-        _module, result = self._analyze(_MATCH_TRY_DIVERGENCE_RESIDUAL)
-        self.assertTrue(
+    def test_try_divergence_match_is_rejected(self):
+        """A directly-carried secret-scrutinee ``match`` whose arm
+        diverges via the ``?`` / ``Try`` operator is a divergence like any
+        other: the arm leaves the frame when its operand is an ``Err``, so
+        whether the sink after the ``match`` runs depends on the secret
+        scrutinee and the program is rejected."""
+        _module, result = self._analyze(_MATCH_TRY_DIVERGENCE_REJECTED)
+        self.assertFalse(
             result.ok,
             msg=(
-                "the disclosed Try-divergence match residual is no longer "
-                "accepted; the Try extension may have landed, so update "
-                "the residual note and this pin:\n"
-                f"{textwrap.indent(_MATCH_TRY_DIVERGENCE_RESIDUAL, '    ')}\n"
+                "a match arm diverging through `?` is accepted again:\n"
+                f"{textwrap.indent(_MATCH_TRY_DIVERGENCE_REJECTED, '    ')}"
+            ),
+        )
+        self.assertTrue(
+            _is_ifc_rejection(result),
+            msg=(
+                "the Try-divergence match was rejected, but NOT (only) for "
+                "an information-flow reason:\n"
                 f"errors: {[e.message for e in result.errors]}"
             ),
         )

@@ -1,0 +1,15 @@
+fun may(k: String) -> Result<Int, String>
+    if k.starts_with("s")
+        return Err("no")
+    return Ok(1)
+
+@strict_ifc()
+fun main(env: Env, stdio: Stdio) -> Result<Unit, String>
+    let k = env.get("API_KEY").unwrap_or("none")
+    var n: Int = 0
+    while n < 5
+        stdio.println("tick")
+        n = n + 1
+        let lst: List<Int> = [1, 2, 3, 4, 5, 6]
+        let _v = lst[may(k)?]
+    return Ok(())

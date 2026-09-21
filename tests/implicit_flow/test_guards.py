@@ -40,6 +40,7 @@ import unittest
 from unittest import mock
 
 from capa import Lexer, Parser, analyze
+from capa import _labels as L
 from capa import capa_ast as A
 from capa.analyzer import Analyzer, Symbol, SymbolKind
 from capa.analyzer._exit_syntax import _ExitSyntaxMixin
@@ -50,7 +51,9 @@ from capa.tokens import Pos
 from capa.typesys import TyInt
 
 from tests.implicit_flow._harness import FIXTURES, REPO, check_fixture, provenance_ok
-from tests.implicit_flow._loop_ending import LOOP_ENDING_KINDS, NON_ENDING_KINDS
+from tests.implicit_flow._loop_ending import (
+    EXIT_FORMS, LOOP_ENDING_KINDS, NON_ENDING_KINDS, loop_ending_probes,
+)
 
 ANALYZER_DIR = REPO / "capa" / "analyzer"
 
@@ -484,16 +487,27 @@ class FixpointCounters(unittest.TestCase):
 # ---------------------------------------------------------------------
 
 class LoopEndingKindGuard(unittest.TestCase):
-    """The kind set the head-pc pins enumerate is the one the walker uses.
+    """The kind set the head-pc pins enumerate is the one the walker uses,
+    and every exit FORM they can spell is one the walker agrees about.
 
-    The pins score programs that differ only in the exit kind a loop ends
-    by, built from the set ``_loop_ending`` declares. Declaring it there
-    rather than importing it from the compiler keeps the expectation
+    The pins score programs that differ only in the exit a loop ends by,
+    built from the sets ``_loop_ending`` declares. Declaring them there
+    rather than importing them from the compiler keeps the expectation
     independent of the implementation it scores, and this guard is what
     makes that safe: a kind added to the walker's ``_LOOP_ENDING_KINDS``
     and not to the test package's set would otherwise be a hole in the
     net exactly where a new kind needs one, and a kind added to the test
-    package alone would score a rule the walker does not have."""
+    package alone would score a rule the walker does not have.
+
+    A kind set alone does not bound that net, and the third test is what
+    closes the gap. The generator's real parameter is the SYNTAX of the
+    exit, not its kind name: two forms can share the kind ``return``, one
+    spelled by the keyword under an enclosing guard and one by ``?``,
+    whose dependence is the label of its own operand. Comparing sets of
+    NAMES cannot see a form the generator is unable to spell, so this
+    test compares BEHAVIOUR instead, in both directions: every form the
+    generator emits is given a loop-ending exit by the walker exactly
+    when the form's declared kind ends a loop."""
 
     def test_the_declared_set_is_the_walker_set(self):
         self.assertEqual(
@@ -510,6 +524,34 @@ class LoopEndingKindGuard(unittest.TestCase):
         self.assertEqual(
             set(LOOP_ENDING_KINDS) & set(NON_ENDING_KINDS), set(),
         )
+
+    def test_every_emitted_form_ends_a_loop_exactly_when_declared(self):
+        # The walker is ASKED, on a program the generator itself built, so
+        # a form it can spell but the walker does not recognise fails here
+        # rather than scoring as an accepted program nobody looks at. The
+        # question is put the way the loop rule puts it: the body's own
+        # exit map (which includes the ``break`` the loop consumes), then
+        # the one head-pc join, which rises above the loop's entry exactly
+        # when some exit taken in the body ends the loop.
+        self.assertTrue(provenance_ok())
+        asked = 0
+        for form, source in loop_ending_probes():
+            asked += 1
+            with self.subTest(form=form.name):
+                module = _parse(source)
+                an = Analyzer(source=source)
+                an.analyze(module)
+                loop = next(n for n in walk(module)
+                            if isinstance(n, (A.WhileStmt, A.ForStmt)))
+                body = an._paths(loop.body, an._ALL_KINDS)
+                ends = an._loop_head_pc(L.PUBLIC, body.exits) != L.PUBLIC
+                self.assertEqual(
+                    ends, form.kind in LOOP_ENDING_KINDS,
+                    f"form {form.name!r} (kind {form.kind!r}) ends the loop: "
+                    f"{ends}, declared {form.kind in LOOP_ENDING_KINDS}; "
+                    f"the loop body's exits are {body.exits}",
+                )
+        self.assertEqual(asked, len(EXIT_FORMS), "a form was never asked about")
 
 
 if __name__ == "__main__":
