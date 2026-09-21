@@ -195,16 +195,19 @@ _LEAF_KINDS = {A.ReturnStmt: "return", A.BreakStmt: "break", A.ContinueStmt: "co
 
 
 def _reference_kinds(an, node, out, inner_loop=False):
-    """Every jump kind syntactically reachable from ``node`` that leaves
+    """Every exit kind syntactically reachable from ``node`` that leaves
     the body ``node`` sits in: a lambda is a frame boundary, a loop BODY
-    consumes its own break / continue, a builtin ``panic`` is a return."""
+    consumes its own break / continue, a builtin ``panic`` is a return,
+    and so is a ``?``, which leaves the frame when its operand is an
+    ``Err``. ``_LEAF_KINDS`` stays statement-only because a ``?`` is not
+    a leaf statement: it is an expression whose operand is walked on."""
     if node is None or isinstance(node, A.LambdaExpr):
         return
     leaf = _LEAF_KINDS.get(type(node))
     if leaf is not None:
         if leaf == "return" or not inner_loop:
             out.add(leaf)
-    elif _is_builtin_panic(an, node):
+    elif _is_builtin_panic(an, node) or isinstance(node, A.Try):
         out.add("return")
     if isinstance(node, (A.WhileStmt, A.ForStmt)):
         for child in children(node):

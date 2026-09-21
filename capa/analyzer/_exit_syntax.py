@@ -87,13 +87,15 @@ class _ExitSyntaxMixin:
         return label
 
     def _jump_kind(self, node):
-        """The kind of an unconditional exit: a ``return`` / ``break`` /
+        """The kind of an UNCONDITIONAL exit: a ``return`` / ``break`` /
         ``continue`` statement, or a call of the builtin ``panic`` (which
         leaves the frame), as an expression or as a bare statement.
-        ``None`` for anything else, including a ``?`` / ``Try`` early
-        return, which is not a recognised exit form (a disclosed
-        residual: a branch that leaves through ``?`` reads as one that
-        terminates normally)."""
+        ``None`` for anything else, including a ``?`` / ``Try``: that is
+        an exit form, but a conditional one, whose guard is the label of
+        its own operand rather than an enclosing construct, so it is
+        answered by :meth:`_paths` where every expression position is
+        visited. A node this returns a kind for leaves on EVERY path, and
+        ``_block_leaves`` reads it for exactly that."""
         if isinstance(node, A.ReturnStmt):
             return "return"
         if isinstance(node, A.BreakStmt):
@@ -159,22 +161,37 @@ class _ExitSyntaxMixin:
         traversal has entered a loop, whose own ``break`` / ``continue``
         do not leave the enclosing body).
 
-        A jump leaves by its kind; a guarded construct leaves by every
-        kind an arm leaves by, under the guard, and terminates normally
-        under the guard when some arm may leave and some arm may not
-        (all-paths exclusion: an arm that leaves on every path does not
-        make the construct's normal termination secret, because reaching
-        the successor reveals only that the other arms ran); a loop
-        leaves only by ``return`` from its body, under its controlling
-        expression; a lambda is a frame of its own, so a definition
-        leaves by nothing; every other node folds its children in
-        evaluation order with ``_Paths.then``. A ``match`` or ``if``
-        expression is found wherever it sits in an expression, not only
-        when directly carried by a statement."""
+        A jump leaves by its kind; a ``?`` leaves by ``return`` under the
+        label of its own operand and may also continue; a guarded
+        construct leaves by every kind an arm leaves by, under the guard,
+        and terminates normally under the guard when some arm may leave
+        and some arm may not (all-paths exclusion: an arm that leaves on
+        every path does not make the construct's normal termination
+        secret, because reaching the successor reveals only that the
+        other arms ran); a loop leaves only by ``return`` from its body,
+        under its controlling expression; a lambda is a frame of its own,
+        so a definition leaves by nothing; every other node folds its
+        children in evaluation order with ``_Paths.then``. A ``match``,
+        an ``if`` expression or a ``?`` is found wherever it sits in an
+        expression, not only when directly carried by a statement."""
         if node is None or isinstance(node, A.LambdaExpr):
             return _NO_PATHS
         if isinstance(node, A.Block):
             return self._paths_seq(node.stmts, kinds)
+        if isinstance(node, A.Try):
+            # A CONDITIONAL exit, like a guarded construct and unlike a
+            # jump: ``x?`` leaves the frame when x is an ``Err`` / a
+            # ``None`` and continues otherwise, so which of the two
+            # happens is exactly the information in x. The guard is
+            # therefore the operand's own label rather than an enclosing
+            # construct's, which is why this is reached here, where every
+            # expression position is visited, and not through
+            # ``_jump_kind``, which answers for UNCONDITIONAL exits and
+            # is asked only about statements.
+            operand = self._paths(node.expr, kinds)
+            guard = self._label_of(node.expr)
+            leaves = {"return": guard} if "return" in kinds else {}
+            return operand.then(_Paths(leaves, guard, True))
         kind = self._jump_kind(node)
         if kind is not None:
             # The operand (a returned value, a panic's arguments) runs
