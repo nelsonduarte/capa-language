@@ -64,7 +64,14 @@ class ExitForm(NamedTuple):
     its own, so wrapping it would only re-describe a dependence it already
     has. ``ret`` is the enclosing function's declared return type and
     ``prelude`` the declarations the statement refers to, because a form
-    can need a signature the bare keywords do not."""
+    can need a signature the bare keywords do not.
+
+    ``observable`` marks a form whose exit is ITSELF something outside
+    the program can see: a ``panic`` writes to stderr, so taking it under
+    a secret guard discloses the secret whether or not anything later
+    reads a value. The no-sink control asks what a head pc costs when
+    nothing observes it, which is not a question that arises for such a
+    form, so that one control is not built for it."""
 
     name: str
     kind: str
@@ -73,6 +80,7 @@ class ExitForm(NamedTuple):
     ret: str = ""
     prelude: str = ""
     tail: str = ""
+    observable: bool = False
 
 
 def _jump_form(kind: str) -> ExitForm:
@@ -94,11 +102,20 @@ _TRY_PRELUDE = (
 )
 
 #: Every exit FORM the shapes below can spell. The keyword forms are
-#: derived from the kind sets; the ``?`` form is the expression form of
-#: the ``return`` kind, which no keyword can spell.
+#: derived from the kind sets; the other two are spellings of the
+#: ``return`` kind that no keyword can express: a builtin ``panic``,
+#: which leaves the frame by aborting, and a ``?``, which leaves it when
+#: its operand is an ``Err`` and carries its own secret dependence.
 EXIT_FORMS = tuple(
     [_jump_form(kind) for kind in LOOP_ENDING_KINDS + NON_ENDING_KINDS]
     + [
+        ExitForm(
+            name="panic",
+            kind="return",
+            stmt='panic("no")',
+            guarded=True,
+            observable=True,
+        ),
         ExitForm(
             name="try",
             kind="return",
@@ -370,8 +387,8 @@ def head_pc_members():
 def head_pc_negatives():
     """Every (name, source) the same rule must ACCEPT: the same shapes
     spelled with a form that does NOT end the loop, the same shapes with
-    the secret dependence removed, and the write with no sink reading it,
-    for every form."""
+    the secret dependence removed, and the write with no sink reading it
+    for every form whose exit is not itself observable."""
     for form in EXIT_FORMS:
         if form.kind in NON_ENDING_KINDS:
             for shape, build in _CHAIN_SHAPES.items():
@@ -383,7 +400,8 @@ def head_pc_negatives():
                 f"hpp_{form.name}_{shape}_public_guard",
                 build(public, _PUBLIC_GUARD),
             )
-        yield (
-            f"hpc_{form.name}_write_without_a_sink",
-            _write_without_a_sink(form, _SECRET_GUARD),
-        )
+        if not form.observable:
+            yield (
+                f"hpc_{form.name}_write_without_a_sink",
+                _write_without_a_sink(form, _SECRET_GUARD),
+            )

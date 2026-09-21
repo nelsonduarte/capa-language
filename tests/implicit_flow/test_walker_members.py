@@ -722,8 +722,9 @@ class TryExitForm(unittest.TestCase):
         )
 
     def test_match_arm_typing_is_unmoved(self):
-        # The sibling connection: an arm carrying a ``?`` still terminates
-        # normally, so the arms unify and the program is accepted.
+        # The other rule that reads whether a body leaves: an arm
+        # carrying a ``?`` still terminates normally, so the arms unify
+        # and the program is accepted.
         source = (
             "fun may(k: String) -> Result<Int, String>\n"
             '    if k.starts_with("s")\n'

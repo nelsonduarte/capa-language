@@ -486,8 +486,51 @@ class FixpointCounters(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------
-# Guard 7: the loop-ending kind set
+# Guard 7: the loop-ending kind set and the exit forms
 # ---------------------------------------------------------------------
+
+#: The node types a body is left THROUGH rather than BY: they carry the
+#: exits of the bodies inside them, so every program has them and they say
+#: nothing about which forms take an exit.
+_CARRIER_NODE_TYPES = {
+    "Block", "IfStmt", "MatchExpr", "IfExpr", "WhileStmt", "ForStmt",
+    "ExprStmt",
+}
+
+#: Node types the module tests for a reason other than attributing an
+#: exit, each with the reason: a frame boundary the walk stops at, and the
+#: name position that identifies a call's CALLEE (a ``panic`` is
+#: recognised by the ``Call``, which IS in the derived set).
+_NOT_AN_EXIT_FORM = {
+    "LambdaExpr": "a frame of its own, so a definition leaves by nothing",
+    "Ident": "the callee position of a call, not an exit",
+}
+
+
+def _exit_producing_node_types():
+    """Every AST node type the exit-syntax module can attribute an exit
+    of its OWN to, derived from that module's source.
+
+    The grammar, stated: an ``A.<Name>`` mentioned in an ``isinstance``
+    test inside the module, minus the carriers above, which only pass an
+    inner body's exits outward, and minus the types the module tests for
+    another reason, each of which carries that reason. What is left is
+    the set of shapes a generated program has to be able to spell."""
+    source = (ANALYZER_DIR / "_exit_syntax.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    names = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "isinstance"):
+            continue
+        for arg in ast.walk(node.args[1] if len(node.args) > 1 else node):
+            if (isinstance(arg, ast.Attribute)
+                    and isinstance(arg.value, ast.Name)
+                    and arg.value.id == "A"):
+                names.add(arg.attr)
+    return names - _CARRIER_NODE_TYPES - set(_NOT_AN_EXIT_FORM)
+
 
 class LoopEndingKindGuard(unittest.TestCase):
     """The kind set the head-pc pins enumerate is the one the walker uses,
@@ -502,15 +545,20 @@ class LoopEndingKindGuard(unittest.TestCase):
     net exactly where a new kind needs one, and a kind added to the test
     package alone would score a rule the walker does not have.
 
-    A kind set alone does not bound that net, and the third test is what
-    closes the gap. The generator's real parameter is the SYNTAX of the
-    exit, not its kind name: two forms can share the kind ``return``, one
-    spelled by the keyword under an enclosing guard and one by ``?``,
+    A kind set alone does not bound that net, and the last two tests are
+    what close the gap. The generator's real parameter is the SYNTAX of
+    the exit, not its kind name: two forms can share the kind ``return``,
+    one spelled by the keyword under an enclosing guard and one by ``?``,
     whose dependence is the label of its own operand. Comparing sets of
-    NAMES cannot see a form the generator is unable to spell, so this
-    test compares BEHAVIOUR instead, in both directions: every form the
-    generator emits is given a loop-ending exit by the walker exactly
-    when the form's declared kind ends a loop."""
+    NAMES cannot see a form the generator is unable to spell, so the two
+    directions are checked separately and against different sources.
+
+    Outward, the walker is ASKED about each form the generator emits, and
+    must end the loop exactly when the form's kind says so. Inward, the
+    AST node types the walker can attribute an exit to are derived from
+    its own source, and each must have a form: that direction cannot be
+    satisfied by the generator's own declaration, so DELETING a form
+    fails here rather than silently shrinking the net."""
 
     def test_the_declared_set_is_the_walker_set(self):
         self.assertEqual(
@@ -555,6 +603,42 @@ class LoopEndingKindGuard(unittest.TestCase):
                     f"the loop body's exits are {body.exits}",
                 )
         self.assertEqual(asked, len(EXIT_FORMS), "a form was never asked about")
+
+    def test_every_exclusion_names_a_real_site_and_a_reason(self):
+        # An exemption for a type the module never names is stale and
+        # would hide the next one, and an exemption with no reason is a
+        # silent one.
+        source = (ANALYZER_DIR / "_exit_syntax.py").read_text(encoding="utf-8")
+        for name, reason in _NOT_AN_EXIT_FORM.items():
+            with self.subTest(node=name):
+                self.assertIn(f"A.{name}", source)
+                self.assertTrue(reason.strip())
+
+    def test_every_exit_producing_node_type_has_a_form(self):
+        # The other direction, and the one the generator cannot satisfy by
+        # declaring it: the AST node types the walker can attribute an
+        # exit to are read out of the exit-syntax module's own source, and
+        # each must be reachable by some form the generator emits. A form
+        # deleted from the table therefore fails here, which is what stops
+        # the net shrinking back to the spellings it happens to have.
+        producing = _exit_producing_node_types()
+        self.assertTrue(producing, "the derivation found nothing")
+        covered = set()
+        for form, source in loop_ending_probes():
+            module = _parse(source)
+            an = Analyzer(source=source)
+            an.analyze(module)
+            loop = next(n for n in walk(module)
+                        if isinstance(n, (A.WhileStmt, A.ForStmt)))
+            for node in walk(loop.body):
+                name = type(node).__name__
+                if name in producing and an._paths(node, an._ALL_KINDS).exits:
+                    covered.add(name)
+        self.assertEqual(
+            producing - covered, set(),
+            f"the walker can attribute an exit to these node types and no "
+            f"generated form reaches one: {sorted(producing - covered)}",
+        )
 
 
 if __name__ == "__main__":
