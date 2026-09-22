@@ -112,6 +112,66 @@ elements][ntia], a common baseline that later SBOM guidance
 
 [ntia]: https://www.ntia.gov/files/ntia/publications/sbom_minimum_elements_report.pdf
 
+(Those seven are the report's Data Fields category. NTIA also
+names two further categories, Automation Support and Practices
+and Processes; the latter is organisational, and a compiler
+answers only the machine-readable half of the former.)
+
+Against those seven fields, measured by generating both a
+CycloneDX and an SPDX BOM for a `capa.toml` project carrying a
+path dependency, a github-hosted git dependency, a
+non-github git dependency and an unresolvable dependency:
+
+| NTIA data field | Capa |
+|---|---|
+| Supplier Name | CycloneDX only. Every CycloneDX component carries `supplier: {"name": "capa-build"}`; SPDX packages carry no supplier key. Whether a build-tool identity is the "entity that creates, defines, and identifies components" NTIA has in mind is in any case a judgement for an auditor, not one this document can settle |
+| Component Name | Present in both, from `[package].name` |
+| Version of the Component | **Conditional.** Present for every dependency Capa resolves, absent for one it cannot |
+| Other Unique Identifiers | **Conditional.** A real purl for every git dependency; deliberately absent for a path dependency |
+| Dependency Relationship | Present in both. CycloneDX `dependencies[]`, SPDX `DEPENDS_ON` |
+| Author of SBOM Data | Present in both, as the `capa` tool entry in `metadata.tools` / `creationInfo.creators` |
+| Timestamp | Present in both, and reproducible under `SOURCE_DATE_EPOCH` |
+
+The two conditional fields are worth stating plainly, because
+an auditor walking the list mechanically will record them as
+misses, and the reason they are conditional is a deliberate
+refusal rather than an unfinished emitter.
+
+**Version is absent exactly when the dependency does not
+resolve.** `[package].version` is a required key in
+`capa.toml`, so any dependency Capa can read reports one. A
+dependency reports no version only when it resolves to nothing
+readable: never vendored (`capa install` not run), a
+native or non-Capa package, a directory with a manifest but no
+Capa source, or a corrupt manifest. Such a component is also
+marked `capa:resolved=false`, so the BOM says which case it is
+rather than leaving a blank field to guess at.
+
+**Other Unique Identifiers is absent for a path dependency,
+by design.** A path dependency is a directory on the building
+machine. It has no registry coordinate and no VCS coordinate,
+so there is no identifier that would mean anything to a
+consumer looking it up. Capa could emit a `pkg:generic` string
+built from the name, and it deliberately does not: the one
+purl producer in the compiler
+([`capa/manifest/_compose.py`](../capa/manifest/_compose.py),
+`_construct_purl`) returns nothing for a path dependency
+rather than fabricate an identity it cannot resolve. The
+component still carries its name, its version, its
+root-relative path and `capa:source_kind=path`, which is what
+is actually known about it. NTIA's own text allows for this
+("These other identifiers may not be available for every
+piece of software, but should be used if they exist"), but a
+checklist applied mechanically will not, so the honest move is
+to name it here.
+
+Git dependencies are not affected: measured on both emitters,
+a github-hosted dependency carries
+`pkg:github/<owner>/<repo>@<commit>` and a non-github one
+carries `pkg:generic/<name>@<version>?vcs_url=git+<url>@<commit>`,
+identically in the CycloneDX `purl` field and the SPDX
+`externalRefs` entry.
+
 Capa emits CycloneDX 1.6 and SPDX 2.3. BSI TR-03183-2 v2.1.0
 (2025-08-20) asks for CycloneDX >= 1.6 or SPDX >= 3.0.1: the
 CycloneDX output now meets that guideline's CycloneDX floor,
