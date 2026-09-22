@@ -16,6 +16,8 @@ For an article-by-article CRA deep dive, see [`docs/cra.md`](cra.md). For NIS2 a
 
 Most of what these frameworks demand is organisational. Vulnerability disclosure processes, incident notification timelines, supplier due diligence, internal audit, conformity assessment. None of that is in Capa's reach. What Capa contributes is a narrow slice of the technical artefacts the organisational layer consumes. Where appropriate this document marks a fit as **direct** (the artefact satisfies the clause on its own), **indirect** (Capa enables it but the organisation still has work to do), **partial** (Capa contributes without closing the requirement), or **out of scope** (organisational, language cannot help). These strength words apply to the CRA, NIST SSDF, and OWASP SCVS columns. They do not apply to NIS2 or DORA: those are **entity regimes**, so a compiler can never *satisfy* an obligation the regulation places on an operator. The NIS2 and DORA columns therefore read only **evidence toward** a named article, following the stricter deep dive in [`docs/nis2-dora.md`](nis2-dora.md).
 
+The same caution has to be extended to NIST SSDF, one step short of dropping its column to "evidence toward". SSDF is voluntary in itself, and where it is enforced it is enforced entity-style: through an attestation a corporate officer signs about an organisation's practices, on a form whose scope excludes freely available software such as Capa. So no SSDF cell below reads **direct**, and none should. The strongest a Capa artefact gets is to be evidence a producer attaches to their own attestation. [The SSDF section](#nist-ssdf) sets out what that does and does not permit anyone to claim.
+
 A few frameworks are sometimes confused with this set but are not covered here. ISO 27001, SOC 2, PCI DSS, and HIPAA are management and audit standards; Capa contributes evidence to them but does not deliver compliance. US Executive Order 14028 is subsumed in practice by NIST SSDF, the technical baseline EO 14028 cites. The AI Act and GDPR are tangential to supply-chain governance. SWID (ISO/IEC 19770-2) is a dying SBOM format; CycloneDX and SPDX cover the live ecosystem. The wider DORA articles on business continuity, recovery objectives, and board oversight are not technical.
 
 ## Capa artefacts at a glance
@@ -38,13 +40,15 @@ And how each maps across the five frameworks:
 | Capa output | CRA Annex I | NIS2 Art. 21 | DORA Chapters II-V | NIST SSDF | OWASP SCVS |
 |---|---|---|---|---|---|
 | Manifest | I-II(1) direct | evidence toward 21(2)(d) | evidence toward Art. 30(2)(a) | PS.1 indirect | Domain 1 partial |
-| CycloneDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3 **direct** | Domain 2 **direct** |
-| SPDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3 **direct** | Domain 2 **direct** |
-| CycloneDX VEX | I-II(2) partial | evidence toward 21(2)(e) | n/a | RV.1, RV.2 **direct** | Domain 5 **direct** |
+| CycloneDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3.2 partial | Domain 2 **direct** |
+| SPDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3.2 partial | Domain 2 **direct** |
+| CycloneDX VEX | I-II(2) partial | evidence toward 21(2)(e) | n/a | RV.2 partial | Domain 5 **direct** |
 | SLSA L1 provenance | I-I(2)(f) indirect | evidence toward 21(3) | evidence toward Art. 28 | PS.2 partial, PS.3 partial | Domain 6 **direct** |
-| Audit pipeline | I-II(1) indirect | evidence toward 21(2)(d) | evidence toward Arts. 28-30 | PO.5 indirect | Domain 1 partial |
+| Audit pipeline | I-II(1) indirect | evidence toward 21(2)(d) | evidence toward Arts. 28-30 | PW.4.4 indirect | Domain 1 partial |
 | SBOM diff tool | I-II(2) indirect | evidence toward 21(2)(d) | evidence toward Art. 29 | RV.1 partial | Domain 2 partial |
 | Machine-checked soundness | I-I(2)(b) indirect | n/a | n/a | PW.4 indirect | n/a |
+
+The SSDF column names a *task* (PS.3.2, PW.4.4) rather than a practice wherever only one task of the practice is in a compiler's reach. SP 800-218 states its requirements at the task level, and most practices mix a task an artefact can carry with one that is purely organisational: PS.3 pairs PS.3.2 (share provenance data for all components, "e.g., in a software bill of materials [SBOM]") with PS.3.1 (securely archive the files), and no artefact archives anything. Reading the verbatim task text is what the grades below are set against; the reasoning per row is in [the SSDF section](#nist-ssdf).
 
 ## Reproducible SBOMs: rebuild and diff byte-for-byte
 
@@ -98,18 +102,37 @@ NIST published SP 800-218 (SSDF) in February 2022 as the US federal baseline for
 
 The practices group into four families. PO (Prepare the Organization) covers policy, training, and toolchain. PS (Protect the Software) covers integrity, access control, and archival. PW (Produce Well-Secured Software) covers secure design, reuse of well-secured components, and vulnerability remediation. RV (Respond to Vulnerabilities) covers identify, assess, and remediate.
 
-Where Capa lands, by practice:
+### What Capa can and cannot be to an SSDF audience
 
-| Practice | What Capa provides |
+SSDF is worth treating with the same caution this document already applies to NIS2 and DORA, and for the same reason. SP 800-218 is a voluntary framework and NIST runs no conformance programme against it, so nothing can be "SSDF-certified". Where SSDF acquires teeth is procurement, and the instrument there is the [CISA Secure Software Development Attestation Common Form](https://www.cisa.gov/resources-tools/resources/secure-software-development-attestation-form), which is signed by "the Chief Executive Officer (CEO) of the software producer or their designee, who must be an employee of the software producer and have the authority to bind the corporation". It attests about an organisation's practices, not about a language.
+
+That form's status changed recently and is worth stating accurately. It was created under EO 14028 and OMB M-22-18 as amended by M-23-16, which required every federal agency to collect it. OMB Memorandum M-26-05 (23 January 2026) rescinded M-22-18 and M-23-16 in favour of agency-tailored, risk-based requirements. The form still exists and agencies may still choose to use it, but it is no longer a government-wide mandate, so a US federal procurement ask now depends on the individual agency's terms.
+
+Two consequences follow for Capa, and neither is fixable by engineering:
+
+- **Capa is outside the form's scope.** The form's own exclusion list ends with "Software that is freely obtained and publicly available". Capa is free on PyPI and GitHub, so no attestation about Capa itself is asked for or possible. "Capa is SSDF-attested" would be a category error, not merely an unproven claim.
+- **The reachable audience is the producer, not the compiler.** Someone who builds a product in Capa and is asked to attest is the one making the attestation. Capa's role there is evidence that supports particular task-level statements, in the same way the CycloneDX or SPDX SBOM is input to a NIS2 operator's supplier assessment rather than the assessment itself.
+
+That is a narrowing, not a dismissal. The task-level mapping below is the useful part: it tells such a producer which artefact to point at for which task, and which tasks it does not help with at all. What it is not is a product conformance claim.
+
+Where Capa lands, by task:
+
+| Task | What Capa provides |
 |---|---|
-| PS.1 (Protect all forms of code) | Manifest declares the access boundary per function; widening is loud in diffs. Repository access control stays organisational |
-| PS.2 (Provide a mechanism for verifying software release integrity) | SLSA L1 provenance names the builder, the source, and the parameters, with the source SHA-256. Signing is external at L1 |
-| PS.3 (Archive and protect each release) | CycloneDX, SPDX, and provenance bundled as a release-artefact set; PS.3.2 names provenance data and SBOMs explicitly. Archival itself stays organisational |
-| PW.4 (Reuse existing, well-secured software) | Capability discipline rules out ambient-authority abuse in third-party Capa code |
-| RV.1 (Identify and confirm vulnerabilities) | VEX entries make per-function exploitability assertions; SBOM diff catches supplier widening |
-| RV.2 (Assess, prioritise, and remediate) | VEX `state` and `justification` shape feeds standard tooling |
+| PS.1.1 (Store all forms of code based on least privilege) | Manifest declares the authority boundary per function, and widening is loud in diffs. The task is about repository access control for personnel and tools, which stays wholly organisational |
+| PS.2.1 (Make software integrity verification information available to acquirers) | SLSA L1 provenance names the builder, the source, and the parameters, with the source SHA-256. Signing is external at L1 |
+| PS.3.2 (Share provenance data for all components of each release) | The task names an SBOM as its example, and `--cyclonedx` / `--spdx` are that SBOM. "Safeguard" and "maintain" in the same task, and all of PS.3.1 (archive the release files), stay organisational |
+| PW.4.4 (Verify that third-party components comply with organisation-defined requirements) | Capability discipline rules out ambient-authority abuse in third-party Capa code; the audit pipeline compares an SBOM's declared capabilities against a written policy |
+| RV.1.1 / RV.1.2 (Gather vulnerability reports; review, analyse or test the code) | Nothing directly. The SBOM diff surfaces supplier capability widening between releases, which is an input to RV.1.1's "review provenance and software composition data" example, not a discharge of the task |
+| RV.2.1 / RV.2.2 (Analyse each vulnerability; plan and implement risk responses) | The VEX document records a conclusion a human reached and wrote into a `@vex` attribute, in the `state` and `justification` shape standard tooling consumes. The analysis and the response are the producer's work |
 
-The PO family is organisational. PW.1 (threat modelling), PW.5 (configure tools for security defaults), and the bulk of the RV organisational follow-through sit outside what a language can offer.
+The PO family is organisational, including PO.5 (secure development environments and hardened endpoints), which no Capa artefact touches. PW.1 (threat modelling), PW.5 (configure tools for security defaults), and the bulk of the RV organisational follow-through likewise sit outside what a language can offer.
+
+### Why the VEX row is not "direct"
+
+It is worth being explicit about the strongest-sounding cell, because an earlier version of this table graded it **direct** and that was wrong. Read the tasks verbatim. RV.1.1 is to "gather information from software acquirers, users, and public sources on potential vulnerabilities" and "investigate all credible reports". RV.1.2 is to "review, analyze, and/or test the software's code to identify or confirm the presence of previously undetected vulnerabilities". RV.2.1 is to "analyze each vulnerability to gather sufficient information about risk to plan its remediation". RV.2.2 is to "plan and implement risk responses for vulnerabilities".
+
+A VEX document performs none of these. `capa --vex` reads `@vex(cve: ..., status: ..., justification: ...)` attributes out of the source and emits them as a CycloneDX `vulnerabilities[]` array. Every fact in it was typed by a developer who had already done the analysis. The artefact is the machine-readable *record* of an RV.2 conclusion, which is genuinely useful to a consumer and genuinely not the task. So the cell reads **RV.2 partial**: it contributes without closing the requirement, which is what "partial" means in this document. RV.1 is dropped from the row entirely, because monitoring public vulnerability sources and reviewing code are not things the emitter does at all.
 
 ## OWASP SCVS
 
@@ -150,6 +173,7 @@ Capa is a one-person project at 1.0. It is suitable for proofs of concept and pe
 - [Directive (EU) 2022/2555 (NIS2)](https://eur-lex.europa.eu/eli/dir/2022/2555/oj)
 - [Regulation (EU) 2022/2554 (DORA)](https://eur-lex.europa.eu/eli/reg/2022/2554/oj)
 - [NIST SP 800-218 (SSDF) v1.1](https://csrc.nist.gov/Projects/ssdf)
+- [CISA Secure Software Development Attestation Common Form](https://www.cisa.gov/resources-tools/resources/secure-software-development-attestation-form)
 - [OWASP SCVS](https://owasp.org/www-project-software-component-verification-standard/)
 - [CycloneDX 1.6 specification](https://cyclonedx.org/docs/1.6/json/)
 - [SPDX 2.3 specification](https://spdx.github.io/spdx-spec/v2.3/)
