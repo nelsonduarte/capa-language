@@ -278,11 +278,11 @@ class HeadPcOverEveryLoopEndingForm(unittest.TestCase):
 
     Scored per FORM and not per kind: the head-pc rule quantifies over
     kinds, but a program has to SPELL the exit, and one kind has more than
-    one spelling. The ``return`` kind is taken both by the keyword under
-    an enclosing guard and by a ``?``, whose secret dependence is the
-    label of its own operand and which no keyword can express. A net
-    parameterised by the kind name scores the first spelling only, and its
-    kind-set guard stays green while the second is unreachable.
+    one spelling. The ``return`` kind is taken by the keyword under an
+    enclosing guard, and also by a ``?``, whose own operand can carry the
+    secret dependence and which no keyword can express. A net
+    parameterised by the kind name scores the keyword spelling only, and
+    its kind-set guard stays green while the ``?`` is unreachable.
 
     Every program here is built by ``_loop_ending`` from one shape per
     channel applied to every form, so a form added there is pinned by
@@ -292,10 +292,11 @@ class HeadPcOverEveryLoopEndingForm(unittest.TestCase):
     the program and loses only that form's VALUE diagnostic, which is why
     the value error is counted and not just the verdict.
 
-    The negatives bound the rule from the other side: the same shapes
-    spelled with a form that does NOT end the loop, the same shapes with
-    the secret dependence removed, and the same write with no sink reading
-    it, all accepted for every form."""
+    The negatives bound the rule from the other side, and all are
+    accepted: the same shapes spelled with a form that does NOT end the
+    loop, the same shapes with the secret dependence removed for every
+    form, and the same write with no sink reading it for every form whose
+    exit is not itself observable."""
 
     def test_every_loop_ending_form_raises_the_head_pc(self):
         self.assertTrue(provenance_ok(), f"wrong compiler: {capa.__file__}")
@@ -623,17 +624,20 @@ class Negatives(unittest.TestCase):
 
 
 class TryExitForm(unittest.TestCase):
-    """The ``?`` operator as an exit form, at every expression position.
+    """The ``?`` operator as an exit form, at the expression positions
+    pinned below.
 
-    A ``?`` leaves the enclosing frame when its operand is an ``Err`` (or
-    a ``None``), so it ends a loop the way a ``return`` does. It differs
-    from every other exit form in WHERE its secret dependence comes from:
-    a ``return`` statement is unconditional and depends on the secret only
-    through an enclosing guard, while a ``?`` is an expression that
-    depends on the label of its own operand and needs no guard at all.
-    The walker therefore reaches it as an expression, which is why the
-    positions below are members: a ``?`` can sit anywhere an expression
-    can, and every one of these ends the loop the sink runs in.
+    A ``?`` that runs leaves the enclosing frame when its operand is an
+    ``Err`` (or a ``None``), so it ends a loop the way a ``return`` does.
+    It differs from the statement exits in where a secret dependence CAN
+    come from: a ``return`` statement leaves whenever it is reached, so
+    its dependence on a secret comes from what decides that, such as an
+    enclosing guard, while a ``?`` is an expression whose own operand can
+    carry the dependence with no guard around it. The walker therefore
+    reaches it as an expression, which is why the positions below are
+    members: each puts a ``?`` with a secret operand in one of these
+    expression positions, the interpolation one in both of its
+    spellings, and each ends the loop the sink runs in.
 
     Each member was scored against a runtime oracle before being used as
     one: stripped of the annotation and run under two keys, each prints
@@ -643,15 +647,18 @@ class TryExitForm(unittest.TestCase):
 
     The negatives bound the rule. A PUBLIC operand is the discriminating
     one: it makes the rule label-sensitive rather than blind to the
-    syntax, and it runs its sink the same number of times under every
-    key. A ``?`` INSIDE a lambda body returns from the LAMBDA, so it does
-    not end an enclosing loop; a ``?`` applied to a lambda CALL does, and
-    ``tf11`` pins that direction so the boundary is read as being about
-    where the ``?`` is and not about the presence of a lambda."""
+    syntax, and it ran its sink the same number of times under both keys
+    on the same three backends. A ``?`` INSIDE a lambda body returns from
+    the LAMBDA, so it does not end an enclosing loop; a ``?`` applied to
+    a lambda CALL does, and ``tf11`` pins that direction so the boundary
+    is read as being about where the ``?`` is and not about the presence
+    of a lambda."""
 
-    #: One member per expression position a ``?`` can occupy, each with
-    #: the sink AHEAD of it in the loop body, so how many times the sink
-    #: runs is how many iterations there are.
+    #: One member for each of these expression positions (the
+    #: interpolation position in both of its spellings), a sample of
+    #: where a ``?`` can sit rather than an enumeration of the grammar,
+    #: each with the sink AHEAD of it in the loop body, so how many times
+    #: the sink runs is how many iterations there are.
     TABLE = {
         "tf01_interpolation_embedded_sink_before": REFUSE,
         "tf02_interpolation_bare_sink_before": REFUSE,
@@ -697,8 +704,8 @@ class TryExitForm(unittest.TestCase):
     def test_the_declared_return_type_rule_is_unmoved(self):
         # A ``?`` MAY leave and MAY continue, so a body whose last
         # statement is one does NOT end in a return: a function declaring
-        # a return type still falls through, and that is a compile error.
-        # Treating the ``?`` as an unconditional exit instead would
+        # a return type can still fall through, and that is a compile
+        # error. Treating the ``?`` as an unconditional exit instead would
         # silence this, and the program would then be accepted and print
         # nothing at runtime where an error is correct.
         source = (
@@ -722,9 +729,9 @@ class TryExitForm(unittest.TestCase):
         )
 
     def test_match_arm_typing_is_unmoved(self):
-        # The other rule that reads whether a body leaves: an arm
-        # carrying a ``?`` still terminates normally, so the arms unify
-        # and the program is accepted.
+        # A second rule the ``?`` must not move: match arm typing. An arm
+        # whose body is a ``?`` expression is typed by that expression's
+        # value, so the arms unify and the program is accepted.
         source = (
             "fun may(k: String) -> Result<Int, String>\n"
             '    if k.starts_with("s")\n'

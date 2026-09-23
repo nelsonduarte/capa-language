@@ -26,14 +26,17 @@ from ..capa_ast._walk import children
 
 
 class _Paths(NamedTuple):
-    """Myers' path labels of one node, relative to the body it sits in.
+    """Myers' path labels of one node, relative to the body it sits in,
+    as :meth:`_ExitSyntaxMixin._paths` derives them.
 
-    ``exits`` maps each kind by which the node may leave that body to the
-    label of the guards it leaves under; an absent kind means the node
-    cannot leave the body that way. ``norm`` is the normal-termination
-    label: the information conveyed by control reaching the node's
-    successor in the body. ``may_normal`` is False when no path through
-    the node terminates normally, so nothing after it in the body runs.
+    ``exits`` maps each kind by which the traversal finds the node may
+    leave that body, among the exits the node spells, to the label it
+    derives for the guards that exit is taken under; an absent kind
+    means it found no exit of that kind. ``norm`` is the
+    normal-termination label: the label the traversal derives for
+    control reaching the node's successor in the body. ``may_normal`` is
+    False only when no path through the node terminates normally, so
+    nothing after it in the body runs.
     """
 
     exits: dict
@@ -77,10 +80,10 @@ class _ExitSyntaxMixin:
     def _loop_head_pc(self, pc_at_head, exits: dict) -> str:
         """THE ONE head pc of a loop: the pc at the loop's head joined
         with the label of every exit kind that ENDS the loop
-        (``_LOOP_ENDING_KINDS``) in ``exits``. Everything whose number of
-        executions the loop decides runs under it: the body, the counter
-        a body statement increments, a container the loop mutates, and a
-        ``while``'s controlling expression."""
+        (``_LOOP_ENDING_KINDS``) in ``exits``. The loop rule walks the
+        body and a ``while``'s controlling expression under it, so the
+        counter a body statement increments and a container the loop
+        mutates are written under it too."""
         label = pc_at_head
         for kind in sorted(self._LOOP_ENDING_KINDS):
             label = L.join(label, exits.get(kind, L.PUBLIC))
@@ -91,10 +94,9 @@ class _ExitSyntaxMixin:
         ``continue`` statement, or a call of the builtin ``panic`` (which
         leaves the frame), as an expression or as a bare statement.
         ``None`` for anything else, including a ``?`` / ``Try``: that is
-        an exit form, but a conditional one, whose guard is the label of
-        its own operand rather than an enclosing construct, so it is
-        answered by :meth:`_paths` where every expression position is
-        visited. A node this returns a kind for leaves on EVERY path, and
+        an exit form, but a conditional one, which :meth:`_paths` answers
+        in a clause of its own as it descends into expressions. A node
+        this returns a kind for leaves on EVERY path, and
         ``_block_leaves`` reads it for exactly that."""
         if isinstance(node, A.ReturnStmt):
             return "return"
@@ -128,13 +130,13 @@ class _ExitSyntaxMixin:
         return sym is not None and sym.pos == BUILTIN_POS
 
     def _guarded_arms(self, node):
-        """``(guard expressions, guard label, arm bodies)`` for a node that
-        selects one of several bodies by a guard: an ``if`` statement (the
-        implicit fall-through of a missing ``else`` is a ``None`` arm), a
-        ``match`` expression, an ``if`` expression. The guard label is
-        the join of every guard, the over-approximation the strict tier
-        applies to every branching construct: it can only raise a pc,
-        never lower one. ``None`` for any other node."""
+        """``(guard expressions, guard label, arm bodies)`` for the three
+        constructs this recognises as selecting one of several bodies by
+        a guard: an ``if`` statement (the implicit fall-through of a
+        missing ``else`` is a ``None`` arm), a ``match`` expression, an
+        ``if`` expression. The guard label is the join of every guard,
+        an over-approximation for each arm of these constructs: it can
+        only raise a pc, never lower one. ``None`` for any other node."""
         if isinstance(node, A.IfStmt):
             guards = [node.cond] + [c for c, _ in node.elif_arms]
             bodies = (
@@ -168,26 +170,30 @@ class _ExitSyntaxMixin:
         and some arm may not (all-paths exclusion: an arm that leaves on
         every path does not make the construct's normal termination
         secret, because reaching the successor reveals only that the
-        other arms ran); a loop leaves only by ``return`` from its body,
+        other arms ran); a loop's controlling expression takes its own
+        exits first, and from its body a loop leaves only by ``return``,
         under its controlling expression; a lambda is a frame of its own,
         so a definition leaves by nothing; every other node folds its
-        children in evaluation order with ``_Paths.then``. A ``match``,
-        an ``if`` expression or a ``?`` is found wherever it sits in an
-        expression, not only when directly carried by a statement."""
+        children with ``_Paths.then``, in the order ``children`` yields
+        them (field declaration order), which is taken as evaluation
+        order. A ``match``, an ``if`` expression or a ``?`` nested inside
+        an expression is found too, not only one directly carried by a
+        statement."""
         if node is None or isinstance(node, A.LambdaExpr):
             return _NO_PATHS
         if isinstance(node, A.Block):
             return self._paths_seq(node.stmts, kinds)
         if isinstance(node, A.Try):
             # A CONDITIONAL exit, like a guarded construct and unlike a
-            # jump: ``x?`` leaves the frame when x is an ``Err`` / a
-            # ``None`` and continues otherwise, so which of the two
-            # happens is exactly the information in x. The guard is
-            # therefore the operand's own label rather than an enclosing
-            # construct's, which is why this is reached here, where every
-            # expression position is visited, and not through
-            # ``_jump_kind``, which answers for UNCONDITIONAL exits and
-            # is asked only about statements.
+            # jump: once ``x?`` runs, it leaves the frame when x is an
+            # ``Err`` / a ``None`` and continues otherwise. This clause
+            # takes that exit under the label the checker recorded for
+            # x, and that label is the only guard it contributes: what
+            # decides whether the ``?`` runs at all reaches the exit only
+            # through the paths this traversal folds around it. It is
+            # answered here, as the traversal descends into expressions,
+            # and not by ``_jump_kind``, whose kinds mean an exit taken
+            # on every path.
             operand = self._paths(node.expr, kinds)
             guard = self._label_of(node.expr)
             leaves = {"return": guard} if "return" in kinds else {}

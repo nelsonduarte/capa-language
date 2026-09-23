@@ -828,11 +828,12 @@ fun main(stdio: Stdio, env: Env)
 '''
 
 # A directly-carried secret-scrutinee ``match`` whose arm diverges via the
-# ``?`` / ``Try`` operator. The statement walker's exit syntax reaches a
-# ``?`` wherever it sits in an expression and takes its exit under the
-# label of its own operand, so whether the arm early-returns (hence
-# whether the sink after runs) is secret and the program is REJECTED,
-# symmetric with the if / while / for path.
+# ``?`` / ``Try`` operator. The statement walker's exit syntax recognises
+# the ``?`` in the arm as an exit, and the arm is selected by the secret
+# scrutinee, so whether the arm early-returns (hence whether the sink
+# after runs) is secret and the program is REJECTED, symmetric with the
+# if / while / for path. The operand itself is public here: the secret
+# comes from the ``match``, not from the ``?``.
 _MATCH_TRY_DIVERGENCE_REJECTED = '''fun always_err() -> Result<Int, String>
     return Err("boom")
 

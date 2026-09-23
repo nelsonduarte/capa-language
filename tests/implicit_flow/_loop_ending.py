@@ -17,13 +17,14 @@ silent divergence into a failure.
 A KIND is not a FORM, and conflating them is how the net grows a hole.
 The kind is the channel by which control leaves a body, which is what the
 head-pc rule quantifies over; the form is the SYNTAX that takes that
-exit, which is what a generated program must actually spell. Two forms
-share the kind ``return``: the ``return`` statement, whose secret
-dependence comes from an enclosing ``if``, and the ``?`` operator, an
-expression whose secret dependence is the label of its own operand and
-which has no keyword to substitute. A generator parameterised by the kind
-NAME can emit only the first, so the second would be a member the net
-cannot express even while the kind sets agree.
+exit, which is what a generated program must actually spell. Several
+forms share the kind ``return``: the ``return`` statement and a builtin
+``panic``, which the generator makes depend on the secret through an
+enclosing guard, and the ``?`` operator, an expression whose own operand
+can carry that dependence and which has no keyword to substitute. A
+generator parameterised by the kind NAME can emit only the keyword forms,
+so the ``?`` would be a member the net cannot express even while the kind
+sets agree.
 
 :data:`NON_ENDING_KINDS` is the other half of the bound. A ``continue``
 skips the rest of one iteration without changing how many there are, so
@@ -59,12 +60,14 @@ class ExitForm(NamedTuple):
     ``kind`` is the channel control leaves by, so an expectation reads the
     kind sets above and never the form's name. ``stmt`` is the statement
     the shape places at the exit's position. ``guarded`` says whether the
-    secret dependence has to be supplied by an enclosing guard: a
-    statement jump is unconditional and needs one, while a ``?`` carries
-    its own, so wrapping it would only re-describe a dependence it already
-    has. ``ret`` is the enclosing function's declared return type and
-    ``prelude`` the declarations the statement refers to, because a form
-    can need a signature the bare keywords do not.
+    generated program supplies the secret dependence through an enclosing
+    guard: a statement jump is unconditional and needs one, while the
+    ``?`` form takes it from its own operand, so the generator emits it
+    with a secret operand and no guard around it. The flag records how
+    this net spells a form; it says nothing about what a construct around
+    a ``?`` would add. ``ret`` is the enclosing function's declared return
+    type and ``prelude`` the declarations the statement refers to,
+    because a form can need a signature the bare keywords do not.
 
     ``observable`` marks a form whose exit is ITSELF something outside
     the program can see: a ``panic`` writes to stderr, so taking it under
@@ -91,8 +94,8 @@ def _jump_form(kind: str) -> ExitForm:
 
 
 #: The operand of the ``?`` form: a call that returns ``Err`` exactly when
-#: the secret key has the tested shape, so the exit's occurrence is the
-#: secret and the form needs no enclosing guard.
+#: the secret key has the tested shape, so the exit's occurrence depends
+#: on the secret without an enclosing guard supplying that dependence.
 _TRY_PRELUDE = (
     "fun may(k: String) -> Result<Int, String>\n"
     '    if k.starts_with("s")\n'
@@ -105,7 +108,8 @@ _TRY_PRELUDE = (
 #: derived from the kind sets; the other two are spellings of the
 #: ``return`` kind that no keyword can express: a builtin ``panic``,
 #: which leaves the frame by aborting, and a ``?``, which leaves it when
-#: its operand is an ``Err`` and carries its own secret dependence.
+#: its operand is an ``Err`` and here takes its secret dependence from
+#: that operand.
 EXIT_FORMS = tuple(
     [_jump_form(kind) for kind in LOOP_ENDING_KINDS + NON_ENDING_KINDS]
     + [

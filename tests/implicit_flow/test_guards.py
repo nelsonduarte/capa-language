@@ -495,13 +495,14 @@ def _own_exit_node_types(sources):
 
     An exit is the node's OWN when the walker attributes it to the node
     and no child of the node already carries it. That is a question about
-    BEHAVIOUR, asked of the walker itself, so no list of node names is
-    kept anywhere: a carrier fails it because every exit a carrier has
-    came from inside it, a lambda fails it because the walk stops at a
-    frame boundary and it has no exits at all, and the shapes that are
-    left are exactly the ones a generated program has to be able to
-    spell. A program that does not parse is skipped, as elsewhere in this
-    module: the corpus carries deliberately invalid fixtures."""
+    BEHAVIOUR, asked of the walker itself, so the derivation keeps no
+    list of node names: a carrier fails it because every exit a carrier
+    has came from inside it, a lambda fails it because the walk stops at
+    a frame boundary and it has no exits at all, and the shapes that are
+    left, among those the programs in ``sources`` spell, are the ones a
+    generated program has to be able to spell. A program that does not
+    parse is skipped, as elsewhere in this module: the corpus carries
+    deliberately invalid fixtures."""
     found = set()
     for source in sources:
         try:
@@ -542,22 +543,23 @@ class LoopEndingKindGuard(unittest.TestCase):
     package alone would score a rule the walker does not have.
 
     A kind set alone does not bound that net, and the last two tests are
-    what close the gap. The generator's real parameter is the SYNTAX of
-    the exit, not its kind name: two forms can share the kind ``return``,
-    one spelled by the keyword under an enclosing guard and one by ``?``,
-    whose dependence is the label of its own operand. Comparing sets of
-    NAMES cannot see a form the generator is unable to spell, so the two
-    directions are checked separately and against different sources.
+    what narrow the gap. The generator's real parameter is the SYNTAX of
+    the exit, not its kind name: several forms share the kind ``return``,
+    among them the keyword under an enclosing guard and ``?``, whose own
+    operand can carry the dependence. Comparing sets of NAMES cannot see
+    a form the generator is unable to spell, so the two directions are
+    checked separately and against different sources.
 
     Outward, the walker is ASKED about each form the generator emits, and
     must end the loop exactly when the form's kind says so. Inward, the
     node types the walker gives an exit of its OWN to are collected by
-    asking the walker about the whole corpus, and each must have a form:
-    that direction cannot be satisfied by the generator's own
-    declaration, so DELETING a form fails here rather than silently
-    shrinking the net. Both directions put behavioural questions to the
-    walker and keep no list of node names to exempt, so there is nothing
-    here that an edit to a list can narrow."""
+    asking the walker about the fixture and example corpus, and each must
+    have a form: that direction cannot be satisfied by the generator's
+    own declaration, so DELETING a form whose shape the corpus spells
+    fails here rather than silently shrinking the net (the bound is
+    stated on that test). Both directions put behavioural questions to
+    the walker and keep no list of node names to exempt, so there is
+    nothing here that an edit to a list can narrow."""
 
     def test_the_declared_set_is_the_walker_set(self):
         self.assertEqual(
@@ -581,8 +583,10 @@ class LoopEndingKindGuard(unittest.TestCase):
         # rather than scoring as an accepted program nobody looks at. The
         # question is put the way the loop rule puts it: the body's own
         # exit map (which includes the ``break`` the loop consumes), then
-        # the one head-pc join, which rises above the loop's entry exactly
-        # when some exit taken in the body ends the loop.
+        # the one head-pc join, which rises above a public entry exactly
+        # when that map gives a secret label to a kind that ends the loop.
+        # Every probe takes its exit under the secret, so the join rises
+        # exactly for the forms whose kind ends a loop.
         self.assertTrue(provenance_ok())
         asked = 0
         for form, source in loop_ending_probes():
