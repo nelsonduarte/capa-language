@@ -11,6 +11,111 @@ breaking changes and the discipline is still being shaped.
 
 **Security / soundness (unreleased).**
 
+- *Under `@strict_ifc`, a `?` whose operand carries a secret label is now a
+  recognised conditional exit, so a public sink that runs after it, or once per
+  iteration of the loop it sits in, is a flow error.* The `?` operator leaves the
+  enclosing function when its operand is an `Err` (or a `None`) and continues
+  otherwise, so how many times a loop iterates, and whether the statements after
+  a `?` run at all, depend on that operand. The strict tier's enumeration of what
+  leaves a block, `_paths` in
+  [`capa/analyzer/_exit_syntax.py`](capa/analyzer/_exit_syntax.py), recognised
+  the jump statements and a builtin `panic` but not `?`, and its own docstring
+  listed that as a disclosed residual. A `@strict_ifc()` function with
+  `stdio.println("tick")` at the top of a `while` or `for` body and
+  `let _v = may(k)?` below it, where `may` returns `Err` for one value of the
+  secret, passed `--check` at rc 0 and printed `tick` once under one secret value
+  and five times under another, identically on `--run`, `--run --ir` and
+  `--run --wasm`; the straight-line form (a secret-operand `?` followed by a
+  sink, no loop) printed the sink under one value and not under the other, on
+  the same three backends. One clause closes it, in the analyzer: `_paths` now
+  answers a `?` as an exit of kind `return`, taken under the label the checker
+  recorded for its operand, that may also continue (the `Ok` path), the same
+  shape it already gives an `if` / `match` arm that may leave. `_LOOP_ENDING_KINDS`,
+  `_loop_head_pc` and `_jump_kind` are unchanged, so nothing new decides which
+  kinds end a loop, and the clause reads the operand's existing label rather
+  than computing secrecy itself. Because `_paths` descends into expressions, the
+  clause is not limited to a `?` carried directly by a statement: the pinned
+  members put the secret-operand `?` in a bare expression
+  statement, a `let`, an assignment source, a binary operand, a call argument, an
+  index subject, a list literal element, a `match` scrutinee, an `if` condition,
+  a string interpolation (`"n=${may(k)?}"` and `"${may(k)?}"`), and on a call of a
+  lambda, each with the sink ahead of it in the loop body. A `?` with a PUBLIC
+  operand in the body of an `if` whose condition is secret, or of a `match` arm
+  selected by a secret scrutinee or by a secret arm guard (in statement and in
+  value position, and nested under a call or an `if` inside the arm), followed by
+  a public sink, is refused for the same reason: the exit is now seen, and the
+  arm's guard label reaches it. Tier: a hard error under `@strict_ifc` only,
+  reported at the sink with the existing wording (`error: information-flow
+  (strict): Stdio.println runs under secret control flow (inside a branch whose
+  condition is @secret), which leaks whether that branch was taken. Move the sink
+  outside the secret-conditioned branch so its execution does not depend on the
+  secret.`, exit 1). The default (warn) tier does not enforce implicit flows and
+  is unchanged: the loop program above without the attribute compiles with no
+  diagnostic, before and after, and runs the same way on the three backends.
+
+  What stays accepted, each run on the three backends under two secret values
+  with identical output before and after: the same loop with a `?` on a public
+  operand (the rule is label-sensitive, not a ban on `?` in strict loops), and a
+  `?` inside a lambda body defined in the loop, which returns from the lambda and
+  does not end the loop. A body ending in a `?` still does not count as ending in
+  a `return` for the declared-return-type check, and `match` arm typing is
+  unmoved; both are pinned.
+
+  Two further verdict changes ride the same label, and a user may notice both. A
+  function carrying BOTH `@strict_ifc` and `@constant_time` whose `while` loop
+  contains a `?` on a `@secret` operand was accepted and is now refused, with
+  the constant-time wording (`error: constant-time violation: a while-condition
+  depends on a @secret value, which leaks it through timing. A @constant_time
+  function must not branch on secret data; rewrite it branchless (e.g. a
+  constant-time select / compare).`, exit 1), because the loop's condition is now
+  seen to depend on the secret; the change applies only when both attributes are
+  present, and the same function with `@constant_time` alone keeps the verdict it
+  had. And the `--manifest` of an accepted `@strict_ifc` function can change: for
+  a function that counts the iterations of a loop containing a secret-operand `?`
+  and returns `declassify(c, reason: ...)` of that counter, `--check` previously
+  printed `warning: declassify of a @public value is a no-op (the value is not
+  @secret); remove it or re-check the data flow` and the manifest's
+  `declassifications` list was empty with `declassification_sites: 0`; the counter
+  is now secret-dependent, the warning is gone, and the manifest records the
+  declassification (`declassification_sites: 1`). That program is accepted and
+  prints the same output on all three backends before and after; only the ledger
+  moves, and it moves toward what the program does.
+
+  Honest scope. What is refused is a `?` whose operand the analyzer labels
+  secret, and a `?` in an arm whose guard the analyzer labels secret. This entry
+  claims neither that every expression position was enumerated (the members
+  above are a sample of where a `?` can sit, not the grammar) nor that every way
+  the execution of a `?` can come to depend on a secret is covered. The measured
+  change is monotone in the reject direction: over the 555 `.capa` files in the
+  tree at this commit, the 12 whose verdict moves all go from `ok` to refused and
+  all are fixtures of this change (eleven new members and one pre-existing
+  fixture that had been pinned as a disclosed residual); every one of the 205
+  files under [`examples/`](examples/) keeps its verdict and its diagnostics; and
+  over 1338 `.capa` files in 44 downstream repositories outside this tree, no
+  verdict and no diagnostic text changed (the same instrument is what found the
+  12). Analyzer-only, reject-only: a refused program never reaches codegen, and on
+  the five accepted programs run for this entry the Python interpreter, `--ir`
+  and the Wasm Component Model backend printed identical output before and
+  after. Pinned
+  RED-first in
+  [`tests/implicit_flow/test_walker_members.py`](tests/implicit_flow/test_walker_members.py)
+  (`TryExitForm`: the eleven members, the negatives, and the two unmoved rules;
+  `gap19_try_under_pub_if` moves from the disclosed table to the refused one), by
+  the flipped pin `test_try_divergence_match_is_rejected` in
+  [`tests/test_ifc_noninterference.py`](tests/test_ifc_noninterference.py), and
+  by [`tests/implicit_flow/_loop_ending.py`](tests/implicit_flow/_loop_ending.py),
+  whose generated head-pc corpus is now parameterised by exit FORM (`break`,
+  `return`, `continue`, a builtin `panic`, and `?`) rather than by kind name,
+  with two guards in
+  [`tests/implicit_flow/test_guards.py`](tests/implicit_flow/test_guards.py) that
+  ask the walker itself, in both directions, whether every generated form ends a
+  loop exactly when its kind says so and whether every node type the walker gives
+  an exit of its own to, over the fixture and example corpus, has a generated
+  form. The test package's reference walk moved with the analyzer clause, and
+  `test_agreement_over_the_corpus` asserts the two agree. No version change and
+  no GHSA (Python-style cadence; a security-fix advisory batches at the next
+  stable release).
+
 - *Under `@strict_ifc`, a container mutated under secret control now has
   secret observable state, so a later public read of it is a flow error;
   `List.pop` is covered through one mutator classification with a

@@ -40,6 +40,7 @@ import unittest
 from unittest import mock
 
 from capa import Lexer, Parser, analyze
+from capa import _labels as L
 from capa import capa_ast as A
 from capa.analyzer import Analyzer, Symbol, SymbolKind
 from capa.analyzer._exit_syntax import _ExitSyntaxMixin
@@ -50,7 +51,9 @@ from capa.tokens import Pos
 from capa.typesys import TyInt
 
 from tests.implicit_flow._harness import FIXTURES, REPO, check_fixture, provenance_ok
-from tests.implicit_flow._loop_ending import LOOP_ENDING_KINDS, NON_ENDING_KINDS
+from tests.implicit_flow._loop_ending import (
+    EXIT_FORMS, LOOP_ENDING_KINDS, NON_ENDING_KINDS, loop_ending_probes,
+)
 
 ANALYZER_DIR = REPO / "capa" / "analyzer"
 
@@ -192,16 +195,19 @@ _LEAF_KINDS = {A.ReturnStmt: "return", A.BreakStmt: "break", A.ContinueStmt: "co
 
 
 def _reference_kinds(an, node, out, inner_loop=False):
-    """Every jump kind syntactically reachable from ``node`` that leaves
+    """Every exit kind syntactically reachable from ``node`` that leaves
     the body ``node`` sits in: a lambda is a frame boundary, a loop BODY
-    consumes its own break / continue, a builtin ``panic`` is a return."""
+    consumes its own break / continue, a builtin ``panic`` is a return,
+    and so is a ``?``, which leaves the frame when its operand is an
+    ``Err``. ``_LEAF_KINDS`` stays statement-only because a ``?`` is not
+    a leaf statement: it is an expression whose operand is walked on."""
     if node is None or isinstance(node, A.LambdaExpr):
         return
     leaf = _LEAF_KINDS.get(type(node))
     if leaf is not None:
         if leaf == "return" or not inner_loop:
             out.add(leaf)
-    elif _is_builtin_panic(an, node):
+    elif _is_builtin_panic(an, node) or isinstance(node, A.Try):
         out.add("return")
     if isinstance(node, (A.WhileStmt, A.ForStmt)):
         for child in children(node):
@@ -480,20 +486,80 @@ class FixpointCounters(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------
-# Guard 7: the loop-ending kind set
+# Guard 7: the loop-ending kind set and the exit forms
 # ---------------------------------------------------------------------
 
-class LoopEndingKindGuard(unittest.TestCase):
-    """The kind set the head-pc pins enumerate is the one the walker uses.
+def _own_exit_node_types(sources):
+    """The name of every AST node type the walker gives an exit of its
+    OWN to, across the programs in ``sources``.
 
-    The pins score programs that differ only in the exit kind a loop ends
-    by, built from the set ``_loop_ending`` declares. Declaring it there
-    rather than importing it from the compiler keeps the expectation
+    An exit is the node's OWN when the walker attributes it to the node
+    and no child of the node already carries it. That is a question about
+    BEHAVIOUR, asked of the walker itself, so the derivation keeps no
+    list of node names: a carrier fails it because every exit a carrier
+    has came from inside it, a lambda fails it because the walk stops at
+    a frame boundary and it has no exits at all, and the shapes that are
+    left, among those the programs in ``sources`` spell, are the ones a
+    generated program has to be able to spell. A program that does not
+    parse is skipped, as elsewhere in this module: the corpus carries
+    deliberately invalid fixtures."""
+    found = set()
+    for source in sources:
+        try:
+            module = _parse(source)
+        except Exception:
+            continue
+        an = Analyzer(source=source)
+        an.analyze(module)
+        for node in walk(module):
+            own = set(an._paths(node, an._ALL_KINDS).exits)
+            if not own:
+                continue
+            for child in children(node):
+                own -= set(an._paths(child, an._ALL_KINDS).exits)
+                if not own:
+                    break
+            if own:
+                found.add(type(node).__name__)
+    return found
+
+
+def _corpus_sources():
+    """Every fixture and shipped example, as source text."""
+    return [p.read_text(encoding="utf-8") for p in _all_fixture_files()]
+
+
+class LoopEndingKindGuard(unittest.TestCase):
+    """The kind set the head-pc pins enumerate is the one the walker uses,
+    and every exit FORM they can spell is one the walker agrees about.
+
+    The pins score programs that differ only in the exit a loop ends by,
+    built from the sets ``_loop_ending`` declares. Declaring them there
+    rather than importing them from the compiler keeps the expectation
     independent of the implementation it scores, and this guard is what
     makes that safe: a kind added to the walker's ``_LOOP_ENDING_KINDS``
     and not to the test package's set would otherwise be a hole in the
     net exactly where a new kind needs one, and a kind added to the test
-    package alone would score a rule the walker does not have."""
+    package alone would score a rule the walker does not have.
+
+    A kind set alone does not bound that net, and the last two tests are
+    what narrow the gap. The generator's real parameter is the SYNTAX of
+    the exit, not its kind name: several forms share the kind ``return``,
+    among them the keyword under an enclosing guard and ``?``, whose own
+    operand can carry the dependence. Comparing sets of NAMES cannot see
+    a form the generator is unable to spell, so the two directions are
+    checked separately and against different sources.
+
+    Outward, the walker is ASKED about each form the generator emits, and
+    must end the loop exactly when the form's kind says so. Inward, the
+    node types the walker gives an exit of its OWN to are collected by
+    asking the walker about the fixture and example corpus, and each must
+    have a form: that direction cannot be satisfied by the generator's
+    own declaration, so DELETING a form whose shape the corpus spells
+    fails here rather than silently shrinking the net (the bound is
+    stated on that test). Both directions put behavioural questions to
+    the walker and keep no list of node names to exempt, so there is
+    nothing here that an edit to a list can narrow."""
 
     def test_the_declared_set_is_the_walker_set(self):
         self.assertEqual(
@@ -509,6 +575,71 @@ class LoopEndingKindGuard(unittest.TestCase):
         )
         self.assertEqual(
             set(LOOP_ENDING_KINDS) & set(NON_ENDING_KINDS), set(),
+        )
+
+    def test_every_emitted_form_ends_a_loop_exactly_when_declared(self):
+        # The walker is ASKED, on a program the generator itself built, so
+        # a form it can spell but the walker does not recognise fails here
+        # rather than scoring as an accepted program nobody looks at. The
+        # question is put the way the loop rule puts it: the body's own
+        # exit map (which includes the ``break`` the loop consumes), then
+        # the one head-pc join, which rises above a public entry exactly
+        # when that map gives a secret label to a kind that ends the loop.
+        # Every probe takes its exit under the secret, so the join rises
+        # exactly for the forms whose kind ends a loop.
+        self.assertTrue(provenance_ok())
+        asked = 0
+        for form, source in loop_ending_probes():
+            asked += 1
+            with self.subTest(form=form.name):
+                module = _parse(source)
+                an = Analyzer(source=source)
+                an.analyze(module)
+                loop = next(n for n in walk(module)
+                            if isinstance(n, (A.WhileStmt, A.ForStmt)))
+                body = an._paths(loop.body, an._ALL_KINDS)
+                ends = an._loop_head_pc(L.PUBLIC, body.exits) != L.PUBLIC
+                self.assertEqual(
+                    ends, form.kind in LOOP_ENDING_KINDS,
+                    f"form {form.name!r} (kind {form.kind!r}) ends the loop: "
+                    f"{ends}, declared {form.kind in LOOP_ENDING_KINDS}; "
+                    f"the loop body's exits are {body.exits}",
+                )
+        self.assertEqual(asked, len(EXIT_FORMS), "a form was never asked about")
+
+    def test_the_exit_node_types_of_the_corpus_each_have_a_form(self):
+        # The other direction, and the one the generator cannot satisfy by
+        # declaring it: every node type the walker gives an exit of its
+        # OWN to somewhere in the corpus must be reachable by some form
+        # the generator emits. A form deleted from the table therefore
+        # fails here, which is what stops the net shrinking back to the
+        # spellings it happens to have.
+        #
+        # BOTH sides are asked of the walker, through the one derivation,
+        # so there is nothing to keep in step by hand: no list of carriers
+        # to exempt, no list of names tested for another reason, and no
+        # dependence on HOW the module spells a type test.
+        #
+        # The BOUND, stated rather than implied: the shapes are read off
+        # the fixture tree and the shipped examples, so a shape the walker
+        # could exit for that no program there spells is invisible here.
+        # The size check keeps an EMPTIED corpus from reading as a pass;
+        # it does not bound a corpus that merely stops spelling one shape,
+        # which is why the hand-written members of each form stay.
+        self.assertTrue(provenance_ok())
+        corpus = _corpus_sources()
+        self.assertGreater(
+            len(corpus), 100, "the corpus is too small to mean anything",
+        )
+        producing = _own_exit_node_types(corpus)
+        self.assertTrue(producing, "the derivation found nothing")
+        covered = _own_exit_node_types(
+            source for _form, source in loop_ending_probes()
+        )
+        self.assertEqual(
+            producing - covered, set(),
+            f"the walker gives these node types an exit of their own and no "
+            f"generated form reaches one: {sorted(producing - covered)}",
         )
 
 
