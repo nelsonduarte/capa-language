@@ -38,6 +38,7 @@ from capa.manifest import (
     CONTENT_INTEGRITY_KEY,
     DIGEST_ALGORITHM,
     SCHEMA_VERSION,
+    UNAUDITED_SECRET_SINKS_SCOPE_KEY,
     build_cyclonedx,
     build_manifest,
     build_provenance,
@@ -280,6 +281,10 @@ class TestTopLevelShape(unittest.TestCase):
         # present (empty when none declared).
         "foreign_components",
         "functions",
+        # What the per-function ``unaudited_secret_sinks`` lists are
+        # entitled to claim, stated once (``capa/manifest/_scope.py``) and
+        # carried in band; additive, so the schema version did not move.
+        UNAUDITED_SECRET_SINKS_SCOPE_KEY,
         # Roadmap S2.5: declassification sites outside any function body
         # (a top-level ``const`` initializer), always present (empty when
         # none). Without it the summary's ``declassification_sites`` count

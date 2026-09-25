@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from .. import capa_ast as A
 from ..lexer import SYNTHETIC_FILENAME
+from ._scope import UNAUDITED_SECRET_SINKS_SCOPE, UNAUDITED_SECRET_SINKS_SCOPE_KEY
 
 if TYPE_CHECKING:
     from ..pkg import CapabilityCeiling
@@ -1605,6 +1606,11 @@ def build_composed_sbom(
         # foreign call composes as a BOUNDED node instead of TOP.
         "enforcement_posture": enforcement,
         "packages": packages,
+        # What the per-package ``attributed_unaudited_secret_sinks`` /
+        # ``unaudited_secret_sink_capabilities`` above are entitled to
+        # claim: they derive from the manifest's per-function field, and
+        # the scope is the one sentence of ``._scope``, carried in band.
+        UNAUDITED_SECRET_SINKS_SCOPE_KEY: UNAUDITED_SECRET_SINKS_SCOPE,
         "edges": edges,
         "unresolved_dependencies": unresolved,
         "capability_ceilings": {

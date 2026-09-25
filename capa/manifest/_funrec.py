@@ -35,6 +35,7 @@ from ._reachability import (
     caps_reachable_via_sig,
     compute_reachability,
 )
+from ._scope import UNAUDITED_SECRET_SINKS_SCOPE, UNAUDITED_SECRET_SINKS_SCOPE_KEY
 from ._strings import _contains_fun_type, _root_type_name, _ty_text
 
 
@@ -403,7 +404,10 @@ def build_manifest(
     secret->public-sink flows. When supplied, each function record carries
     the ``unaudited_secret_sinks`` evidence for its body; when omitted (a
     manifest built without the accompanying analysis) the field is an
-    empty list, the historical shape.
+    empty list, the historical shape. What that field is entitled to
+    claim is stated once, in :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE`,
+    and carried in every manifest under the top-level
+    :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE_KEY`.
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -604,6 +608,10 @@ def build_manifest(
         # runtime that makes the bound SOUND is F2.
         "foreign_components": foreign_components_block,
         "functions": functions,
+        # What the per-function ``unaudited_secret_sinks`` lists above are
+        # entitled to claim, stated once in ``._scope`` and carried in band
+        # so the reader of the artefact has it. Additive: no schema bump.
+        UNAUDITED_SECRET_SINKS_SCOPE_KEY: UNAUDITED_SECRET_SINKS_SCOPE,
         # Roadmap S2.5: the audited @secret -> @public bridges that sit
         # OUTSIDE any function body (a top-level ``const`` initializer).
         # Same record shape as a function record's ``declassifications``
