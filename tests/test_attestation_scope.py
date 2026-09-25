@@ -317,8 +317,26 @@ class TestRegister(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+def _probe() -> str:
+    """A distinctive clause of the sentence, collapsed and lowercased, so a
+    copy survives re-wrapping, re-casing or a different split across
+    string literals. Asserted to be part of the sentence first."""
+    _, sentence = _scope()
+    probe = "not a proof of absence in either direction"
+    assert probe in _collapse(sentence).lower()
+    return probe
+
+
+def _string_literals(path: Path):
+    """Every string constant in a Python source file, adjacent literals
+    already joined by the parser, collapsed and lowercased."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            yield _collapse(node.value).lower()
+
+
 class TestSingleSource(unittest.TestCase):
-    _PROBE = "not a proof of absence"
     _PRODUCERS = (
         "capa/manifest/_funrec.py",
         "capa/manifest/_compose.py",
@@ -326,11 +344,11 @@ class TestSingleSource(unittest.TestCase):
     )
 
     def test_sentence_text_lives_in_exactly_one_module(self):
-        _scope()
+        probe = _probe()
         hits = sorted(
             p.relative_to(REPO_ROOT).as_posix()
             for p in PACKAGE.rglob("*.py")
-            if self._PROBE in p.read_text(encoding="utf-8")
+            if any(probe in literal for literal in _string_literals(p))
         )
         self.assertEqual(hits, ["capa/manifest/_scope.py"], hits)
 
@@ -342,12 +360,9 @@ class TestSingleSource(unittest.TestCase):
                     "UNAUDITED_SECRET_SINKS_SCOPE_KEY" in text,
                     f"{rel} does not reference the scope constant by name",
                 )
-                self.assertFalse(
-                    self._PROBE in text, f"{rel} carries its own copy of the sentence",
-                )
 
     def test_sentence_is_restated_in_no_other_document(self):
-        _scope()
+        probe = _probe()
         candidates = [
             *REPO_ROOT.glob("*.md"),
             *(REPO_ROOT / "docs").rglob("*.md"),
@@ -356,7 +371,9 @@ class TestSingleSource(unittest.TestCase):
         hits = sorted(
             p.relative_to(REPO_ROOT).as_posix()
             for p in candidates
-            if self._PROBE in p.read_text(encoding="utf-8", errors="replace")
+            if probe in _collapse(
+                p.read_text(encoding="utf-8", errors="replace"),
+            ).lower()
         )
         self.assertEqual(hits, [REGISTER.relative_to(REPO_ROOT).as_posix()], hits)
 
@@ -538,7 +555,8 @@ def _derivation_table(scope_key: str) -> dict:
             "/packages[]/composed_declassification_sites": (EXACT, None, None),
             "/packages[]/composed_has_declassification": (EXACT, None, None),
             "/packages[]/unaudited_secret_sink_capabilities": (
-                ANALYSIS, scope, "/packages[]/unaudited_secret_sink_capabilities",
+                ANALYSIS, scope,
+                "/packages[]/attributed_unaudited_secret_sinks[]/capability",
             ),
         },
         "--conformance-report": {
@@ -554,21 +572,26 @@ def _derivation_table(scope_key: str) -> dict:
     }
 
 
-def _claim_paths(observed: set) -> set:
+def _claim_paths(observed: set, scope_key: str) -> set:
     """The outermost observed paths whose leaf carries the claim
-    vocabulary (descendants of a claim-bearing key are its facts)."""
+    vocabulary. Descendants of a claim-bearing key are its facts, and the
+    in-band scope statement itself is not a claim."""
     def leaf(path: str) -> str:
         return path.rsplit("/", 1)[1].replace("[]", "")
 
     def parents(path: str):
-        parts = path.split("/")[1:]
+        parts = path.replace("[]", "").split("/")[1:]
         for n in range(1, len(parts)):
             yield "/" + "/".join(parts[:n])
 
-    bearing = {p for p in observed if _CLAIM_VOCABULARY.search(leaf(p))}
+    bearing = {
+        p for p in observed
+        if _CLAIM_VOCABULARY.search(leaf(p)) and leaf(p) != scope_key
+    }
+    flat = {p.replace("[]", "") for p in bearing}
     return {
         p for p in bearing
-        if not any(parent in bearing for parent in parents(p))
+        if not any(parent in flat for parent in parents(p))
     }
 
 
@@ -590,7 +613,7 @@ class TestDerivation(_CorpusProjects):
         for flag in table:
             with self.subTest(document=flag):
                 self.assertEqual(
-                    _claim_paths(self.observed[flag]), set(table[flag]),
+                    _claim_paths(self.observed[flag], key), set(table[flag]),
                     "a claim-bearing key is emitted without a derivation "
                     "class, or a classified key is no longer emitted",
                 )
