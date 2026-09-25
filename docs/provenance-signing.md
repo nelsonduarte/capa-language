@@ -242,10 +242,18 @@ exactly that source through the declared build process.
   verify the binary came from the declared source.
 - **DORA Articles 28-30** (ICT third-party risk): same
   argument, financial-sector specific.
-- **NIST SSDF PS.2 and PS.3** (verify release integrity;
-  archive and protect each release): the signed attestation is
-  the verification mechanism PS.2 asks for, and the provenance
-  data PS.3.2 expects to travel with each release.
+- **NIST SSDF PS.2.1** (make software integrity verification
+  information available to acquirers): the signed attestation
+  is integrity verification information an acquirer can act
+  on. Partial, not direct: SSDF states its requirements at the
+  task level, and PS.2.1 is about making the information
+  available, which is a release-process step the producer
+  still has to take. PS.3.2 asks for provenance data covering
+  *all components* of a release, and the artefact that carries
+  component data in Capa is the SBOM (`--cyclonedx` /
+  `--spdx`), not this attestation. See
+  [`docs/regulatory.md`](regulatory.md) for the task-by-task
+  grading and for why no SSDF cell reads "direct".
 - **OWASP SCVS Domain 6** (Pedigree and Provenance): L1
   satisfies baseline, signed provenance lifts toward L2 and
   L3 of SCVS depending on the signing infrastructure.
