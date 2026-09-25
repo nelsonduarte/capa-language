@@ -1,0 +1,8 @@
+@strict_ifc()
+fun pick(env: Env) -> Int
+    let k = env.get("API_KEY").unwrap_or("none")
+    return if k.starts_with("s") then 1 else 0
+
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    stdio.println("v=${pick(env)}")

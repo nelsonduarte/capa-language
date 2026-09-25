@@ -1,0 +1,4 @@
+fun main(env: Env, stdio: Stdio)
+    match env.get("API_KEY")
+        Some(k) -> stdio.println(declassify(k, reason: "audited"))
+        None -> stdio.println("none")
