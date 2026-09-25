@@ -881,11 +881,11 @@ def _eval_no_secret_egress(pol, composed, paths):
       @secret value the warn-tier information-flow check REPORTED reaching
       an egress sink (e.g. ``net.post(url, token)``) with NO ``declassify``.
       That set is the per-package roll-up of the manifest's per-function
-      ``unaudited_secret_sinks``; a recorded flow is a real un-audited
-      flow, and what the ABSENCE of a record is entitled to claim is stated
-      once, in :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE`, which the
-      report carries verbatim under
-      :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE_KEY`.
+      ``unaudited_secret_sinks``; a recorded flow is one the warn-tier
+      check reported (it may be a documented sound over-report), and what
+      the ABSENCE of a record is entitled to claim is stated once, in
+      :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE`, which the report
+      carries verbatim under :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE_KEY`.
 
     A TOP in-scope package (its declassification status, capability set,
     and/or leak set unknown) FAILS CLOSED with ``authority_unknown`` unless
@@ -893,10 +893,10 @@ def _eval_no_secret_egress(pol, composed, paths):
 
     What this proves, precisely: no in-scope package both declassifies
     secret data and holds a declared egress capability (the co-residence
-    half, computed exactly from the recorded declassify sites and the
-    composed capability set), and no REPORTED un-audited secret->sink flow
-    lands on a declared egress capability (the B1 half, bounded by the
-    scope sentence referenced above and not restated here)."""
+    half, computed from the recorded declassify sites and the
+    over-approximating composed capability set), and no RECORDED un-audited
+    secret->sink flow lands on a declared egress capability (the B1 half,
+    bounded by the scope sentence referenced above and not restated here)."""
     egress = set(pol.params["capabilities"])
     display = sorted(egress)
     target = pol.params["package"]

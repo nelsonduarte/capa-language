@@ -25,11 +25,17 @@ Five groups of pins, over the corpus in ``tests/fixtures/attestation_scope``
   repository restates it;
 - members: the CURRENT value of the field, the composed sink-capability
   set and the conformance verdict for every corpus program, including the
-  explicit misses pinned as ``[]``, so a silent widening or narrowing of
+  explicit misses pinned as ``[]`` and the reported-but-not-recorded
+  member pinned as warning AND empty, so a silent widening or narrowing of
   the VALUE turns red and must be reconciled with the sentence;
 - derivation: every claim-bearing key the manifest, the composed SBOM and
   the conformance report emit, enumerated from the documents themselves,
-  is classified, and every ANALYSIS-class key carries its scope in band;
+  is classified, and every ANALYSIS-class key carries its scope in band.
+  Two bounds, both measured: a key whose leaf name carries none of the
+  claim vocabulary is not classified here (the exact top-level key set in
+  ``test_manifest`` catches a new top-level one, a nested one escapes), and
+  the class label of a non-family key is a fixture judgement, so editing it
+  in the fixture is a visible diff, not a failure;
 - producers: exactly three call sites record the fact, each on the
   non-strict branch of its innermost tier test.
 
@@ -248,6 +254,9 @@ class TestScopeStatement(_CorpusProjects):
         low = sentence.lower()
         for phrase in (
             "reported",
+            "recorded with a sink capability",
+            "did not attribute is not recorded",
+            "recorded nothing",
             "not a proof of absence in either direction",
             "implicit",
             "never recorded at any tier",
@@ -403,6 +412,13 @@ _MEMBERS = {
     "d1_direct_default": (True, {"main": [("Stdio", "3:19")]}, ["Stdio"], False),
     "g2_k1_method_strict": (True, {"pick": [], "main": []}, [], True),
     "g2_k1b_fun_strict": (False, None, None, None),
+    # Reported but NOT recorded: the warn-tier check emits a warning for
+    # the capture-carried callee sink, the secret prints on three backends,
+    # and the recorder receives no sink capability for it, so the field is
+    # empty and the conformance report passes. See _REPORTED_NOT_RECORDED.
+    "k1_capture_callee_warn_default": (
+        True, {"reveal": [], "leak": [], "main": []}, [], True,
+    ),
     "n1_clean": (True, {"main": []}, [], True),
     # Authorized disclosure: the field is (correctly) empty; the policy
     # refuses on declassify + egress co-residence, a separate rule.
@@ -411,9 +427,37 @@ _MEMBERS = {
 }
 
 
+# Members whose --check EMITS an information-flow warning while the field
+# stays empty: the check reported the flow, the recorder did not record it.
+# The sentence states this case; the pin below holds both halves, so the
+# day the recorder attributes such a flow the row above flips, this pin
+# flips, and the sentence is re-derived rather than silently outgrown.
+_REPORTED_NOT_RECORDED = ("k1_capture_callee_warn_default",)
+
+
 class TestMembers(_CorpusProjects):
     def test_corpus_and_table_agree(self):
         self.assertEqual(_corpus_names(), sorted(_MEMBERS))
+
+    def test_reported_but_not_recorded_members_warn_and_stay_empty(self):
+        for name in _REPORTED_NOT_RECORDED:
+            with self.subTest(program=name):
+                rc, _out, err = _cli(self.roots[name], "--check")
+                self.assertEqual(rc, 0, err)
+                self.assertIn(
+                    "information-flow", err,
+                    "the warn-tier check no longer reports this flow",
+                )
+                docs = _documents(self.roots[name])
+                recorded = [
+                    s for f in docs["--manifest"]["functions"]
+                    for s in f["unaudited_secret_sinks"]
+                ]
+                self.assertEqual(
+                    recorded, [],
+                    "the recorder now attributes this reported flow: "
+                    "re-derive the scope sentence and move this member",
+                )
 
     def test_current_values_pinned(self):
         for name, (accepted, sinks, caps, passes) in _MEMBERS.items():
