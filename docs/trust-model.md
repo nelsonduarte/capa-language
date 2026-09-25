@@ -317,6 +317,29 @@ separately.
   by construction a statement that the source carries the annotation and
   claims nothing further.
 
+<!-- BEGIN GENERATED: unaudited_secret_sinks scope (tools/gen_trust_register.py) -->
+- **What `unaudited_secret_sinks` attests.** unaudited_secret_sinks
+  lists ONLY the explicit secret-to-sink flows the warn-tier
+  information-flow check REPORTED for this function (a @secret value
+  passed as a sink argument, or into a callee the analysis proved
+  reaches a sink, with no declassify), and every per-package value
+  derived from it inherits this scope. An empty list is NOT a proof of
+  absence in either direction: implicit (control-flow) flows are never
+  recorded at any tier, including under @strict_ifc; the explicit check
+  itself has documented misses (SECURITY.md and its advisories); a
+  function refused under @strict_ifc produces no artifact, and an
+  accepted @strict_ifc function can still leak; and a manifest built
+  without the analysis result carries an empty list by construction.
+  Read [] as 'the warn-tier explicit check reported nothing', never as
+  'cannot leak'.
+
+  Every `--manifest`, `--manifest-digest`, `--compose-sbom` and
+  `--conformance-report` document carries this sentence verbatim under
+  the top-level `unaudited_secret_sinks_scope` key. This entry is
+  generated from `capa/manifest/_scope.py`: change the constant there
+  and run `python tools/gen_trust_register.py`.
+<!-- END GENERATED: unaudited_secret_sinks scope -->
+
 - **Compromise of the GitHub release channel or a signing key.** The
   registry root key and a dependency's `verify_key` are trust anchors: an
   attacker who holds the corresponding private key can produce signatures
