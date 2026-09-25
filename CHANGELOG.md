@@ -122,27 +122,39 @@ breaking changes and the discipline is still being shaped.
   analyzer became one walker.* The strict tier's rule for "a sink reached
   after a secret-conditioned exit" lived in one of the analyzer's several body
   walks and read only a statement's own guard, so whether a leak was caught
-  depended on which spelling and which nesting depth the exit sat at. In
-  particular the loop's head program counter, the join that makes a sink
-  inside a loop run under the label of whatever ends that loop, was written out
-  by hand at two sites and named `break` only. A `return` also ends a loop, so
-  a public sink placed EARLIER in the body (or called from a `while`
-  condition) ran once per iteration until the return fired and leaked the
-  iteration count: `capa --check` accepted the program at rc 0, and the sink
-  printed once under one secret value and five times under another,
-  identically on `--run`, `--run --ir` and `--run --wasm`. Three changes close
-  it, all in the analyzer. `_check_stmt_seq` in
+  depended on which spelling and which nesting depth the exit sat at. The
+  loop's head program counter, the join that makes a sink inside a loop run
+  under the label of whatever ends that loop, was in the first form of this
+  merge's walker written out by hand at two sites (the fixpoint's passes and
+  the real pass) and named `break` only. A `return` also ends a loop, so a
+  public sink placed EARLIER in the body (or called from a `while` condition)
+  ran once per iteration until the return fired and leaked the iteration
+  count. Before this merge, in three of the five spellings the pins cover (a
+  `for` body, an outer body whose inner loop returns, and a `while`
+  condition), `capa --check` accepted the program at rc 0 and the sink printed
+  once under one secret value and five, three and six times respectively
+  under another, identically on `--run`, `--run --ir` and `--run --wasm`; the
+  `while`-body and `match`-arm spellings were already refused. Three changes
+  close it, all in the analyzer. `_check_stmt_seq` in
   [`capa/analyzer/_statements.py`](capa/analyzer/_statements.py) is now the ONE
   statement walker: after each statement the pc for the next is the enclosing
-  pc joined with the normal-termination label of the statements so far, so a
-  sink after a secret-conditioned exit is checked under a secret pc however
-  deep the exit sits. The enumeration of what leaves a block is single-sourced
+  pc joined with the normal-termination label `_paths` derives for the
+  statements so far. That label joins the guards `_paths` recognises around an
+  exit: an exit in an arm of an `if` statement, a `match` or an `if`
+  expression is taken under the join of that construct's conditions, an exit
+  in a loop body under the loop's controlling expression, and the traversal
+  recurses through those constructs (the generated corpora pin chains of up to
+  three of them), so a sink after such an exit is checked under a secret pc
+  whichever of those conditions is secret. What is checked is that derived
+  label, not every condition the execution of an exit can depend on; the
+  honest-scope paragraph below states the bound. The enumeration of what
+  leaves a block is single-sourced
   as `_paths` in
   [`capa/analyzer/_exit_syntax.py`](capa/analyzer/_exit_syntax.py), replacing
   six copies of one traversal, and `_block_leaves` there replaces a second,
   disagreeing exit test that sat beside it at the merge sites. The head-pc join
-  is now `_loop_head_pc`, reading a declared `_LOOP_ENDING_KINDS`
-  (`capa/analyzer/_exit_syntax.py` lines 75 and 77), and both the fixpoint's
+  is now `_loop_head_pc`, reading a declared `_LOOP_ENDING_KINDS` (declared
+  beside it in `capa/analyzer/_exit_syntax.py`), and both the fixpoint's
   passes and the real pass call it, so they cannot disagree about which kinds
   govern the iteration count; `continue` stays out of that set, because it
   skips the rest of one iteration without changing how many there are. Tier: a
@@ -185,10 +197,13 @@ breaking changes and the discipline is still being shaped.
 
   Analyzer-only: a refused program never reaches codegen, no golden moved, and
   the runtime output of an accepted program is unchanged (all 47 `--check`-clean
-  programs under [`examples/`](examples/) produce byte-identical `--run` output
-  before and after the merge, and the Python interpreter and the Wasm Component
-  Model backend agree on each of them that runs on both). Measured across the
-  539 `.capa` files in the tree, `--check` verdict per file before and after
+  programs directly under [`examples/`](examples/), the top-level directory and
+  not the `examples/wasm/` subtree, produce byte-identical `--run` output
+  before and after the merge; on the merge commit `--run --ir` agrees with
+  `--run` on all 47 and `--run --wasm` on the 42 that run on it, the other
+  five carrying `Unsafe`, which `--wasm` refuses loudly). Measured across the
+  539 `.capa` files in the tree at the merge commit, `--check` verdict per file
+  before and after
   the merge: every one of the 247 files outside `tests/implicit_flow/` keeps
   its verdict, and the 166 that move are all new fixtures of this merge, which
   are RED first by construction. The wider sweep the commits report (1581
@@ -197,9 +212,10 @@ breaking changes and the discipline is still being shaped.
   here. Pinned by the
   new [`tests/implicit_flow/`](tests/implicit_flow/) package, which is RED
   first on the pre-merge analyzer: four generated corpora (219 / 978 / 513 /
-  234 members) whose verdicts a single stated enumeration rule predicts and
-  whose depth-2 members agree with a runtime oracle, 292 hand-written fixture
-  programs by class, per-class verdict tables in
+  234 members) whose verdicts a single stated enumeration rule predicts (the
+  commits report the depth-2 members agreeing with a runtime oracle; that
+  oracle is not part of the suite and was not re-run here), 292 hand-written
+  fixture programs by class, per-class verdict tables in
   [`tests/implicit_flow/test_walker_members.py`](tests/implicit_flow/test_walker_members.py),
   the loop-ending kind set built one program per declared element in
   [`tests/implicit_flow/_loop_ending.py`](tests/implicit_flow/_loop_ending.py),
@@ -216,10 +232,11 @@ breaking changes and the discipline is still being shaped.
   [`tests/implicit_flow/`](tests/implicit_flow/) score, under `@strict_ifc`.
   The tier boundary is unchanged: outside `@strict_ifc` an implicit flow is not
   reported at all, and this merge does not change that. The implementation-level
-  scope stays the public register of
-  [`docs/trust-model.md`](docs/trust-model.md): the analysis is source-level,
-  its rejections are enumerated, the discipline is opt-in per function, and
-  there is no points-to analysis.
+  scope is unchanged: the discipline is opt-in per function and a hard error
+  only under `@strict_ifc` ([`docs/semantics.md`](docs/semantics.md), section
+  9.8, item 6), the analyzer itself is not formally verified
+  ([`docs/trust-model.md`](docs/trust-model.md), section 3), and there is no
+  points-to analysis (section 9.8, item 1).
 
 - *Under `@strict_ifc`, a container mutated under secret control now has
   secret observable state, so a later public read of it is a flow error;
@@ -365,11 +382,16 @@ breaking changes and the discipline is still being shaped.
   it was written have since been closed by later work on the same seam and are
   no longer open: the `t = s` AssignStmt whole-value alias double-free and its
   husk-target over-rejection twin (the re-assign now routes through the one
-  whole-value move seam), destructure of a linear carrier (a struct pattern is
-  the per-field projection, so it moves the field out of the carrier), and the
-  E3 generic-return aliasing double-free
-  (`let b2 = id(b); close(b2.h); close(b.h)`, now rejected because every
-  deciding position resolves its operand to a place). One hole listed here
+  whole-value move seam; `TestAssignAliasWholeValue` in
+  [`tests/analyzer/test_linear_obligation.py`](tests/analyzer/test_linear_obligation.py)),
+  destructure of a linear carrier (a struct pattern is the per-field
+  projection, so it moves the field out of the carrier; `TestBinderMoves` in
+  [`tests/analyzer/test_linear_alias_introduction.py`](tests/analyzer/test_linear_alias_introduction.py)),
+  and the E3 generic-return aliasing double-free
+  (`let b2 = id(b); close(b2.h); close(b.h)`, now rejected: the call result's
+  origin is resolved at the move positions; `TestMembers` in
+  [`tests/analyzer/test_linear_return.py`](tests/analyzer/test_linear_return.py)).
+  One hole listed here
   remains open and is tracked internally: the borrow-read residual, passing a
   spent husk by borrow to a callee that reads the moved-out field, a
   use-after-move-via-borrow rather than a double-free, which still passes
