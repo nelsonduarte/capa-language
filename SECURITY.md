@@ -88,15 +88,15 @@ Out of scope:
 
 ## Supported versions
 
-Capa is on the `1.x` line (latest `1.31.0`) and is a one-person
+Capa is on the `1.x` line (latest `1.32.0`) and is a one-person
 project. Only the latest tagged release is supported for security fixes.
 I may publish patch releases for the latest minor when a fix is
 significant.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.31.0 (latest) | yes |
-| < 1.31.0 | no, please upgrade |
+| 1.32.0 (latest) | yes |
+| < 1.32.0 | no, please upgrade |
 
 ## Published advisories
 
