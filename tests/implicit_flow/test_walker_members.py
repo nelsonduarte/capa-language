@@ -33,12 +33,46 @@ import capa
 
 from tests.implicit_flow._harness import (
     ACCEPT, REFUSE, assert_table, assert_verdict, check_fixture, check_source,
-    ifc_errors, provenance_ok, value_errors,
+    ifc_errors, provenance_ok, read_fixture, value_errors,
 )
 from tests.implicit_flow._loop_ending import (
     EXIT_FORMS, LOOP_ENDING_FORMS, head_pc_members, head_pc_negatives,
-    sink_before_programs,
+    loop_ending_probes, sink_before_programs,
 )
+
+
+def _derived(source: str, edits) -> str:
+    """``source`` with each ``(old, new)`` of ``edits`` substituted exactly
+    once. An anchor that is absent or ambiguous raises instead of
+    returning a program other than the one the edits describe."""
+    for old, new in edits:
+        if source.count(old) != 1:
+            raise ValueError(
+                f"anchor found {source.count(old)} times, expected once: {old!r}"
+            )
+        source = source.replace(old, new)
+    return source
+
+
+def assert_disclosed_residual(tc, twin, twin_source, member, edits):
+    """Score a DISCLOSED residual whose program is not written out.
+
+    A residual pin records a program the discipline ACCEPTS although
+    its behaviour depends on the secret, so that the day the residual
+    is closed the pin goes RED and the decision is visible. Such a
+    program is not kept on disk: the pin holds a TWIN the walker
+    REFUSES and the substitutions that turn the twin into the member,
+    and both verdicts are asserted, so the derivation is shown to
+    start inside the net and to end outside it. ``twin_source`` is
+    the refused program, ``edits`` the ``(old, new)`` pairs applied
+    exactly once each (a twin that changed spelling fails here rather
+    than silently pinning another program), and ``member`` names the
+    derived program in the subtest."""
+    tc.assertTrue(provenance_ok(), f"wrong compiler under test: {capa.__file__}")
+    assert_verdict(tc, twin, check_source(twin_source), REFUSE)
+    source = _derived(twin_source, edits)
+    with tc.subTest(program=member):
+        assert_verdict(tc, member, check_source(source), ACCEPT)
 
 
 class BodyPositions(unittest.TestCase):
@@ -389,14 +423,16 @@ class ControllingExpression(unittest.TestCase):
     (``wcb*``, ``wcr2``); a public exit of either kind, or a secret
     ``continue``, does not. Whatever the condition DOES also happens under
     that pc: a container it mutates becomes secret, which
-    ``HeadPcOverEveryLoopEndingKind`` scores for every kind that ends a
+    ``HeadPcOverEveryLoopEndingForm`` scores for every form that ends a
     loop.
 
-    ``lcw2`` (a ``for`` whose iterated container is pushed under a secret
-    pc in the body) is a DISCLOSED residual of this class: the iterable is
-    evaluated once, before the loop, so the channel is the mutation of the
-    container being iterated, which no rule here models. It is pinned
-    ACCEPTED so a change of that decision is visible."""
+    A ``for`` has no such condition: its iterable is evaluated ONCE,
+    before the loop, so a mutation of the container being iterated,
+    made in the body under a secret pc, is a channel no rule here
+    models. That is a DISCLOSED residual of this class, pinned
+    ACCEPTED by ``test_disclosed_residual`` so a change of that
+    decision is visible; the member is derived there from its refused
+    ``while`` twin rather than kept as a program."""
 
     TABLE = {
         "lcw0_while_cond_onelink": REFUSE,
@@ -432,7 +468,18 @@ class ControllingExpression(unittest.TestCase):
         "wcr3_control_cond_sink_public_return": ACCEPT,
     }
 
-    DISCLOSED = {"lcw2_for_over_list_mutated_in_body": ACCEPT}
+    #: The substitutions that turn ``lcw3`` (a ``while`` whose condition
+    #: reads a container the body pushes under a secret pc, REFUSED
+    #: because the condition is re-evaluated every iteration and the
+    #: rule sees it) into the ``for`` twin that iterates the container
+    #: itself: seeded so the loop is entered, and bounded in the guard
+    #: since there is no condition to bound it in.
+    ITERATED_CONTAINER_TWIN = (
+        ("    var lst: List<Int> = []\n", "    var lst: List<Int> = [0]\n"),
+        ("    while lst.is_empty() and n < 5\n", "    for x in lst\n"),
+        ('        if k.starts_with("s")\n',
+         '        if k.starts_with("s") and n < 3\n'),
+    )
 
     def test_table(self):
         assert_table(self, "loop_condition", self.TABLE)
@@ -441,7 +488,12 @@ class ControllingExpression(unittest.TestCase):
         assert_table(self, "loop_condition", self.CONDITION_EXECUTION)
 
     def test_disclosed_residual(self):
-        assert_table(self, "loop_condition", self.DISCLOSED)
+        twin = "lcw3_while_cond_container"
+        assert_disclosed_residual(
+            self, twin, read_fixture("loop_condition", twin),
+            "for_over_the_container_mutated_in_the_body",
+            self.ITERATED_CONTAINER_TWIN,
+        )
 
     def test_condition_diagnostics_are_reported_once(self):
         # The condition's sink error and the body's sink error: one each.
@@ -680,26 +732,42 @@ class TryExitForm(unittest.TestCase):
         "tn04_not_strict_stays_accepted": ACCEPT,
     }
 
-    #: A loop ended by an abort the program never spells: an operation
-    #: whose failure depends on a secret (here a division whose divisor is
-    #: zero only under one key) stops the loop, so how many times the sink
-    #: ahead of it runs is that secret. The walker reasons about the exits
-    #: a body SPELLS, so no exit is attributed to the arithmetic and the
-    #: program is ACCEPTED, while stripped of the annotation it prints its
-    #: sink once under one key and five times under another on the legacy,
-    #: ``--ir`` and ``--wasm`` backends. Pinned as ACCEPTED so the
-    #: residual is disclosed rather than implied to be covered, and so a
-    #: change that closes it flips this deliberately.
-    DISCLOSED = {"td01_secret_dependent_abort_ends_the_loop": ACCEPT}
+    #: The residual of this class, DISCLOSED and PINNED: the walker
+    #: reasons about the exits a body SPELLS, so an abort the program
+    #: never spells (an operation that fails at run time on a value the
+    #: secret decided) is attributed no exit, and a loop it ends keeps a
+    #: public head pc while its iteration count is secret. The member is
+    #: not written out: it is the generator's sink-before-``while`` member
+    #: for the ``panic`` form, REFUSED because that abort is spelled,
+    #: with the spelled abort replaced by an unspelled one and the guard
+    #: moved to decide the value it fails on before the loop. Pinned
+    #: ACCEPTED so the residual is disclosed rather than implied to be
+    #: covered, and so a change that closes it flips this deliberately.
+    UNSPELLED_ABORT_TWIN = (
+        ('        if k.starts_with("s")\n            panic("no")\n',
+         "        let _q = 10 / d\n"),
+        ('    let k = env.get("API_KEY").unwrap_or("none")\n',
+         '    let k = env.get("API_KEY").unwrap_or("none")\n'
+         "    var d: Int = 1\n"
+         '    if k.starts_with("s")\n'
+         "        d = 0\n"),
+    )
 
-    def test_every_position_is_a_member(self):
+    def test_the_sampled_positions_are_members(self):
         assert_table(self, "exit_forms", self.TABLE)
 
     def test_the_negatives_stay_accepted(self):
         assert_table(self, "exit_forms", self.NEGATIVES)
 
     def test_disclosed_residual(self):
-        assert_table(self, "exit_forms", self.DISCLOSED)
+        spelled = next(
+            source for form, source in loop_ending_probes()
+            if form.name == "panic"
+        )
+        assert_disclosed_residual(
+            self, "sb_panic_while", spelled,
+            "unspelled_abort_ends_the_loop", self.UNSPELLED_ABORT_TWIN,
+        )
 
     def test_the_declared_return_type_rule_is_unmoved(self):
         # A ``?`` MAY leave and MAY continue, so a body whose last

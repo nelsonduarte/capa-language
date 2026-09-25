@@ -607,7 +607,7 @@ class LoopEndingKindGuard(unittest.TestCase):
                 )
         self.assertEqual(asked, len(EXIT_FORMS), "a form was never asked about")
 
-    def test_every_node_type_the_walker_exits_for_has_a_form(self):
+    def test_the_exit_node_types_of_the_corpus_each_have_a_form(self):
         # The other direction, and the one the generator cannot satisfy by
         # declaring it: every node type the walker gives an exit of its
         # OWN to somewhere in the corpus must be reachable by some form
