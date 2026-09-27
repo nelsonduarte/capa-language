@@ -11,6 +11,11 @@ without regeneration, fails the suite.
     python tools/gen_trust_register.py            # regenerate the block
     python tools/gen_trust_register.py --check    # exit 1 on drift
 
+Exit codes: 0 up to date (or regenerated), 1 the block differs
+(``--check`` only), 2 the document does not carry exactly one marker
+pair, 3 the ``capa`` package that would supply the constant is not the
+one in this checkout (nothing is read from it and nothing is written).
+
 The document's own line endings are preserved.
 """
 
@@ -23,6 +28,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTER = REPO_ROOT / "docs" / "trust-model.md"
 
+EXIT_DRIFT = 1
+EXIT_MARKERS = 2
+EXIT_FOREIGN_CAPA = 3
+
 BEGIN = (
     "<!-- BEGIN GENERATED: unaudited_secret_sinks scope "
     "(tools/gen_trust_register.py) -->"
@@ -32,11 +41,26 @@ END = "<!-- END GENERATED: unaudited_secret_sinks scope -->"
 WIDTH = 72
 
 
+class ForeignCapa(Exception):
+    """The importable ``capa`` is not the one beside this script."""
+
+
 def _constants() -> tuple[str, str]:
-    """The key and the sentence, imported from this repository's package
-    (the repository root is put first on the import path so an editable
-    install of another checkout cannot be read by mistake)."""
+    """The key and the sentence, imported from this repository's package.
+
+    The repository root is put first on the import path, and the package
+    that actually loads is checked to sit under it: with no ``capa/``
+    beside ``tools/``, an editable install or a ``PYTHONPATH`` entry would
+    otherwise supply another tree's constant and the register would be
+    verified, or rewritten, against the wrong sentence."""
     sys.path.insert(0, str(REPO_ROOT))
+    try:
+        import capa
+    except ImportError as e:
+        raise ForeignCapa(f"no capa package importable ({e})") from e
+    loaded = Path(capa.__file__).resolve()
+    if REPO_ROOT.resolve() not in loaded.parents:
+        raise ForeignCapa(f"capa imported from {loaded}, not from {REPO_ROOT}")
     from capa.manifest._scope import (
         UNAUDITED_SECRET_SINKS_SCOPE, UNAUDITED_SECRET_SINKS_SCOPE_KEY,
     )
@@ -64,11 +88,23 @@ def render_block(key: str, sentence: str) -> list[str]:
 
 def expected_text(current: str) -> str:
     """``current`` with the block between the markers replaced by the
-    rendering. Raises ``ValueError`` when a marker is missing."""
+    rendering. Raises ``ForeignCapa`` before anything else when the
+    importable package is not this checkout's, and ``ValueError`` unless
+    the document carries exactly one BEGIN and one END marker, in that
+    order: a second block would be a copy this script never checks."""
+    rendered = render_block(*_constants())
+    begins, ends = current.count(BEGIN), current.count(END)
+    if (begins, ends) != (1, 1):
+        raise ValueError(
+            f"expected exactly one marker pair, found {begins} BEGIN and "
+            f"{ends} END",
+        )
+    if current.index(BEGIN) > current.index(END):
+        raise ValueError("END marker precedes BEGIN marker")
     newline = "\r\n" if "\r\n" in current else "\n"
     head, rest = current.split(BEGIN, 1)
     _stale, tail = rest.split(END, 1)
-    block = newline.join([BEGIN, *render_block(*_constants()), END])
+    block = newline.join([BEGIN, *rendered, END])
     return head + block + tail
 
 
@@ -78,12 +114,15 @@ def main(argv: list[str]) -> int:
         current = fh.read()
     try:
         expected = expected_text(current)
-    except ValueError:
+    except ValueError as e:
         print(
-            f"{REGISTER}: register markers not found; expected "
-            f"{BEGIN!r} ... {END!r}", file=sys.stderr,
+            f"{REGISTER}: {e}; expected exactly {BEGIN!r} ... {END!r}",
+            file=sys.stderr,
         )
-        return 2
+        return EXIT_MARKERS
+    except ForeignCapa as e:
+        print(f"{REGISTER}: refusing to run: {e}", file=sys.stderr)
+        return EXIT_FOREIGN_CAPA
     if current == expected:
         if not check:
             print(f"{REGISTER}: up to date")
@@ -94,7 +133,7 @@ def main(argv: list[str]) -> int:
             f"from capa/manifest/_scope.py; run "
             f"python tools/gen_trust_register.py", file=sys.stderr,
         )
-        return 1
+        return EXIT_DRIFT
     with open(REGISTER, "w", encoding="utf-8", newline="") as fh:
         fh.write(expected)
     print(f"{REGISTER}: regenerated")

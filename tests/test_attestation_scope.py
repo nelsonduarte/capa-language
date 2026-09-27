@@ -18,8 +18,11 @@ Five groups of pins, over the corpus in ``tests/fixtures/attestation_scope``
 - characterization (RED before the key and the constant existed): the key
   is present, byte-equal to the constant in all four documents, the
   content-integrity envelopes still verify, the register block is
-  generated and the generator's check passes, and the wording keeps its
-  load-bearing clauses while naming no tier as covering anything;
+  generated and the generator's check passes, the register carries
+  exactly one block and states the field nowhere outside it, the
+  generator refuses to run against a capa that is not the checkout it
+  sits in, and the wording keeps its load-bearing clauses while naming no
+  tier as covering anything;
 - single source: the sentence's text lives in exactly one module, every
   producer references the constant by name, and no other document in the
   repository restates it;
@@ -301,11 +304,70 @@ class TestRegister(unittest.TestCase):
             gen.BEGIN, text, "docs/trust-model.md has no generated register block",
         )
         self.assertIn(gen.END, text)
+        # Exactly one marker pair: a second block, however worded, would
+        # carry a copy the generator never checks.
+        self.assertEqual(
+            (text.count(gen.BEGIN), text.count(gen.END)), (1, 1),
+            "docs/trust-model.md carries more than one register block",
+        )
         block = text.split(gen.BEGIN, 1)[1].split(gen.END, 1)[0]
         self.assertIn(
             _collapse(sentence), _collapse(block),
             "register block does not match the constant (stale copy)",
         )
+
+    def test_register_states_the_field_only_inside_the_generated_block(self):
+        # The register document is the one file the restatement pin below
+        # expects to hit, so it must be held on its own: outside the
+        # generated block it may not mention the field at all, nor carry a
+        # tier claim, or a hand-written restatement beside the block would
+        # pass every other pin.
+        gen = self._generator()
+        text = REGISTER.read_text(encoding="utf-8")
+        head, rest = text.split(gen.BEGIN, 1)
+        _block, tail = rest.split(gen.END, 1)
+        outside = _collapse(head + tail).lower()
+        self.assertNotIn(
+            "unaudited_secret_sinks", outside,
+            "docs/trust-model.md restates the field outside the generated block",
+        )
+        # A claim that implicit flows are covered, in either word order,
+        # within one sentence.
+        for pattern in (
+            r"implicit[^.]{0,80}\bcover(ed|s)\b", r"\bcover(ed|s)\b[^.]{0,80}implicit",
+        ):
+            self.assertIsNone(re.search(pattern, outside), f"tier claim: {pattern}")
+
+    def test_generator_refuses_a_foreign_capa(self):
+        # A copy of tools/ and docs/ with no capa/ beside them, and another
+        # tree's capa importable through PYTHONPATH: the generator must
+        # refuse to verify or regenerate against that tree's constant, and
+        # the document must be left untouched.
+        gen = self._generator()
+        with tempfile.TemporaryDirectory(prefix="capa_gen_") as tmp:
+            root = Path(tmp)
+            (root / "tools").mkdir()
+            (root / "docs").mkdir()
+            shutil.copyfile(GENERATOR, root / "tools" / GENERATOR.name)
+            shutil.copyfile(REGISTER, root / "docs" / REGISTER.name)
+            before = (root / "docs" / REGISTER.name).read_bytes()
+            env = dict(os.environ, PYTHONPATH=str(REPO_ROOT), PYTHONIOENCODING="utf-8")
+            for args in (["--check"], []):
+                with self.subTest(args=args):
+                    proc = subprocess.run(
+                        [sys.executable, str(root / "tools" / GENERATOR.name), *args],
+                        cwd=str(root), env=env, stdin=subprocess.DEVNULL,
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    self.assertEqual(
+                        proc.returncode, gen.EXIT_FOREIGN_CAPA,
+                        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+                    )
+                    self.assertIn("refus", proc.stderr.lower())
+                    self.assertEqual(
+                        (root / "docs" / REGISTER.name).read_bytes(), before,
+                        "the generator wrote the document from a foreign capa",
+                    )
 
     def test_generator_check_passes(self):
         self.assertTrue(GENERATOR.is_file(), f"no generator at {GENERATOR}")
@@ -385,6 +447,12 @@ class TestSingleSource(unittest.TestCase):
             ).lower()
         )
         self.assertEqual(hits, [REGISTER.relative_to(REPO_ROOT).as_posix()], hits)
+        # And exactly once in the register: a second copy in the same file
+        # would otherwise hide behind the expected hit.
+        self.assertEqual(
+            _collapse(REGISTER.read_text(encoding="utf-8")).lower().count(probe), 1,
+            "docs/trust-model.md carries the sentence more than once",
+        )
 
 
 # ---------------------------------------------------------------------------
