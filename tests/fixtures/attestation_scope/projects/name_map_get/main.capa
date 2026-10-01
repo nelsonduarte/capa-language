@@ -1,0 +1,8 @@
+fun look(m: Map<String, Int>, key: String) -> Int
+    return m.get(key).unwrap_or(0)
+
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    let m: Map<String, Int> = new_map()
+    let v = look(m, k)
+    stdio.println("done")

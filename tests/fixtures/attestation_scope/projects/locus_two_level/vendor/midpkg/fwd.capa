@@ -1,0 +1,4 @@
+import sinkpkg.leak as leak
+
+pub fun forward(stdio: Stdio, s: String)
+    leak.emit(stdio, s)
