@@ -32,7 +32,8 @@ FIXED, enumerated set of predicate kinds:
                              egress capability from one package, whether via
                              an AUDITED declassify+egress co-residence or an
                              UN-AUDITED raw secret->egress-sink flow the
-                             information-flow analysis proved (the
+                             warn-tier information-flow check recorded,
+                             within the scope :mod:`._scope` states (the
                              exfiltration-path prohibition) (feature #6,
                              P2 + B1).
 

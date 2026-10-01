@@ -87,10 +87,12 @@ if TYPE_CHECKING:
 #       ``has_declassification`` (feature #6, P2).
 #   4 - per-package UN-AUDITED secret->egress-sink rollup
 #       (``attributed_unaudited_secret_sinks`` /
-#       ``unaudited_secret_sink_capabilities``): the WARN-tier raw
-#       secret-to-sink flows the IFC analysis surfaced, attributed to the
-#       package that owns the leaking code, so ``no-secret-egress`` catches
-#       an un-audited leak to a declared egress capability (feature #6, B1).
+#       ``unaudited_secret_sink_capabilities``): each per-function
+#       ``unaudited_secret_sinks`` record attributed to the package that
+#       owns the function it was recorded against, which
+#       ``no-secret-egress`` intersects with a declared egress set
+#       (feature #6, B1). What a record claims and where it sits is stated
+#       once, in ``._scope``.
 #   5 - per-package ceiling check additionally FAILS CLOSED (authority_unknown)
 #       when a ceiling-DECLARING package's OWN attributed functions are not
 #       provable from their types (``authority_provable_from_types`` False:
@@ -249,13 +251,12 @@ class PackageNode:
     # nothing. The transitive (composed) count is rolled up separately so a
     # policy can gate on where sensitive data is deliberately released.
     declassifications: list[dict[str, str]] = field(default_factory=list)
-    # Feature #6 (B1): the UN-AUDITED @secret -> egress-sink flows attributed
-    # to this package's OWN functions (each a ``{capability, pos}`` dict,
-    # sorted canonically). These are the WARN-tier raw secret-to-sink flows
-    # the IFC analysis surfaced -- a secret reaching an egress sink with NO
-    # declassify. A leak lives in a SPECIFIC package's own code, so there is
-    # no transitive rollup: ``no-secret-egress`` intersects THIS set with the
-    # declared egress set. Empty when the package leaks nothing un-audited.
+    # Feature #6 (B1): the ``unaudited_secret_sinks`` records of this
+    # package's OWN functions (each a ``{capability, pos}`` dict, sorted
+    # canonically), with no transitive rollup: ``no-secret-egress``
+    # intersects THIS set with the declared egress set. What a record
+    # claims, where it sits, and why an empty set is not a proof of absence
+    # is stated once, in ``._scope``.
     unaudited_secret_sinks: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -1559,13 +1560,14 @@ def build_composed_sbom(
                 declass_total_by_dir[node.manifest_dir],
             "composed_has_declassification":
                 declass_total_by_dir[node.manifest_dir] > 0,
-            # Feature #6 (B1): the un-audited secret->egress-sink flows in
-            # THIS package's own code (evidence + the distinct capability
-            # set). No transitive rollup: a leak is in a specific package's
-            # own body, so ``no-secret-egress`` intersects this OWN set with
-            # the declared egress set. Under ``composed_authority_unknown``
-            # the set is a FLOOR (an unanalyzable subtree may leak unseen),
-            # so the policy still fails closed on a TOP package.
+            # Feature #6 (B1): the records of THIS package's own functions
+            # (evidence + the distinct capability set), with no transitive
+            # rollup: ``no-secret-egress`` intersects this OWN set with the
+            # declared egress set, and what the set is entitled to claim is
+            # the one sentence of ``._scope``, carried in band below. Under
+            # ``composed_authority_unknown`` an unanalyzable subtree may also
+            # leak unseen, so the policy fails closed on a TOP package unless
+            # it waives that with ``allow_unknown``.
             "attributed_unaudited_secret_sinks": node.unaudited_secret_sinks,
             "unaudited_secret_sink_capabilities": sorted({
                 s["capability"] for s in node.unaudited_secret_sinks

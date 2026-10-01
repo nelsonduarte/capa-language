@@ -565,7 +565,8 @@ arguments.
 source `("Env", "get")` (the `_SECRET_SOURCES` set in
 `_ifc.py`). `sink(e)` abstracts the public-exfiltration sinks
 `_PUBLIC_SINKS` (`Stdio.println` / `print` / `eprintln`,
-`Net.get` / `post`, `Fs.write`, `Db.exec` / `query`). `e1 ⊕ e2`
+`Net.get` / `post`, `Fs.write`, `Db.exec` / `query`, `Serve.send`).
+`e1 ⊕ e2`
 abstracts every label-joining expression form in `_compute_label`
 (BinOp, interpolation, indexing, aggregate literals, pure call
 results): each is a join of operand labels, so a single n-ary
