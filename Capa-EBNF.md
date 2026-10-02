@@ -540,7 +540,7 @@ An optional `uses_clause` may follow the return type of a **trait or
 capability** method signature (not a regular `fun`, and not an
 `extern component` method): `fun fetch(self, net: Net) -> Int uses
 [Net]` declares the capability atoms the method is allowed to
-exercise, and `uses []` declares it pure. The analyzer checks each
+exercise, and `uses []` declares that it exercises none. The analyzer checks each
 implementation against the declared bound and charges a caller the
 bound rather than the concrete implementor. `uses` is a **contextual**
 keyword (recognised by position, like `component` / `from`), not a

@@ -111,8 +111,8 @@ this SBOM in hand knows:
 
 - **What holds no capability.** `parse_config_text`,
   `has_field`, `set_field`. Zero capability declarations, and
-  none takes a function value, so the body of each can call no
-  built-in capability.
+  their parameters are strings and plain `Config` records, so the
+  body of each can call no built-in capability.
 
 - **What needs each single capability.** `load_local_config`
   needs `Fs` and only `Fs`. If a future revision quietly adds

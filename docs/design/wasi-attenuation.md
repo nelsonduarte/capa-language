@@ -17,9 +17,9 @@ compiler-proved.
 
 The goal is to reconcile Capa's DYNAMIC attenuation model with the
 STATIC capability model of WASI Preview 2 (WASI P2) without losing the
-load-bearing claim of the language: that
-`provably_excluded_capabilities` in the manifest is a real guarantee,
-not merely a guest-side promise the runtime trusts.
+load-bearing property of the language: that
+`provably_excluded_capabilities` in the manifest stays a statement the
+compiler derives, not merely a guest-side promise the runtime trusts.
 
 This is distinct from, and complementary to, the existing experimental
 `--wasi` mode. That mode (documented in `docs/design/wasi_mode.md`)
@@ -271,10 +271,10 @@ the Level 2 ceiling (`inherit_env`).
 LEVEL 2, the FINE ATTENUATION, the in-program narrowings below the
 ceiling (`restrict_to`, `restrict_to_keys`, the Clock deadline). This
 is:
-- PROVED by the compiler. `provably_excluded_capabilities` still holds
-  unchanged (`capa/manifest/_funrec.py:475-528`); the static
-  discipline that makes the proof sound
-  (`capa/analyzer/_discipline.py:187-226`) is untouched.
+- PROVED by the compiler. The derivation of
+  `provably_excluded_capabilities` is unchanged
+  (`capa/manifest/_funrec.py:475-528`); the static discipline it
+  relies on (`capa/analyzer/_discipline.py:187-226`) is untouched.
 - REINFORCED by the runtime on the CAPA host (the handle table
   re-checks every call:
   `capa/runtime/_wasm_component_host.py:335-363`).

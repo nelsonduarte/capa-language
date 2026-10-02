@@ -28,8 +28,8 @@ capa --run hello.capa
 ```
 
 The difference between Capa and "traditional" languages is this: `stdio`
-is not a magical global, it is a **parameter**, and Capa guarantees
-that only functions which receive it can perform I/O.
+is not a magical global, it is a **parameter**, and the compiler refuses
+a call on `stdio` in a function that does not have it in scope.
 
 ### Variables
 
@@ -341,7 +341,8 @@ let r = parse_int(s).ok_or("invalid input")
 ## Chapter 6: Capabilities
 
 Capa's distinctive feature: I/O and system resources are only
-accessible via *capabilities*, values explicitly passed as parameters.
+accessible through *capabilities*, values that reach a function
+explicitly, usually as parameters.
 
 ```capa
 fun main(stdio: Stdio, fs: Fs)
@@ -367,7 +368,9 @@ Available capabilities:
 
 ### Why capabilities?
 
-A function without capability parameters **cannot** perform I/O:
+A function handed no capability, no function value and no struct that
+implements a user-defined capability holds no built-in capability and
+cannot call one:
 
 ```capa
 fun pure(x: Int) -> Int
@@ -375,19 +378,23 @@ fun pure(x: Int) -> Int
     // Cannot call stdio.println, it has no stdio
 ```
 
-This makes code auditable: to know what a function does, you only need
-to look at its signature. "Pure" functions are obvious.
+This makes code auditable: the signature shows which built-in
+capabilities a function is handed, and functions that are handed none
+are easy to spot.
 
-### Linearity
+### No aliasing
 
-Capabilities are *linear*, each one can only be passed to one
-function at a time (unless you use `consume` to indicate ownership
-transfer):
+A capability cannot be aliased: one call cannot receive the same
+capability in two arguments (`consume` marks an ownership transfer; see
+the reference):
 
 ```capa
-fun both(a: Stdio, b: Stdio)  // Error: aliasing
+fun both(a: Stdio, b: Stdio)
     a.println("a")
     b.println("b")
+
+fun main(stdio: Stdio)
+    both(stdio, stdio)    // Error: the same capability in two arguments
 ```
 
 ---

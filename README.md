@@ -59,8 +59,9 @@ Statistics:
 
 ## The 30-second story
 
-A helper that needs no authority declares no capabilities, and the
-analyzer refuses any call on a built-in capability in its body.
+A helper that needs no authority is handed none: `classify` takes a
+`Float`, and the analyzer refuses any call on a built-in capability in
+its body.
 
 ```capa
 fun classify(score: Float) -> String

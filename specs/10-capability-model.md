@@ -162,9 +162,9 @@ abusive one.
 In Capa the pattern is closed for the built-in capabilities. A
 component can call only the built-in capabilities handed to it with the
 request; if the caller has no `Fs`, it cannot pass `Fs`, and the deputy
-has no ambient `Fs` to use instead. A function without capability
-parameters, and without function-typed parameters, holds no built-in
-capability and cannot call one.
+has no ambient `Fs` to use instead. A function handed no capability,
+no function value and no struct that implements a user-defined
+capability holds no built-in capability and cannot call one.
 
 `render` computes a string and receives no capability; it can call no
 built-in capability, and the compiler accepts it:
