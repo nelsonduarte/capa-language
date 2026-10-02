@@ -305,10 +305,10 @@ A CRA-aligned development workflow with Capa:
    produces the SBOM with capability metadata embedded. This
    becomes one of the conformity-assessment artefacts the
    manufacturer keeps under Article 31. Set `SOURCE_DATE_EPOCH`
-   (Unix UTC seconds) in the build environment to make this and
-   the SPDX, VEX, and provenance artefacts byte-reproducible
-   across repeated runs: rebuilding the same checkout yields the
-   same bytes, which can be compared with the published copies.
+   (Unix UTC seconds) in the build environment to pin the
+   timestamps of this and the SPDX, VEX, and provenance
+   artefacts, so repeated runs of the same program produce the
+   same bytes.
    See [the reproducible-artefacts section of the regulatory
    note](regulatory.md#reproducible-sboms-rebuild-and-diff-byte-for-byte).
 

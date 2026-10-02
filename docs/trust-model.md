@@ -168,16 +168,11 @@ refused on failure.
   prints the refusal it overrode in full. See `capa/pkg/_floor.py` and
   [advisory 2026-07-20](advisories/2026-07-20-capa-floor.md).
 
-- **SBOMs are byte-reproducible across repeated runs.** With
-  `SOURCE_DATE_EPOCH` set, the CycloneDX / SPDX / VEX / SLSA artefacts
-  are byte-for-byte identical across repeated runs of the same checkout
-  (pinned by tests across processes and hash seeds), and an invalid
-  `SOURCE_DATE_EPOCH` is refused rather than silently replaced by the
-  wall clock. The artefacts are written with LF line endings on every
-  host OS. Identity across different machines has not been measured
-  and is not claimed here. See
-  `capa/manifest/_timestamp.py` and
-  [the reproducible-artefacts section of the regulatory note](regulatory.md#reproducible-sboms-rebuild-and-diff-byte-for-byte).
+- **An invalid `SOURCE_DATE_EPOCH` is refused.** A value that is not a
+  plain non-negative decimal integer, or that is out of the
+  representable date range, stops the artefact emission with a non-zero
+  exit and no output, instead of silently falling back to the wall
+  clock. See `capa/manifest/_timestamp.py`.
 
 ## 2. Best-effort (fail-open)
 
@@ -207,6 +202,15 @@ trust decision: the unconditional tier above stands underneath them.
   Set `verify_provenance = "off"` to silence the warning deliberately.
   See `_verify_slsa_provenance` in `capa/pkg/_install.py`. For the
   fail-closed mode, see tier 1's `verify_provenance = "required"` entry.
+
+- **Byte-reproducible artefacts.** With `SOURCE_DATE_EPOCH` set, the
+  timestamps of the CycloneDX / SPDX / VEX / SLSA artefacts derive from
+  that instant, and the tests pin byte-identical artefacts for repeated
+  runs of the same program, including runs in separate processes with
+  different hash seeds. The artefacts are written with LF line endings
+  on every host OS. A rebuild-and-diff is a check to run, not a
+  guarantee. See
+  [the reproducible-artefacts section of the regulatory note](regulatory.md#reproducible-sboms-rebuild-and-diff-byte-for-byte).
 
 ## 3. Premises / TCB boundary
 

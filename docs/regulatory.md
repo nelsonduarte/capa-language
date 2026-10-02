@@ -52,7 +52,7 @@ The SSDF column names a *task* (PS.3.2, PW.4.4) rather than a practice wherever 
 
 ## Reproducible SBOMs: rebuild and diff byte-for-byte
 
-The four supply-chain artefacts (`--cyclonedx`, `--spdx`, `--vex`, `--provenance`) are byte-reproducible across repeated runs of the same checkout. Every identifier they carry, the CycloneDX `serialNumber`, the SPDX `documentNamespace`, the provenance `invocationId`, is derived deterministically from the source file's SHA-256, so two builds of the same checkout produce the same identifiers. The one field that would otherwise vary is the build timestamp.
+The four supply-chain artefacts (`--cyclonedx`, `--spdx`, `--vex`, `--provenance`) can be rebuilt and diffed: the tests pin byte-identical output for repeated runs of the same program. Between repeated runs, the field that would otherwise vary is the build timestamp.
 
 To pin it, set `SOURCE_DATE_EPOCH` to an integer of Unix UTC seconds, the [reproducible-builds.org convention](https://reproducible-builds.org/specs/source-date-epoch/) that `dpkg` and other toolchains already honour:
 
@@ -62,11 +62,11 @@ SOURCE_DATE_EPOCH=1609459200 capa --cyclonedx app.capa > b.json
 diff a.json b.json   # empty: byte-for-byte identical
 ```
 
-When `SOURCE_DATE_EPOCH` is set, the CycloneDX `metadata.timestamp`, the SPDX `created`/`annotationDate`, the VEX `timestamp`/`firstIssued`, and the provenance `startedOn`/`finishedOn` all derive deterministically from that one instant. Each invocation emits a single artefact, so four separate invocations (one per artefact) that share the same `SOURCE_DATE_EPOCH` produce the same timestamp; inside a CycloneDX document carrying VEX entries, the one instant feeds both `metadata.timestamp` and every `firstIssued`. Rebuild the same checkout with the same value and the artefacts are identical, which is what lets you rebuild an SBOM from source and compare it with the published one. Identity across different machines has not been measured and is not claimed here; treat a cross-machine rebuild-and-diff as a check to run, not as a guarantee.
+When `SOURCE_DATE_EPOCH` is set, the CycloneDX `metadata.timestamp`, the SPDX `created`/`annotationDate`, the VEX `timestamp`/`firstIssued`, and the provenance `startedOn`/`finishedOn` all derive deterministically from that one instant. Each invocation emits a single artefact, so four separate invocations (one per artefact) that share the same `SOURCE_DATE_EPOCH` produce the same timestamp; inside a CycloneDX document carrying VEX entries, the one instant feeds both `metadata.timestamp` and every `firstIssued`. Repeated runs with the same value produce identical artefacts (pinned by the tests). A rebuild-and-diff is a check to run, not a guarantee.
 
 When `SOURCE_DATE_EPOCH` is unset, the timestamps record real wall-clock time, so an interactive build still says when it ran. Determinism is opt-in via the standard variable. A value that is not a plain non-negative decimal integer, including one that is out of the representable date range, is rejected with a clear error and a non-zero exit, rather than silently falling back to wall-clock time, because a build that asked for determinism should fail loudly if it cannot get it.
 
-Line endings do not vary by operating system. These artefacts (and the `--manifest` they wrap) are written with canonical LF (`\n`) line endings regardless of host OS: the CLI emits their bytes through the binary stdout buffer, bypassing the platform newline translation that would otherwise turn each `\n` into `\r\n` on Windows. That removes the line-ending difference between Windows, Linux, and macOS builds; it is one precondition of a cross-machine rebuild-and-diff, not a measurement of one. Only these artefacts are LF-pinned; the stdout of a Capa program you *run* keeps ordinary platform line endings.
+Line endings do not vary by operating system. These artefacts (and the `--manifest` they wrap) are written with canonical LF (`\n`) line endings regardless of host OS: the CLI emits their bytes through the binary stdout buffer, bypassing the platform newline translation that would otherwise turn each `\n` into `\r\n` on Windows. That removes line-ending differences between Windows, Linux, and macOS. Only these artefacts are LF-pinned; the stdout of a Capa program you *run* keeps ordinary platform line endings.
 
 ## CRA: Cyber Resilience Act
 

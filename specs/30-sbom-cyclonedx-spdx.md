@@ -192,10 +192,9 @@ The document is assembled in `build_cyclonedx` (`_cyclonedx.py` line
 }
 ```
 
-The `serialNumber` is a deterministic UUIDv5 derived from the display
-filename (root-relative) plus the source's sha256, NOT from the
-timestamp, so two runs of the same project produce the same serial
-(SBOM-diff friendly). The `metadata` block (measured):
+The `serialNumber` is a deterministic UUIDv5, NOT derived from the
+timestamp, so repeated runs produce the same serial (SBOM-diff
+friendly). The `metadata` block (measured):
 
 ```
 "metadata": {
@@ -323,8 +322,7 @@ no granularity below `package`, so each function is a package with
 ```
 
 The `documentNamespace` is, like the CycloneDX serial, a
-deterministic UUIDv5 URN of name plus source sha256, not of the
-timestamp. Each package carries `licenseConcluded` /
+deterministic UUIDv5 URN, not derived from the timestamp. Each package carries `licenseConcluded` /
 `licenseDeclared` / `copyrightText` as `NOASSERTION`:
 compliance-grade consumers (OpenChain, strict SPDX validation) refuse
 a package without these three fields, and SPDX 2.3 blesses
@@ -475,8 +473,8 @@ not a regulatory-conformity claim (section 7).
 **Determinism (measured).** With `SOURCE_DATE_EPOCH=1700000000`, two
 runs of `--cyclonedx` over the same project gave identical bytes
 (same sha256), and likewise `--spdx`. The CycloneDX serial and the
-SPDX namespace are deterministic UUIDv5 of name+source, not of the
-clock; the timestamp derives from `SOURCE_DATE_EPOCH`. Note: the
+SPDX namespace are deterministic, not derived from the clock; the
+timestamp derives from `SOURCE_DATE_EPOCH`. Note: the
 SBOMs are printed with `json.dumps(..., indent=2)` (readable), NOT in
 the key-sorted canonical form of chapter 29's S1 envelope; the
 measured byte stability comes from the builder already sorting lists

@@ -84,8 +84,8 @@ The output is a single JSON document:
 }
 ```
 
-The `invocationId` is deterministic for a given source content
-and filename, so reproducible builds get matching attestations.
+The `invocationId` is deterministic, not derived from the clock,
+so repeated runs produce matching attestations.
 
 ---
 
