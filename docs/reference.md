@@ -452,10 +452,11 @@ signatures reach either (see [`stdlib.md`](stdlib.md)).
 
 ### 6.2. The capability discipline (three layers)
 
-**Structural**: capabilities cannot appear in struct fields,
-variant payloads, function return types, constants, `let`/`var`
-bindings, generic args, or tuples. They only flow through
-parameters. (Exception: a struct that `impl`s a user-defined
+**Structural**: a struct field, a variant payload or a constant
+cannot hold a capability; a parameter can hold one only bare, not
+packed inside a container, `Option`, `Result` or tuple type; a
+capability is never a generic type argument; and a capability
+parameter cannot be copied into a `let`/`var` binding. (Exception: a struct that `impl`s a user-defined
 capability *may* hold built-in caps as fields - the
 "cap-bearing struct" relaxation.)
 

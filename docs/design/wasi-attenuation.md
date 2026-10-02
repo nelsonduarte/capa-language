@@ -126,20 +126,19 @@ boundary (audit slice 25; history in
 The guarantee is the product of two distinct layers.
 
 STATIC layer (the type system, in `capa/analyzer/_discipline.py`):
-capabilities flow ONLY through function parameters. They cannot be
-hidden in data structures, returned by ordinary functions, or bound
-to `let` / `var` slots (`_check_no_capability` at
-`capa/analyzer/_discipline.py:213-226`), and a capability cannot be
-aliased twice within a single call (`_check_no_aliasing` at
-`capa/analyzer/_discipline.py:187-211`). On top of this the manifest
+a call on a built-in capability that is not in scope is refused; a
+struct field (outside a capability-bearing struct), a variant payload
+or a constant cannot hold a capability, and a capability parameter
+cannot be copied into a `let` / `var` slot (`_check_no_capability`);
+and a capability cannot be aliased twice within a single call
+(`_check_no_aliasing`). On top of this the manifest
 computes `provably_excluded_capabilities` from the function signature
 plus a closed-world reachability bound
 (`capa/manifest/_funrec.py:475-528`, written out at
 `capa/manifest/_funrec.py:607`; reachability map in
-`capa/manifest/_reachability.py`). The computation is CONSERVATIVE: it
-DOWNGRADES the exclusion claim to the empty list whenever it cannot be
-honored, specifically when `Unsafe` is in scope or a `Fun(...)` type
-appears in the signature (closures can carry a captured cap the type
+`capa/manifest/_reachability.py`). It empties the exclusion list
+when `Unsafe` is in scope or a `Fun(...)` type appears in the
+signature (closures can carry a captured cap the type
 system does not track:
 `capa/manifest/_funrec.py:470-520`), and it folds in caps reachable
 through cap-bearing structs via the per-impl reachability map.
@@ -149,13 +148,12 @@ object on Python, the handle on Wasm) and is enforced per call. There
 is no "widen" operation anywhere in the model; every `restrict_*`
 returns a strictly-narrower or equal instance.
 
-KEY POINT: the type system guarantees the PRESENCE or ABSENCE of a
-capability at a function boundary (whether `main`'s Fs ever reaches a
-given function at all). The CONTENT of a concrete restriction (which
-prefixes, hosts, or keys it admits) is a RUNTIME value, decided by the
-sequence of `restrict_*` calls actually executed. The static layer
-proves the shape of the authority graph; the dynamic layer carries the
-concrete narrowing.
+KEY POINT: the type system checks which capability values are in
+scope at a function boundary. The CONTENT of a concrete restriction
+(which prefixes, hosts, or keys it admits) is a RUNTIME value, decided
+by the sequence of `restrict_*` calls actually executed. The static
+layer checks the shape of the authority graph; the dynamic layer
+carries the concrete narrowing.
 
 ## 3. The WASI Preview 2 restriction models
 

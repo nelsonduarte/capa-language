@@ -77,7 +77,7 @@ the metadata is statically inspectable.
 | `deprecated` | `reason`, `since`, `use`, `removed_in` | documentation metadata |
 | `audited` | `date`, `by`, `scope`, `notes` | audit metadata |
 | `vex` | `cve`, `status`, `justification`, `detail`, `first_issued` | VEX metadata |
-| `strict_ifc` | (none) | behavioural (IFC findings become hard errors) |
+| `strict_ifc` | (none) | behavioural (detected flows become hard errors) |
 | `constant_time` | (none) | behavioural (CWE-208) |
 | `export` | (none) | behavioural (Wasm Component Model export surface) |
 
@@ -86,7 +86,7 @@ audit tooling, see
 [29-capability-manifest.md](29-capability-manifest.md)); the last three
 are **behavioural** and are written without arguments (`@strict_ifc()`,
 `@constant_time()`, `@export()`). `@strict_ifc` makes every
-information-flow finding in the function a hard error and turns on the
+detected flow in the function a hard error and turns on the
 implicit-flow checks (see
 [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md));
 `@constant_time` rejects control decisions or indexing that depend on a
@@ -185,8 +185,10 @@ enforced by the **analyzer**, not the parser.
 ### 3.1 Capability parameters
 
 A parameter whose type is a built-in capability (`Stdio`, `Fs`, `Net`,
-...) is how a built-in capability enters a function (a closure can also
-carry one in, section 5.1): there is no global capability value (see
+...) is one way a built-in capability reaches a function; the others
+are a field of a struct that implements a user-defined capability and
+a closure that captured one (section 5.1). There is no global
+capability value (see
 [10-capability-model.md](10-capability-model.md)). The
 analyzer requires a declared capability parameter to be **used**;
 otherwise it is an error (prefixing with `_` silences it). The rule is

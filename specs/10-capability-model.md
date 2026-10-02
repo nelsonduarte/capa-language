@@ -4,8 +4,8 @@
 > how it propagates: capabilities as unforgeable values; the absence of
 > ambient authority (no global, `import`, constructor or literal
 > produces a capability; the runtime hands all authority to `main`);
-> the propagation discipline (no aliasing, no returning of built-ins,
-> no fabrication); the elimination of the confused
+> the propagation discipline (no copying a capability parameter into
+> a binding, no fabrication); the elimination of the confused
 > deputy; and the authority-chain-in-the-types property, verified
 > against the manifest. The 10 concrete capabilities are in
 > [11-builtin-capabilities.md](11-builtin-capabilities.md); attenuation
@@ -111,15 +111,13 @@ capability-bearing struct that is then passed
 ([08-functions-closures-modules.md](08-functions-closures-modules.md)
 section 5.1,
 [13-user-defined-capabilities.md](13-user-defined-capabilities.md)).
-Three static rules close the other routes. All are enforced by the
+Two static rules restrict the other routes. Both are enforced by the
 analyzer at compile time (`--check`), not by a runtime monitor. A
 signature that carries a function value is marked in the manifest as
 not provable from its types (section 5).
 
-**(a) A capability cannot be aliased into a binding.** Copying a
-capability into a `let`/`var` is refused; the capability keeps existing
-only as a parameter, with no second name through which it could escape
-the flow analysis.
+**(a) A capability parameter cannot be copied into a binding.**
+Copying a capability parameter into a `let`/`var` is refused:
 
 ```capa
 // alias_cap.capa
@@ -137,46 +135,20 @@ alias_cap.capa:3:5: error: capability 'Fs' cannot appear in a 'let' binding; cap
 alias_cap.capa: 1 error
 ```
 
-**(b) A built-in capability cannot be returned by a function.**
-Built-in capabilities only flow "inward" (by parameter), never
-"outward" (by return). No regular function "produces" a built-in
-capability: a function that holds one was handed it.
-
-```capa
-// return_cap.capa
-fun grab(fs: Fs) -> Fs
-    return fs
-
-fun main(fs: Fs, stdio: Stdio)
-    let f = grab(fs)
-    stdio.println("got it")
-```
-
-```
-$ python -m capa --check return_cap.capa
-return_cap.capa:2:1: error: capability 'Fs' cannot appear in return type of function 'grab'; built-in capabilities only flow through function parameters
-   2 | fun grab(fs: Fs) -> Fs
-       ^
-
-return_cap.capa: 1 error
-```
-
-The restriction is on **built-in** capabilities. A user-defined
-capability can be returned by a factory (it is an ordinary Capa value
-that wraps built-in authority in a field); see
-[13-user-defined-capabilities.md](13-user-defined-capabilities.md).
-
-**(c) A capability cannot be fabricated from data.** There is no
+**(b) A capability cannot be fabricated from data.** There is no
 literal or constructor for a built-in capability (section 2 and the
 `forge` example in [02](02-authority-in-types.md)). The only value of
 type `Fs` in a program is the one that entered through `main` and was
-passed on (or an attenuation of it, see
+handed on (or an attenuation of it, see
 [12-attenuation.md](12-attenuation.md)).
 
-JUDGEMENT. The three rules together give the central property: **a
-function can call a built-in capability only if a value of it reached
-the function**. No global, import, constructor, alias or return yields
-one.
+A user-defined capability, by contrast, can be produced by a factory
+(it is an ordinary Capa value that wraps built-in authority in a
+field); see [13-user-defined-capabilities.md](13-user-defined-capabilities.md).
+
+JUDGEMENT. With no global or import that yields one, these rules give
+the central property: **a function can call a built-in capability only
+if a value of it reached the function**.
 
 ## 4. Eliminating the confused deputy
 
@@ -247,9 +219,10 @@ $ python -m capa --manifest thread.capa
 `provably_excluded_capabilities` lists the nine capabilities the
 manifest pass found no path to from `greet`'s signature types and body;
 it is derived by the compiler, not written by the author. For `greet`,
-which receives only `Stdio` and no function value, the nine exclusions
-follow from the rule that a built-in capability cannot be constructed,
-aliased or returned. `authority_provable_from_types: true` means the
+which receives only `Stdio` and no function value, and whose body
+calls only `stdio.println`, the nine exclusions reflect that no
+constructor, global or import yields another built-in capability.
+`authority_provable_from_types: true` means the
 function crosses no `Unsafe` and no function type is reachable from its
 signature or from a value its body constructs. The manifest, CycloneDX
 and SPDX carry the exclusion set; VEX and provenance do not. The
@@ -259,8 +232,9 @@ complete envelope structure is in
 ## 6. What the model guarantees, and where it ends
 
 - **Guarantees** (static, every program that passes `--check`): no
-  function calls a built-in capability that is not in scope; a built-in
-  capability cannot be constructed, aliased into a binding or returned.
+  function calls a built-in capability that is not in scope; no
+  constructor or literal produces a built-in capability and no global
+  or import yields one.
   The `lambda_cap` core of these rules is formalized in Agda (see
   [`proofs/README.md`](../proofs/README.md)); the translation from full
   Capa to that core is not mechanized.

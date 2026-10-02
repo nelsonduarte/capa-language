@@ -265,10 +265,8 @@ result.
 
 This is the contact point between generics and the authority model of
 [02-authority-in-types.md](02-authority-in-types.md). A built-in
-capability **only flows as a bare top-level value** (a direct
-parameter named in the type). It cannot be substituted into a generic
-type parameter, because that would hide the authority flow from the
-signature. The analyzer refuses it in two places: substituting an
+capability **cannot be substituted into a generic type parameter**,
+because that would hide the authority flow from the signature. The analyzer refuses it in two places: substituting an
 argument in a generic call, and a return type instantiating to a
 capability ([`capa/analyzer/_discipline.py`](../capa/analyzer/_discipline.py)
 line 638).

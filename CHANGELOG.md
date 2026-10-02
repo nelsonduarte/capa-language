@@ -762,8 +762,8 @@ breaking changes and the discipline is still being shaped.
   README, the trust model, the regulatory mappings, the language reference, the
   specification chapters and the evaluation write-ups now state the capability
   guarantee as the rule the analyzer enforces (a call on a built-in capability
-  that is not in scope is refused, and a built-in capability cannot be
-  constructed, aliased or returned); describe the manifest's capability sets as
+  that is not in scope is refused, and no constructor, global or import yields
+  one); describe the manifest's capability sets as
   derived by a manifest pass from the type-checked program rather than as a
   proof; attribute the Agda theorems to the `lambda_cap` and `lambda_if`
   calculi; describe the information-flow tiers as reporting the flows the

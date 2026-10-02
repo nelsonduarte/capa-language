@@ -447,9 +447,9 @@ The SAME content in SPDX, as annotations of the
 `annotator: "Tool: capa"` annotation per pair).
 
 For this `main`, which receives only `Stdio` and no function value,
-the nine exclusions (`CAPABILITY_NAMES` minus `{Stdio}`) follow from
-the rule that a built-in capability cannot be constructed, aliased or
-returned. Besides the capability fields, the function-to-capability
+the nine exclusions (`CAPABILITY_NAMES` minus `{Stdio}`) are the
+manifest pass's derived set: it found no path to another capability
+from the signature types or body. Besides the capability fields, the function-to-capability
 membership is ALSO encoded as a graph edge (the CycloneDX `dependsOn`
 / the SPDX `DEPENDS_ON` of sections 4.2/5.1), so graph tooling sees
 the authority chain, not just a flat property. A user capability

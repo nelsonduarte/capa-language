@@ -62,15 +62,13 @@ being passed as an argument, held in a field of a struct that implements
 a user-defined capability, or captured by a closure that is then passed.
 A function that none of these reached does not have it.
 
-**(b) A capability can be neither fabricated nor aliased into being.**
-There is no constructor for a built-in capability from data. It cannot
-appear in a `let`/`var` binding from any expression other than the
-parameter itself flowing through calls. Built-in capabilities also
-cannot be returned by a regular function (they only flow "inward"), so
-that a capability passed as an argument is visible in the signature at
-every link; a link that carries it inside a function value or a
-user-defined capability shows that type instead, and the manifest
-accounts for both (section 6).
+**(b) A built-in capability cannot be fabricated.** There is no
+constructor or literal for a built-in capability, and no global or
+import yields one; a capability parameter cannot be copied into a
+`let`/`var` binding either. A capability passed as an argument is
+visible in the signature at that link; a link that carries it inside a
+function value or a user-defined capability shows that type instead,
+and the manifest accounts for both (section 6).
 
 An attempt to forge `Stdio`:
 
@@ -99,7 +97,7 @@ forge.capa: 3 errors
 ```
 
 Two independent barriers fire: `Stdio` is not a struct type (no literal
-constructs it) and a capability cannot appear in a `let` binding. The
+constructs it) and the `let` that would hold the literal is refused. The
 list of the 10 built-in capabilities has a single source of truth,
 `CAPABILITY_NAMES` in [`capa/typesys.py`](../capa/typesys.py) line 190
 (`Stdio, Fs, Net, Env, Proc, Clock, Random, Db, Serve, Unsafe`).
@@ -239,9 +237,9 @@ noninterferent. The full statement is in
 ## 8. What the model guarantees, and what it does not
 
 - **Guarantees** (static, every program that passes `--check`): no
-  function calls a built-in capability that is not in scope; a built-in
-  capability cannot be constructed, aliased into a binding or returned;
-  attenuation is monotone. The `lambda_cap` core of these rules is
+  function calls a built-in capability that is not in scope; no
+  constructor or literal produces a built-in capability and no global
+  or import yields one; attenuation is monotone. The `lambda_cap` core of these rules is
   formalized in Agda; the translation from full Capa to that core is
   not mechanized.
 - **Does not guarantee by itself**: that the runtime materializing the

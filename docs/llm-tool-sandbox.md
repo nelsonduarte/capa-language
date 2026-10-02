@@ -99,9 +99,9 @@ fun process_request(
 This function takes `SearchWeb` and `SendEmail`. It does not take
 `RunCode`, and its body obtains none. The authority behind a tool
 is the built-in capability its implementor wraps: `StubSearch` and
-`StubMailer` hold `Net`, and a built-in capability cannot be
-constructed, returned from a function or read from a global, so
-only code that was handed `Net` can build them. A tool that really
+`StubMailer` hold `Net`, and no constructor, literal, global or
+import yields a built-in capability, so building one needs a `Net`
+value in scope. A tool that really
 runs code needs a built-in capability of its own (`Proc`, or
 `Unsafe` for the FFI), and `process_request` holds neither.
 
@@ -162,10 +162,10 @@ For `process_request`, the capability fields:
 }
 ```
 
-The built-in exclusions follow from the rule that a built-in
-capability cannot be constructed, aliased or returned:
+The built-in exclusions are the manifest pass's derived record:
 `process_request` is handed `Stdio`, and `Net` only inside the two
-tool values. The `RunCode` exclusion records that the manifest
+tool values, and no constructor, global or import yields another
+built-in capability. The `RunCode` exclusion records that the manifest
 pass found no path to `RunCode` from the function's signature
 types or body. For an LLM-tool-use review this is the artefact:
 
@@ -319,10 +319,9 @@ $ capa --manifest examples/llm_agent_runner.capa | jq '.functions[] | select(.na
 }
 ```
 
-(Trimmed to three fields.) `agent_loop` holds no `Fs`, `Net`,
-`Env` or `Unsafe`, and a built-in capability cannot be
-constructed or returned, so its body cannot call one, regardless
-of what the model emits.
+(Trimmed to three fields.) `agent_loop` declares no `Fs`, `Net`,
+`Env` or `Unsafe`, and the manifest pass found no path to them from
+its signature types and body, whatever the model emits.
 
 ### Plugging in a real LLM
 
