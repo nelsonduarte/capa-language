@@ -109,8 +109,8 @@ exploiting starts *below* the layer Capa operates on.
 ## The Capa version
 
 The legitimate role of `xz-utils` is bytes-in, bytes-out: a
-compression / decompression API. In Capa, that surface is
-*pure*, no capabilities at all
+compression / decompression API. In Capa, that surface takes
+no capabilities at all
 ([cve_xz_utils.capa](../examples/cve_xz_utils.capa)):
 
 ```capa
@@ -122,9 +122,9 @@ fun decompress(data: List<Int>) -> List<Int>
 ```
 
 The SBOM derived from these signatures lists no capabilities.
-A `liblzma`-shaped library has, by construction, no path to
-the network, the filesystem, the environment, or process
-control. The downstream consumer reading the SBOM cannot be
+A `liblzma`-shaped library with these signatures holds no
+capability, so it cannot call the network, the filesystem, the
+environment, or process control. The downstream consumer reading the SBOM cannot be
 confused into thinking the library asked for authority it did
 not need.
 
@@ -144,9 +144,8 @@ fun authenticate(req: AuthRequest, allowed_keys: List<List<Int>>) -> Bool
 This is the function the xz attack subverted: in the real
 incident, `RSA_public_decrypt` (called from `sshd` during
 authentication) was hijacked at dynamic-linker time. In Capa,
-the `authenticate` function has no capabilities, no
-side-effects, no externally-injectable resolver. The signature
-*is* the contract.
+the `authenticate` function has no capabilities and no
+externally-injectable resolver. The signature *is* the contract.
 
 ---
 

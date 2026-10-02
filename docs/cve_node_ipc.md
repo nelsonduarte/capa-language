@@ -61,10 +61,11 @@ job did not require the authority the malicious code abused**.
   transform streams.
 - An AST scope analyser does not need `Fs` to walk an AST.
 
-Capa's structural rule, *every external authority must appear in
-the function signature*, made the attempted attacks visible in the
-type system. The malicious widening of the signature was the
-loud signal an auditor (human or automated) could act on.
+Capa's structural rule, *a built-in capability is usable only where
+one was handed in*, made the attempted attacks visible in the type
+system: the malicious code needed a capability the library's functions
+did not receive, and adding it widened a signature. That widening was
+the loud signal an auditor (human or automated) could act on.
 
 node-ipc breaks this property. **node-ipc legitimately needs `Net`
 and `Fs`**. It is an inter-process-communication library; that is
@@ -121,16 +122,17 @@ Three things remain useful:
 
 A node-ipc-like library's manifest (`capa --cyclonedx`) lists
 `capa:declared_capability=Net` and `capa:declared_capability=Fs`
-on every function that touches them. There is no ambient access,
-no hidden import; every place that can reach the network is
-discoverable by reading the SBOM. The auditor reading the SBOM
+on every function whose signature holds them. There is no global
+`Net` and no import that yields one; every function whose signature
+holds `Net` is listed with it in the SBOM. The auditor reading the SBOM
 sees "this library has Net authority; budget accordingly".
 
 In npm, the equivalent declaration is absent or hand-authored
 (the `permissions` field on some manifests, or a separate
-SECURITY.md). The Capa SBOM is *derived from the type system*, so
-it cannot be wrong about what authority the library uses
-internally.
+SECURITY.md). The Capa SBOM is derived by the compiler from the
+library's type-checked signatures: it records the built-in
+capabilities each function holds, and the compiler refuses code that
+calls a capability that is not in scope.
 
 ### 2. The caller can attenuate before passing
 

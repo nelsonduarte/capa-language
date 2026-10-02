@@ -27,12 +27,12 @@ emitting *some* tool call the application accepts.
 
 Capa's capability discipline operates one layer down. Each tool
 becomes a *capability*. The function that interprets the LLM's
-tool-call sequence declares which capabilities it has. The
-compiler proves the function cannot call tools it did not
-declare. The SBOM emits that declaration as an audit artefact.
-No prompt, no matter how cleverly crafted, can convince the
-runtime to dispatch to a tool the function does not have in
-scope, because the dispatch site is statically checked.
+tool-call sequence declares which capabilities it has. A
+function can call a tool only through a value of that tool
+capability in its scope, and the compiler refuses a call on one
+that is not. The SBOM emits the declaration as an audit artefact.
+No prompt, no matter how cleverly crafted, can add a call site:
+the dispatch is fixed in the source and statically checked.
 
 ## The pattern in three pieces
 
@@ -97,17 +97,18 @@ fun process_request(
 ```
 
 This function takes `SearchWeb` and `SendEmail`. It does not take
-`RunCode`. There is no way for the body to obtain a `RunCode`
-instance: capabilities cannot be returned from functions (except
-user-defined ones via factories, which themselves require the
-backing built-in caps the agent does not have), they cannot be
-read from a global, they cannot be conjured from thin air.
+`RunCode`, and its body obtains none. The authority behind a tool
+is the built-in capability its implementor wraps: `StubSearch` and
+`StubMailer` hold `Net`, and a built-in capability cannot be
+constructed, returned from a function or read from a global, so
+only code that was handed `Net` can build them. A tool that really
+runs code needs a built-in capability of its own (`Proc`, or
+`Unsafe` for the FFI), and `process_request` holds neither.
 
-The agent is *provably* incapable of running arbitrary code,
-even if the LLM emits a tool call sequence that includes
-`{"tool": "run_code", "args": {...}}`. The dispatch site does
-not exist; the call does not compile; the program does not
-run a code execution path.
+Whatever tool-call sequence the LLM emits, including
+`{"tool": "run_code", "args": {...}}`, the body contains no call
+to a `RunCode` method: the dispatch site does not exist, and the
+program does not run a code execution path.
 
 ## Attenuation at the boundary
 
@@ -141,33 +142,40 @@ The Capa manifest emits, per function, both the declared
 capabilities and the **provably excluded** capabilities:
 
 ```bash
-$ capa --manifest agent.capa
+$ capa --manifest examples/llm_tool_sandbox.capa
 ```
 
-For `process_request`, the relevant fields:
+For `process_request`, the capability fields:
 
 ```json
 {
   "name": "process_request",
   "declared_capabilities": ["Stdio", "SearchWeb", "SendEmail"],
+  "transitively_reachable_capabilities": [
+    "Net", "SearchWeb", "SendEmail", "Stdio"
+  ],
   "provably_excluded_capabilities": [
-    "Clock", "Db", "Env", "Fs", "Net", "Proc",
-    "Random", "RunCode", "Unsafe"
+    "Clock", "Db", "Env", "Fs", "Proc", "Random",
+    "RunCode", "Serve", "Unsafe"
   ],
   "has_unsafe": false
 }
 ```
 
-The exclusion is sound because Capa's discipline makes the
-declared set an upper bound on what the function can exercise.
-For an LLM-tool-use review this is the artefact:
+The built-in exclusions follow from the rule that a built-in
+capability cannot be constructed, aliased or returned:
+`process_request` is handed `Stdio`, and `Net` only inside the two
+tool values. The `RunCode` exclusion records that the manifest
+pass found no path to `RunCode` from the function's signature
+types or body. For an LLM-tool-use review this is the artefact:
 
-- A reviewer looking at the SBOM learns that `process_request`
-  is provably incapable of executing arbitrary code, opening
-  network connections to arbitrary hosts, reading the
-  filesystem, or accessing environment variables.
-- A diff between two SBOM versions surfaces any change to the
-  agent's tool surface (`capa --cyclonedx old.capa > old.json;
+- A reviewer looking at the manifest learns that
+  `process_request` holds no `Fs`, `Env`, `Proc` or `Unsafe`,
+  that its only network authority is the `Net` inside the two
+  tool values (each narrowed to one host by its factory), and
+  that the compiler found no path from it to `RunCode`.
+- A diff between two SBOM versions surfaces a change to the
+  agent's declared tool surface (`capa --cyclonedx old.capa > old.json;
   capa --cyclonedx new.capa > new.json; diff` and look for the
   `capa:declared_capability` / `capa:provably_excluded_capability`
   properties).
@@ -183,7 +191,7 @@ For an LLM-tool-use review this is the artefact:
 | Function-calling API (OpenAI / Anthropic) | Per agent, fully trusted | No | Application code only |
 | Allow-list / regex on tool args | Per call, runtime | Partial | Application code |
 | OS-level sandbox (Firecracker, gVisor) | Per process | Yes, coarse | Infrastructure config |
-| Capa capability discipline | **Per function** | **Yes** | **Type signature + SBOM** |
+| Capa capability discipline | **Per function** | **Compile-time check on built-in capabilities; see Honest limits** | **Type signature + SBOM** |
 
 The capability approach is **structural**: the discipline holds
 regardless of what the LLM emits, because the dispatch is
@@ -198,10 +206,11 @@ exposes `capability SendEmail` can be used by many agents, each
 with its own narrowing. No new infrastructure is needed to add a
 new tool; declaring `capability NewTool` is one line.
 
-The capability approach is **auditable from source**: the SBOM
-is a deterministic function of the source. The same compile
-produces the same manifest. A reviewer never has to read the
-agent's code to know its tool surface; the manifest is enough.
+The capability approach is **auditable from source**: the
+manifest is a deterministic function of the source. The same
+source produces the same manifest. A reviewer can read the
+agent's declared tool surface from the manifest before reading
+its code.
 
 ## End-to-end runner: the agent loop
 
@@ -210,7 +219,7 @@ counterpart is an agent loop that actually talks to an LLM,
 dispatches tool calls based on the model's response, and feeds
 results back. The same capability discipline applies to the
 loop: the agent function declares its tool surface as parameters
-and provably cannot escalate beyond it, whatever the LLM emits.
+and can call only the tools it holds, whatever the LLM emits.
 
 The full runnable example is at
 [`examples/llm_agent_runner.capa`](../examples/llm_agent_runner.capa).
@@ -304,15 +313,16 @@ $ capa --manifest examples/llm_agent_runner.capa | jq '.functions[] | select(.na
   "declared_capabilities": ["Stdio", "LlmClient", "SearchWeb", "SendEmail"],
   "provably_excluded_capabilities": [
     "Clock", "Db", "Env", "Fs", "Net",
-    "Proc", "Random", "Unsafe"
+    "Proc", "Random", "Serve", "Unsafe"
   ],
   "has_unsafe": false
 }
 ```
 
-`agent_loop` is provably incapable of touching the filesystem,
-the network, environment variables, or `Unsafe`, regardless of
-what the model emits.
+(Trimmed to three fields.) `agent_loop` holds no `Fs`, `Net`,
+`Env` or `Unsafe`, and a built-in capability cannot be
+constructed or returned, so its body cannot call one, regardless
+of what the model emits.
 
 ### Plugging in a real LLM
 
@@ -380,8 +390,10 @@ the network turn needs is visible in the agent's signature rather
 than hidden behind the abstract cap. That is the whole point of
 the audit: a holder of an abstract capability must never be able
 to reach `Unsafe` through a private field it cannot see. The
-agent still provably has **no** `Net` and **no** `Fs`, no matter
-what the model emits.
+agent still holds no `Net` and no `Fs` capability; what code can
+do through `Unsafe` is outside the capability discipline, which
+is why the manifest makes no exclusion claim for a function that
+crosses it.
 
 ### A working real-API round-trip
 
@@ -424,21 +436,18 @@ The manifest still tells the audit story:
 $ capa --manifest examples/llm_anthropic_real.capa | jq '.functions[] | select(.name=="run_chat")'
 {
   "declared_capabilities": ["Stdio", "LlmClient", "Unsafe"],
-  "provably_excluded_capabilities": [
-    "Clock", "Db", "Env", "Fs", "Net",
-    "Proc", "Random"
-  ],
+  "provably_excluded_capabilities": [],
   "has_unsafe": true
 }
 ```
 
-`run_chat` declares `Unsafe` because asking the model crosses the
-Python FFI boundary, and that authority is named in the signature
-rather than laundered through the client's fields. The honest SBOM
-is the stronger guarantee: it still proves `run_chat` cannot touch
-`Net`, `Fs`, `Db`, `Proc`, `Env`, `Clock`, or `Random`, and it
-records `Unsafe` openly so an auditor sees exactly where the FFI
-boundary is crossed.
+(Trimmed to three fields.) `run_chat` declares `Unsafe` because
+asking the model crosses the Python FFI boundary, and that
+authority is named in the signature rather than laundered through
+the client's fields. The manifest records it openly
+(`has_unsafe: true`) and, as for every function that crosses
+`Unsafe`, makes no exclusion claim, so an auditor sees exactly
+where the FFI boundary is crossed.
 
 ### The full end-to-end: real Anthropic + tool dispatch
 
@@ -487,25 +496,24 @@ match parse_turn(raw)
                    history.push(build_tool_result_msg(t.tool_use_id, result))
 ```
 
-The headline audit claim still holds:
+The manifest records the same boundary:
 
 ```bash
 $ capa --manifest examples/llm_anthropic_agent.capa | jq '.functions[] | select(.name=="agent_loop")'
 {
-  "declared_capabilities": ["Stdio", "LlmClient", "SearchWeb"],
-  "provably_excluded_capabilities": [
-    "Clock", "Db", "Env", "Fs", "Net",
-    "Proc", "Random", "Unsafe"
-  ],
-  "has_unsafe": false
+  "declared_capabilities": ["Stdio", "LlmClient", "SearchWeb", "Unsafe"],
+  "provably_excluded_capabilities": [],
+  "has_unsafe": true
 }
 ```
 
-Even though a real model is in the loop deciding which tools
-to call, `agent_loop` provably cannot escalate beyond
-`(Stdio, LlmClient, SearchWeb)`. Whatever the model emits, the
-dispatcher's only legal targets are the cap parameters the
-agent received. A `tool_use` for `run_code` returns
+(Trimmed to three fields.) `agent_loop` declares `Stdio`,
+`LlmClient`, `SearchWeb` and `Unsafe`; because it crosses
+`Unsafe`, the manifest makes no exclusion claim for it. Even
+though a real model is in the loop deciding which tools to call,
+the dispatcher's only call sites are methods on the cap
+parameters it received (`dispatch` itself declares only
+`SearchWeb`). A `tool_use` for `run_code` returns
 `"unknown tool: run_code"` and the model sees that string;
 there is nowhere for the call to land.
 
@@ -548,8 +556,8 @@ The discipline is a precise tool. It does what it does, no more.
 
 The point of capability discipline in this setting is to reduce
 the trusted surface from "the entire application logic" to
-"the small set of tools the agent actually needs". Everything
-else, the model literally cannot reach.
+"the small set of tools the agent actually needs". For
+everything else there is no call site for the model to trigger.
 
 ## See it for yourself
 
@@ -575,4 +583,4 @@ The same pattern scales. Adding a new tool is one `capability X`
 declaration plus an implementor. Wiring it into an agent is
 adding one parameter to the agent's signature. Excluding it is
 not passing it. The contract lives in the type system; the audit
-artefact follows for free.
+artefact is emitted by the same compiler.
