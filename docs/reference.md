@@ -516,7 +516,7 @@ annotation. The public sinks are `Stdio.print` / `println` /
 `eprintln`, `Net.get` / `post`, `Fs.write`, `Db.exec` / `query`, and
 `Serve.send` (the payload argument only, not the connection id, which
 the runtime issued rather than the program). A `@secret` value
-reaching a sink-position argument is an information-flow violation: a
+the analysis finds reaching a sink-position argument is reported: a
 warning by default, a hard error inside a function annotated
 `@strict_ifc()` (which also turns on implicit-flow checking, where a
 sink inside a branch guarded by a secret condition is reported).
