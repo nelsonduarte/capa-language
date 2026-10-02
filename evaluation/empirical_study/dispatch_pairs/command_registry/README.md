@@ -112,7 +112,9 @@ outside its precise points-to. A *sound* analysis could only
 recover this by over-approximating the subscript to every value
 the container can hold, which is imprecise in general and degrades
 to "any value" once the table is populated from outside the
-module. Capa carries the authority through the closure's type
-instead, with no points-to budget and no constant-table
+module. Capa names the captured capabilities in the registration
+site's signature instead and makes no exclusion claim for the
+dispatcher, with no points-to budget and no constant-table
 precondition. So even at the supposedly-easy end of the spectrum,
-the real tool loses and Capa keeps the record by construction.
+the real tool loses and Capa's record for the dispatcher clears
+nothing.

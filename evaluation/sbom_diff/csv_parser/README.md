@@ -54,7 +54,8 @@ Three reasons:
    PURL-based SBOM for the file says literally nothing about
    the file's behaviour. The Capa version, by contrast, names
    all five helpers and declares zero capabilities per
-   function, with the compiler proving each one pure - so the
+   function, with the compiler refusing any capability call in
+   each - so the
    SBOM-diff gap on a pure file with non-trivial parsing logic
    is exactly the per-function attribution that PURL cannot
    carry.

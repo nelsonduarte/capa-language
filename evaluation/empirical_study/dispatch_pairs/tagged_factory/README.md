@@ -50,10 +50,9 @@ parsed data at runtime, and that runtime value indexes the handler
 table (`actions.get(tag)`). The capability reached depends on the
 data, exactly as in the Python.
 
-In Capa the authority is named, and the consequence of the
-deserialization is bounded by construction: `action_export` carries
-`Net`, `action_archive` carries `Fs`, `build_actions` carries both,
-`doc_body` is provably pure. On the dispatcher itself Capa
+In Capa the authority is named in the signatures: `action_export`
+carries `Net`, `action_archive` carries `Fs`, `build_actions` carries
+both, `doc_body` holds no capability. On the dispatcher itself Capa
 attributes nothing: `run_action` reports
 `transitively_reachable_capabilities = []`, so T3 does NOT credit
 `run_action` with the `Net` or `Fs` authority -- it only reports
@@ -98,4 +97,5 @@ single handler. Even though `_ACTIONS` itself is a constant dict
 data, so the lookup is unresolved. This is near the opaque end of
 the spectrum, alongside `reflect_dispatch`, and is the direct
 analogue of why deserialization CVEs are dangerous: the data
-chooses the code. Capa bounds it by construction.
+chooses the code. In Capa the registration site's signature names the
+authority the handlers can use.

@@ -52,7 +52,7 @@ reached through the assembled stage, exactly as in the Python.
 
 In Capa the authority is named:
 
-* `stage_uppercase` is provably pure (a bare `Fun` value, no
+* `stage_uppercase` holds no capability (a bare `Fun` value, no
   captured capability).
 * `make_audit_stage` carries `Fs`, `make_token_stage` carries
   `Env` (the factories that capture the capability into the stage

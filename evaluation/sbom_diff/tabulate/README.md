@@ -38,8 +38,8 @@ Three reasons:
    `slugify/` shows pip *over-attributing* (`re` + `unicodedata`
    as opaque dependencies for a pure function), this pair shows
    pip *under-attributing*: silence is not equivalent to a
-   per-function purity proof. Capa proves each helper pure
-   individually and the SBOM names them.
+   per-function capability record. Capa records each helper as
+   holding no capability, and the SBOM names them.
 
 ## Functions
 

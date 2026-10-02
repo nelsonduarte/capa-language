@@ -44,7 +44,7 @@ Three reasons:
    `humanize/`, `csv_parser/`) all do pure string transformation
    over flat character sequences; this pair adds a recursive
    pattern matcher to the pure-case panel. The Capa version
-   proves the recursive matcher pure, with the same per-function
+   declares no capability for the recursive matcher, with the same per-function
    attribution as the rest of the pure cases.
 3. **It is the structural-asymmetry case taken further than
    slugify.** Capa has no regex stdlib at all, so the Capa
