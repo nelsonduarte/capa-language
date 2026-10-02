@@ -260,8 +260,8 @@ class TestRawStringLiterals(unittest.TestCase):
         self.assertEqual(toks[0].value, r"\n\t\\")
 
     def test_windows_path(self):
-        toks = lex(r'r"C:\Users\nelso\file.txt"')
-        self.assertEqual(toks[0].value, r"C:\Users\nelso\file.txt")
+        toks = lex(r'r"C:\Users\noone\file.txt"')
+        self.assertEqual(toks[0].value, r"C:\Users\noone\file.txt")
 
     def test_regex_pattern(self):
         toks = lex(r'r"\d+\.\d+"')
