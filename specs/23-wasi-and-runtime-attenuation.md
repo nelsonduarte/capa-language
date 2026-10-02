@@ -32,16 +32,18 @@ Depends on:
 ## 1. WASI as the execution layer of authority
 
 Capa's capability model is static: authority enters through `main`'s
-signature, propagates explicitly, and the checker proves no function
-touches a capability it did not receive. On the Wasm backend that
-compile-time proof needs a runtime enforcement mirroring it: a Wasm
+signature, propagates explicitly, and the checker refuses a function
+that calls a built-in capability that is not in scope. On the Wasm
+backend that compile-time check needs a runtime enforcement mirroring
+it: a Wasm
 guest only reaches an effect if the host satisfies the corresponding
 import.
 
 WASI (the WebAssembly System Interface) is capability-based by
-design: a WASI component has no ambient authority over the filesystem
-or the network; it receives PREOPENED descriptors granted by the host
-at instantiation, and cannot open anything outside them. That model is
+design: its stated principle is that a component has no ambient
+authority over the filesystem or the network, and filesystem access
+goes through PREOPENED descriptors the host grants at instantiation.
+That model is
 Capa's own, and the `--wasi` mode exploits the coincidence: instead of
 the `capa:host` host mediating each `Fs.read` through a Python
 callback, the component imports `wasi:filesystem` and wasmtime itself

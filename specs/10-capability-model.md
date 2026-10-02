@@ -4,8 +4,8 @@
 > how it propagates: capabilities as unforgeable values; the absence of
 > ambient authority (no global, `import`, constructor or literal
 > produces a capability; the runtime hands all authority to `main`);
-> the propagation discipline (parameter-only, no aliasing, no returning
-> of built-ins, no fabrication); the elimination of the confused
+> the propagation discipline (no aliasing, no returning of built-ins,
+> no fabrication); the elimination of the confused
 > deputy; and the authority-chain-in-the-types property, verified
 > against the manifest. The 10 concrete capabilities are in
 > [11-builtin-capabilities.md](11-builtin-capabilities.md); attenuation
@@ -21,9 +21,9 @@ Depends on: [02-authority-in-types.md](02-authority-in-types.md).
 
 ## 1. Where authority enters: the runtime hands everything to `main`
 
-A Capa program has no way to invoke an external effect (print, read a
-file, open a socket, read the environment, run a process) except
-through a **capability value** some function received. These values do
+A Capa program calls a built-in capability (to print, read a file,
+open a socket, read the environment, run a process) only through a
+**capability value** that reached the calling function. These values do
 not appear in the middle of the program: they enter at a single point,
 the entry point's signature. The runtime (the Python backend or the
 Wasm host) constructs the capabilities `main` asks for, one per
@@ -54,14 +54,15 @@ Hello, Rui
 
 The two backends produce identical output. `main` received `Stdio` from
 the runtime and propagated it to `greet` by explicit argument. There is
-no other door: a capability `main` does not request in its signature is
-never constructed.
+no other door: a built-in capability `main` does not request in its
+signature is never constructed.
 
-## 2. There is no ambient authority
+## 2. No ambient access to the built-in capabilities
 
 **Ambient authority** is any authority a function exercises without
 having received it: a global `open`, an `import socket`, a constructor
-that fabricates it. Capa has none of these doors.
+that fabricates it. Capa has none of these doors for its ten built-in
+capabilities.
 
 - **No global produces it.** There is no capability in the global scope
   a leaf function could reach. A reference to a capability name that
@@ -97,15 +98,23 @@ deputy_leak.capa: 1 error
 ```
 
 `render` receives no `Net`, so the name `net` does not exist in its
-body. The only way for `render` to open the network would be to declare
-`net: Net` in its signature, and then the fact would be visible in
-`render` and in every call chain up to `main`.
+body. `render` cannot call `Net` unless a `Net` reaches it, and the
+compiler refuses the program otherwise; for this `render`, whose only
+parameter is a `String`, that means declaring `net: Net` in its
+signature.
 
 ## 3. The propagation discipline
 
-Authority moves in exactly one way: **passed as an argument**. Three
-static rules close the alternative routes. All are enforced by the
-analyzer at compile time (`--check`), not by a runtime monitor.
+A built-in capability value moves by being **passed as an argument**,
+or by being captured in a closure or held in a field of a
+capability-bearing struct that is then passed
+([08-functions-closures-modules.md](08-functions-closures-modules.md)
+section 5.1,
+[13-user-defined-capabilities.md](13-user-defined-capabilities.md)).
+Three static rules close the other routes. All are enforced by the
+analyzer at compile time (`--check`), not by a runtime monitor. A
+signature that carries a function value is marked in the manifest as
+not provable from its types (section 5).
 
 **(a) A capability cannot be aliased into a binding.** Copying a
 capability into a `let`/`var` is refused; the capability keeps existing
@@ -130,9 +139,8 @@ alias_cap.capa: 1 error
 
 **(b) A built-in capability cannot be returned by a function.**
 Built-in capabilities only flow "inward" (by parameter), never
-"outward" (by return). This guarantees that the chain from `main` to
-any capability value is a sequence of passings visible at every link,
-with no hidden link where a regular function "produces" authority.
+"outward" (by return). No regular function "produces" a built-in
+capability: a function that holds one was handed it.
 
 ```capa
 // return_cap.capa
@@ -165,11 +173,10 @@ type `Fs` in a program is the one that entered through `main` and was
 passed on (or an attenuation of it, see
 [12-attenuation.md](12-attenuation.md)).
 
-JUDGEMENT. The three rules together give the central property: **the
-authority a function can exercise is exactly what it receives in its
-parameters**. There is no channel (global, import, constructor, alias,
-return) through which unpassed authority enters. This is why a
-function's signature is a provable upper bound on what it can do.
+JUDGEMENT. The three rules together give the central property: **a
+function can call a built-in capability only if a value of it reached
+the function**. No global, import, constructor, alias or return yields
+one.
 
 ## 4. Eliminating the confused deputy
 
@@ -180,14 +187,15 @@ deputy holds authority that comes not from the request but from the
 environment, and cannot separate the legitimate request from the
 abusive one.
 
-In Capa the pattern disappears by construction. A component acts only
-with the authority passed to it with the request; if the caller has no
-`Fs`, it cannot pass `Fs`, and the deputy has no ambient `Fs` to use
-instead. A function without capability parameters is, demonstrably,
-pure with respect to external effects.
+In Capa the pattern is closed for the built-in capabilities. A
+component can call only the built-in capabilities handed to it with the
+request; if the caller has no `Fs`, it cannot pass `Fs`, and the deputy
+has no ambient `Fs` to use instead. A function without capability
+parameters, and without function-typed parameters, holds no built-in
+capability and cannot call one.
 
-`render` computes a string and receives no capability; it can have no
-external effects, and the compiler accepts it:
+`render` computes a string and receives no capability; it can call no
+built-in capability, and the compiler accepts it:
 
 ```capa
 // deputy.capa
@@ -213,12 +221,12 @@ thing, which is the definition of the object-capability property (see
 
 ## 5. The authority chain in the types
 
-Because authority lives in the types and flows only by parameter, the
-compiler can **derive** (not declare) each function's authority surface
-by reachability over the call chain. `--manifest` records, per
-function, the capabilities declared in the signature, those
-transitively reachable through the functions it calls, and the
-**provably excluded** ones.
+Because built-in authority is carried by typed values, the compiler can
+**derive** (not ask the author to declare) a per-function capability
+record from the type-checked program. `--manifest` records, per
+function, the capabilities declared in the signature, those the
+manifest pass finds reachable through its signature types and body, and
+the **provably excluded** ones.
 
 An excerpt of the manifest of `thread.capa` (section 1):
 
@@ -236,21 +244,26 @@ $ python -m capa --manifest thread.capa
 ...
 ```
 
-`provably_excluded_capabilities` is the strong statement: the nine
-capabilities `greet` **demonstrably does not reach**, derived from the
-types and not from the author's word. `authority_provable_from_types:
-true` signals that the whole surface is provable from the signatures.
-This is the fact the supply-chain artefacts (SBOM, VEX, provenance)
-carry; the complete envelope structure is in
+`provably_excluded_capabilities` lists the nine capabilities the
+manifest pass found no path to from `greet`'s signature types and body;
+it is derived by the compiler, not written by the author. For `greet`,
+which receives only `Stdio` and no function value, the nine exclusions
+follow from the rule that a built-in capability cannot be constructed,
+aliased or returned. `authority_provable_from_types: true` means the
+function crosses no `Unsafe` and no function type is reachable from its
+signature or from a value its body constructs. The manifest, CycloneDX
+and SPDX carry the exclusion set; VEX and provenance do not. The
+complete envelope structure is in
 [29-capability-manifest.md](29-capability-manifest.md).
 
 ## 6. What the model guarantees, and where it ends
 
 - **Guarantees** (static, every program that passes `--check`): no
-  function exercises authority it did not receive by parameter;
-  authority cannot be aliased, returned (built-ins) or fabricated; the
-  authority surface is derivable from the types. This is the core
-  formalized in Agda (see [`proofs/README.md`](../proofs/README.md)).
+  function calls a built-in capability that is not in scope; a built-in
+  capability cannot be constructed, aliased into a binding or returned.
+  The `lambda_cap` core of these rules is formalized in Agda (see
+  [`proofs/README.md`](../proofs/README.md)); the translation from full
+  Capa to that core is not mechanized.
 - **Does not guarantee by itself** the integrity of the runtime that
   materializes the capabilities. On the Python backend the host is
   **trusted** (capabilities are Python objects). On the Wasm backend

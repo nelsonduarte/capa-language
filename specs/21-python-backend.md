@@ -33,11 +33,10 @@ confinement guarantee is as strong as the integrity of the interpreter
 and the support runtime (`capa/runtime/`). The narrower runtime
 confinement, by WASI imports, belongs to the Wasm backend
 ([23-wasi-and-runtime-attenuation.md](23-wasi-and-runtime-attenuation.md)).
-What the Python backend guarantees by construction is not external
-interposition; it is that authority only enters through the signature:
-a function that did not receive the capability has no way to obtain
-it, because the emitted Python exposes no global that holds one
-(section 4).
+What the Python backend provides is not external interposition; it is
+that no global holds a capability: a function can call a built-in
+capability only on a value that reached it, because the emitted Python
+exposes no global that holds one (section 4).
 
 ## 2. The two Python emission paths
 
@@ -200,15 +199,16 @@ if __name__ == "__main__":
 ```
 
 This is the central point of the authority model materialized in the
-emitted Python. The only way for a function to obtain a capability is
-to RECEIVE it. The `Fs()`, `Stdio()` instances are created ONCE, in
-the bootstrap, and propagated from there by explicit argument. There
+emitted Python. A function obtains a built-in capability only by
+being HANDED one. The `Fs()`, `Stdio()` instances are created ONCE, in
+the bootstrap, and propagated from there (as arguments, or inside
+closures and capability-bearing structs that are passed on). There
 is no global capability object, neither in the emitted file nor in the
 imported runtime: importing `capa.runtime` grants no authority
 ([`capa/runtime/__init__.py`](../capa/runtime/__init__.py) line 29:
 a program that imports the runtime "does not gain capacities by a
-simple import"). A function without the parameter has no way to reach
-the authority: the same discipline the analyzer refuses statically
+simple import"). A function that was handed none has no global to
+reach one through: the same discipline the analyzer checks statically
 before the program runs (see
 [10-capability-model.md](10-capability-model.md)).
 

@@ -1,8 +1,9 @@
 # 16. IFC: the analyzer, the tiers and the cross-function analysis
 
-> **What this chapter covers.** How IFC is enforced: the two tiers
-> (the warn-then-enforce default versus the fail-closed
-> `@strict_ifc()` attribute) over the same flow; what strict mode adds
+> **What this chapter covers.** How IFC is checked: the two tiers
+> (the warn-only default versus the `@strict_ifc()` attribute, under
+> which a detected flow is a hard error) over the same flow; what
+> strict mode adds
 > (implicit flows); how the cross-function analysis works (per-function
 > summaries and their channels) and the field-qualified precision; the
 > sibling attribute `@constant_time` (CWE-208) with its four rejection
@@ -21,7 +22,8 @@ Depends on: [15-ifc-model-and-labels.md](15-ifc-model-and-labels.md).
 
 ## 1. Two tiers over the same flow
 
-IFC is **warn-then-enforce**. A `@secret -> public sink` flow is:
+IFC is **warn-then-enforce**. A `@secret -> public sink` flow the
+analysis detects is:
 
 - a **non-fatal warning by default** (unannotated code is untouched,
   and annotated code surfaces the disclosure without breaking the
@@ -78,12 +80,12 @@ strict.capa: 1 error
 The diagnostic text is the same; only the severity (`warning` versus
 `error`) and the exit code (0 versus 1) change. A flow that is merely
 warned about still compiles and still runs: never read the default
-tier as "cannot leak".
+tier, or an accepted `@strict_ifc` function, as "cannot leak".
 
 ## 2. What `@strict_ifc` adds beyond hardening
 
 Turning the warning into an error is not the only difference. Under
-`@strict_ifc` the analyzer additionally enforces:
+`@strict_ifc` the analyzer additionally checks:
 
 - **Implicit (control-flow) flows.** A sink that runs inside a branch
   whose condition is `@secret` leaks the bit "which branch was taken",
@@ -91,7 +93,8 @@ Turning the warning into an error is not the only difference. Under
   `@strict_ifc`**: it is subtle and pervasive, and at the warn tier it
   would be noisy and undermine `declassify`. The default tier stays
   focused on high-value explicit DATA leaks; `@strict_ifc` turns on
-  full noninterference (explicit plus implicit, as hard errors).
+  the implicit-flow checks and makes every detected flow, explicit or
+  implicit, a hard error. It is the tier `lambda_if` models.
 - **The pc-label join.** Under strict, the control-flow label (the
   pc-label) joins into the label of values computed inside
   secret-conditioned branches.
@@ -121,10 +124,11 @@ implicit_strict.capa: 1 error
 The same program without the attribute passes `--check` clean (exit 0,
 no warning): implicit flows are a strict-only check.
 
-JUDGEMENT. This is why `@strict_ifc` is the only tier where the
-noninterference guarantee (Theorem 3 of
+JUDGEMENT. This is why `@strict_ifc` is the tier the noninterference
+model (Theorem 3 of
 [`proofs/CapaNoninterference.agda`](../proofs/CapaNoninterference.agda))
-is claimed: only there are implicit flows closed.
+is written against: only there are implicit flows checked. Theorem 3
+is a statement about `lambda_if`, not about the analyzer (section 8.1).
 
 ## 3. `declassify` closes the flow in both tiers
 
@@ -140,8 +144,8 @@ declass.capa: ok (2 items, 10 expressions typed, 6 bindings)
 
 ## 4. The cross-function analysis: per-function summaries
 
-The intra-procedural pass of `_ifc.py` catches a `@secret` reaching a
-sink INSIDE one body. Crossing a function boundary is the job of
+The intra-procedural pass of `_ifc.py` reports a `@secret` it finds
+reaching a sink INSIDE one body. Crossing a function boundary is the job of
 [`capa/analyzer/_ifc_summary.py`](../capa/analyzer/_ifc_summary.py).
 For every user-defined function and method it computes a summary, at a
 least fixpoint over the call graph (monotone: starts empty, grows
@@ -169,11 +173,10 @@ consulted at the call site):
 JUDGEMENT (the "env / content / return" naming). This is a reference
 characterization of the three channels the summary computes; the code
 does not use exactly these three names as labels, but the three
-structures correspond one-to-one. The analysis is a sound
+structures correspond one-to-one. The dispatch rule is an
 over-approximation: a method call whose receiver type is not known
-statically is matched against every user method of that name, so it
-never under-reports on the flows it models (the module docstring
-states the direction is never more permissive).
+statically is matched against every user method of that name (the
+module docstring states the direction is never more permissive).
 
 A `@secret` passed to an UNannotated parameter that reaches a sink
 inside the callee is caught at the call site:
@@ -405,21 +408,21 @@ the same mechanism the other entries use.
 
 ### 8.1 `@strict_ifc`
 
-Under `@strict_ifc`, for a program that passes `--check`: no `@secret`
-reaches a public sink without `declassify`, including the implicit
-flows of section 2 and the cross-function flows caught by the
-summaries, on the flows the analysis models. The analysis is a sound
-over-approximation on those flows (it can over-report on a non-flow;
-its tightening direction is stated in the `_ifc_summary.py`
-docstring). The noninterference theorems (Theorem 3 and 4 in
+Under `@strict_ifc`, every secret-to-sink flow the analysis detects,
+including the implicit flows of section 2 and the cross-function flows
+found through the summaries, is a hard error. A program that passes
+`--check` is not thereby proved free of such flows. The analysis can
+also over-report on a non-flow (its tightening direction is stated in
+the `_ifc_summary.py` docstring). The noninterference theorems
+(Theorem 3 and 4 in
 [`proofs/CapaNoninterference.agda`](../proofs/CapaNoninterference.agda))
 are mechanized for the core `lambda_if` calculus of
 [`docs/semantics.md`](../docs/semantics.md) section 9, not for the
 full implementation. The implementation-level scope is the public
 register of [`docs/trust-model.md`](../docs/trust-model.md): the
 analysis is source-level, there is no points-to analysis, and the
-discipline is opt-in per function (outside `@strict_ifc` a flow warns
-and the build passes).
+discipline is opt-in per function (outside `@strict_ifc` a detected
+flow warns and the build passes).
 
 ### 8.2 `@constant_time`
 

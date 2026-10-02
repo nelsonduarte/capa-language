@@ -1,8 +1,8 @@
 # 29. The capability manifest and composition
 
-> **What this chapter covers.** The supply-chain artefacts born from
-> the authority graph the analyzer already computes: the per-program
-> manifest (`--manifest`), its signable canonical envelope
+> **What this chapter covers.** The supply-chain artefacts the
+> `capa/manifest/` package builds from the type-checked program: the
+> per-program manifest (`--manifest`), its signable canonical envelope
 > (`--manifest-digest`), the composed SBOM of the whole PRODUCT
 > (`--compose-sbom`) with the dependency DAG and the
 > authority-UNKNOWN element, the authority changelog
@@ -30,14 +30,15 @@ Depends on: [10-capability-model.md](10-capability-model.md),
 
 ## 1. The subsystem: an authority graph turned artefact
 
-The `capa/manifest/` package turns the analyzer's result into a set of
-machine-checkable artefacts. The central idea, in the package's own
-docstring: "Other languages cannot emit this because the authority
-graph is not in their type system; in Capa, it falls out of the
-analyser for free". The capability discipline makes
-`declared_capabilities` an UPPER bound on what a function can exercise
-(no cap a callee touches can exist without being in scope here to be
-passed); the manifest reads that bound and records it.
+The `capa/manifest/` package builds a set of machine-readable
+artefacts from the linked program after the analyzer accepts it: a
+manifest pass reads each function's capability-typed parameters and
+what its signature types and body reach. The analyzer is the gate (it
+refuses a function that calls a capability that is not in scope, and a
+refused program yields no artefact); the capability sets themselves
+are computed by the manifest pass, not by the analyzer. The sets
+record the capabilities a function holds, which a given run need not
+exercise.
 
 The subsystem is layered. Each layer rests on the previous one and has
 its own independent `schema_version`, so a consumer can refuse a shape
@@ -60,7 +61,7 @@ The builder imports `CAPABILITY_NAMES` from `capa.typesys`, the same
 set as [11-builtin-capabilities.md](11-builtin-capabilities.md). A
 function's `provably_excluded_capabilities` is literally
 `{all capability names} - {reachable}`, so any new built-in capability
-automatically enters the exclusion proof.
+automatically enters the exclusion set.
 
 ---
 
@@ -125,21 +126,23 @@ The regulatory core of each record is four capability views:
   through the CLI only the factory shape reaches the manifest. Pinned
   in [`tests/test_manifest_ceiling_user_caps.py`](../tests/test_manifest_ceiling_user_caps.py).
 - **`provably_excluded_capabilities`**: `{all caps} - {reachable}`,
-  the capabilities the function PROVABLY cannot use. This is the
-  strong-guarantee field regulatory tooling consumes.
+  the capabilities the manifest pass found no path to from the
+  signature types and body. It is a derived set, not a machine-checked
+  proof.
 - **`has_unsafe`**: whether the function crosses the `Unsafe` hatch.
 
-**The exclusion proof degrades to empty when it cannot be honoured.**
+**The exclusion set is emptied when the pass cannot stand behind it.**
 `provably_excluded_capabilities` is only filled when
 `authority_provable_from_types` is true; that signal is
-`not (has_unsafe or has_fun_in_sig or sig_unprovable)`. The proof is
-VOIDED (empty list, never a false exclusion) in three documented
-cases: (1) `Unsafe` in scope, which can bypass the discipline; (2) a
-`Fun(...)` type in the signature (parameter, return, or nested
-generic), because the caller injects authority the types never named
-by passing a closure that captures a capability; (3) a signature type
-that reaches a `Fun` through an impl. JUDGEMENT: this is a fail-safe
-choice, the opposite of over-claiming.
+`not (has_unsafe or has_fun_in_sig or sig_unprovable or body_unprovable)`
+([`capa/manifest/_funrec.py`](../capa/manifest/_funrec.py)). The list
+is emptied in the documented cases: (1) `Unsafe` in scope, which can
+bypass the discipline; (2) a `Fun(...)` type in the signature
+(parameter, return, or nested generic), because the caller injects
+authority the types never named by passing a closure that captures a
+capability; (3) a signature type, or a value the body constructs, that
+reaches a `Fun` through an impl or a field. JUDGEMENT: a fail-safe
+choice for those cases.
 
 ### 2.2 What else the record carries
 
@@ -294,8 +297,8 @@ The three pieces, in the module docstring's order:
 2. **The package DAG.** Built by reading the root `capa.toml`'s
    declared `[dependencies]` and RECURSIVELY each resolvable
    dependency's own `capa.toml` under `vendor/<name>`.
-   `[dev-dependencies]` are excluded: test/tooling-only, never part of
-   the shipped product.
+   `[dev-dependencies]` are excluded from the DAG, as declared
+   test/tooling-only dependencies.
 3. **The bottom-up join** over a lattice whose carrier is {capability
    set} PLUS a distinguished TOP element, "authority unknown / trusted
    boundary".
@@ -458,11 +461,12 @@ produce an EMPTY diff.
 
 **How widening versus narrowing is decided** (module docstring): a
 cap that ENTERED `transitively_reachable` = ADDED = widening; a cap
-that LEFT `provably_excluded` = GUARANTEE LOST = widening (the subtle,
-high-value signal: it fires even when the cap is not named in the new
-signature, for example when the function gained an `Unsafe` /
-higher-order parameter that voids the whole exclusion proof; a
-scanner does not see this); the inverses are narrowings. Only
+that LEFT `provably_excluded` = an exclusion entry lost (the diff's
+`guarantee_lost` field) = widening (the subtle, high-value signal: it
+fires even when the cap is not named in the new signature, for example
+when the function gained an `Unsafe` / higher-order parameter that
+empties the whole exclusion set; a dependency-level scanner does not
+see this); the inverses are narrowings. Only
 EXPORTED (`pub`) functions appear per function; a private widening
 contributes to the product's COMPOSED set delta (subject to set-union
 cancellation). A product transition authority-KNOWN -> UNKNOWN (a new
@@ -531,7 +535,7 @@ rules over a FIXED, enumerated set of predicate kinds
 | `forbid-dependency` | a named package may not depend (directly or transitively) on another |
 | `no-unresolved-dependencies` | the product may have no unresolved dependency |
 | `no-declassification` | a named package (or the product) must have ZERO audited `@secret -> @public` declassifies |
-| `no-secret-egress` | no secret value may reach a declared egress capability (via audited declassify+egress co-residence OR a raw unaudited secret-to-sink flow the IFC analysis proved) |
+| `no-secret-egress` | no package may both hold an audited `declassify` site and a declared egress capability, and no package may carry an unaudited secret-to-sink flow that the IFC analysis recorded against a declared egress capability |
 
 The parser is strict/closed: an unknown `kind` or a key outside the
 allowed union for that kind is a hard error, never a silently ignored
@@ -610,17 +614,19 @@ content-addressable artefact.
   directions), and `--check-policies` / `--conformance-report`; the
   line numbers and schema values in `capa/manifest/`. JUDGEMENT: the
   characterizations of WHY a choice is sound (the `has_unsafe`-only
-  roll-up versus the self-scoped ceiling check; the voided exclusion
-  proof instead of over-claiming; the diff's capability-universe
+  roll-up versus the self-scoped ceiling check; the emptied exclusion
+  set; the diff's capability-universe
   fail-safe) are readings of the cited docstrings and comments, not
   theorems re-proved here.
-- **Relation to the formal proofs.** `--manifest` corresponds to
-  Theorem 2 (Manifest Completeness) of
-  [`proofs/README.md`](../proofs/README.md), proved for the core
-  `lambda_cap` calculus: the manifest declares exactly the capability
-  footprint a term can exercise. The gated variant
-  `CapaManifestExact.agda` does NOT yet prove surface exactness, and
-  `proofs/README.md` says so. Composition (S2/S3), the diff and the
+- **Relation to the formal proofs.** Theorem 2 (Manifest
+  Completeness) of [`proofs/README.md`](../proofs/README.md) proves,
+  for the core `lambda_cap` calculus, that a closed program's trace
+  uses only capability classes in its initial environment: an upper
+  bound, not an equality. `--manifest` is the implementation's
+  per-function record; the translation from full Capa to `lambda_cap`
+  is not mechanized, so the theorem is not a theorem about this
+  record. The gated variant `CapaManifestExact.agda` does NOT prove
+  surface exactness, and `proofs/README.md` says so. Composition (S2/S3), the diff and the
   policies have NO mechanized proof; they are constructions over the
   manifest, verified by test and execution.
 - **NOT VERIFIED by execution.** (1) The fail-closed guard over

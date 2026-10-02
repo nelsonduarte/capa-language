@@ -185,8 +185,7 @@ capability wrapped in a container (`-> List<Logger>`). That is why
 
 ## 5. How they appear in the manifest
 
-The manifest recognizes user capabilities as first-class citizens and
-keeps the authority chain explicit: a function that declares only
+The manifest records user capabilities: a function that declares only
 `SendEmail` shows `Net` in its transitively reachable capabilities,
 because the implementor wraps it.
 
