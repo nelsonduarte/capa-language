@@ -68,6 +68,28 @@ def _first_error_line(run: CapaRun) -> str:
     return run.combined.splitlines()[0] if run.combined else ""
 
 
+def _without_builder_path(line: str, path: Path, label: str) -> str:
+    """``line`` with the temp file's path replaced by ``label``.
+
+    The compiler's diagnostics begin with the path it was given, and
+    that path is this machine's temporary directory plus a random
+    name. ``results.csv`` is a committed artefact, so the reason must
+    not carry either: the row names the attack instead.
+
+    Fails closed. If the random file name survives the replacement,
+    the compiler printed the path in a spelling this function does not
+    know, and recording the line would put a machine path in the CSV.
+    """
+    for spelling in (str(path), str(path.resolve())):
+        line = line.replace(spelling, label)
+    if path.stem in line:
+        raise RuntimeError(
+            "the diagnostic names the temporary file in a form the "
+            "harness does not recognise; refusing to record it"
+        )
+    return line
+
+
 def _run_attack(category: str, attack) -> Result:
     """Write the attack source to a temp file, invoke
     ``capa --check``, and classify the outcome."""
@@ -82,7 +104,12 @@ def _run_attack(category: str, attack) -> Result:
         path.unlink(missing_ok=True)
 
     rejected = not run.ok
-    reason = _first_error_line(run) if rejected else "(none; program was ACCEPTED)"
+    reason = (
+        _without_builder_path(
+            _first_error_line(run), path, f"{attack.attack_id}.capa",
+        )
+        if rejected else "(none; program was ACCEPTED)"
+    )
     return Result(
         category=category,
         attack_id=attack.attack_id,
