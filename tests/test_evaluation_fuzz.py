@@ -94,10 +94,15 @@ class TestRejectionReasonIsPortable(unittest.TestCase):
 
     def test_every_spelling_of_the_path_is_replaced(self):
         with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "tmpabc123.capa"
+            # A path that is not in its resolved form on any platform,
+            # so the two spellings are certain to differ and each
+            # replacement is exercised on its own.
+            (Path(td) / "sub").mkdir()
+            path = Path(td) / "sub" / ".." / "tmpabc123.capa"
             path.write_text("", encoding="utf-8")
+            self.assertNotEqual(str(path), str(path.resolve()))
             for spelling in (str(path), str(path.resolve())):
-                with self.subTest(spelling=spelling == str(path)):
+                with self.subTest(given=spelling == str(path)):
                     line = f"{spelling}:2:14: error: no ({spelling})"
                     self.assertEqual(
                         harness._without_builder_path(line, path, "a.capa"),
