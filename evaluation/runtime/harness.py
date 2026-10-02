@@ -18,9 +18,10 @@ temp directory per trial. RSS is sampled via ``psutil.Process``
 at ~100Hz from a sidecar thread; the peak across the run is
 recorded.
 
-Workloads live in ``evaluation/runtime/workloads.py``. They
-hard-code paths to the downstream demo repos (which Nelson keeps
-under ``~/Desktop/repos/`` per ``project_repo_layout`` memory).
+Workloads live in ``evaluation/runtime/workloads.py``. Each runs
+inside a downstream demo repo; the directory holding those
+checkouts is named by ``CAPA_DEMO_REPOS`` and defaults to a
+``repos`` directory next to this compiler checkout.
 Missing repos are skipped with a warning, so the harness runs
 on any machine that has the demos cloned without rewriting
 config.
