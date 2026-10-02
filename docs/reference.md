@@ -443,8 +443,10 @@ the scrutinee's type arguments.
 
 Capabilities are primitive types representing access to system
 resources (`Stdio`, `Fs`, `Env`, `Clock`, `Random`, `Net`, `Db`,
-`Proc`, `Serve`, `Unsafe`). They are only accessible via function
-parameters, there are no global instances. `Serve` and `Unsafe` run
+`Proc`, `Serve`, `Unsafe`). There are no global instances: a
+capability enters a function as a parameter, inside a closure that
+captured one, or as a field of a capability-bearing struct (6.2).
+`Serve` and `Unsafe` run
 on the Python backend only; `capa --wasm` rejects a program whose
 signatures reach either (see [`stdlib.md`](stdlib.md)).
 
@@ -479,7 +481,7 @@ discover consumes in the first iteration.
 
 ```capa
 fun main(stdio: Stdio, fs: Fs)            // multiple
-fun pure(x: Int) -> Int                   // no capabilities (pure)
+fun pure(x: Int) -> Int                   // no capabilities
 fun with_consume(consume cap: MyCap)      // ownership transfer
 ```
 
@@ -536,9 +538,10 @@ single auditable secret-to-public bridge. It is identity at runtime
 and relabels its result `@public`; the `reason` must be a named
 string literal so the manifest can record it. Declassifying a value
 that is not `@secret` is reported as a no-op warning and is excluded
-from the SBOM record. Every *genuine* `@secret -> @public` call site
-is recorded in the SBOM as `declassifications` per function and
-`declassification_sites` in the summary. A `declassify` written
+from the manifest record. Every *genuine* `@secret -> @public` call
+site is recorded in the Capa manifest (`--manifest`) as
+`declassifications` per function and `declassification_sites` in the
+summary. A `declassify` written
 outside any function body, in a top-level `const` initializer, is
 recorded too, under `module_declassifications`; the summary count is
 the module-wide total across both. Identity, not the name, decides:
@@ -567,10 +570,14 @@ capability dispatch. No explicit `@secret` parameter is required for
 the flow to be tracked. Struct labels are per-field: reading a public
 field of a struct that also holds a secret is no longer over-tainted;
 lists, tuples, and maps remain whole-aggregate. Under `@strict_ifc`
-the analyzer additionally enforces implicit flows, secrets that
+the analyzer additionally checks implicit flows, secrets that
 influence control through `if` / `while` / `match` guards and the
 assignments they govern; the default (warn) tier stays focused on
 explicit data flows.
+
+At both tiers the check reports the flows the analysis detects. A
+program that passes it, with or without `@strict_ifc`, is not thereby
+proved free of secret-to-sink flows.
 
 `declassify` is the audited downgrade. The model is backed by a
 machine-checked Agda noninterference proof (termination-insensitive,
@@ -854,7 +861,7 @@ Capa transpiles to Python 3.10+, but the semantics differ:
 
 | Capa | Python |
 |---|---|
-| Capabilities required for I/O | Globals such as `print`, `open` |
+| File, network and console methods live on capability values | Globals such as `print`, `open` |
 | Types checked at compile time | Duck typing |
 | Exhaustive `match` checked | `match` at runtime, no exhaustiveness |
 | Or-patterns with consistent bindings | Or-patterns without bindings |
