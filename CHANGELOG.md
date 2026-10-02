@@ -645,7 +645,7 @@ breaking changes and the discipline is still being shaped.
 
 - *The CycloneDX and SPDX SBOMs now carry the resolved `capa.toml`
   dependencies.* `capa --cyclonedx` (CycloneDX 1.6) and `capa --spdx`
-  (SPDX 2.3) emit one component per resolved dependency, each with its name,
+  (SPDX 2.3) emit one component per resolved runtime dependency, each with its name,
   version, and a single package-URL built by the one purl producer
   ([`capa/manifest/_compose.py`](capa/manifest/_compose.py)): a native
   `pkg:github/<owner>/<repo>@<revision>` purl for a github-hosted git

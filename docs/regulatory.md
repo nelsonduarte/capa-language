@@ -27,7 +27,7 @@ The rows below list what the compiler at this revision emits.
 | Capa artefact | Flag | What it carries |
 |---|---|---|
 | Capability manifest | `--manifest` | Per-function declared capabilities, attributes, signatures, user-defined cap declarations |
-| CycloneDX 1.6 SBOM | `--cyclonedx` | The per-function capability sets carried as `capa:`-namespaced `properties[]` entries, one `library` component per dependency declared in `capa.toml` (a purl for git deps, `pkg:github` for github-hosted ones) with a `dependencies[]` graph, and an optional `vulnerabilities[]` array |
+| CycloneDX 1.6 SBOM | `--cyclonedx` | The per-function capability sets carried as `capa:`-namespaced `properties[]` entries, one `library` component per runtime dependency (`[dependencies]`) (a purl for git deps, `pkg:github` for github-hosted ones) with a `dependencies[]` graph, and an optional `vulnerabilities[]` array |
 | SPDX 2.3 SBOM | `--spdx` | Same metadata and the same per-dependency components from one source, each carrying its purl as an `externalRefs[]` entry with `DEPENDS_ON` relationships; SPDX `annotations[]` shape, Linux Foundation alignment |
 | CycloneDX VEX | `--vex` | Per-function exploitability claims from `@vex(cve, status, justification, detail)` attributes |
 | SLSA L1 provenance | `--provenance` | in-toto Statement v1 plus SLSA Provenance v1.0 predicate, source SHA-256 |
@@ -72,7 +72,7 @@ Line endings do not vary by operating system. These artefacts (and the `--manife
 
 The CRA entered into force on 10 December 2024 and applies most of its obligations from 11 December 2027. It binds manufacturers placing products with digital elements on the EU market. The clauses that matter most for a compiler are Annex I Part I (the essential cybersecurity requirements: secure by default, attack-surface minimisation, data minimisation, exploitation mitigation, integrity protection), Annex I Part II (1) (machine-readable SBOM covering at least top-level dependencies), and Annex I Part II (2)-(7) (vulnerability handling processes).
 
-The strongest fits land in Part II (1) on SBOM, where CycloneDX and SPDX each list the dependencies declared in `capa.toml` with their purls; in Part I (2)(b) on secure-by-default, where a function holds no built-in capability unless it is handed one; in Part I (2)(g) on data minimisation, where least authority is the language model; and in Part I (2)(j) on attack-surface minimisation, where the function's signature is the declared attack surface. The article-by-article view lives in [`docs/cra.md`](cra.md).
+The strongest fits land in Part II (1) on SBOM, where CycloneDX and SPDX each list the runtime dependencies (`[dependencies]`) with their purls; in Part I (2)(b) on secure-by-default, where a function holds no built-in capability unless it is handed one; in Part I (2)(g) on data minimisation, where least authority is the language model; and in Part I (2)(j) on attack-surface minimisation, where the function's signature is the declared attack surface. The article-by-article view lives in [`docs/cra.md`](cra.md).
 
 What Capa does not address: vulnerability disclosure processes, the 24-hour incident notification window, security-update distribution, and the conformity assessment paperwork itself.
 
@@ -142,8 +142,8 @@ The six domains are inventory, SBOM, build environment, package management, comp
 
 | Domain | What Capa provides |
 |---|---|
-| 1. Inventory | A per-function inventory of the program, plus one component per dependency declared in `capa.toml`; whether that inventory is complete for a product is the organisation's to establish |
-| 2. SBOM | CycloneDX 1.6 and SPDX 2.3 documents that validate against the official schemas, each with a unique identifier and a timestamp. The signing controls need an external signer, license and file-hash content is not emitted, and the inventory lists the dependencies declared in `capa.toml` |
+| 1. Inventory | A per-function inventory of the program, plus one component per runtime dependency (`[dependencies]`); whether that inventory is complete for a product is the organisation's to establish |
+| 2. SBOM | CycloneDX 1.6 and SPDX 2.3 documents that validate against the official schemas, each with a unique identifier and a timestamp. The signing controls need an external signer, license and file-hash content is not emitted, and the inventory lists the runtime dependencies (`[dependencies]`) |
 | 3. Build Environment | Artefacts are byte-reproducible across repeated runs under `SOURCE_DATE_EPOCH` (rebuild and diff); the build environment itself is out of scope |
 | 4. Package Management | `capa.toml` + `capa install` + `capa.lock` with a signed registry index; lockfile SHA pinning and GPG-verified tags |
 | 5. Component Analysis | VEX entries feed component-analysis tooling at function granularity |

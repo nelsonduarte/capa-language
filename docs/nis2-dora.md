@@ -105,7 +105,7 @@ ones:
 
 | NIS2 reference | What the article requires | Capa as supporting evidence |
 |---|---|---|
-| **Art 21(2)(d)** | supply-chain security, including "the security-related aspects concerning the relationships between each entity and its direct suppliers or service providers" | For components the entity builds in Capa, the machine-readable SBOM (`--cyclonedx`, `--spdx`) carries one component per dependency declared in `capa.toml`, with a purl for each git dependency and a dependency graph, and the capability manifest (`--manifest`) records the capabilities each of the program's own functions holds. An entity assessing a *direct supplier* who ships Capa artefacts has a per-function authority surface to inspect and diff across releases, not just a name-and-version list. This is input to the entity's supplier assessment, not the assessment itself. |
+| **Art 21(2)(d)** | supply-chain security, including "the security-related aspects concerning the relationships between each entity and its direct suppliers or service providers" | For components the entity builds in Capa, the machine-readable SBOM (`--cyclonedx`, `--spdx`) carries one component per runtime dependency (`[dependencies]`), with a purl for each git dependency and a dependency graph, and the capability manifest (`--manifest`) records the capabilities each of the program's own functions holds. An entity assessing a *direct supplier* who ships Capa artefacts has a per-function authority surface to inspect and diff across releases, not just a name-and-version list. This is input to the entity's supplier assessment, not the assessment itself. |
 | **Art 21(3)** | Member States shall ensure entities take into account "the overall quality and resilience of products ... the cybersecurity practices of their suppliers ... including their secure development procedures" | Capa's capability discipline is a *secure development procedure* whose output is inspectable: a function cannot call a built-in capability that is not in scope (the compiler refuses the program otherwise), and SLSA L1 provenance (`--provenance`) names the source and builder. This is evidence about the *quality of the product and its development procedure*, one input the entity weighs. |
 | **Art 21(2)(e)** | "security in network and information systems acquisition, development and maintenance, including vulnerability handling and disclosure" | The SBOM (deps + purls + graph) is consumable by vulnerability tooling (Dependency-Track, OSV-Scanner) at the dependency layer, and the per-function capability metadata plus information-flow control add a language-level view a dependency-only SBOM cannot carry. Supports the acquisition/development/maintenance measure for Capa-built components; it does not constitute the entity's vulnerability-handling process. |
 
@@ -184,8 +184,8 @@ supporting evidence toward the named articles, nothing more.
 - **CycloneDX 1.6 SBOM** (`--cyclonedx`,
   [`capa/manifest/_cyclonedx.py`](../capa/manifest/_cyclonedx.py),
   `CYCLONEDX_SPEC_VERSION = "1.6"`). For a `capa.toml` project it
-  emits one `library` component per dependency declared in
-  `capa.toml`, carrying its name, version, and (for a git
+  emits one `library` component per runtime dependency
+  (`[dependencies]`), carrying its name, version, and (for a git
   dependency) a purl, plus a `dependencies` graph edge from the
   program to each. A github-hosted git dependency
   carries a `pkg:github/<owner>/<repo>@<commit>` purl with the
@@ -193,7 +193,7 @@ supporting evidence toward the named articles, nothing more.
 - **SPDX 2.3 SBOM** (`--spdx`,
   [`capa/manifest/_spdx.py`](../capa/manifest/_spdx.py),
   `SPDX_SPEC_VERSION = "SPDX-2.3"`). Symmetric with CycloneDX from
-  the same dependency-identity source: one `Package` per declared
+  the same dependency-identity source: one `Package` per runtime
   dependency, its purl (when it has one) as a `referenceType` `purl`
   `externalRefs` entry, and `DEPENDS_ON` relationships for the graph.
 - **Capability manifest** (`--manifest`,
@@ -247,7 +247,7 @@ State these the wrong way and the honesty discipline breaks:
 - **"Provenance proves the build to L2."** `--provenance` is
   unsigned L1. L2 is the signing CI's property.
 - **"Capa covers the whole dependency chain."** The SBOM covers
-  the dependencies *declared* in `capa.toml`; a transitive dependency at a source the root
+  the runtime dependencies (`[dependencies]`); a transitive dependency at a source the root
   lock does not cover carries its declared pin rather than a SHA,
   and a path dependency has no purl. Same residuals as
   [`docs/cra.md`](cra.md).
