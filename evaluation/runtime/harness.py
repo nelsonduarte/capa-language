@@ -21,10 +21,12 @@ recorded.
 Workloads live in ``evaluation/runtime/workloads.py``. Each runs
 inside a downstream demo repo; the directory holding those
 checkouts is named by ``CAPA_DEMO_REPOS`` and defaults to a
-``repos`` directory next to this compiler checkout.
+``repos`` directory next to the compiler's main checkout.
 Missing repos are skipped with a warning, so the harness runs
 on any machine that has the demos cloned without rewriting
-config.
+config. If none is found, the run measured nothing: it says
+where it looked and exits 3, so a caller cannot mistake it for a
+measurement.
 
 Out of scope for this slice: hand-Python and Node.js baselines.
 Those will land as a follow-up; the headline number for the
@@ -56,7 +58,8 @@ except ImportError:
     psutil = None  # type: ignore
 
 from evaluation.runtime.workloads import (
-    BACKEND_CAPA_PYTHON, BACKEND_CAPA_WASM, WORKLOADS, Workload,
+    BACKEND_CAPA_PYTHON, BACKEND_CAPA_WASM, REPOS, REPOS_ENV, WORKLOADS,
+    Workload,
 )
 from evaluation.shared.runner_utils import python_executable, repo_root
 
@@ -244,8 +247,14 @@ def main(argv: list[str] | None = None) -> int:
         runnable.append(w)
 
     if not runnable:
-        print("[runtime] no workloads runnable on this machine.", file=sys.stderr)
-        return 0
+        print(
+            f"[runtime] no workload is runnable: none of the demo "
+            f"directories exists under {REPOS}. Set {REPOS_ENV} to the "
+            f"directory that holds the demo checkouts. Nothing was "
+            f"measured and {args.out} was not written.",
+            file=sys.stderr,
+        )
+        return 3
 
     with tempfile.TemporaryDirectory(prefix="capa-runtime-") as scratch_str:
         scratch = Path(scratch_str)
