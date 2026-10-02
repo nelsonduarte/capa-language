@@ -99,3 +99,14 @@ the load-bearing buckets and is expected to shift the number by
 a few percentage points in either direction. Re-run
 `python -m evaluation.cve.summary` after any manual edit to
 `decisions.csv` to regenerate the figure.
+
+The committed fuzz results ([`fuzz/results.csv`](fuzz/results.csv))
+are the 2026-05-24 run. On 2026-10-02 the leading path of every
+`rejection_reason` (the builder's temporary file) was rewritten to
+`<attack_id>.capa` in place, and nothing else, rather than
+regenerating the file. One row is out of date in its reason only:
+for `alias_pair_db` a current compiler still rejects the program
+(same verdict, same exit code), but its first diagnostic is not
+the one the row records. Every other row matches a run on that
+date. Re-run `python -m evaluation.fuzz.harness --all` before
+citing a reason column.
