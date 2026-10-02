@@ -14,7 +14,10 @@ without regeneration, fails the suite.
 Exit codes: 0 up to date (or regenerated), 1 the block differs
 (``--check`` only), 2 the document does not carry exactly one marker
 pair, 3 the ``capa`` package that would supply the constant is not the
-one in this checkout (nothing is read from it and nothing is written).
+one in this checkout (nothing is read from it and nothing is written),
+4 this checkout's scope module does not import or does not render its
+sentence, for instance because a clause would name an empty set
+(nothing is written).
 
 The document's own line endings are preserved.
 """
@@ -31,6 +34,7 @@ REGISTER = REPO_ROOT / "docs" / "trust-model.md"
 EXIT_DRIFT = 1
 EXIT_MARKERS = 2
 EXIT_FOREIGN_CAPA = 3
+EXIT_SCOPE_UNRENDERED = 4
 
 BEGIN = (
     "<!-- BEGIN GENERATED: unaudited_secret_sinks scope "
@@ -43,6 +47,12 @@ WIDTH = 72
 
 class ForeignCapa(Exception):
     """The importable ``capa`` is not the one beside this script."""
+
+
+class ScopeUnrendered(Exception):
+    """Importing the key and the sentence from this checkout's scope module
+    raised, for instance because it refuses to render a clause over an
+    empty name set."""
 
 
 def _constants() -> tuple[str, str]:
@@ -61,9 +71,17 @@ def _constants() -> tuple[str, str]:
     loaded = Path(capa.__file__).resolve()
     if REPO_ROOT.resolve() not in loaded.parents:
         raise ForeignCapa(f"capa imported from {loaded}, not from {REPO_ROOT}")
-    from capa.manifest._scope import (
-        UNAUDITED_SECRET_SINKS_SCOPE, UNAUDITED_SECRET_SINKS_SCOPE_KEY,
-    )
+    # Any error here is the scope module's own (the package is this
+    # checkout's), so it is reported as such and never as a marker problem.
+    try:
+        from capa.manifest._scope import (
+            UNAUDITED_SECRET_SINKS_SCOPE, UNAUDITED_SECRET_SINKS_SCOPE_KEY,
+        )
+    except Exception as e:
+        raise ScopeUnrendered(
+            f"capa/manifest/_scope.py does not render its sentence "
+            f"({type(e).__name__}: {e})",
+        ) from e
     return UNAUDITED_SECRET_SINKS_SCOPE_KEY, UNAUDITED_SECRET_SINKS_SCOPE
 
 
@@ -89,9 +107,11 @@ def render_block(key: str, sentence: str) -> list[str]:
 def expected_text(current: str) -> str:
     """``current`` with the block between the markers replaced by the
     rendering. Raises ``ForeignCapa`` before anything else when the
-    importable package is not this checkout's, and ``ValueError`` unless
-    the document carries exactly one BEGIN and one END marker, in that
-    order: a second block would be a copy this script never checks."""
+    importable package is not this checkout's, then ``ScopeUnrendered``
+    when its scope module does not yield the sentence, and ``ValueError``
+    when the document does not carry exactly one BEGIN and one END marker,
+    in that order: a second block would be a copy this script never
+    checks."""
     rendered = render_block(*_constants())
     begins, ends = current.count(BEGIN), current.count(END)
     if (begins, ends) != (1, 1):
@@ -123,6 +143,9 @@ def main(argv: list[str]) -> int:
     except ForeignCapa as e:
         print(f"{REGISTER}: refusing to run: {e}", file=sys.stderr)
         return EXIT_FOREIGN_CAPA
+    except ScopeUnrendered as e:
+        print(f"{REGISTER}: refusing to run: {e}", file=sys.stderr)
+        return EXIT_SCOPE_UNRENDERED
     if current == expected:
         if not check:
             print(f"{REGISTER}: up to date")
