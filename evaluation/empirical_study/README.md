@@ -52,7 +52,7 @@ well on one and badly on the other.
   output **for `F`** (not merely somewhere in the pair). This is a
   **modest** measure. On it Capa does **not** beat the best dataflow
   tool - it **ties** it (CodeQL and Capa both 38/48): Capa is
-  **conservative, not omniscient**, and like CodeQL it declines to say which handler a
+  **not omniscient**, and like CodeQL it declines to say which handler a
   dispatcher will run, so it does not positively attribute a handler's
   authority to the dispatcher.
 
@@ -440,7 +440,7 @@ attribute. That absence is itself the security property.
 **granularity** point over T1 (per-function vs per-package). On **Q1
 (positive attribution)** the best dataflow tool and Capa are at an
 **exact tie** (CodeQL 38/48, Capa 38/48, Semgrep 36/48): Capa is
-conservative, not omniscient, and does not see more than CodeQL. The real result is
+not omniscient, and does not see more than CodeQL. The real result is
 **Q2 (false-clearance)**: under closed-world SBOM semantics T1
 false-clears all 48, Semgrep the 12 facts it misses, **CodeQL the 10
 dispatcher facts**, and **Capa false-clears 0** because it distinguishes

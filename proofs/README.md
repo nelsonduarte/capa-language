@@ -52,13 +52,13 @@ The design documents state two soundness properties for the core
 λ_cap calculus of the Capa capability discipline:
 
 - **Theorem 1 (Capability Soundness)**: a reduction step of a
-  well-typed λ_cap term introduces no capability: every
+  closed, well-typed λ_cap term introduces no capability: every
   capability in the reduct already appeared in the term.
-- **Theorem 2 (Manifest Completeness)**: the multi-step form:
-  every capability appearing after any number of steps already
-  appeared in the initial term, so the capability set a program
-  starts with is an upper bound, not an equality, on what its
-  reduction can use.
+- **Theorem 2 (Manifest Completeness)**: the multi-step form,
+  for a closed, well-typed term: every capability appearing after
+  any number of steps already appeared in the initial term, so the
+  capability set a closed program starts with is an upper bound,
+  not an equality, on what its reduction can use.
 
 Both are theorems about the calculus. The translation from full
 Capa to λ_cap is not mechanised (see "Out of scope" below), so

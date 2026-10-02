@@ -276,7 +276,7 @@ constant-table precondition.
 - On **positive attribution (Q1) Capa ties the best dataflow tool
   exactly**: CodeQL and Capa both attribute 38/48, against Semgrep's
   36/48. The honest message is three-way parity at the top: Capa does
-  **not** see more than CodeQL. Capa is conservative, not omniscient, and
+  **not** see more than CodeQL. Capa is not omniscient, and
   does not vouch which handler a dispatcher runs - and neither does CodeQL.
 - The decisive result is **false-clearance (Q2)**: Capa commits **0
   false-clearances** under closed-world SBOM semantics, against **10 for
