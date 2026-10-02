@@ -76,16 +76,23 @@ def _without_builder_path(line: str, path: Path, label: str) -> str:
     name. ``results.csv`` is a committed artefact, so the reason must
     not carry either: the row names the attack instead.
 
-    Fails closed. If the random file name survives the replacement,
-    the compiler printed the path in a spelling this function does not
-    know, and recording the line would put a machine path in the CSV.
+    Fails closed on what it knows about. If the temporary file's random
+    name, or the directory it was created in, survives the replacement
+    in any letter case, the compiler printed the path in a spelling
+    this function does not know, and the line is refused instead of
+    recorded. It does not judge any other path a diagnostic may carry;
+    the repository's personal-path test catches a personal one in the
+    written CSV.
     """
     for spelling in (str(path), str(path.resolve())):
         line = line.replace(spelling, label)
-    if path.stem in line:
+    leftovers = (path.stem, str(path.parent), str(path.resolve().parent))
+    folded = line.casefold()
+    if any(part.casefold() in folded for part in leftovers):
         raise RuntimeError(
-            "the diagnostic names the temporary file in a form the "
-            "harness does not recognise; refusing to record it"
+            "the diagnostic names the temporary file or its directory "
+            "in a form the harness does not recognise; refusing to "
+            "record it"
         )
     return line
 

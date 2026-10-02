@@ -129,6 +129,26 @@ class TestRejectionReasonIsPortable(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 harness._without_builder_path(other, path, "a.capa")
 
+    def test_a_spelling_in_another_letter_case_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tmpabc123.capa"
+            # Upper case always differs from the given spelling, which
+            # holds lower-case letters on every platform.
+            spelling = str(path).upper()
+            with self.assertRaises(RuntimeError):
+                harness._without_builder_path(
+                    f"{spelling}:1:1: error: no", path, "a.capa"
+                )
+
+    def test_the_temporary_directory_alone_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tmpabc123.capa"
+            other = str(Path(td) / "helper.capa")
+            with self.assertRaises(RuntimeError):
+                harness._without_builder_path(
+                    f"{path}:1:1: error: see {other}", path, "a.capa"
+                )
+
     def test_the_committed_results_are_in_the_portable_form(self):
         csv_path = Path(harness.__file__).parent / "results.csv"
         with csv_path.open(encoding="utf-8", newline="") as f:
