@@ -105,8 +105,8 @@ ones:
 
 | NIS2 reference | What the article requires | Capa as supporting evidence |
 |---|---|---|
-| **Art 21(2)(d)** | supply-chain security, including "the security-related aspects concerning the relationships between each entity and its direct suppliers or service providers" | For components the entity builds in Capa, the machine-readable SBOM (`--cyclonedx`, `--spdx`) carries one component per resolved `capa.toml` dependency with a real per-dependency purl and a dependency graph, and the capability manifest (`--manifest`) records what each of the program's own functions can do. An entity assessing a *direct supplier* who ships Capa artefacts has a per-function authority surface to inspect and diff across releases, not just a name-and-version list. This is input to the entity's supplier assessment, not the assessment itself. |
-| **Art 21(3)** | Member States shall ensure entities take into account "the overall quality and resilience of products ... the cybersecurity practices of their suppliers ... including their secure development procedures" | Capa's capability discipline is a *secure development procedure* whose output is inspectable: a function cannot exercise authority its signature does not carry (the Manifest Completeness upper bound, [`docs/semantics.md`](semantics.md)), and SLSA L1 provenance (`--provenance`) names the source and builder. This is evidence about the *quality of the product and its development procedure*, one input the entity weighs. |
+| **Art 21(2)(d)** | supply-chain security, including "the security-related aspects concerning the relationships between each entity and its direct suppliers or service providers" | For components the entity builds in Capa, the machine-readable SBOM (`--cyclonedx`, `--spdx`) carries one component per dependency declared in `capa.toml`, with a purl for each git dependency and a dependency graph, and the capability manifest (`--manifest`) records the capabilities each of the program's own functions holds. An entity assessing a *direct supplier* who ships Capa artefacts has a per-function authority surface to inspect and diff across releases, not just a name-and-version list. This is input to the entity's supplier assessment, not the assessment itself. |
+| **Art 21(3)** | Member States shall ensure entities take into account "the overall quality and resilience of products ... the cybersecurity practices of their suppliers ... including their secure development procedures" | Capa's capability discipline is a *secure development procedure* whose output is inspectable: a function cannot call a built-in capability that is not in scope (the compiler refuses the program otherwise), and SLSA L1 provenance (`--provenance`) names the source and builder. This is evidence about the *quality of the product and its development procedure*, one input the entity weighs. |
 | **Art 21(2)(e)** | "security in network and information systems acquisition, development and maintenance, including vulnerability handling and disclosure" | The SBOM (deps + purls + graph) is consumable by vulnerability tooling (Dependency-Track, OSV-Scanner) at the dependency layer, and the per-function capability metadata plus information-flow control add a language-level view a dependency-only SBOM cannot carry. Supports the acquisition/development/maintenance measure for Capa-built components; it does not constitute the entity's vulnerability-handling process. |
 
 ### Out of scope under NIS2 (stated plainly)
@@ -156,7 +156,7 @@ That is the only surface a compiler's artefacts touch:
 |---|---|---|
 | **Art 28(3)** | maintain and update a **Register of Information** on all contractual arrangements for the use of ICT services | The SBOM's per-dependency components (purls + `DEPENDS_ON` / `dependencies` graph) are a *technical input* an entity can reconcile against its register for the Capa-built parts of a service. It is **not** the register: DORA's register is of **contracts**, not an SBOM, and it is the entity's to keep. |
 | **Art 30(2)(a)** | contracts shall include "a clear and complete description of all functions and ICT services ... indicating whether subcontracting an ICT service ... is permitted and, when that is the case, the conditions applying to such subcontracting" | The capability manifest and information-flow surface are evidence toward the *description of functions* for a Capa component, and the SBOM's dependency graph maps onto the *subcontracting-chain* concern at the software-dependency level. Supporting material for the contractual description, not the contract. |
-| **Art 30(2)(c)** | provisions on "the availability, authenticity, integrity and confidentiality in relation to the protection of data" | Capa's information-flow control governs *where* data typed `@secret` may flow: by default a secret reaching a public sink without an audited `declassify` is a **warning** (best-effort; the build proceeds), and only under `@strict_ifc()` is it a **hard compile-time error**. Every audited disclosure is enumerated in the manifest. This is evidence toward the *confidentiality* and *integrity* description, scoped to the Capa component and carrying the warn-vs-strict caveat. |
+| **Art 30(2)(c)** | provisions on "the availability, authenticity, integrity and confidentiality in relation to the protection of data" | Capa's information-flow control checks *where* data typed `@secret` may flow: by default a flow the analysis detects from a secret to a public sink, without an audited `declassify`, is a **warning** (best-effort; the build proceeds), and only under `@strict_ifc()` is a detected flow a **hard compile-time error**. Neither mode is a guarantee of confidentiality. Every audited disclosure is enumerated in the manifest. This is evidence toward the *confidentiality* and *integrity* description, scoped to the Capa component and carrying the warn-vs-strict caveat. |
 | **Art 29** | preliminary assessment of ICT concentration risk, including "long or complex chains of subcontracting" | The resolved dependency graph (per-dependency purls + `DEPENDS_ON`) is a technical input to reasoning about the software-dependency chain for a Capa component. Input to the entity's assessment, never the assessment. |
 
 ### Out of scope under DORA (stated plainly)
@@ -184,31 +184,35 @@ supporting evidence toward the named articles, nothing more.
 - **CycloneDX 1.6 SBOM** (`--cyclonedx`,
   [`capa/manifest/_cyclonedx.py`](../capa/manifest/_cyclonedx.py),
   `CYCLONEDX_SPEC_VERSION = "1.6"`). For a `capa.toml` project it
-  emits one `library` component per resolved dependency carrying
-  its name, version, and a real purl, plus a `dependencies` graph
-  edge from the program to each. A github-hosted git dependency
+  emits one `library` component per dependency declared in
+  `capa.toml`, carrying its name, version, and (for a git
+  dependency) a purl, plus a `dependencies` graph edge from the
+  program to each. A github-hosted git dependency
   carries a `pkg:github/<owner>/<repo>@<commit>` purl with the
   `capa.lock` commit SHA.
 - **SPDX 2.3 SBOM** (`--spdx`,
   [`capa/manifest/_spdx.py`](../capa/manifest/_spdx.py),
   `SPDX_SPEC_VERSION = "SPDX-2.3"`). Symmetric with CycloneDX from
-  the same dependency-identity source: one `Package` per resolved
-  dependency, its purl as a `referenceType` `purl` `externalRefs`
-  entry, and `DEPENDS_ON` relationships for the graph.
+  the same dependency-identity source: one `Package` per declared
+  dependency, its purl (when it has one) as a `referenceType` `purl`
+  `externalRefs` entry, and `DEPENDS_ON` relationships for the graph.
 - **Capability manifest** (`--manifest`,
   [`capa/manifest/__init__.py`](../capa/manifest/__init__.py)).
   Per-function `declared_capabilities`,
-  `transitively_reachable_capabilities` (the authority ceiling),
-  `provably_excluded_capabilities`, `declassifications`, and
-  `unaudited_secret_sinks`. The completeness property is an
-  **upper bound**: a function cannot exercise authority absent
-  from its reachable set (Manifest Completeness, Theorem 2,
-  [`docs/semantics.md`](semantics.md)), machine-checked in Agda
-  under `--safe`.
+  `transitively_reachable_capabilities` (the set the manifest pass
+  derives from the signature and body),
+  `provably_excluded_capabilities` (its complement),
+  `declassifications`, and `unaudited_secret_sinks`. Theorem 2
+  (Manifest Completeness, machine-checked in Agda under `--safe`)
+  is an **upper bound** for the `lambda_cap` calculus's
+  program-level manifest. The translation from full Capa to
+  `lambda_cap` is deferred
+  ([`docs/semantics.md`](semantics.md), Section 7), so it is not
+  a theorem about these fields.
 - **Information-flow control** (`@secret` / `@public`,
-  [`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py)). Warn-only
-  by default; a hard error only under `@strict_ifc()`. Never
-  write "cannot leak" for the default mode.
+  [`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py)). A detected
+  flow is a warning by default and a hard error only under
+  `@strict_ifc()`. Never write "cannot leak", for either mode.
 - **SLSA provenance** (`--provenance`,
   [`capa/manifest/_provenance.py`](../capa/manifest/_provenance.py)).
   An unsigned SLSA **Build L1** in-toto Statement v1 + Provenance
@@ -234,15 +238,16 @@ State these the wrong way and the honesty discipline breaks:
   technical input the entity reconciles against it.
 - **"Capa's IFC guarantees confidentiality of processed data
   (Art 30(2)(c))."** By default the secret-to-sink check is a
-  **warning**, not a guarantee; the fail-closed behaviour exists
-  only under `@strict_ifc()`. State the mode.
+  **warning**, and under `@strict_ifc()` a detected flow is a hard
+  error; neither mode is a guarantee of confidentiality. State the
+  mode, and say "detected".
 - **"Capa handles NIS2 incident reporting / DORA resilience
   testing."** It touches neither. Both are runtime, operational
   duties; Capa has no runtime as an operator.
 - **"Provenance proves the build to L2."** `--provenance` is
   unsigned L1. L2 is the signing CI's property.
 - **"Capa covers the whole dependency chain."** The SBOM covers
-  the *resolved* set; a transitive dependency at a source the root
+  the dependencies *declared* in `capa.toml`; a transitive dependency at a source the root
   lock does not cover carries its declared pin rather than a SHA,
   and a path dependency has no purl. Same residuals as
   [`docs/cra.md`](cra.md).

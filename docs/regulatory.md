@@ -22,12 +22,12 @@ A few frameworks are sometimes confused with this set but are not covered here. 
 
 ## Capa artefacts at a glance
 
-The rows below list what Capa emits today.
+The rows below list what the compiler at this revision emits.
 
 | Capa artefact | Flag | What it carries |
 |---|---|---|
 | Capability manifest | `--manifest` | Per-function declared capabilities, attributes, signatures, user-defined cap declarations |
-| CycloneDX 1.6 SBOM | `--cyclonedx` | The manifest wrapped in CycloneDX with per-function `properties[]`, one `library` component per resolved `capa.toml` dependency (a real purl for git deps, `pkg:github` for github-hosted ones) with a `dependencies[]` graph, and an optional `vulnerabilities[]` array |
+| CycloneDX 1.6 SBOM | `--cyclonedx` | The per-function capability sets carried as `capa:`-namespaced `properties[]` entries, one `library` component per dependency declared in `capa.toml` (a purl for git deps, `pkg:github` for github-hosted ones) with a `dependencies[]` graph, and an optional `vulnerabilities[]` array |
 | SPDX 2.3 SBOM | `--spdx` | Same metadata and the same per-dependency components from one source, each carrying its purl as an `externalRefs[]` entry with `DEPENDS_ON` relationships; SPDX `annotations[]` shape, Linux Foundation alignment |
 | CycloneDX VEX | `--vex` | Per-function exploitability claims from `@vex(cve, status, justification, detail)` attributes |
 | SLSA L1 provenance | `--provenance` | in-toto Statement v1 plus SLSA Provenance v1.0 predicate, source SHA-256 |
@@ -40,10 +40,10 @@ And how each maps across the five frameworks:
 | Capa output | CRA Annex I | NIS2 Art. 21 | DORA Chapters II-V | NIST SSDF | OWASP SCVS |
 |---|---|---|---|---|---|
 | Manifest | I-II(1) direct | evidence toward 21(2)(d) | evidence toward Art. 30(2)(a) | PS.1 indirect | Domain 1 partial |
-| CycloneDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3.2 partial | Domain 2 **direct** |
-| SPDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3.2 partial | Domain 2 **direct** |
-| CycloneDX VEX | I-II(2) partial | evidence toward 21(2)(e) | n/a | RV.2 partial | Domain 5 **direct** |
-| SLSA L1 provenance | I-I(2)(f) indirect | evidence toward 21(3) | evidence toward Art. 28 | PS.2 partial, PS.3 partial | Domain 6 **direct** |
+| CycloneDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3.2 partial | Domain 2 partial |
+| SPDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3.2 partial | Domain 2 partial |
+| CycloneDX VEX | I-II(2) partial | evidence toward 21(2)(e) | n/a | RV.2 partial | Domain 5 partial |
+| SLSA L1 provenance | I-I(2)(f) indirect | evidence toward 21(3) | evidence toward Art. 28 | PS.2 partial, PS.3 partial | Domain 6 partial |
 | Audit pipeline | I-II(1) indirect | evidence toward 21(2)(d) | evidence toward Arts. 28-30 | PW.4.4 indirect | Domain 1 partial |
 | SBOM diff tool | I-II(2) indirect | evidence toward 21(2)(d) | evidence toward Art. 29 | RV.1 partial | Domain 2 partial |
 | Machine-checked soundness | I-I(2)(b) indirect | n/a | n/a | PW.4 indirect | n/a |
@@ -52,7 +52,7 @@ The SSDF column names a *task* (PS.3.2, PW.4.4) rather than a practice wherever 
 
 ## Reproducible SBOMs: rebuild and diff byte-for-byte
 
-The four supply-chain artefacts (`--cyclonedx`, `--spdx`, `--vex`, `--provenance`) are byte-reproducible. Every identifier they carry, the CycloneDX `serialNumber`, the SPDX `documentNamespace`, the provenance `invocationId`, is derived deterministically from the source file's SHA-256, so two builds of the same source produce the same identifiers on any machine. The one field that would otherwise vary is the build timestamp.
+The four supply-chain artefacts (`--cyclonedx`, `--spdx`, `--vex`, `--provenance`) are byte-reproducible across repeated runs of the same checkout. Every identifier they carry, the CycloneDX `serialNumber`, the SPDX `documentNamespace`, the provenance `invocationId`, is derived deterministically from the source file's SHA-256, so two builds of the same checkout produce the same identifiers. The one field that would otherwise vary is the build timestamp.
 
 To pin it, set `SOURCE_DATE_EPOCH` to an integer of Unix UTC seconds, the [reproducible-builds.org convention](https://reproducible-builds.org/specs/source-date-epoch/) that `dpkg` and other toolchains already honour:
 
@@ -62,17 +62,17 @@ SOURCE_DATE_EPOCH=1609459200 capa --cyclonedx app.capa > b.json
 diff a.json b.json   # empty: byte-for-byte identical
 ```
 
-When `SOURCE_DATE_EPOCH` is set, the CycloneDX `metadata.timestamp`, the SPDX `created`/`annotationDate`, the VEX `timestamp`/`firstIssued`, and the provenance `startedOn`/`finishedOn` all derive deterministically from that one instant. Each invocation emits a single artefact, so four separate invocations (one per artefact) that share the same `SOURCE_DATE_EPOCH` produce the same timestamp; inside a CycloneDX document carrying VEX entries, the one instant feeds both `metadata.timestamp` and every `firstIssued`. Rebuild on a different machine with the same value and the artefacts are identical, which is what lets a downstream consumer rebuild your SBOM from source and confirm it matches the one you published, rather than trusting it.
+When `SOURCE_DATE_EPOCH` is set, the CycloneDX `metadata.timestamp`, the SPDX `created`/`annotationDate`, the VEX `timestamp`/`firstIssued`, and the provenance `startedOn`/`finishedOn` all derive deterministically from that one instant. Each invocation emits a single artefact, so four separate invocations (one per artefact) that share the same `SOURCE_DATE_EPOCH` produce the same timestamp; inside a CycloneDX document carrying VEX entries, the one instant feeds both `metadata.timestamp` and every `firstIssued`. Rebuild the same checkout with the same value and the artefacts are identical, which is what lets you rebuild an SBOM from source and compare it with the published one. Identity across different machines has not been measured and is not claimed here; treat a cross-machine rebuild-and-diff as a check to run, not as a guarantee.
 
 When `SOURCE_DATE_EPOCH` is unset, the timestamps record real wall-clock time, so an interactive build still says when it ran. Determinism is opt-in via the standard variable. A value that is not a plain non-negative decimal integer, including one that is out of the representable date range, is rejected with a clear error and a non-zero exit, rather than silently falling back to wall-clock time, because a build that asked for determinism should fail loudly if it cannot get it.
 
-The byte-for-byte guarantee holds across operating systems, not just across runs on the same one. These artefacts (and the `--manifest` they wrap) are written with canonical LF (`\n`) line endings regardless of host OS: the CLI emits their bytes through the binary stdout buffer, bypassing the platform newline translation that would otherwise turn each `\n` into `\r\n` on Windows. So the same source produces the identical artefact bytes whether built on Windows, Linux, or macOS, which is what makes a cross-machine rebuild-and-diff meaningful. Only these verifiable artefacts are LF-pinned; the stdout of a Capa program you *run* keeps ordinary platform line endings.
+Line endings do not vary by operating system. These artefacts (and the `--manifest` they wrap) are written with canonical LF (`\n`) line endings regardless of host OS: the CLI emits their bytes through the binary stdout buffer, bypassing the platform newline translation that would otherwise turn each `\n` into `\r\n` on Windows. That removes the line-ending difference between Windows, Linux, and macOS builds; it is one precondition of a cross-machine rebuild-and-diff, not a measurement of one. Only these artefacts are LF-pinned; the stdout of a Capa program you *run* keeps ordinary platform line endings.
 
 ## CRA: Cyber Resilience Act
 
 The CRA entered into force on 10 December 2024 and applies most of its obligations from 11 December 2027. It binds manufacturers placing products with digital elements on the EU market. The clauses that matter most for a compiler are Annex I Part I (the essential cybersecurity requirements: secure by default, attack-surface minimisation, data minimisation, exploitation mitigation, integrity protection), Annex I Part II (1) (machine-readable SBOM covering at least top-level dependencies), and Annex I Part II (2)-(7) (vulnerability handling processes).
 
-The strongest fits land in Part II (1) on SBOM, where CycloneDX and SPDX cover the requirement twice over; in Part I (2)(b) on secure-by-default, which Capa's capability discipline enforces structurally; in Part I (2)(g) on data minimisation, where least authority is the language model; and in Part I (2)(j) on attack-surface minimisation, where the function's signature is the declared attack surface. The article-by-article view lives in [`docs/cra.md`](cra.md).
+The strongest fits land in Part II (1) on SBOM, where CycloneDX and SPDX each list the dependencies declared in `capa.toml` with their purls; in Part I (2)(b) on secure-by-default, where a function holds no built-in capability unless it is handed one; in Part I (2)(g) on data minimisation, where least authority is the language model; and in Part I (2)(j) on attack-surface minimisation, where the function's signature is the declared attack surface. The article-by-article view lives in [`docs/cra.md`](cra.md).
 
 What Capa does not address: vulnerability disclosure processes, the 24-hour incident notification window, security-update distribution, and the conformity assessment paperwork itself.
 
@@ -119,10 +119,10 @@ Where Capa lands, by task:
 
 | Task | What Capa provides |
 |---|---|
-| PS.1.1 (Store all forms of code based on least privilege) | Manifest declares the authority boundary per function, and widening is loud in diffs. The task is about repository access control for personnel and tools, which stays wholly organisational |
+| PS.1.1 (Store all forms of code based on least privilege) | Manifest records the capabilities each function holds, and a widening of that record shows in diffs. The task is about repository access control for personnel and tools, which stays wholly organisational |
 | PS.2.1 (Make software integrity verification information available to acquirers) | SLSA L1 provenance names the builder, the source, and the parameters, with the source SHA-256. Signing is external at L1 |
 | PS.3.2 (Share provenance data for all components of each release) | The task names an SBOM as its example, and `--cyclonedx` / `--spdx` are that SBOM. "Safeguard" and "maintain" in the same task, and all of PS.3.1 (archive the release files), stay organisational |
-| PW.4.4 (Verify that third-party components comply with organisation-defined requirements) | Capability discipline rules out ambient-authority abuse in third-party Capa code; the audit pipeline compares an SBOM's declared capabilities against a written policy |
+| PW.4.4 (Verify that third-party components comply with organisation-defined requirements) | Third-party Capa code cannot call a built-in capability it is not handed; the audit pipeline compares an SBOM's declared capabilities against a written policy |
 | RV.1.1 / RV.1.2 (Gather vulnerability reports; review, analyse or test the code) | Nothing directly. The SBOM diff surfaces supplier capability widening between releases, which is an input to RV.1.1's "review provenance and software composition data" example, not a discharge of the task |
 | RV.2.1 / RV.2.2 (Analyse each vulnerability; plan and implement risk responses) | The VEX document records a conclusion a human reached and wrote into a `@vex` attribute, in the `state` and `justification` shape standard tooling consumes. The analysis and the response are the producer's work |
 
@@ -142,20 +142,20 @@ The six domains are inventory, SBOM, build environment, package management, comp
 
 | Domain | What Capa provides |
 |---|---|
-| 1. Inventory | Per-function inventory finer than SCVS asks for; the manifest is the canonical list |
-| 2. SBOM | CycloneDX 1.6 and SPDX 2.3 satisfy L1 through L3 |
-| 3. Build Environment | Artefacts are byte-reproducible under `SOURCE_DATE_EPOCH` (rebuild and diff); the build environment itself is out of scope |
+| 1. Inventory | A per-function inventory of the program, plus one component per dependency declared in `capa.toml`; whether that inventory is complete for a product is the organisation's to establish |
+| 2. SBOM | CycloneDX 1.6 and SPDX 2.3 documents that validate against the official schemas, each with a unique identifier and a timestamp. The signing controls need an external signer, license and file-hash content is not emitted, and the inventory lists the dependencies declared in `capa.toml` |
+| 3. Build Environment | Artefacts are byte-reproducible across repeated runs under `SOURCE_DATE_EPOCH` (rebuild and diff); the build environment itself is out of scope |
 | 4. Package Management | `capa.toml` + `capa install` + `capa.lock` with a signed registry index; lockfile SHA pinning and GPG-verified tags |
 | 5. Component Analysis | VEX entries feed component-analysis tooling at function granularity |
-| 6. Pedigree and Provenance | SLSA L1 provenance attestation; signing for L3 is external |
+| 6. Pedigree and Provenance | An unsigned SLSA L1 provenance attestation whose subjects are the source files; signing is external |
 
-SCVS is the cleanest fit of the five. Every Capa artefact maps directly to a domain, and the framework is explicit about which levels each capability satisfies. An organisation using Capa can probably claim SCVS L1 across Domains 1, 2, 5, and 6 without additional work, and L2 on Domains 2 and 6 with the existing artefacts.
+SCVS is the framework whose domains line up most closely with what Capa emits: each artefact is an input to one domain (1, 2, 5 or 6). Which SCVS levels an organisation can claim depends on its own signing, licensing, analysis, and inventory practice; the artefacts alone do not establish a level.
 
 ## The triangle the frameworks all reference
 
 Supply-chain governance literature converges on three artefacts. The SBOM describes what is in the box. VEX describes how the box is affected by known vulnerabilities. Provenance describes where the box came from. CRA names all three in Annex I Part II; NIS2 and DORA touch them through inventory and supplier-risk clauses; NIST SSDF allocates a practice to each; OWASP SCVS gives each its own domain.
 
-Capa is the first compiler I know of that emits all three from one source, at per-function granularity for the first two. The alternative today is to combine `cargo-cyclonedx` plus a hand-written VEX plus `cosign sign` plus a separate provenance attestation, all at package level. Capa packages the three together at finer granularity, with each artefact's contents grounded in the type system rather than in a separate analyser's heuristics.
+Capa is the first compiler I know of that emits all three from one source, at per-function granularity for the first two. The alternative today is to combine `cargo-cyclonedx` plus a hand-written VEX plus `cosign sign` plus a separate provenance attestation, all at package level. Capa packages the three together at finer granularity, with the capability content computed by the compiler from type-checked signatures rather than by a separate scanner; the VEX records the developer's `@vex` claims and the provenance records source digests.
 
 ## Caveats
 
