@@ -47,12 +47,12 @@ In scope:
 - Compilation accepts a program where a `@secret` value reaches a
   public sink that the analyzer should reject: an information-flow /
   noninterference violation (for example under `@strict_ifc`). Capa's
-  information-flow control is a first-class, machine-checked security
-  property (cross-function and per-field IFC, implicit-flow
-  enforcement under `@strict_ifc`), backed by the Agda `lambda_if`
-  noninterference proof. The analyzer itself is not formally verified;
-  the proof is over the `lambda_if` model, so a soundness gap between
-  the analyzer and that model is in scope.
+  information-flow control (cross-function and per-field, with
+  implicit-flow checking under `@strict_ifc`) is designed against the
+  `lambda_if` model, whose noninterference is machine-checked in Agda.
+  The analyzer itself is not formally verified; the proof is over the
+  `lambda_if` model, so a soundness gap between the analyzer and that
+  model is in scope.
 - Crash or arbitrary code execution in the analyzer / transpiler when
   given a malformed `.capa` input. While Capa is not yet positioned
   as a sandbox for untrusted source, defensible behaviour matters.

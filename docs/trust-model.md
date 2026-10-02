@@ -29,23 +29,28 @@ mapping). This page references them rather than restating them.
 These are either true by construction or cause the build / install to be
 refused on failure.
 
-- **SBOM capability claims are derived from the source, not guessed.**
-  The `capabilities`, `provably_excluded_capabilities`,
-  `declassification_sites` and `has_unsafe` fields in the manifest /
-  CycloneDX / SPDX output are computed by the analyzer from the same
-  signatures and flow analysis it uses to accept or reject the program
-  (`capa/manifest/`). They are not a heuristic scan layered on
-  afterwards: if the code exercises a capability, the type system
-  already required it to be declared, and the SBOM reads it off that.
+- **SBOM capability claims are derived from the source by the compiler,
+  not guessed.** A manifest pass in the compiler (`capa/manifest/`) reads
+  each function's capability-typed parameters and what its signature
+  types and body reach, after the analyzer has accepted the program. The
+  analyzer is the gate: it refuses a call on a built-in capability that
+  is not in scope, and a program it rejects produces no manifest,
+  CycloneDX or SPDX document. The capability sets record the authority a
+  function holds, which a given run need not exercise. CycloneDX and SPDX
+  carry the declared, transitively reachable and provably-excluded sets
+  and `has_unsafe` as `capa:`-namespaced properties and annotations;
+  `declassifications` are recorded in the Capa manifest, which is the
+  complete record. What the derived sets establish, and what they do
+  not, is stated in tier 3.
   (`constant_time` is **not** in this list. It reports an annotation
   rather than an analysis outcome; see the separate entry below.)
-  - `provably_excluded_capabilities` is **conservative**: it is a sound
-    over-approximation of what a value's type can transitively reach,
-    closed-world over all impls in the program
-    (`capa/manifest/_reachability.py`). A capability is listed as
-    provably excluded only when no reachable impl, struct field,
-    sum-variant payload, or captured closure can reach it. It will under-
-    claim before it over-claims.
+  - `provably_excluded_capabilities` is the complement of the
+    capabilities the manifest pass found reachable from the function's
+    signature types and body (`capa/manifest/_reachability.py`). It is
+    emptied when the function crosses `Unsafe` or a function type is
+    reachable from its signature or from a value its body constructs. It
+    is a derived set, not a tier-1 guarantee: see the manifest-pass
+    entry in tier 3.
   - `has_unsafe` is true whenever `Unsafe` is reachable. The escape hatch
     always surfaces in the SBOM (see tier 4).
   - `declassification_sites` counts the `@secret -> public` sites the
@@ -163,9 +168,14 @@ refused on failure.
   prints the refusal it overrode in full. See `capa/pkg/_floor.py` and
   [advisory 2026-07-20](advisories/2026-07-20-capa-floor.md).
 
-- **SBOMs are byte-reproducible.** With `SOURCE_DATE_EPOCH` set, the
-  CycloneDX / SPDX / VEX / SLSA artefacts are byte-for-byte identical
-  across runs and machines, so an auditor can rebuild and diff. See
+- **SBOMs are byte-reproducible across repeated runs.** With
+  `SOURCE_DATE_EPOCH` set, the CycloneDX / SPDX / VEX / SLSA artefacts
+  are byte-for-byte identical across repeated runs of the same checkout
+  (pinned by tests across processes and hash seeds), and an invalid
+  `SOURCE_DATE_EPOCH` is refused rather than silently replaced by the
+  wall clock. The artefacts are written with LF line endings on every
+  host OS. Identity across different machines has not been measured
+  and is not claimed here. See
   `capa/manifest/_timestamp.py` and
   [the reproducible-artefacts section of the regulatory note](regulatory.md#reproducible-sboms-rebuild-and-diff-byte-for-byte).
 
@@ -226,14 +236,28 @@ separately.
   *vulnerability* (see [`SECURITY.md`](../SECURITY.md)) but the running
   Python toolchain is trusted to execute.
 
+- **The manifest pass, and what its sets establish.** The per-function
+  capability sets are computed by `capa/manifest/`, which, like the
+  analyzer, is not formally verified.
+  `transitively_reachable_capabilities` is the set that pass derives
+  from the function's signature types and body, and
+  `provably_excluded_capabilities` is its complement, emptied when the
+  function crosses `Unsafe` or a function type is reachable from its
+  signature or from a value its body constructs (a caller can then
+  hand in authority the types never named). Read both as the
+  compiler's derived statement about a function, not as a
+  machine-checked proof: the Agda theorems are about
+  the `lambda_cap` calculus, and the translation from full Capa to that
+  calculus is deferred ([`docs/semantics.md`](semantics.md), Section 7).
+
 - **The compiled Wasm artifact, on the Wasm backends.** Capability
   confinement and attenuation on `capa --wasm` (core module and Component
   Model) are enforced by the trusted Capa compiler / emitter together
   with the host handle table, not by an operator-supplied policy. The
   per-instance handle table is now bootstrapped with a root ONLY for the
   capabilities the artifact declares in its `capa:main-cap-types`
-  binding, so the declared cap set is a runtime-enforced UPPER BOUND on
-  the authority the artifact can exercise, on all three hosts (the core
+  binding, so an artifact can exercise a handle-bearing capability only
+  if it declares it in that binding, on all three hosts (the core
   `WasmHost`, the AOT `capa run-aot` path, and the Component host). The
   linker still defines every `capa:host/*` import, but a hand-written or
   edited module that declares only `net` and forges the small integer an
@@ -250,8 +274,8 @@ separately.
     freely-editable self-declaration, and there is no operator-supplied
     cap allowlist on `run-aot`. A malicious artifact may simply declare
     all six handle-bearing caps and receive all six roots. What the fix
-    restores is the honesty of the declared / SBOM cap set (imports can
-    no longer exceed the declaration), not a confinement decided by the
+    restores is that a handle-bearing capability the artifact did not
+    declare has no root to exercise, not a confinement decided by the
     operator. Operator cap-allowlisting is a separate, open question.
   - Within a cap it DID declare, root handles and their `restrict_to`
     children are still small predictable integers, so a guest can name
@@ -266,8 +290,9 @@ separately.
 
   Consequently the executed `.wasm` / `.cwasm` stays part of the TCB:
   running a third-party-supplied artifact trusts that artifact's declared
-  cap set as its authority ceiling. The fix makes that ceiling ENFORCED
-  rather than advisory; it does not remove the artifact from the TCB. See
+  cap set as its ceiling for the handle-bearing capabilities. The fix
+  makes that ceiling ENFORCED rather than advisory for those
+  capabilities; it does not remove the artifact from the TCB. See
   [`docs/design/wasm-cap-handles.md`](design/wasm-cap-handles.md).
 
 - **`install.sh` channel integrity (M3).** Same-channel SHA pinning for
