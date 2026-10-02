@@ -6,8 +6,8 @@
 #
 # for example
 #
-#   bash fleet/adopt.sh ~/Desktop/repos/capa_hex ddf452e
-#   bash fleet/adopt.sh ~/Desktop/repos/capa_url main
+#   bash fleet/adopt.sh path/to/capa_hex ddf452e
+#   bash fleet/adopt.sh path/to/capa_url main
 #
 # WHY THIS EXISTS. Adoption was an eight-step prose checklist, and every
 # defect this apparatus has found so far was in the MECHANISM rather than

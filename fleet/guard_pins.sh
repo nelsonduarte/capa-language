@@ -6,8 +6,8 @@
 #
 # for example
 #
-#   bash fleet/guard_pins.sh ~/Desktop/repos/capa_url
-#   bash fleet/guard_pins.sh ~/Desktop/repos/capa_url 2db0070
+#   bash fleet/guard_pins.sh path/to/capa_url
+#   bash fleet/guard_pins.sh path/to/capa_url 2db0070
 #
 # With no ref, the revision is read from the target's
 # .github/workflows/release.yml, which is the only correct default: the

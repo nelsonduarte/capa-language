@@ -593,7 +593,7 @@ this study:
   actually run long. Async's main use case (long-running I/O service)
   is gated on P2. **Async before P2 is a feature whose own use case it
   cannot serve.**
-- **A concrete async workload in `~/Desktop/repos/`** that is
+- **A concrete async workload in the downstream repositories** that is
   demonstrably I/O-bound and serial-blocked, to anchor the design and
   justify the cost. None exists today.
 - **Clarity on Component Model async maturity** in the wasmtime
@@ -645,7 +645,7 @@ Justification, tied to positioning:
 
 **The exact driver/condition that would justify starting:** a real,
 in-tree, I/O-bound workload (a daemon/server/agent in
-`~/Desktop/repos/` whose surface matches what async would change)
+the downstream repositories whose surface matches what async would change)
 that is *demonstrably* bottlenecked on serial blocking I/O, **AND**
 P2 (real GC) landed so the workload can actually run long, **AND**
 appetite to re-touch the IFC proof. When all three hold, start at

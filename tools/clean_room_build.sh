@@ -6,7 +6,7 @@
 # WHY THIS EXISTS. capa_authgate v0.1.0 was published, GPG-signed,
 # SLSA-attested and CI-green, and did not compile for anyone who
 # downloaded it. Its capa.toml omitted a transitive dependency
-# (capa_hash), and our own ~/Desktop/repos layout, with every library
+# (capa_hash), and our own development layout, with every library
 # checked out side by side, silently satisfied the unresolved import
 # through the module resolver's parent-directory fallback. Every check
 # we ran passed. The defect surfaced only when the published tarball was
