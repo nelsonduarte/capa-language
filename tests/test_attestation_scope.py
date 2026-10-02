@@ -24,8 +24,8 @@ groups of pins:
   generated and the generator's check passes, the register carries
   exactly one block and states the field nowhere outside it, the
   generator refuses to run against a capa that is not the checkout it
-  sits in, and the wording keeps its load-bearing clauses while naming no
-  tier as covering anything;
+  sits in or whose scope sentence does not render, and the wording keeps
+  its load-bearing clauses while naming no tier as covering anything;
 - universe: the capability sets the sentence names are DERIVED from the
   declared tables (the recordable set from the sink table and the one
   panic capability, the never-recordable set from the policy ceiling
@@ -71,7 +71,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 from capa import analyze
@@ -484,6 +484,48 @@ class TestRegister(unittest.TestCase):
                     self.assertEqual(
                         (root / "docs" / REGISTER.name).read_bytes(), before,
                         "the generator wrote the document from a foreign capa",
+                    )
+
+    def test_generator_refuses_a_scope_sentence_that_does_not_render(self):
+        # The renderer refuses an empty name set by raising while the scope
+        # module is imported. The generator must report that as its own
+        # refusal, distinct from drift, a marker problem or a foreign capa,
+        # and leave the document untouched. The scope module is replaced by
+        # one whose names raise that error when the generator imports them.
+        gen = self._generator()
+        message = (
+            "the unaudited_secret_sinks scope sentence would render an "
+            "empty name set; re-derive the clause that names it"
+        )
+        unrendered = ModuleType("capa.manifest._scope")
+
+        def _raise(name):
+            raise ValueError(message)
+
+        unrendered.__getattr__ = _raise
+        with tempfile.TemporaryDirectory(prefix="capa_gen_") as tmp:
+            document = Path(tmp) / REGISTER.name
+            shutil.copyfile(REGISTER, document)
+            before = document.read_bytes()
+            for args in (["--check"], []):
+                with self.subTest(args=args):
+                    err = io.StringIO()
+                    with mock.patch.dict(sys.modules, {"capa.manifest._scope": unrendered}), \
+                            mock.patch.object(gen, "REGISTER", document), \
+                            mock.patch.object(sys, "path", list(sys.path)), \
+                            mock.patch.object(sys, "stderr", err):
+                        rc = gen.main(args)
+                    self.assertNotIn(
+                        rc,
+                        (0, gen.EXIT_DRIFT, gen.EXIT_MARKERS, gen.EXIT_FOREIGN_CAPA),
+                        f"the refusal is reported as another condition:\n{err.getvalue()}",
+                    )
+                    self.assertEqual(rc, getattr(gen, "EXIT_SCOPE_UNRENDERED", None))
+                    self.assertIn(message, err.getvalue())
+                    self.assertNotIn("marker", err.getvalue().lower())
+                    self.assertEqual(
+                        document.read_bytes(), before,
+                        "the generator wrote the document without a sentence",
                     )
 
     def test_generator_check_passes(self):
