@@ -216,8 +216,7 @@ There is a stack of supply-chain attack layers:
 | Build-script execution  | yes (`.m4`)     | no                |
 | Binary test fixtures    | yes             | no                |
 | Dynamic-linker IFUNC    | yes             | no                |
-| Source-code legitimate
-  authority misuse        | no              | partial (attenuation reduces blast radius) |
+| Source-code legitimate authority misuse | no | partial (attenuation reduces blast radius) |
 
 Capa addresses **one row** of this table well, and **one row**
 partially. The xz operation chose every other row.
