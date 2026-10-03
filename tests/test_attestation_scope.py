@@ -35,14 +35,16 @@ groups of pins:
   panic capability, the never-recordable set from the policy ceiling
   minus it) and hold their current values, the sentence renders every
   derived name in its clause and types none by hand, the renderer refuses
-  an empty set, both panic producers name the one panic capability and
-  move with it when it changes, the policy reader quantifies over the two
-  axes the sentence covers, and every hand copy of the sink table in
-  ``docs/`` and ``specs/`` equals it;
-- recorder universe: over every builtin method and builtin free function
-  that takes a String, read from ``capa.builtins``, a @secret argument is
-  recorded and warned only at a sink-table position (under its
-  capability) and at the panic builtin (under the panic capability);
+  an empty set, both panic producers move with the one panic capability
+  when it changes, the policy reader quantifies over the two axes the
+  sentence covers, and every hand copy of the sink table in ``docs/`` and
+  ``specs/`` equals it;
+- recorder universe: at every parameter position of every builtin method
+  and builtin free function, read from ``capa.builtins``, a @secret
+  argument is recorded and warned only at a sink-table position (under its
+  capability) and at the panic builtin (under the panic capability); the
+  members the sweep cannot build, and those the analyzer refuses, are
+  pinned lists;
 - single source: the sentence's text lives in exactly one module, every
   producer references the constant by name, and no other document in the
   repository restates it;
@@ -572,6 +574,9 @@ class TestRegister(unittest.TestCase):
             "ValueError": 'raise ValueError("planted by the register pins")\n',
             "ImportError": 'raise ImportError("planted by the register pins")\n',
             "RuntimeError": 'raise RuntimeError("planted by the register pins")\n',
+            # Exiting with 1 while the package imports would otherwise read
+            # as drift, silently.
+            "SystemExit": "raise SystemExit(1)\n",
         }
         with tempfile.TemporaryDirectory(prefix="capa_genpkg_") as tmp:
             root = Path(tmp)
@@ -924,28 +929,6 @@ class TestUniverse(unittest.TestCase):
                 ]
                 self.assertEqual(literals, [], "a producer types a capability name")
 
-    def test_both_panic_producers_read_the_one_panic_capability(self):
-        # The direct site records inside ``_check_ifc_panic_sink``; the callee
-        # summary attributes inside the branch that recognizes the builtin.
-        # This holds only that each call spells the constant's name; that
-        # both producers move with its value is the next pin.
-        sites = [
-            (rel, lineno, argument)
-            for rel, lineno, function, tests, argument in _capability_arguments()
-            if function == "_check_ifc_panic_sink" or "'panic'" in tests
-        ]
-        self.assertEqual(
-            sorted(rel for rel, _lineno, _argument in sites),
-            ["capa/analyzer/_ifc.py", "capa/analyzer/_ifc_summary.py"],
-            "the two panic producer sites are not where this pin looks",
-        )
-        for rel, lineno, argument in sites:
-            with self.subTest(site=f"{rel}:{lineno}"):
-                self.assertIn(
-                    "_PANIC_SINK_CAP",
-                    {n.id for n in ast.walk(argument) if isinstance(n, ast.Name)},
-                )
-
     def test_both_panic_producers_move_with_the_one_panic_capability(self):
         # Behaviour, not spelling: in a copy of the package whose one panic
         # capability is given a value no capability has, the direct producer
@@ -1027,64 +1010,93 @@ class TestUniverse(unittest.TestCase):
 # Recorder universe: swept over the builtins table
 # ---------------------------------------------------------------------------
 
-# A receiver for each non-capability owner whose methods take a String; a
-# capability receiver is a parameter of that capability's type. An owner
-# with no receiver here makes the sweep fail with its name, never skip it.
-_SWEEP_RECEIVERS = {
-    "String": ("String", '"r"'),
-    "Option": ("Option<Int>", "Some(1)"),
-    "Result": ("Result<Int, Int>", "Ok(1)"),
+# Members the sweep cannot write a program for, with the reason. Pinned: a
+# new member that cannot be built fails ``test_every_member_is_built_or_listed``
+# until it is built or added here, so it shows as a diff, never as a skip.
+_SWEEP_UNBUILDABLE = {
+    # A parameter the type table leaves unknown (``?``, ``List<?>``) has no
+    # type a program can declare.
+    ("py_invoke", 0): "the call's other parameters are of an unknown type",
+    ("py_invoke", 1): "a parameter of an unknown type",
+    ("py_invoke", 2): "a parameter of an unknown type",
+}
+
+# Members whose program the analyzer refuses whatever the argument's label,
+# with the reason. Pinned: a newly refused member fails
+# ``test_refused_members_are_exactly_the_listed_ones`` instead of passing
+# with nothing checked.
+_SWEEP_REFUSED = {
+    ("declassify", 0): "the reason must be a named string literal",
+    ("declassify", 1): "the reason must be a named string literal",
+    ("_capa_chr", 0): "an internal builtin user code cannot call",
+    ("_capa_str_span", 0): "an internal builtin user code cannot call",
+    ("_capa_str_span", 1): "an internal builtin user code cannot call",
+    ("_capa_str_span", 2): "an internal builtin user code cannot call",
 }
 
 
 def _sweep_members():
-    """``(owner, name, signature, position)`` for every String parameter of
+    """``(owner, name, signature, position)`` for every parameter position of
     every builtin method (``owner`` its type) and builtin free function
     (``owner`` None), read from ``capa.builtins``."""
     from capa.builtins import FREE_FUNCTIONS, METHODS
-    from capa.typesys import TyString
     for owner, methods in sorted(METHODS.items()):
         for name, signature, _extra in methods:
-            for position, ty in enumerate(signature.params):
-                if ty == TyString:
-                    yield owner, name, signature, position
+            for position in range(len(signature.params)):
+                yield owner, name, signature, position
     for name, (signature, _extra) in sorted(FREE_FUNCTIONS.items()):
-        for position, ty in enumerate(signature.params):
-            if ty == TyString:
-                yield None, name, signature, position
+        for position in range(len(signature.params)):
+            yield None, name, signature, position
+
+
+def _spell(ty):
+    """``ty`` as a Capa type annotation, each type variable taken as Int;
+    None for a type a program cannot declare."""
+    from capa.typesys import TyFun, TyName, TyTuple, TyUnit, TyVar
+    if ty is TyUnit:
+        return "Unit"
+    if isinstance(ty, TyVar):
+        return "Int"
+    parts, form = [], None
+    if isinstance(ty, TyName):
+        if not ty.args:
+            return ty.name
+        parts, form = list(ty.args), lambda s: f"{ty.name}<{', '.join(s)}>"
+    elif isinstance(ty, TyFun):
+        parts = [*ty.params, ty.ret]
+        form = lambda s: f"Fun({', '.join(s[:-1])}) -> {s[-1]}"  # noqa: E731
+    elif isinstance(ty, TyTuple):
+        parts, form = list(ty.elements), lambda s: f"({', '.join(s)})"
+    else:
+        return None
+    spelled = [_spell(p) for p in parts]
+    return None if None in spelled else form(spelled)
 
 
 def _sweep_program(owner, name, signature, position, secret=True):
-    """One function calling ``name`` with a @secret String at ``position``
-    (or, for the public twin, a literal), every other argument a public
-    literal or a capability parameter. None when an owner or a parameter
-    type has no builder here."""
-    from capa.typesys import CAPABILITY_NAMES, TyInt, TyName, TyString, TyVar
-    params, body, receiver = ["k: @secret String"], [], ""
+    """One function calling ``name`` on a receiver parameter (for a method)
+    with every argument a parameter of the argument's own type, the one at
+    ``position`` labelled @secret (unlabelled for the public twin). None when
+    a type cannot be declared."""
+    from capa.builtins import PARAMETRIC_TYPES
+    arity = dict(PARAMETRIC_TYPES)
+    params, receiver = [], ""
     if owner is not None:
-        if owner in CAPABILITY_NAMES:
-            params.append(f"r: {owner}")
-        elif owner in _SWEEP_RECEIVERS:
-            annotation, value = _SWEEP_RECEIVERS[owner]
-            body.append(f"    let r: {annotation} = {value}")
-        else:
-            return None
+        type_args = ", ".join("Int" for _ in arity.get(owner, ()))
+        params.append(f"r: {owner}<{type_args}>" if type_args else f"r: {owner}")
         receiver = "r."
     args = []
     for i, ty in enumerate(signature.params):
-        if i == position:
-            args.append("k" if secret else '"p"')
-        elif ty == TyString:
-            args.append('"p"')
-        elif ty == TyInt or isinstance(ty, TyVar):
-            args.append("1")
-        elif isinstance(ty, TyName) and ty.name in CAPABILITY_NAMES:
-            params.append(f"c{i}: {ty.name}")
-            args.append(f"c{i}")
-        else:
+        spelled = _spell(ty)
+        if spelled is None:
             return None
-    body.append(f"    let _v = {receiver}{name}({', '.join(args)})")
-    return f"fun probe({', '.join(params)})\n" + "\n".join(body) + "\n"
+        label = "@secret " if i == position and secret else ""
+        params.append(f"a{i}: {label}{spelled}")
+        args.append(f"a{i}")
+    return (
+        f"fun probe({', '.join(params)})\n"
+        f"    let _v = {receiver}{name}({', '.join(args)})\n"
+    )
 
 
 def _sweep_analyse(source: str):
@@ -1100,12 +1112,13 @@ def _sweep_analyse(source: str):
 
 class TestRecorderUniverse(unittest.TestCase):
     """What the recorder recognizes, swept over ``capa.builtins``: a @secret
-    String passed to any builtin method or free function is recorded, and
-    warned, only at a sink-table position (under that sink's capability) and
-    at the panic builtin (under the one panic capability). Bound: a String
-    parameter at a direct call; an operation reached through another
-    parameter type, through a user callee, or not through a builtin call is
-    outside this sweep."""
+    argument at any parameter position of any builtin method or free
+    function is recorded, and warned, only at a sink-table position (under
+    that sink's capability) and at the panic builtin (under the one panic
+    capability). Bound: a direct call with the secret as an argument (not
+    as the receiver); the listed unbuildable and refused members check
+    nothing; an operation reached through a user callee or not through a
+    builtin call is outside this sweep."""
 
     @classmethod
     def setUpClass(cls):
@@ -1133,22 +1146,42 @@ class TestRecorderUniverse(unittest.TestCase):
         if accepted:
             self.assertEqual(warnings, [], "a @secret argument outside the sink table warns")
             return
-        # A refused program says nothing about the recorder: it passes only
-        # when its public twin is refused with the same diagnostics, so the
-        # call's shape, not the secret, is why.
+        # A listed refusal says nothing about the recorder: its public twin
+        # must be refused with the same errors, so the call's shape, not the
+        # secret, is why; and the secret raises no information-flow
+        # diagnostic. (Warnings may differ: declassifying a public value
+        # warns that it is a no-op.)
+        self.assertFalse(
+            [d for d in (*warnings, *errors) if d.startswith("information-flow")],
+            "a refused member reports an information flow",
+        )
         owner, name, position = key
         twin = _sweep_analyse(_sweep_program(owner, name, signature, position, secret=False))
         self.assertEqual(
-            (twin[0], twin[2], twin[3]), (accepted, warnings, errors),
+            (twin[0], twin[3]), (accepted, errors),
             "the program is refused because of the secret",
         )
 
-    def test_every_member_is_built(self):
-        self.assertTrue(self.results, "the builtins table yields no String parameter")
+    def test_every_member_is_built_or_listed(self):
+        self.assertTrue(self.results, "the builtins table yields no parameter")
         self.assertEqual(
-            [self._label(k) for k in self.unbuilt], [],
-            "the sweep cannot build these members: extend its receiver or argument builder",
+            sorted((owner or "", name, position) for owner, name, position in self.unbuilt),
+            sorted(("", name, position) for name, position in _SWEEP_UNBUILDABLE),
+            "the members the sweep cannot build are not the listed ones: build "
+            "them, or list them with a reason",
         )
+
+    def test_refused_members_are_exactly_the_listed_ones(self):
+        refused = sorted(
+            (name, position) for (owner, name, position), (_s, outcome) in self.results.items()
+            if not outcome[0] and owner is None
+        )
+        refused_methods = sorted(
+            self._label(k) for k, (_s, outcome) in self.results.items()
+            if not outcome[0] and k[0] is not None
+        )
+        self.assertEqual(refused_methods, [], "a builtin method's program is refused")
+        self.assertEqual(refused, sorted(_SWEEP_REFUSED), "the refused members changed")
 
     def test_sink_positions_record_their_capability(self):
         # The control on the same generator: where the table names a sink
