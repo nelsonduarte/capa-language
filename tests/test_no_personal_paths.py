@@ -279,6 +279,27 @@ class AccountTests(unittest.TestCase):
                     mock.patch.object(Path, "home", return_value=Path(home)):
                 self.assertEqual(running_accounts(), frozenset())
 
+    def test_a_personal_running_account_is_looked_for(self):
+        # The positive half, read through the function the real scan
+        # uses. Both machine names are made up.
+        with mock.patch.object(getpass, "getuser", return_value="quillona"), \
+                mock.patch.object(Path, "home", return_value=Path("/x/quillonb")):
+            self.assertEqual(running_accounts(), {b"quillona", b"quillonb"})
+
+
+def _planted_repo(root: Path, files: "dict[str, bytes]") -> "list[str]":
+    """``git init`` at ``root``, write ``files`` and stage them. Returns
+    the git command prefix for further index operations."""
+    g = ["git", "-C", str(root), "-c", "core.autocrlf=false"]
+    subprocess.run(["git", "init", "-q", str(root)], check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    for name, data in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(data)
+    subprocess.run([*g, "add", "-A"], check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    return g
+
 
 class PlantedTreeTests(unittest.TestCase):
     """The scan over a planted repository: every entry kind, encoding,
@@ -290,9 +311,6 @@ class PlantedTreeTests(unittest.TestCase):
         path = f"C:{self.BS}{self.U}{self.BS}alice{self.BS}f".encode()
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            g = ["git", "-C", str(root), "-c", "core.autocrlf=false"]
-            subprocess.run(["git", "init", "-q", str(root)], check=True,
-                           stdin=subprocess.DEVNULL, capture_output=True)
             planted = {
                 "a.csv": b"x," + path + b"\n",
                 "b.txt": ("x " + path.decode()).encode("utf-16"),
@@ -302,13 +320,11 @@ class PlantedTreeTests(unittest.TestCase):
                 "sub dir/e.json": b'{"p": "' + path.replace(b"\\", b"\\\\") + b'"}',
                 "h.txt": f"built by {SAMPLE_ACCOUNT}@host\n".encode(),
             }
-            for name, data in planted.items():
-                (root / name).parent.mkdir(parents=True, exist_ok=True)
-                (root / name).write_bytes(data)
-            (root / "excused.md").write_bytes(b"/ho" + b"me/user/x\n")
-            (root / "clean.md").write_bytes(b"nothing here\n")
-            subprocess.run([*g, "add", "-A"], check=True,
-                           stdin=subprocess.DEVNULL, capture_output=True)
+            g = _planted_repo(root, {
+                **planted,
+                "excused.md": b"/ho" + b"me/user/x\n",
+                "clean.md": b"nothing here\n",
+            })
             # A symbolic link and a gitlink, entered in the index the same
             # way on every platform; neither exists in the working tree.
             target = subprocess.run(
@@ -327,6 +343,23 @@ class PlantedTreeTests(unittest.TestCase):
         )
         self.assertEqual(result.used, {"user": {"excused.md"}})
         self.assertEqual(result.gitlinks, ["module"])
+
+    def test_the_default_scan_looks_for_the_running_account(self):
+        # ``scan_tracked`` without an ``accounts`` argument is the call
+        # the tracked-file test makes: it must look for the running
+        # account, and skip a generic one. All names are made up.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _planted_repo(root, {"h.txt": b"built by quillona@host\n"})
+            for login, kinds in (("quillona", {ACCOUNT}), ("runner", set())):
+                with self.subTest(login), \
+                        mock.patch.object(getpass, "getuser", return_value=login), \
+                        mock.patch.object(Path, "home", return_value=Path("/x") / login):
+                    result = scan_tracked(root)
+                    self.assertEqual(
+                        {f.kind for f in result.violations.get("h.txt", [])},
+                        kinds,
+                    )
 
     def test_outside_a_checkout_there_is_nothing_to_scan(self):
         with tempfile.TemporaryDirectory() as td:
