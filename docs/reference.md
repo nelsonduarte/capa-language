@@ -460,8 +460,8 @@ constant; a capability passed for a generic type parameter, as in
 `id(stdio)`; and a `let`/`var`
 whose right-hand side is a capability parameter (`let b = fs`).
 (Exception: a struct that `impl`s a user-defined
-capability *may* hold built-in caps as fields - the
-"cap-bearing struct" relaxation.)
+capability *may* hold a built-in capability other than `Unsafe` as a
+bare field - the "cap-bearing struct" relaxation.)
 
 **Flow**:
 - *No aliasing*: the analyzer refuses `both(stdio, stdio)`
@@ -566,10 +566,10 @@ fun ok(env: Env, stdio: Stdio)
 
 The analysis is cross-function: it builds modular per-function
 summaries (which parameters reach a public sink, and which writes a
-parameter or `self` field) so that a secret reaching a public sink
-inside a callee, or stored into a parameter / `self` field by a
-callee, is caught at the call site, including through dynamic trait /
-capability dispatch. No explicit `@secret` parameter is required for
+parameter or `self` field), so that a flow the analysis detects from a
+secret to a public sink inside a callee, or into a parameter / `self`
+field written by a callee, is reported at the call site, including
+through dynamic trait / capability dispatch. No explicit `@secret` parameter is required for
 the flow to be tracked. Struct labels are per-field: reading a public
 field of a struct that also holds a secret is no longer over-tainted;
 lists, tuples, and maps remain whole-aggregate. Under `@strict_ifc`

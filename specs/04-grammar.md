@@ -173,7 +173,8 @@ capability method) declares the capability atoms the method may exercise
 (`uses [Net]`, or `uses []` for none); `uses` is contextual. A
 user-defined capability is implemented as a trait (`impl X for Type`);
 the analyzer relaxes two structural rules only for the cap-bearing
-struct (it may hold built-in capabilities as fields, and a regular
+struct (it may hold built-in capabilities other than `Unsafe` as
+fields, and a regular
 function may return it). See
 [13-user-defined-capabilities.md](13-user-defined-capabilities.md).
 

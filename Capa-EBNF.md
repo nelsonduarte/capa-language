@@ -575,7 +575,7 @@ A user-defined capability is implemented exactly like a trait: `impl X for Type`
 
 To make the encapsulation pattern workable, the analyzer relaxes two of the otherwise-strict structural rules **only for the cap-bearing struct**:
 
-- The struct that implements a user-defined capability **may hold built-in capabilities as fields** (e.g. `type SmtpMailer { server: String, net: Net }`). The struct's *value* still has to follow the capability discipline as a whole, aliasing it via `let dup = mailer` is rejected, the same as for built-in caps.
+- The struct that implements a user-defined capability **may hold built-in capabilities other than `Unsafe` as fields** (e.g. `type SmtpMailer { server: String, net: Net }`). The struct's *value* still has to follow the capability discipline as a whole, aliasing it via `let dup = mailer` is rejected, the same as for built-in caps.
 - A regular function **may return a user-defined capability** (factory pattern: `fun make_smtp_mailer(net: Net, ...) -> SmtpMailer`).
 
 ```capa
