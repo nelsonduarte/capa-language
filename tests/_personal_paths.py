@@ -17,23 +17,30 @@ What is a finding, three kinds, and where each is checked:
   home directory followed by a name that is not on
   ``NON_PERSONAL_NAMES``. The rule refuses every unjustified name, not
   one account. The forms it matches are a drive letter followed by
-  ``Users`` in any letter case, ``/Users`` or ``\\Users`` with a
-  capital U, and ``/home`` not preceded by a word, each followed by any
-  run of backslashes, slashes or their percent-encoded forms (either
-  letter case) and then the name. That covers a plain Windows path,
-  the JSON-doubled and forward-slash forms, and the MSYS, macOS and
-  Linux forms. It does NOT cover, measured: drive-less lower-case
-  ``users`` paths (a WSL mount, a UNC share), the WSL UNC form of a
-  home directory, ``/var/home``, ``/export/home``, ``../home``,
-  ``~name``, a path wrapped across lines or assembled by concatenation
-  or a path join, separators written as escapes (``\\u005c``,
-  ``\\x5c``, an HTML entity) or percent-encoded twice, localised or
-  legacy profile folder names, and compressed or base64 content.
+  ``Users`` in any letter case; a slash or backslash followed by
+  ``Users`` spelt exactly so, capital U and the rest lower case; and
+  ``/home`` not preceded by a word. Each must be followed by any run of
+  backslashes, slashes or their percent-encoded forms (either letter
+  case) and then the name. That covers a plain Windows path, the
+  JSON-doubled and forward-slash forms, and the MSYS, macOS and Linux
+  forms. It does NOT cover, measured: a drive-less users directory in
+  any other letter case (``/USERS/name``, ``/users/name``, so a WSL
+  mount or a UNC share), letters written in fullwidth form, the WSL
+  UNC form of a home directory, ``/var/home``, ``/export/home``,
+  ``../home``, ``~name``, a path wrapped across lines or assembled by
+  concatenation or a path join, separators written as escapes
+  (``\\u005c``, ``\\x5c``, an HTML entity) or percent-encoded twice,
+  localised or legacy profile folder names, and compressed or base64
+  content.
 * ``home layout``, checked everywhere: the desktop or application-data
-  folder of a user profile used as a path component, meaning next to a
-  separator or a quote (so a path composed from the home directory in
-  code is caught as well as a written one). The bare word in prose is
-  left alone.
+  folder of a user profile, spelt with exactly the letter case Windows
+  gives it, used as a path component, meaning next to a separator or a
+  quote (so a path composed from the home directory in code is caught
+  as well as a written one). The bare word in prose is left alone. It
+  does NOT cover, measured: 8.3 short names of those folders (the
+  six-letter stem followed by ``~1``), the folder names in any other
+  letter case (all lower case, all upper case), and a layout path whose
+  separators are percent-encoded.
 * ``running account``, checked only where the person running the test
   has a personal account: the account name of whoever runs the test,
   read from the machine at run time (the login name and the last
