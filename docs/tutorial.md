@@ -381,11 +381,10 @@ fun pure(x: Int) -> Int
 This makes code auditable: the signature shows the capabilities a
 function is handed as parameters.
 
-### No aliasing
+### Aliasing
 
-A call that passes the same capability parameter twice, as
-`both(stdio, stdio)` below, is refused (`consume` marks an ownership
-transfer; see the reference):
+The analyzer refuses `both(stdio, stdio)` below (`consume` marks an
+ownership transfer; see the reference):
 
 ```capa
 fun both(a: Stdio, b: Stdio)

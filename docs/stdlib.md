@@ -948,9 +948,8 @@ fun send_welcome(mailer: SendEmail, to: String) -> Result<Unit, IoError>
     return mailer.send(to, "Welcome", "Hello!")
 ```
 
-The discipline still applies: a `let dup = mailer` (plain identifier
-alias of a cap-bearing value) is rejected; only call/method-call RHSs
-produce fresh capability instances that can be bound. See
+The discipline still applies: `let dup = mailer` on a capability
+parameter is rejected. See
 `examples/user_capabilities.capa` for a complete example.
 
 ---

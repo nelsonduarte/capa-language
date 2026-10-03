@@ -114,8 +114,7 @@ not provable from its types (section 5).
 
 **(a) A `let` copy of a capability parameter is refused.** A `let`
 or `var` whose right-hand side is the capability parameter itself is
-refused, also when it is written in parentheses or as both branches of
-an `if` or `match` expression:
+refused:
 
 ```capa
 // alias_cap.capa

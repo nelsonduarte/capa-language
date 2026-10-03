@@ -127,12 +127,11 @@ The guarantee is the product of two distinct layers.
 
 STATIC layer (the type system, in `capa/analyzer/_discipline.py`):
 a call on a built-in capability that is not in scope is refused; the
-analyzer refuses a capability type as the declared type of a struct
-field (outside a capability-bearing struct), a variant payload or a
-constant, and a `let` / `var` whose right-hand side is a capability
-parameter (`_check_no_capability`); and a call that passes the same
-capability parameter in two arguments is refused
-(`_check_no_aliasing`). On top of this the manifest
+analyzer refuses a built-in capability type as the declared type of a
+struct field (outside a capability-bearing struct), a variant payload
+or a constant, and a `let` / `var` whose right-hand side is a
+capability parameter (`_check_no_capability`); and it refuses
+`both(stdio, stdio)` (`_check_no_aliasing`). On top of this the manifest
 computes `provably_excluded_capabilities` from the function signature
 plus a closed-world reachability bound
 (`capa/manifest/_funrec.py:475-528`, written out at

@@ -452,21 +452,19 @@ signatures reach either (see [`stdlib.md`](stdlib.md)).
 
 ### 6.2. The capability discipline (three layers)
 
-**Structural**: the analyzer refuses a capability type, or a `List`,
-`Map`, `Option`, `Result` or tuple of one, as the declared type of a
-struct field or a variant payload; a capability type, or a `List`,
-`Map`, `Option` or `Result` of one, as the declared type of a
+**Structural**: the analyzer refuses a built-in capability type, or a
+`List`, `Map`, `Option`, `Result` or tuple of one, as the declared type
+of a struct field or a variant payload; a built-in capability type, or
+a `List`, `Map`, `Option` or `Result` of one, as the declared type of a
 constant; a capability passed for a generic type parameter, as in
 `id(stdio)`; and a `let`/`var`
-whose right-hand side is a capability parameter (`let b = fs`, also
-written in parentheses or as both branches of an `if` or `match`
-expression). (Exception: a struct that `impl`s a user-defined
+whose right-hand side is a capability parameter (`let b = fs`).
+(Exception: a struct that `impl`s a user-defined
 capability *may* hold built-in caps as fields - the
 "cap-bearing struct" relaxation.)
 
 **Flow**:
-- *No aliasing*: a call that passes the same capability parameter in
-  two argument slots, as `both(stdio, stdio)`, is refused
+- *No aliasing*: the analyzer refuses `both(stdio, stdio)`
 - *Mandatory use*: capability parameters must be used (or prefixed
   with `_` to silence the warning)
 
