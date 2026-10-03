@@ -42,10 +42,14 @@ What is a finding, three kinds, and where each is checked:
   the name in a host name, after ``@``, in a path flattened with
   dashes, or in a path the rules above do not parse. It is NOT checked
   for a name on ``GENERIC_ACCOUNTS`` (CI runners and container
-  defaults), a name shorter than ``MIN_ACCOUNT_LENGTH``, or a name that
-  is a word of the author names published in ``pyproject.toml`` (a
-  published name guards nothing, and it occurs in the licences). So on
-  a CI runner or in a container running as root this kind checks
+  defaults), a name shorter than ``MIN_ACCOUNT_LENGTH``, or a name equal,
+  in any letter case, to a whole word of the author names published in
+  ``pyproject.toml`` (a published name guards nothing, and it occurs in
+  the licences and the examples). That last exemption is exact: a name
+  that is only part of an author word, or an author word with more
+  letters, is still checked, so it cannot switch the check off for an
+  account named after a shortened or extended form of a published name.
+  So on a CI runner or in a container running as root this kind checks
   nothing, and on a developer's own machine it checks that developer's
   account. This file names no particular account and holds nothing an
   account could be recovered from.

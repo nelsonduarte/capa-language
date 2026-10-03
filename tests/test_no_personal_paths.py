@@ -224,6 +224,26 @@ class AccountTests(unittest.TestCase):
             checked_accounts({"Quillon"}, {"quillon", "smith"}), frozenset()
         )
 
+    def test_only_a_whole_author_word_is_exempt(self):
+        # Part of an author word, and an author word with more letters,
+        # are other names: the exemption must not reach them.
+        for name in ("quill", "quillo", "quillons", "aquillon"):
+            with self.subTest(name):
+                self.assertEqual(
+                    checked_accounts({name}, {"quillon"}), {name.encode()}
+                )
+
+    def test_a_running_account_named_after_an_author_word_is_not_looked_for(self):
+        words = sorted(
+            w for w in published_author_words() if len(w) >= MIN_ACCOUNT_LENGTH
+        )
+        self.assertTrue(words, "pyproject.toml publishes no author word to test with")
+        for word in words:
+            with self.subTest(word), \
+                    mock.patch.object(getpass, "getuser", return_value=word), \
+                    mock.patch.object(Path, "home", return_value=Path("/x") / word):
+                self.assertEqual(running_accounts(), frozenset())
+
     def test_the_author_words_are_read_from_the_authors_table(self):
         with tempfile.TemporaryDirectory() as td:
             pyproject = Path(td) / "pyproject.toml"
