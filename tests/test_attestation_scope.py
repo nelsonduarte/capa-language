@@ -570,7 +570,7 @@ class TestRegister(unittest.TestCase):
         gen = self._generator()
         plants = {
             "ValueError": 'raise ValueError("planted by the register pins")\n',
-            "ImportError": "import capa_planted_missing_module\n",
+            "ImportError": 'raise ImportError("planted by the register pins")\n',
             "RuntimeError": 'raise RuntimeError("planted by the register pins")\n',
         }
         with tempfile.TemporaryDirectory(prefix="capa_genpkg_") as tmp:
