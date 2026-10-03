@@ -84,8 +84,9 @@ The output is a single JSON document:
 }
 ```
 
-The `invocationId` is deterministic, not derived from the clock,
-so repeated runs produce matching attestations.
+The `invocationId` is deterministic, not derived from the clock:
+repeated runs produce the same `invocationId`, and with
+`SOURCE_DATE_EPOCH` set the whole attestation matches.
 
 ---
 

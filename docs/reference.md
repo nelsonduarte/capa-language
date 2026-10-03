@@ -443,8 +443,8 @@ the scrutinee's type arguments.
 
 Capabilities are primitive types representing access to system
 resources (`Stdio`, `Fs`, `Env`, `Clock`, `Random`, `Net`, `Db`,
-`Proc`, `Serve`, `Unsafe`). There are no global instances: a
-capability enters a function as a parameter, inside a closure that
+`Proc`, `Serve`, `Unsafe`). There are no global instances. A
+capability can reach a function as a parameter, inside a closure that
 captured one, or as a field of a capability-bearing struct (6.2).
 `Serve` and `Unsafe` run
 on the Python backend only; `capa --wasm` rejects a program whose
@@ -452,17 +452,21 @@ signatures reach either (see [`stdlib.md`](stdlib.md)).
 
 ### 6.2. The capability discipline (three layers)
 
-**Structural**: a struct field, a variant payload or a constant
-cannot hold a capability; a parameter can hold one only bare, not
-packed inside a container, `Option`, `Result` or tuple type; a
-capability is never a generic type argument; and a capability
-parameter cannot be copied into a `let`/`var` binding. (Exception: a struct that `impl`s a user-defined
+**Structural**: the analyzer refuses a capability type, or a `List`,
+`Map`, `Option`, `Result` or tuple of one, as the declared type of a
+struct field or a variant payload; a capability type, or a `List`,
+`Map`, `Option` or `Result` of one, as the declared type of a
+constant; a capability passed for a generic type parameter, as in
+`id(stdio)`; and a `let`/`var`
+whose right-hand side is a capability parameter (`let b = fs`, also
+written in parentheses or as both branches of an `if` or `match`
+expression). (Exception: a struct that `impl`s a user-defined
 capability *may* hold built-in caps as fields - the
 "cap-bearing struct" relaxation.)
 
 **Flow**:
-- *No aliasing*: the same capability cannot occupy two argument slots
-  in a single call
+- *No aliasing*: a call that passes the same capability parameter in
+  two argument slots, as `both(stdio, stdio)`, is refused
 - *Mandatory use*: capability parameters must be used (or prefixed
   with `_` to silence the warning)
 

@@ -55,10 +55,9 @@ Three reasons:
    the file's behaviour. The Capa version, by contrast, names
    all five helpers and declares zero capabilities per
    function, with the compiler refusing any capability call in
-   each - so the
-   SBOM-diff gap on a pure file with non-trivial parsing logic
-   is exactly the per-function attribution that PURL cannot
-   carry.
+   each - so the SBOM-diff gap on a capability-free file with
+   non-trivial parsing logic is exactly the per-function
+   attribution that PURL cannot carry.
 
 ## Functions
 

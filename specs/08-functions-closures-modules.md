@@ -185,9 +185,9 @@ enforced by the **analyzer**, not the parser.
 ### 3.1 Capability parameters
 
 A parameter whose type is a built-in capability (`Stdio`, `Fs`, `Net`,
-...) is one way a built-in capability reaches a function; the others
-are a field of a struct that implements a user-defined capability and
-a closure that captured one (section 5.1). There is no global
+...) is one way a built-in capability can reach a function; a field of
+a struct that implements a user-defined capability and a closure that
+captured one (section 5.1) are two others. There is no global
 capability value (see
 [10-capability-model.md](10-capability-model.md)). The
 analyzer requires a declared capability parameter to be **used**;

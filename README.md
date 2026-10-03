@@ -60,8 +60,8 @@ Statistics:
 ## The 30-second story
 
 A helper that needs no authority is handed none: `classify` takes a
-`Float`, and the analyzer refuses any call on a built-in capability in
-its body.
+`Float`, so a call such as `stdio.println(...)` in its body is refused
+(there is no `stdio` in scope).
 
 ```capa
 fun classify(score: Float) -> String

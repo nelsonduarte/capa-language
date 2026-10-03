@@ -20,9 +20,8 @@ The Python file itself never changes. Only the `.capa` file changes.
 
 Capa programs declare their authority in function signatures: a function
 that opens a network socket has `Net` as a parameter; a function that
-reads a file has `Fs`; a function that does neither has neither, and
-cannot call either unless it is handed a value that already carries
-one. The compiler emits a capability manifest, and CycloneDX and SPDX
+reads a file has `Fs`; a function that does neither has neither in its
+signature. The compiler emits a capability manifest, and CycloneDX and SPDX
 documents that carry it at per-function granularity; VEX records your
 `@vex` claims and SLSA provenance records the source digests.
 

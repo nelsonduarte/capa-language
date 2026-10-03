@@ -122,9 +122,9 @@ fun decompress(data: List<Int>) -> List<Int>
 ```
 
 The SBOM derived from these signatures lists no capabilities.
-A `liblzma`-shaped library with these signatures holds no
-capability, so it cannot call the network, the filesystem, the
-environment, or process control. The downstream consumer reading the SBOM cannot be
+A `liblzma`-shaped library with these signatures is handed no
+capability, so a call on `net`, `fs`, `env` or `proc` in its body is
+refused: none is in scope. The downstream consumer reading the SBOM cannot be
 confused into thinking the library asked for authority it did
 not need.
 

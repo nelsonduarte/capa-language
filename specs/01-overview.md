@@ -24,17 +24,14 @@ Depends on: nothing.
 
 Capa is a programming language whose central discipline is: **the
 authority to call a built-in capability (read files, open sockets, read
-the environment, run processes) exists only as a typed value that
-reaches a function explicitly.** There is no global capability value. A
-function can call a built-in capability's methods only on a value that
-reached it, and the compiler rejects a call on a capability that is not
-in scope before the program runs.
+the environment, run processes) is a typed value a function is
+handed.** There is no global capability value, and the compiler rejects
+a call on a capability that is not in scope before the program runs.
 
-The practical consequence: if `fun parse(s: String) -> Ast` receives
-no capability and no function-typed parameter, then `parse` cannot read
-files, open network connections or read the environment, and this is
-checkable from the signature alone, without reading the body or trusting
-the author.
+The practical consequence: `fun parse(s: String) -> Ast` takes only a
+`String`, so a call on `fs`, `net` or `env` in its body is refused,
+because none is in scope; a reader sees that from the signature, without
+reading the body or trusting the author.
 
 The minimal demonstration: a leaf function that tries to use `stdio`
 without having received it does not compile.
@@ -61,11 +58,9 @@ noauth.capa:5:10: error: capability parameter 'stdio' is declared but never used
 noauth.capa: 2 errors
 ```
 
-There is no global `stdio` for `leak` to reach: `leak` can call a
-`Stdio` method only on a `Stdio` value in its scope, and its only other
-way to reach one is a value handed to it that already carries one (a
-function value or a user-defined capability), which shows in its
-signature as that parameter's type.
+There is no global `stdio` for `leak` to reach, so the call is refused;
+`greet` in section 3 shows the working form, with `stdio` handed to it
+as a parameter.
 The detailed model is in
 [02-authority-in-types.md](02-authority-in-types.md).
 
@@ -162,8 +157,9 @@ The two backends produce identical output.
 This section is the honesty frame of the set. Every guarantee claim has a
 scope, and the scope is stated.
 
-**The capability discipline** (no built-in capability is created from
-nothing; a call on a capability that is not in scope is refused) is
+**The capability discipline** (no literal, global or import yields a
+built-in capability; a call on a capability that is not in scope is
+refused) is
 checked statically by the analyzer for every program that passes
 `--check`. Its core is formalized: the mechanized theorems, about the
 `lambda_cap` calculus, live in [`proofs/`](../proofs/README.md), typed
@@ -250,10 +246,9 @@ Without the `@strict_ifc()` attribute, the same `leak` produces
   monitor. On the Wasm backend there is additional runtime confinement
   (WASI imports), but the central model is the type, not the sandbox.
 - **Not reliant on an honest author for capabilities.** The authority
-  surface is derived, not declared. An author cannot "forget" to declare
-  a built-in capability the code calls: a call on a capability that is
-  not in scope does not compile, and a built-in capability enters the
-  program only through `main`'s signature.
+  surface is derived, not declared: the manifest is computed from the
+  type-checked program, and a call on a capability that is not in scope
+  does not compile.
 - **Not, yet, a total IFC verifier.** The IFC discipline is opt-in per
   function, its default tier warns rather than rejects, and its
   guarantee is scoped as stated in

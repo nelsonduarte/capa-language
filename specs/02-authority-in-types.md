@@ -57,15 +57,14 @@ The two halves of the discipline:
 **(a) Built-in capabilities enter through `main` and are handed on.** A
 capability enters a program through the entry point's signature
 (`fun main(fs: Fs, net: Net, ...)`, see
-[10-capability-model.md](10-capability-model.md)) and propagates by
+[10-capability-model.md](10-capability-model.md)) and can propagate by
 being passed as an argument, held in a field of a struct that implements
 a user-defined capability, or captured by a closure that is then passed.
-A function that none of these reached does not have it.
 
 **(b) A built-in capability cannot be fabricated.** There is no
 constructor or literal for a built-in capability, and no global or
-import yields one; a capability parameter cannot be copied into a
-`let`/`var` binding either. A capability passed as an argument is
+import yields one; and a `let`/`var` whose right-hand side is a
+capability parameter is refused. A capability passed as an argument is
 visible in the signature at that link; a link that carries it inside a
 function value or a user-defined capability shows that type instead,
 and the manifest accounts for both (section 6).
@@ -114,14 +113,14 @@ the abusive one because authority and designation are separated.
 In the object-capability model the confused deputy disappears by
 construction: a component acts only with the authority **passed to it
 with the request**. If the caller has no `Fs`, it cannot pass `Fs`, and
-the deputy has no ambient `Fs` to use instead. In Capa, a function can
-call only the built-in capabilities that reached it. Designation (the
+the deputy has no ambient `Fs` to use instead. In Capa, a call on a
+built-in capability that is not in the caller's scope is refused.
+Designation (the
 argument) and authority (the capability value) are the same thing, which
 is the definition of the property.
 
 JUDGEMENT. This is a consequence of (a)+(b) of section 3, not an
-additional mechanism: a built-in capability reaches a function only by
-being handed to it. The empirical confirmation is the `noauth.capa`
+additional mechanism. The empirical confirmation is the `noauth.capa`
 example of [01-overview.md](01-overview.md) (a leaf without the
 capability does not compile).
 
@@ -236,10 +235,10 @@ noninterferent. The full statement is in
 
 ## 8. What the model guarantees, and what it does not
 
-- **Guarantees** (static, every program that passes `--check`): no
-  function calls a built-in capability that is not in scope; no
-  constructor or literal produces a built-in capability and no global
-  or import yields one; attenuation is monotone. The `lambda_cap` core of these rules is
+- **Checked statically** (`--check`): a call on a built-in
+  capability that is not in scope is refused; no constructor or literal
+  produces a built-in capability, and no global or import yields one;
+  attenuation is monotone. The `lambda_cap` core of these rules is
   formalized in Agda; the translation from full Capa to that core is
   not mechanized.
 - **Does not guarantee by itself**: that the runtime materializing the

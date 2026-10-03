@@ -368,25 +368,24 @@ Available capabilities:
 
 ### Why capabilities?
 
-A function handed no capability, no function value and no struct that
-implements a user-defined capability holds no built-in capability and
-cannot call one:
+A call on a capability that is not in scope is refused. `pure` below
+takes only an `Int`, so a `stdio.println(...)` in its body would be
+refused: there is no `stdio` for it to call.
 
 ```capa
 fun pure(x: Int) -> Int
     return x * 2
-    // Cannot call stdio.println, it has no stdio
+    // stdio.println(...) here is refused: no stdio in scope
 ```
 
-This makes code auditable: the signature shows which built-in
-capabilities a function is handed, and functions that are handed none
-are easy to spot.
+This makes code auditable: the signature shows the capabilities a
+function is handed as parameters.
 
 ### No aliasing
 
-A capability cannot be aliased: one call cannot receive the same
-capability in two arguments (`consume` marks an ownership transfer; see
-the reference):
+A call that passes the same capability parameter twice, as
+`both(stdio, stdio)` below, is refused (`consume` marks an ownership
+transfer; see the reference):
 
 ```capa
 fun both(a: Stdio, b: Stdio)
@@ -394,7 +393,7 @@ fun both(a: Stdio, b: Stdio)
     b.println("b")
 
 fun main(stdio: Stdio)
-    both(stdio, stdio)    // Error: the same capability in two arguments
+    both(stdio, stdio)    // refused: stdio passed twice
 ```
 
 ---

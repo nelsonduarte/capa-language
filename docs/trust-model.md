@@ -168,11 +168,12 @@ refused on failure.
   prints the refusal it overrode in full. See `capa/pkg/_floor.py` and
   [advisory 2026-07-20](advisories/2026-07-20-capa-floor.md).
 
-- **An invalid `SOURCE_DATE_EPOCH` is refused.** A value that is not a
-  plain non-negative decimal integer, or that is out of the
-  representable date range, stops the artefact emission with a non-zero
-  exit and no output, instead of silently falling back to the wall
-  clock. See `capa/manifest/_timestamp.py`.
+- **An invalid `SOURCE_DATE_EPOCH` is refused by the timestamped
+  artefacts.** For `--cyclonedx`, `--spdx`, `--vex` and `--provenance`,
+  a value that is not a plain non-negative decimal integer, or that is
+  out of the representable date range, stops the emission with a
+  non-zero exit and no output, instead of silently falling back to the
+  wall clock. See `capa/manifest/_timestamp.py`.
 
 ## 2. Best-effort (fail-open)
 

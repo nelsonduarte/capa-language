@@ -3,9 +3,10 @@
 > **What this chapter covers.** How authority enters a Capa program and
 > how it propagates: capabilities as unforgeable values; the absence of
 > ambient authority (no global, `import`, constructor or literal
-> produces a capability; the runtime hands all authority to `main`);
-> the propagation discipline (no copying a capability parameter into
-> a binding, no fabrication); the elimination of the confused
+> produces a built-in capability; the runtime constructs the ones
+> `main` requests); the propagation rules the analyzer checks (a
+> `let` copy of a capability parameter is refused, no literal
+> constructs one); the elimination of the confused
 > deputy; and the authority-chain-in-the-types property, verified
 > against the manifest. The 10 concrete capabilities are in
 > [11-builtin-capabilities.md](11-builtin-capabilities.md); attenuation
@@ -19,16 +20,14 @@ Depends on: [02-authority-in-types.md](02-authority-in-types.md).
 
 ---
 
-## 1. Where authority enters: the runtime hands everything to `main`
+## 1. Where authority enters: the runtime hands the capabilities to `main`
 
 A Capa program calls a built-in capability (to print, read a file,
-open a socket, read the environment, run a process) only through a
-**capability value** that reached the calling function. These values do
-not appear in the middle of the program: they enter at a single point,
-the entry point's signature. The runtime (the Python backend or the
-Wasm host) constructs the capabilities `main` asks for, one per
-parameter, and passes them in the startup call. From there on there is
-only propagation: `main` decides who gets what.
+open a socket, read the environment, run a process) through a
+**capability value** in the calling function's scope. The runtime (the
+Python backend or the Wasm host) constructs the capabilities `main`
+asks for, one per parameter, and passes them in the startup call;
+`main` then decides who gets what.
 
 `main` declares the capabilities it needs as parameters, and the
 runtime materializes them:
@@ -53,9 +52,7 @@ Hello, Rui
 ```
 
 The two backends produce identical output. `main` received `Stdio` from
-the runtime and propagated it to `greet` by explicit argument. There is
-no other door: a built-in capability `main` does not request in its
-signature is never constructed.
+the runtime and propagated it to `greet` by explicit argument.
 
 ## 2. No ambient access to the built-in capabilities
 
@@ -98,26 +95,27 @@ deputy_leak.capa: 1 error
 ```
 
 `render` receives no `Net`, so the name `net` does not exist in its
-body. `render` cannot call `Net` unless a `Net` reaches it, and the
-compiler refuses the program otherwise; for this `render`, whose only
-parameter is a `String`, that means declaring `net: Net` in its
-signature.
+body, and the call is refused. For this `render`, whose parameter is
+a `String`, declaring `net: Net` in its signature makes the call
+legal, and then the fact is visible in the signature.
 
 ## 3. The propagation discipline
 
-A built-in capability value moves by being **passed as an argument**,
+A built-in capability value can move by being **passed as an argument**,
 or by being captured in a closure or held in a field of a
 capability-bearing struct that is then passed
 ([08-functions-closures-modules.md](08-functions-closures-modules.md)
 section 5.1,
 [13-user-defined-capabilities.md](13-user-defined-capabilities.md)).
-Two static rules restrict the other routes. Both are enforced by the
-analyzer at compile time (`--check`), not by a runtime monitor. A
+The analyzer checks two static rules at compile time (`--check`);
+neither is a runtime monitor. A
 signature that carries a function value is marked in the manifest as
 not provable from its types (section 5).
 
-**(a) A capability parameter cannot be copied into a binding.**
-Copying a capability parameter into a `let`/`var` is refused:
+**(a) A `let` copy of a capability parameter is refused.** A `let`
+or `var` whose right-hand side is the capability parameter itself is
+refused, also when it is written in parentheses or as both branches of
+an `if` or `match` expression:
 
 ```capa
 // alias_cap.capa
@@ -135,20 +133,19 @@ alias_cap.capa:3:5: error: capability 'Fs' cannot appear in a 'let' binding; cap
 alias_cap.capa: 1 error
 ```
 
-**(b) A capability cannot be fabricated from data.** There is no
-literal or constructor for a built-in capability (section 2 and the
-`forge` example in [02](02-authority-in-types.md)). The only value of
-type `Fs` in a program is the one that entered through `main` and was
-handed on (or an attenuation of it, see
+**(b) No literal constructs a built-in capability.** `Stdio {}` and
+`Stdio()` are refused (section 2 and the `forge` example in
+[02](02-authority-in-types.md)). Attenuation derives a narrower value
+from one a function already holds (see
 [12-attenuation.md](12-attenuation.md)).
 
 A user-defined capability, by contrast, can be produced by a factory
 (it is an ordinary Capa value that wraps built-in authority in a
 field); see [13-user-defined-capabilities.md](13-user-defined-capabilities.md).
 
-JUDGEMENT. With no global or import that yields one, these rules give
-the central property: **a function can call a built-in capability only
-if a value of it reached the function**.
+JUDGEMENT. Together with section 2 (no global, import or literal
+yields a built-in capability), these rules are what tie a call on a
+built-in capability to a value of it in the caller's scope.
 
 ## 4. Eliminating the confused deputy
 
@@ -159,15 +156,12 @@ deputy holds authority that comes not from the request but from the
 environment, and cannot separate the legitimate request from the
 abusive one.
 
-In Capa the pattern is closed for the built-in capabilities. A
-component can call only the built-in capabilities handed to it with the
-request; if the caller has no `Fs`, it cannot pass `Fs`, and the deputy
-has no ambient `Fs` to use instead. A function handed no capability,
-no function value and no struct that implements a user-defined
-capability holds no built-in capability and cannot call one.
+In Capa a deputy has no ambient `Fs` to fall back on: there is no
+global `Fs`, and a call on `fs` in a function that has none in scope is
+refused (section 2).
 
-`render` computes a string and receives no capability; it can call no
-built-in capability, and the compiler accepts it:
+`render` computes a string from its `String` parameter and has no
+capability in scope; the compiler accepts it:
 
 ```capa
 // deputy.capa
@@ -231,10 +225,9 @@ complete envelope structure is in
 
 ## 6. What the model guarantees, and where it ends
 
-- **Guarantees** (static, every program that passes `--check`): no
-  function calls a built-in capability that is not in scope; no
-  constructor or literal produces a built-in capability and no global
-  or import yields one.
+- **Checked statically** (`--check`): a call on a built-in
+  capability that is not in scope is refused; no constructor or literal
+  produces a built-in capability, and no global or import yields one.
   The `lambda_cap` core of these rules is formalized in Agda (see
   [`proofs/README.md`](../proofs/README.md)); the translation from full
   Capa to that core is not mechanized.

@@ -27,10 +27,9 @@ emitting *some* tool call the application accepts.
 
 Capa's capability discipline operates one layer down. Each tool
 becomes a *capability*. The function that interprets the LLM's
-tool-call sequence declares which capabilities it has. A
-function can call a tool only through a value of that tool
-capability in its scope, and the compiler refuses a call on one
-that is not. The SBOM emits the declaration as an audit artefact.
+tool-call sequence declares which capabilities it has. The
+compiler refuses a call on a tool capability that is not in the
+function's scope. The SBOM emits the declaration as an audit artefact.
 No prompt, no matter how cleverly crafted, can add a call site:
 the dispatch is fixed in the source and statically checked.
 
@@ -218,8 +217,9 @@ The static demo above shows the discipline. The runtime
 counterpart is an agent loop that actually talks to an LLM,
 dispatches tool calls based on the model's response, and feeds
 results back. The same capability discipline applies to the
-loop: the agent function declares its tool surface as parameters
-and can call only the tools it holds, whatever the LLM emits.
+loop: the agent function declares its tool surface as parameters,
+and its tool calls are the call sites written in its body, whatever
+the LLM emits.
 
 The full runnable example is at
 [`examples/llm_agent_runner.capa`](../examples/llm_agent_runner.capa).

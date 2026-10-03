@@ -126,11 +126,12 @@ boundary (audit slice 25; history in
 The guarantee is the product of two distinct layers.
 
 STATIC layer (the type system, in `capa/analyzer/_discipline.py`):
-a call on a built-in capability that is not in scope is refused; a
-struct field (outside a capability-bearing struct), a variant payload
-or a constant cannot hold a capability, and a capability parameter
-cannot be copied into a `let` / `var` slot (`_check_no_capability`);
-and a capability cannot be aliased twice within a single call
+a call on a built-in capability that is not in scope is refused; the
+analyzer refuses a capability type as the declared type of a struct
+field (outside a capability-bearing struct), a variant payload or a
+constant, and a `let` / `var` whose right-hand side is a capability
+parameter (`_check_no_capability`); and a call that passes the same
+capability parameter in two arguments is refused
 (`_check_no_aliasing`). On top of this the manifest
 computes `provably_excluded_capabilities` from the function signature
 plus a closed-world reachability bound
@@ -271,7 +272,7 @@ the Level 2 ceiling (`inherit_env`).
 LEVEL 2, the FINE ATTENUATION, the in-program narrowings below the
 ceiling (`restrict_to`, `restrict_to_keys`, the Clock deadline). This
 is:
-- PROVED by the compiler. The derivation of
+- Unchanged on the compiler side. The derivation of
   `provably_excluded_capabilities` is unchanged
   (`capa/manifest/_funrec.py:475-528`); the static discipline it
   relies on (`capa/analyzer/_discipline.py:187-226`) is untouched.

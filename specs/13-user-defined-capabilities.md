@@ -34,7 +34,8 @@ wrapping one or more built-ins.
 
 `capability X` declares a type the discipline treats as a capability
 (it reaches the analyzer as `SymbolKind.CAPABILITY`, identical to a
-built-in: no aliasing, no storage in plain bindings, and so on), while
+built-in: `let dup = mailer` on a capability parameter is refused, as
+for a built-in), while
 `trait X` arrives as `SymbolKind.TRAIT`; method dispatch and `impl`
 checking are the same in both cases
 ([`capa/analyzer/_declarations.py`](../capa/analyzer/_declarations.py)).

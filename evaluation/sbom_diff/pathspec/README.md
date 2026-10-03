@@ -43,9 +43,10 @@ Three reasons:
    other pure cases (`slugify/`, `tabulate/`, `textwrap/`,
    `humanize/`, `csv_parser/`) all do pure string transformation
    over flat character sequences; this pair adds a recursive
-   pattern matcher to the pure-case panel. The Capa version
-   declares no capability for the recursive matcher, with the same per-function
-   attribution as the rest of the pure cases.
+   pattern matcher to the capability-free panel. The Capa
+   version declares no capability for the recursive matcher,
+   with the same per-function attribution as the rest of the
+   capability-free cases.
 3. **It is the structural-asymmetry case taken further than
    slugify.** Capa has no regex stdlib at all, so the Capa
    version implements gitignore globbing DIRECTLY via recursion
