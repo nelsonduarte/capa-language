@@ -178,8 +178,8 @@ over-approximation: a method call whose receiver type is not known
 statically is matched against every user method of that name (the
 module docstring states the direction is never more permissive).
 
-A `@secret` passed to an UNannotated parameter that reaches a sink
-inside the callee is caught at the call site:
+In this example, a `@secret` passed to an UNannotated parameter that
+reaches a sink inside the callee is reported at the call site:
 
 ```capa
 // crossfn.capa

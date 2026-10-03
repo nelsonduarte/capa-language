@@ -39,7 +39,7 @@ And how each maps across the five frameworks:
 
 | Capa output | CRA Annex I | NIS2 Art. 21 | DORA Chapters II-V | NIST SSDF | OWASP SCVS |
 |---|---|---|---|---|---|
-| Manifest | I-II(1) direct | evidence toward 21(2)(d) | evidence toward Art. 30(2)(a) | PS.1 indirect | Domain 1 partial |
+| Manifest | I-II(1) partial | evidence toward 21(2)(d) | evidence toward Art. 30(2)(a) | PS.1 indirect | Domain 1 partial |
 | CycloneDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3.2 partial | Domain 2 partial |
 | SPDX SBOM | I-II(1) **direct** | evidence toward 21(2)(d) | evidence toward Art. 28(3) | PS.3.2 partial | Domain 2 partial |
 | CycloneDX VEX | I-II(2) partial | evidence toward 21(2)(e) | n/a | RV.2 partial | Domain 5 partial |

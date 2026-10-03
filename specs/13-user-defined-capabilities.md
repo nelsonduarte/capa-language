@@ -113,7 +113,7 @@ structural "no capability as struct field" rule). This prevents an
 anonymous struct from smuggling `Net` inside a data value. The
 exception, and it is the heart of the pattern, is the **cap-bearing
 relaxation**: a struct that **implements a user capability** may hold
-built-in capability fields. It is because `SmtpMailer` implements
+built-in capability fields (never `Unsafe`, section 4). It is because `SmtpMailer` implements
 `SendEmail` that it could declare `net: Net`.
 
 The effect is that constructing an implementor needs the built-in

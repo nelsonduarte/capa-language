@@ -180,9 +180,10 @@ states.
 
 ## 5. Sinks reached through a parameter (cross-function)
 
-A `@secret` need not reach a sink in the same body: if it is passed to
-a parameter (even an unannotated one) that reaches a sink INSIDE the
-callee, it is reported at the call site. The cross-function analysis
+A `@secret` need not reach a sink in the same body: when it is passed
+to a parameter (even an unannotated one) and the analysis detects that
+the parameter reaches a sink INSIDE the callee, it is reported at the
+call site. The cross-function analysis
 behind this is covered in
 [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md); the
 model here: a parameter that reaches a sink is itself a transitive
