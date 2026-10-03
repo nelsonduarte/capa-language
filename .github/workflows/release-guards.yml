@@ -8,7 +8,7 @@ name: release-guards
 #
 #   1. capa_authgate v0.1.0 was published, signed, SLSA-attested and
 #      CI-green, and did not compile for anyone who downloaded it. Our
-#      ~/Desktop/repos layout, with every library side by side, silently
+#      development layout, with every library side by side, silently
 #      satisfied an import the manifest never declared.
 #   2. The same repo export-ignored tools/, so the tarball shipped a
 #      README telling readers to run a script it did not contain.

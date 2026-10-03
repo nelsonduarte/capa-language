@@ -46,6 +46,19 @@ machine and are checked within a tolerance band; they only warn unless
 `--strict` is given. The fast studies need no network (the CVE headline
 is recomputed from the committed `cve/decisions.csv`).
 
+`--with-runtime` and `--all` also run the runtime harness, which
+times three downstream demo programs: `policy-eval`, `sbom-watch` and
+`audit-trail-reporter`. They are separate repositories, not part of
+this one. Put a checkout of each, under those directory names, in one
+directory and name that directory with the `CAPA_DEMO_REPOS`
+environment variable. When the variable is not set, the harness looks
+for a `repos` directory next to the compiler's main checkout (from a
+`git worktree`, next to the main checkout, not the worktree). A demo
+that is missing is skipped with a warning. If none of the three is
+found, the harness says where it looked, writes no
+`runtime/results.csv` and exits 3, and `reproduce` lists
+`runtime_macro` among the studies that failed to run and exits 1.
+
 On the day you submit, run this at the release tag: re-anchor the
 baseline with `--update-baseline`, or fix whatever drifted, so the
 paper never cites a number an old run produced.
@@ -66,7 +79,7 @@ From the repo root, with the venv active:
 .venv/Scripts/python -m evaluation.cve.classify
 .venv/Scripts/python -m evaluation.cve.summary
 
-# runtime benchmarks (slice 5)
+# runtime benchmarks (slice 5); needs the demo checkouts, see CAPA_DEMO_REPOS above
 .venv/Scripts/python -m evaluation.runtime.harness
 .venv/Scripts/python -m evaluation.runtime.plot
 ```
@@ -99,3 +112,14 @@ the load-bearing buckets and is expected to shift the number by
 a few percentage points in either direction. Re-run
 `python -m evaluation.cve.summary` after any manual edit to
 `decisions.csv` to regenerate the figure.
+
+The committed fuzz results ([`fuzz/results.csv`](fuzz/results.csv))
+are the 2026-05-24 run. On 2026-10-02 the leading path of every
+`rejection_reason` (the builder's temporary file) was rewritten to
+`<attack_id>.capa` in place, and nothing else, rather than
+regenerating the file. One row is out of date in its reason only:
+for `alias_pair_db` a current compiler still rejects the program
+(same verdict, same exit code), but its first diagnostic is not
+the one the row records. Every other row matches a run on that
+date. Re-run `python -m evaluation.fuzz.harness --all` before
+citing a reason column.

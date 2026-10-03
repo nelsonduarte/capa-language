@@ -15,7 +15,11 @@ Slice 6 will add the full panel; this file grows by one parametrised
 test per new category at that point.
 """
 
+import csv
+import re
+import tempfile
 import unittest
+from pathlib import Path
 
 from evaluation.fuzz import harness
 from evaluation.fuzz.attacks import cat_fs_traversal
@@ -61,6 +65,101 @@ class TestFuzzHarnessSmoke(unittest.TestCase):
             escaped, [],
             f"LLM-dispatch escape: {[(r.attack_id, r.rejection_reason) for r in escaped]}",
         )
+
+
+class TestRejectionReasonIsPortable(unittest.TestCase):
+    """The recorded reason must not depend on the machine that ran it.
+
+    The compiler's diagnostic begins with the path it was given, and
+    the harness gives it a temporary file, so the raw first error line
+    carries the builder's temporary directory. ``results.csv`` is
+    committed, which is how 138 rows of one machine's path were
+    published. The harness names the attack instead.
+    """
+
+    def test_a_live_reason_names_the_attack_not_the_temp_file(self):
+        temp_dir = str(Path(tempfile.gettempdir()))
+        results = harness.run_category("cat_fs_traversal")
+        self.assertGreaterEqual(len(results), 3)
+        for r in results:
+            with self.subTest(r.attack_id):
+                self.assertRegex(
+                    r.rejection_reason,
+                    rf"^{re.escape(r.attack_id)}\.capa:\d+:\d+: error: ",
+                )
+                self.assertNotIn(temp_dir, r.rejection_reason)
+                self.assertNotIn(
+                    str(Path(temp_dir).resolve()), r.rejection_reason
+                )
+
+    def test_every_spelling_of_the_path_is_replaced(self):
+        with tempfile.TemporaryDirectory() as td:
+            # A path that is not in its resolved form on any platform,
+            # so the two spellings are certain to differ and each
+            # replacement is exercised on its own.
+            (Path(td) / "sub").mkdir()
+            path = Path(td) / "sub" / ".." / "tmpabc123.capa"
+            path.write_text("", encoding="utf-8")
+            self.assertNotEqual(str(path), str(path.resolve()))
+            for spelling in (str(path), str(path.resolve())):
+                with self.subTest(given=spelling == str(path)):
+                    line = f"{spelling}:2:14: error: no ({spelling})"
+                    self.assertEqual(
+                        harness._without_builder_path(line, path, "a.capa"),
+                        "a.capa:2:14: error: no (a.capa)",
+                    )
+
+    def test_a_line_with_no_path_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tmpabc123.capa"
+            self.assertEqual(
+                harness._without_builder_path(
+                    "capa: internal error", path, "a.capa"
+                ),
+                "capa: internal error",
+            )
+
+    def test_an_unrecognised_spelling_is_refused_not_recorded(self):
+        # Fail closed: if the compiler ever prints the temporary file
+        # in a form the harness does not know, the row must not be
+        # written with a machine path in it.
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tmpabc123.capa"
+            other = f"//?/elsewhere/{path.name}:1:1: error: no"
+            with self.assertRaises(RuntimeError):
+                harness._without_builder_path(other, path, "a.capa")
+
+    def test_a_spelling_in_another_letter_case_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tmpabc123.capa"
+            # Upper case always differs from the given spelling, which
+            # holds lower-case letters on every platform.
+            spelling = str(path).upper()
+            with self.assertRaises(RuntimeError):
+                harness._without_builder_path(
+                    f"{spelling}:1:1: error: no", path, "a.capa"
+                )
+
+    def test_the_temporary_directory_alone_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tmpabc123.capa"
+            other = str(Path(td) / "helper.capa")
+            with self.assertRaises(RuntimeError):
+                harness._without_builder_path(
+                    f"{path}:1:1: error: see {other}", path, "a.capa"
+                )
+
+    def test_the_committed_results_are_in_the_portable_form(self):
+        csv_path = Path(harness.__file__).parent / "results.csv"
+        with csv_path.open(encoding="utf-8", newline="") as f:
+            rows = list(csv.DictReader(f))
+        self.assertGreaterEqual(len(rows), 138)
+        for row in rows:
+            with self.subTest(row["attack_id"]):
+                self.assertRegex(
+                    row["rejection_reason"],
+                    rf"^{re.escape(row['attack_id'])}\.capa:\d+:\d+: error: ",
+                )
 
 
 if __name__ == "__main__":

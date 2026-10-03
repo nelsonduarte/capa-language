@@ -68,6 +68,35 @@ def _first_error_line(run: CapaRun) -> str:
     return run.combined.splitlines()[0] if run.combined else ""
 
 
+def _without_builder_path(line: str, path: Path, label: str) -> str:
+    """``line`` with the temp file's path replaced by ``label``.
+
+    The compiler's diagnostics begin with the path it was given, and
+    that path is this machine's temporary directory plus a random
+    name. ``results.csv`` is a committed artefact, so the reason must
+    not carry either: the row names the attack instead.
+
+    Fails closed on what it knows about. If the temporary file's random
+    name, or the directory it was created in, survives the replacement
+    in any letter case, the compiler printed the path in a spelling
+    this function does not know, and the line is refused instead of
+    recorded. It does not judge any other path a diagnostic may carry;
+    the repository's personal-path test catches a personal one in the
+    written CSV.
+    """
+    for spelling in (str(path), str(path.resolve())):
+        line = line.replace(spelling, label)
+    leftovers = (path.stem, str(path.parent), str(path.resolve().parent))
+    folded = line.casefold()
+    if any(part.casefold() in folded for part in leftovers):
+        raise RuntimeError(
+            "the diagnostic names the temporary file or its directory "
+            "in a form the harness does not recognise; refusing to "
+            "record it"
+        )
+    return line
+
+
 def _run_attack(category: str, attack) -> Result:
     """Write the attack source to a temp file, invoke
     ``capa --check``, and classify the outcome."""
@@ -82,7 +111,12 @@ def _run_attack(category: str, attack) -> Result:
         path.unlink(missing_ok=True)
 
     rejected = not run.ok
-    reason = _first_error_line(run) if rejected else "(none; program was ACCEPTED)"
+    reason = (
+        _without_builder_path(
+            _first_error_line(run), path, f"{attack.attack_id}.capa",
+        )
+        if rejected else "(none; program was ACCEPTED)"
+    )
     return Result(
         category=category,
         attack_id=attack.attack_id,
