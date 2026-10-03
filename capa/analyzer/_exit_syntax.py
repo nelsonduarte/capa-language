@@ -118,16 +118,9 @@ class _ExitSyntaxMixin:
 
     def _is_panic_call(self, e) -> bool:
         """True if ``e`` is a call to the built-in ``panic`` (a divergent
-        abort that writes to stderr). Mirrors ``_is_declassify_call``'s
-        builtin-position guard so a user function named ``panic`` is not
-        treated as divergent here."""
-        from ..builtins import BUILTIN_POS
-        if not isinstance(e, A.Call):
-            return False
-        if not isinstance(e.callee, A.Ident) or e.callee.name != "panic":
-            return False
-        sym = self.bindings.get(id(e.callee))
-        return sym is not None and sym.pos == BUILTIN_POS
+        abort that writes to stderr), by the one built-in identity
+        decision (``_is_builtin_call``)."""
+        return self._is_builtin_call(e, "panic")
 
     def _guarded_arms(self, node):
         """``(guard expressions, guard label, arm bodies)`` for the three

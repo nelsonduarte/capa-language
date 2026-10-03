@@ -42,6 +42,9 @@ from pathlib import Path
 
 from capa import Lexer, Parser, analyze
 from capa import capa_ast as A
+from capa._builtin_identity import (
+    builtin_call, is_builtin_symbol, module_scope_names,
+)
 from capa._declassify import (
     FUNCTION_KINDS,
     UnknownItemError,
@@ -55,6 +58,9 @@ from capa.loader import ModuleLoader
 from capa.manifest import (
     build_composed_sbom, build_manifest, evaluate_policies, find_policy_file,
     read_policy_file,
+)
+from tests._builtin_name_corpus import (
+    RESERVED_FRAGMENT, assert_only_reserved_refusals,
 )
 
 
@@ -83,8 +89,11 @@ MIXED_THREE = (
     '    return\n'
 )
 
-# A user-defined function named ``declassify``. It is NOT the built-in,
-# so it declassifies nothing: the secret still reaches the sink raw.
+# A user-defined function named ``declassify``. ``declassify`` is a
+# reserved built-in name, so the analyzer refuses this program; the
+# tests below that build artifacts from it do so past that refusal (its
+# only diagnostic), as the analysis-free artifact paths would, and pin that
+# the user function is still not taken for the built-in.
 SHADOWED = (
     'fun declassify(value: String, reason: String) -> String\n'
     '    return value\n'
@@ -106,12 +115,13 @@ CLEAN = 'pub fun add(a: Int, b: Int) -> Int\n    return a + b\n'
 
 
 def _analysed(source: str, filename: str = "t.capa"):
-    """Parse + analyse ``source``, returning ``(module, result)``."""
+    """Parse + analyse ``source``, returning ``(module, result)``. The only
+    refusal tolerated is a reserved built-in name (see ``SHADOWED``)."""
     tokens = Lexer(source).lex()
     module = Parser(tokens, source=source).parse_module()
     result = analyze(module, source=source, filename=filename)
     if not result.ok:
-        raise AssertionError(f"analyzer errors: {result.errors}")
+        assert_only_reserved_refusals(result)
     return module, result
 
 
@@ -265,43 +275,56 @@ class TestSharedPredicate(unittest.TestCase):
         module, result = _analysed(FUNCTION_LEVEL)
         calls = self._calls_named_declassify(module)
         self.assertEqual(len(calls), 1)
-        self.assertTrue(is_declassify_call(calls[0], result.bindings))
+        self.assertTrue(is_declassify_call(
+            calls[0], module_scope_names(module), result.bindings,
+        ))
 
     def test_user_defined_declassify_is_not(self):
         module, result = _analysed(SHADOWED)
         calls = self._calls_named_declassify(module)
         self.assertEqual(len(calls), 1)
-        self.assertFalse(is_declassify_call(calls[0], result.bindings))
+        self.assertFalse(is_declassify_call(
+            calls[0], module_scope_names(module), result.bindings,
+        ))
+
+    def test_user_defined_declassify_is_refused(self):
+        _module, result = _analysed(SHADOWED)
+        self.assertFalse(result.ok)
+        assert_only_reserved_refusals(result)
 
     def test_analyzer_and_manifest_ask_the_same_function(self):
-        # The analyzer's own predicate delegates to the shared one, so
-        # the two cannot answer differently for the same node.
+        # The analyzer's own predicate and the shared one read the same
+        # decision, so they cannot answer differently for the same node.
         from capa.analyzer import Analyzer
-        module, result = _analysed(SHADOWED)
-        calls = self._calls_named_declassify(module)
-        az = Analyzer.__new__(Analyzer)
-        az.bindings = result.bindings
-        self.assertEqual(
-            az._is_declassify_call(calls[0]),
-            is_declassify_call(calls[0], result.bindings),
-        )
+        for src in (FUNCTION_LEVEL, SHADOWED):
+            with self.subTest(src=src.splitlines()[0]):
+                module = Parser(Lexer(src).lex(), source=src).parse_module()
+                az = Analyzer(source=src)
+                result = az.analyze(module)
+                call = self._calls_named_declassify(module)[0]
+                self.assertEqual(
+                    az._is_declassify_call(call),
+                    is_declassify_call(
+                        call, module_scope_names(module), result.bindings,
+                    ),
+                )
 
     def test_module_scope_identity_matches_per_call_identity(self):
         # The cross-function summary pass runs BEFORE bindings exist, so
-        # it resolves identity through the global scope instead. On a
-        # module-scope shadow the two sources must agree; if they did not,
-        # a leak could break its sink-reaching chain on one rule and not
-        # the other.
+        # it decides identity from the module's top-level names. The
+        # per-call binding must agree with that decision; if they did
+        # not, one rule could treat a call as the built-in while the
+        # other did not.
         for src, expected in ((FUNCTION_LEVEL, True), (SHADOWED, False)):
             with self.subTest(src=src.splitlines()[0]):
                 module, result = _analysed(src)
                 call = self._calls_named_declassify(module)[0]
-                scope = _GlobalScopeView(result.global_symbols)
                 self.assertEqual(
-                    is_declassify_call(call, module_scope=scope), expected,
+                    builtin_call(call, module_scope_names(module)), expected,
                 )
                 self.assertEqual(
-                    is_declassify_call(call, result.bindings), expected,
+                    is_builtin_symbol(result.bindings.get(id(call.callee))),
+                    expected,
                 )
 
     def test_summary_pass_still_tracks_a_leak_through_a_user_declassify(self):
@@ -326,21 +349,6 @@ class TestSharedPredicate(unittest.TestCase):
             any("information-flow" in w.message for w in result.warnings),
             [w.message for w in result.warnings],
         )
-
-
-class _GlobalScopeView:
-    """The ``.lookup(name)`` surface ``is_declassify_call`` needs, over an
-    ``AnalysisResult.global_symbols`` snapshot.
-
-    That snapshot IS ``Analyzer.global_scope.symbols``, built-ins
-    included (they are installed into the global scope), so this is the
-    same table the summary pass consults, not a stand-in."""
-
-    def __init__(self, global_symbols):
-        self._symbols = global_symbols
-
-    def lookup(self, name):
-        return self._symbols.get(name)
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +480,8 @@ class _Project(unittest.TestCase):
             sources=linked.sources, module_privates=linked.module_privates,
         )
         if not result.ok:
-            raise AssertionError(f"analyzer errors: {result.errors}")
+            # Only a reserved built-in name (``SHADOWED``) is tolerated.
+            assert_only_reserved_refusals(result)
         manifest = build_manifest(
             linked.module, filename=filename,
             bindings=result.bindings, expr_labels=result.expr_labels,
@@ -623,12 +632,14 @@ class TestNoDeclassificationPolicy(_Project):
         doc = json.loads(out)
         self.assertEqual(doc["summary"]["declassification_sites"], 3)
 
-    def test_manifest_cli_records_no_phantom_for_shadowed_name(self):
+    def test_manifest_cli_refuses_a_user_function_named_declassify(self):
+        # ``declassify`` is a reserved built-in name: the CLI refuses the
+        # program, so no artifact (and so no phantom record) is produced.
         root = self._tree(SHADOWED)
         code, out, err = self._cli(root, "--manifest")
-        self.assertEqual(code, 0, err)
-        doc = json.loads(out)
-        self.assertEqual(doc["summary"]["declassification_sites"], 0)
+        self.assertEqual(code, 1, err)
+        self.assertIn(RESERVED_FRAGMENT, err)
+        self.assertEqual(out, "")
 
 
 if __name__ == "__main__":

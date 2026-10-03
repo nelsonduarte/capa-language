@@ -354,6 +354,7 @@ class AnalysisResult:
 # ===========================================================
 
 
+from ._builtin_names import _BuiltinNamesMixin
 from ._declarations import _DeclarationsMixin
 from ._discipline import _DisciplineMixin
 from ._dispatch import _DispatchMixin
@@ -372,7 +373,7 @@ class Analyzer(
     _TypingMixin, _DisciplineMixin, _DispatchMixin,
     _PatternsMixin, _DeclarationsMixin, _FrozenTypesMixin,
     _IfcMixin, _E3Mixin, _LinearMixin, _StatementsMixin, _ExpressionsMixin,
-    _ItemsMixin,
+    _ItemsMixin, _BuiltinNamesMixin,
 ):
     """Performs the semantic analysis of a Module.
 
@@ -419,6 +420,10 @@ class Analyzer(
         self.module_privates: dict[str, set[str]] = module_privates or {}
         self.global_scope = Scope()
         self.scope = self.global_scope
+        # The module's top-level names: the one input built-in identity
+        # is decided from (``capa._builtin_identity``). Set by
+        # ``analyze`` before any phase reads it.
+        self._module_scope_names: frozenset[str] = frozenset()
         self.errors: list[AnalysisError] = []
         # Non-fatal IFC warnings (roadmap S2.4, warn-then-enforce).
         self.warnings: list[AnalysisError] = []
@@ -849,6 +854,7 @@ class Analyzer(
         self.fixpoint_overruns = 0
         # Pre-populate global scope with primitives and capabilities.
         self._install_builtins()
+        self._init_module_scope(module)
         # Roadmap S3: record typestate declarations (name -> ordered
         # states) BEFORE signature resolution, since ``_resolve_type``
         # consults them to validate every ``Name[State]`` it meets.
@@ -869,6 +875,10 @@ class Analyzer(
         self._linear_types = linear_type_names(module)
         # Phase 1: register all top-level declarations (forward refs).
         self._collect_globals(module)
+        # Fail-closed guard: the AST-side top-level name enumeration that
+        # built-in identity is decided from must match what Phase 1
+        # registered.
+        self._assert_module_scope_agrees()
         # Fail-closed single-source guard for the must-consume obligation.
         # The analyzer (which ENFORCES the obligation) feeds a Symbol-based
         # field lookup to the shared ``owned_obligation`` predicate; the

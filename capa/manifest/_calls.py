@@ -107,6 +107,7 @@ def _collect_declassifications(
     node,
     sites: list[dict[str, Any]],
     *,
+    module_names,
     bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
 ) -> None:
@@ -122,12 +123,12 @@ def _collect_declassifications(
     WHAT counts as a site is NOT decided here: it is decided by
     :func:`capa._declassify.declassification_site`, the single source of
     truth this walker shares with the analyzer. This function only walks
-    and formats. ``bindings`` (the analyzer's ``id(Ident) -> Symbol``
-    map) and ``expr_labels`` (its ``id(expr) -> label`` map) are passed
-    straight through: the former makes IDENTITY rather than the callee's
-    NAME decide (a user-defined ``fun declassify`` is not a
-    declassification), the latter drops the no-op declassify of an
-    already-public value.
+    and formats. ``module_names`` (the module's top-level names),
+    ``bindings`` (the analyzer's ``id(Ident) -> Symbol`` map) and
+    ``expr_labels`` (its ``id(expr) -> label`` map) are passed straight
+    through: the first decides built-in IDENTITY rather than the callee's
+    NAME, the second is checked to agree with it, the third drops the
+    no-op declassify of an already-public value.
 
     The root may be a function body OR any other expression-bearing item
     root -- a top-level ``const`` initializer above all, whose sites were
@@ -136,7 +137,8 @@ def _collect_declassifications(
         return
 
     parts = declassification_site(
-        node, bindings=bindings, expr_labels=expr_labels,
+        node, module_names=module_names, bindings=bindings,
+        expr_labels=expr_labels,
     )
     if parts is not None:
         sites.append({
@@ -150,5 +152,6 @@ def _collect_declassifications(
     if isinstance(node, A.Node):
         for child in A.children(node):
             _collect_declassifications(
-                child, sites, bindings=bindings, expr_labels=expr_labels,
+                child, sites, module_names=module_names, bindings=bindings,
+                expr_labels=expr_labels,
             )

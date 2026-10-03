@@ -2050,17 +2050,19 @@ class TestDeclassify(unittest.TestCase):
         )
         self.assertTrue(r.ok, [e.message for e in r.errors])
 
-    def test_user_function_named_declassify_is_not_special(self):
-        # A user-defined declassify is an ordinary function: the IFC
-        # special-case is guarded by the built-in binding position, so
-        # this must not fire the bespoke shape errors.
+    def test_user_function_named_declassify_is_refused_not_special(self):
+        # ``declassify`` is a reserved built-in name, so a user function
+        # may not take it; the refusal is the ONLY diagnostic. The call to
+        # it is not mistaken for the built-in either: the bespoke
+        # declassify shape errors must not fire.
+        from tests._builtin_name_corpus import assert_only_reserved_refusals
         r = self._analyze(
             "fun declassify(x: Int) -> Int\n"
             "    return x\n"
             "fun f() -> Int\n"
             "    return declassify(5)\n"
         )
-        self.assertTrue(r.ok, [e.message for e in r.errors])
+        assert_only_reserved_refusals(r)
 
     def test_sbom_records_declassification_site(self):
         from capa.manifest import build_manifest

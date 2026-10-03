@@ -24,6 +24,7 @@ expression position).
 from __future__ import annotations
 
 from .. import capa_ast as A
+from .._builtin_identity import builtin_call
 
 
 #: The AST expression kinds ``_emit_expr`` renders, one per ``isinstance``
@@ -618,10 +619,13 @@ class _ExpressionsMixin:
         # Already handled naturally - `Some(x)` in Capa becomes `Some(x)`
         # in Python because Some is a class.
         # Builtin collection-creation functions: emit Python literals.
-        if isinstance(e.callee, A.Ident):
-            if e.callee.name == "new_map" and not e.args:
+        # Only the BUILT-IN constructors, by the one built-in identity
+        # decision (``capa._builtin_identity``); a module function of the
+        # same name is an ordinary call, as on every other backend.
+        if not e.args:
+            if builtin_call(e, self._scope_names, "new_map"):
                 return "{}"
-            if e.callee.name == "new_set" and not e.args:
+            if builtin_call(e, self._scope_names, "new_set"):
                 # CapaSet is an insertion-ordered set (dict-backed), not
                 # a raw Python ``set`` (hash order); the latter would
                 # diverge from the Wasm backend's linear element array.

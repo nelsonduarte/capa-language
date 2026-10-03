@@ -185,6 +185,7 @@ from __future__ import annotations
 import dataclasses
 
 from .. import capa_ast as A
+from .._builtin_identity import builtin_call, module_scope_names
 from ._callables import fun_key, method_key
 from ._ifc_tables import (
     _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
@@ -393,6 +394,11 @@ class _SummaryBuilder:
     def __init__(self, module: A.Module, global_scope) -> None:
         self.module = module
         self.global_scope = global_scope
+        # The module's top-level names. Built-in identity is a
+        # module-scope fact (built-in names are reserved for every
+        # binder), so this pass, which runs before any binding exists,
+        # decides it exactly from these (``capa._builtin_identity``).
+        self._module_names = module_scope_names(module)
         # callable_key -> set of sink-reaching param indices.
         self.summaries: dict = {}
         # callable_key -> {param idx -> set of built-in sink CAPABILITY
@@ -2790,12 +2796,13 @@ class _SummaryBuilder:
         # goes to stderr, like Stdio.eprintln): a parameter flowing
         # into its argument is sink-reaching, so a caller passing a
         # @secret to a function that panics with it is flagged at the
-        # boundary. A user function named ``panic`` shadows the
-        # builtin and takes the regular summary path below instead.
+        # boundary. Whether the callee IS the built-in is decided once,
+        # from module scope (``capa._builtin_identity``): built-in names
+        # are reserved for every binder, so no local can stand in for
+        # it, and the analyzer refuses a module-level item named
+        # ``panic`` in any linked file.
         if (
-            isinstance(e.callee, A.Ident)
-            and e.callee.name == "panic"
-            and fun_key("panic") not in self.callables
+            builtin_call(e, self._module_names, "panic")
             and arg_srcs
         ):
             reaching |= arg_srcs[0]
@@ -3491,9 +3498,7 @@ class _SummaryBuilder:
         Delegates to :func:`capa._declassify.is_declassify_call`, the
         single source of truth the intra-procedural walk and the artifact
         pipeline also consult. This pass runs BEFORE the body walk fills
-        ``Analyzer.bindings``, so identity comes from the global scope
-        (the module-scope floor): a user-declared ``declassify`` of ANY
-        item kind -- not just a ``fun``, which is all the previous
-        hand-rolled check looked at -- displaces the built-in."""
+        ``Analyzer.bindings``; it needs none, because built-in identity
+        is decided from the module's top-level names, which exist here."""
         from .._declassify import is_declassify_call
-        return is_declassify_call(e, module_scope=self.global_scope)
+        return is_declassify_call(e, self._module_names)

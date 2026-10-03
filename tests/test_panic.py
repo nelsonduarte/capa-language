@@ -10,7 +10,8 @@ Wasm and Component Model paths, which the CLI translates to exit
 Layers covered here:
 
   * analyzer: registration (Unit-returning free function), arg
-    typing / arity, user-function shadowing;
+    typing / arity, the reserved name (a user function may not be
+    called ``panic``);
   * Python backend in-process: exit semantics + stderr / stdout
     contract, panic inside a callee, interpolated message;
   * core Wasm + Component Model hosts in-process: trap raised,
@@ -142,7 +143,10 @@ class TestPanicAnalyzer(unittest.TestCase):
         _, result = _parse_analyze('fun main()\n    panic()\n')
         self.assertFalse(result.ok)
 
-    def test_user_function_named_panic_shadows_builtin(self):
+    def test_user_function_named_panic_is_refused(self):
+        # ``panic`` is a reserved built-in name: a user function may not
+        # take it, and that refusal is the program's only diagnostic.
+        from tests._builtin_name_corpus import assert_only_reserved_refusals
         src = (
             'fun panic(msg: String) -> Int\n'
             '    return msg.length()\n'
@@ -152,7 +156,7 @@ class TestPanicAnalyzer(unittest.TestCase):
             '    let m = n + 1\n'
         )
         _, result = _parse_analyze(src)
-        self.assertTrue(result.ok, result.errors)
+        assert_only_reserved_refusals(result)
 
 
 class TestPanicPythonBackend(unittest.TestCase):
@@ -184,6 +188,10 @@ class TestPanicPythonBackend(unittest.TestCase):
         self.assertEqual(err, "")
 
     def test_user_panic_function_runs_instead_of_builtin(self):
+        # Refused by the analyzer (a reserved name), but compiled past the
+        # refusal the module-level function is still what runs: built-in
+        # identity is a module-scope fact on every backend.
+        from tests._builtin_name_corpus import analyze_past_reserved_refusal
         src = (
             'fun panic(msg: String) -> Int\n'
             '    return msg.length()\n'
@@ -192,7 +200,13 @@ class TestPanicPythonBackend(unittest.TestCase):
             '    let n = panic("four")\n'
             '    stdio.println("${n}")\n'
         )
-        out, err, exc = _run_python_backend(src)
+        module, result = analyze_past_reserved_refusal(src)
+        code = transpile(module, types=result.types, bindings=result.bindings)
+
+        def thunk():
+            exec(compile(code, "<panic-test>", "exec"), {"__name__": "__main__"})
+
+        out, err, exc = _capture_streams(thunk)
         self.assertIsNone(exc)
         self.assertEqual(out, "4\n")
         self.assertEqual(err, "")
@@ -428,7 +442,11 @@ class TestPanicWit(unittest.TestCase):
         self.assertNotIn("interface panic", wit)
         self.assertNotIn("import panic;", wit)
 
-    def test_wit_omits_panic_when_shadowed_by_user_function(self):
+    def test_wit_omits_panic_for_a_module_function_named_panic(self):
+        # Refused by the analyzer (a reserved name); compiled past the
+        # refusal, the WIT world still reads the one identity decision.
+        from capa.ir import compile_wit
+        from tests._builtin_name_corpus import analyze_past_reserved_refusal
         src = (
             'fun panic(msg: String) -> Int\n'
             '    return msg.length()\n'
@@ -437,7 +455,8 @@ class TestPanicWit(unittest.TestCase):
             '    let n = panic("x")\n'
             '    stdio.println("${n}")\n'
         )
-        wit = self._wit(src)
+        module, result = analyze_past_reserved_refusal(src)
+        wit = compile_wit(module, types=result.types)
         self.assertNotIn("import panic;", wit)
 
 

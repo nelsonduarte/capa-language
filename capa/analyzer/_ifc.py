@@ -2597,16 +2597,14 @@ class _IfcMixin:
 
     def _is_declassify_call(self, e: A.Expr) -> bool:
         """True if ``e`` is a call to the built-in ``declassify``.
-        Guarded by the binding's built-in position so a user function
-        that happens to be named ``declassify`` is not special-cased.
 
-        Delegates to :func:`capa._declassify.is_declassify_call`, the
-        SINGLE source of truth this predicate shares with the artifact
-        pipeline: the manifest collector asks the same function, so the
-        analyzer and the SBOM can no longer disagree about which calls
-        are declassifications."""
-        from .._declassify import is_declassify_call
-        return is_declassify_call(e, self.bindings)
+        The analyzer's door onto the one built-in identity decision
+        (``_is_builtin_call``), the same decision
+        :func:`capa._declassify.is_declassify_call` gives the artifact
+        pipeline, so the analyzer and the SBOM cannot disagree about which
+        calls are declassifications."""
+        from .._declassify import DECLASSIFY
+        return self._is_builtin_call(e, DECLASSIFY)
 
     def _check_declassify(self, e: A.Call, arg_tys: list):
         """Validate a ``declassify(value, reason: "...")`` call and
@@ -3126,9 +3124,9 @@ class _IfcMixin:
         ``@strict_ifc`` (a panic in a secret-conditioned branch leaks
         whether the branch was taken through the abort itself).
 
-        Called from ``_check_call`` only for the BUILTIN panic (a
-        user function named ``panic`` shadows the builtin and is
-        covered by the regular cross-function summary instead)."""
+        Called from ``_check_call`` only for the BUILTIN panic, by the
+        one built-in identity decision (``_is_builtin_call``); ``panic``
+        is a reserved name, so no user function can take it."""
         if e.args and L.normalize(self._label_of(e.args[0])) == L.SECRET:
             msg = (
                 f"information-flow: a @secret value reaches panic "

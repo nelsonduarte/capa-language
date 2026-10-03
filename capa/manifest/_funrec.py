@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from .. import capa_ast as A
 from .._borrow import borrow_escapes, is_fun_typed_param
+from .._builtin_identity import module_scope_names
 from .._declassify import FUNCTION_KINDS, module_expression_roots
 from .._owned_obligation import (
     field_roots_from_module,
@@ -375,14 +376,13 @@ def build_manifest(
     have run the analyser first; this builder does not re-validate
     attributes or types.
 
-    ``bindings`` is the analyser's ``id(Ident) -> Symbol`` map
-    (``AnalysisResult.bindings``). When supplied, a ``declassify`` site
-    is recognised by the IDENTITY of its callee binding rather than by
-    its name, so a user-defined ``fun declassify(...)`` does not produce
-    a phantom declassification record. Every artifact-producing CLI path
-    supplies it; the analysis-free callers (docgen, the LSP code lens,
-    the Wasm capability side-table, the migrator) do not read the
-    declassification surface at all.
+    A ``declassify`` site is recognised by built-in IDENTITY, decided
+    from the module's own top-level names
+    (:func:`capa._builtin_identity.module_scope_names`), never by the
+    callee's name alone, so it is decided the same way with or without
+    an analysis. ``bindings`` is the analyser's ``id(Ident) -> Symbol``
+    map (``AnalysisResult.bindings``); when supplied it is checked to
+    agree with that decision.
 
     ``expr_labels`` is the analyser's ``id(expr) -> label`` map
     (``AnalysisResult.expr_labels``). When supplied, the
@@ -482,6 +482,9 @@ def build_manifest(
     # information for the SBOM and for F2 to later flip to bounded.
     from ..foreign import extern_component_names
     foreign_names: set[str] = extern_component_names(module)
+    # The module's top-level names: the one input built-in identity is
+    # decided from (``capa._builtin_identity``).
+    module_names = module_scope_names(module)
     foreign_components_block = _foreign_components_block(module)
 
     # Build per-function records. Walks both top-level funs and
@@ -511,6 +514,7 @@ def build_manifest(
                 container=None, implicit_cap=None,
                 reachable=reachable, unprovable=unprovable,
                 linear_names=linear_names, field_roots=field_roots,
+                module_names=module_names,
                 bindings=bindings,
                 expr_labels=expr_labels,
                 foreign_names=foreign_names,
@@ -530,6 +534,7 @@ def build_manifest(
                     implicit_cap=implicit,
                     reachable=reachable, unprovable=unprovable,
                     linear_names=linear_names, field_roots=field_roots,
+                    module_names=module_names,
                     bindings=bindings,
                     expr_labels=expr_labels,
                     foreign_names=foreign_names,
@@ -544,7 +549,8 @@ def build_manifest(
     # block; the summary counts BOTH so the artifact's
     # ``declassification_sites`` is the module-wide total it claims to be.
     module_declassifications = _module_declassifications(
-        module, filename, bindings=bindings, expr_labels=expr_labels,
+        module, filename, module_names=module_names, bindings=bindings,
+        expr_labels=expr_labels,
     )
 
     summary = {
@@ -630,6 +636,7 @@ def _module_declassifications(
     module: A.Module,
     filename: str,
     *,
+    module_names,
     bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
 ) -> list[dict[str, Any]]:
@@ -661,7 +668,8 @@ def _module_declassifications(
             continue
         sites: list[dict[str, Any]] = []
         _collect_declassifications(
-            root.node, sites, bindings=bindings, expr_labels=expr_labels,
+            root.node, sites, module_names=module_names, bindings=bindings,
+            expr_labels=expr_labels,
         )
         if not sites:
             continue
@@ -752,6 +760,7 @@ def _fun_record(
     unprovable: Optional[set[str]] = None,
     linear_names: Optional[set[str]] = None,
     field_roots: Optional[dict[str, list[str]]] = None,
+    module_names,
     bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
     foreign_names: Optional[set[str]] = None,
@@ -1040,7 +1049,7 @@ def _fun_record(
     # secret data cross to a public sink.
     declassifications: list[dict[str, Any]] = []
     _collect_declassifications(
-        fn.body, declassifications,
+        fn.body, declassifications, module_names=module_names,
         bindings=bindings, expr_labels=expr_labels,
     )
 

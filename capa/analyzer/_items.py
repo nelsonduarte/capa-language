@@ -286,7 +286,7 @@ class _ItemsMixin:
                 self._err(
                     f"duplicate parameter name {p.name!r}", p.pos,
                 )
-            self.scope.define(psym)
+            self._define_local(psym)
 
         # ``borrow`` parameter discipline: a ``borrow`` marker is only
         # meaningful on a ``Fun``-typed parameter, and that parameter may
@@ -615,8 +615,10 @@ class _ItemsMixin:
         (``_enclosing_scope_local``). A read INSIDE a lambda still counts
         for the read side, but only if it RESOLVES to the module symbol (a
         capture that already resolves to an enclosing local does not).
-        Built-in symbols are excluded (a shadow of a builtin is a separate,
-        pre-existing concern).
+        Built-in symbols are excluded: this rule is for USER names only.
+        A binder that takes a built-in name is refused outright, at the
+        one binder door (``_define_local``, the reserved built-in name
+        rule), so it never needs this check.
         """
         from . import SymbolKind
         from ..builtins import BUILTIN_POS

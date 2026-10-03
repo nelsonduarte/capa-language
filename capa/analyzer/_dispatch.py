@@ -52,12 +52,12 @@ class _DispatchMixin:
         whose names start with ``_`` carry a real source position,
         never ``BUILTIN_POS``, so they are unaffected."""
         from . import SymbolKind
-        from ..builtins import BUILTIN_POS
+        from .._builtin_identity import is_builtin_symbol
         return (
             not self.internal
             and sym.kind == SymbolKind.FUNCTION
             and sym.name.startswith("_")
-            and sym.pos == BUILTIN_POS
+            and is_builtin_symbol(sym)
         )
 
     def _resolve_named_args(
@@ -205,7 +205,8 @@ class _DispatchMixin:
                         e.pos,
                     )
                     return TyName(sym.name)
-                if sym.kind == SymbolKind.TYPE_STRUCT and sym.name == "IoError":
+                if (sym.kind == SymbolKind.TYPE_STRUCT
+                        and self._is_builtin_call(e, "IoError")):
                     # ``IoError(msg)`` / ``IoError(msg, cause)`` is the
                     # one built-in value type Capa constructs with call
                     # syntax. Until 2026-07 this fell through to
@@ -220,9 +221,7 @@ class _DispatchMixin:
                     # already checked above; arity / argument mistakes
                     # keep their pre-existing runtime behaviour rather
                     # than growing new compile-time rejections.
-                    from ..builtins import BUILTIN_POS
-                    if sym.pos == BUILTIN_POS:
-                        return TyName("IoError")
+                    return TyName("IoError")
                 if sym.kind == SymbolKind.FUNCTION:
                     # The empty map / set constructors start with a
                     # genuinely INFERABLE element type -- a fresh flexible
@@ -234,11 +233,11 @@ class _DispatchMixin:
                     # it through ``_pin_flexible``, so a value read back at
                     # an incompatible type is caught. The vars are tracked
                     # as empty-container origins for the end-of-function
-                    # never-determined guard. Guarded on BUILTIN_POS so a
-                    # user function shadowing the name is unaffected.
-                    from ..builtins import BUILTIN_POS as _BPOS_MK
-                    if sym.pos == _BPOS_MK and not e.args and sym.name in (
-                        "new_map", "new_set",
+                    # never-determined guard. Only the BUILT-IN
+                    # constructors, by the one identity decision.
+                    if not e.args and (
+                        self._is_builtin_call(e, "new_map")
+                        or self._is_builtin_call(e, "new_set")
                     ):
                         if sym.name == "new_map":
                             k = self._fresh_ty_var("map")
@@ -301,11 +300,7 @@ class _DispatchMixin:
                         self._check_ct_call(e, sym, perm)
                         # ``panic(message)`` writes to stderr, so the
                         # builtin is a public sink like Stdio.eprintln.
-                        # A user function named ``panic`` shadows the
-                        # builtin (real source pos, not BUILTIN_POS)
-                        # and is covered by the summary check above.
-                        from ..builtins import BUILTIN_POS
-                        if sym.name == "panic" and sym.pos == BUILTIN_POS:
+                        if self._is_builtin_call(e, "panic"):
                             self._check_ifc_panic_sink(e)
                         # Cross-function mutation effect: a callee that
                         # stores a secret-derived value into a field of

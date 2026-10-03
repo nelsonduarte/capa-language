@@ -332,7 +332,7 @@ class _StatementsMixin(_ExitSyntaxMixin):
         # explicit @secret annotation already raised the whole value.
         if L.normalize(_decl_label) != L.SECRET:
             self._copy_container_split(sym, s.value)
-        self.scope.define(sym)
+        self._define_local(sym)
         # Roadmap S2 (two-hop closure-by-name): record a lambda-literal
         # RHS on the fresh ``var`` binding. A subsequent reassignment in
         # ``_check_assign`` poisons it (the denotation becomes ambiguous),

@@ -77,6 +77,18 @@ class ConstDecl(Item):
     # ``None`` means the parser did not record it (older code paths,
     # synthetic AST in tests).
     name_pos: Optional[Pos] = None
+    # Set by the module loader when it RENAMES a top-level item while
+    # linking (privacy mangling, a selective import hiding it or binding
+    # it under an ``as`` alias), so the analyzer still sees the names
+    # the author wrote: ``declared_name`` is the name at the declaration
+    # (``None`` when the item still carries it), ``alias_pos`` the
+    # position of the ``import ... (x as y)`` selector that bound the
+    # current name (``None`` when no alias did). Read by the reserved
+    # built-in name rule (``capa.analyzer._builtin_names``).
+    declared_name: Optional[str] = field(
+        default=None, repr=False, compare=False,
+    )
+    alias_pos: Optional[Pos] = field(default=None, repr=False, compare=False)
 
 
 @dataclass(kw_only=True)
@@ -283,6 +295,18 @@ class FunDecl(Item):
     attributes: list[Attribute] = field(default_factory=list)
     doc: Optional[str] = None
     name_pos: Optional[Pos] = None
+    # Set by the module loader when it RENAMES a top-level item while
+    # linking (privacy mangling, a selective import hiding it or binding
+    # it under an ``as`` alias), so the analyzer still sees the names
+    # the author wrote: ``declared_name`` is the name at the declaration
+    # (``None`` when the item still carries it), ``alias_pos`` the
+    # position of the ``import ... (x as y)`` selector that bound the
+    # current name (``None`` when no alias did). Read by the reserved
+    # built-in name rule (``capa.analyzer._builtin_names``).
+    declared_name: Optional[str] = field(
+        default=None, repr=False, compare=False,
+    )
+    alias_pos: Optional[Pos] = field(default=None, repr=False, compare=False)
 
 
 @dataclass(kw_only=True)

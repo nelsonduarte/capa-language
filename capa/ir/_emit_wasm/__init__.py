@@ -1177,8 +1177,10 @@ class WasmEmitter(
         # ``panic`` is a plain runtime function. The guest calls it
         # with (ptr, len) of the UTF-8 message and then executes
         # ``unreachable``, so the trap is deterministic and guest-
-        # side regardless of host behaviour. A user-defined ``panic``
-        # shadows the builtin and suppresses the import.
+        # side regardless of host behaviour. The import is emitted
+        # exactly when the module reaches the BUILT-IN ``panic``
+        # (``_option.module_reaches_panic``, the answer the WIT world
+        # reads too).
         if self._uses_panic(module):
             self._write(
                 '(import "capa:host/panic" "panic" '
@@ -1624,17 +1626,6 @@ class WasmEmitter(
 
     # ----- tail-call optimisation (roadmap P4) ------------------
 
-    # Free-function names that ``_emit_user_call`` routes to a
-    # non-``call $name`` path (intrinsics / host bridges / source-level
-    # constructors). A tail call must reuse the *ordinary* user-call
-    # shape, so these are excluded from the peephole and fall back to
-    # the normal call + return.
-    _TAIL_CALL_INTRINSICS = frozenset({
-        "Random", "parse_json", "to_json",
-        "parse_int", "parse_float", "to_float", "to_int",
-        "_capa_chr", "_capa_str_span", "panic",
-    })
-
     def _emit_body(self, instrs: list) -> None:
         """Emit a straight-line instruction sequence, applying the
         tail-call peephole (roadmap P4): a ``Call`` whose result is
@@ -1686,21 +1677,17 @@ class WasmEmitter(
     def _is_tail_callable(self, instr: Call) -> bool:
         """True if ``instr`` is an ordinary user-function call (the only
         flavour the tail-call peephole handles). Variant constructors,
-        intrinsics / host bridges, and closure calls keep their normal
-        call + return lowering."""
+        built-in calls (intrinsics, host bridges, the inline ``IoError``
+        construction: none is a ``call $name`` of a user function), and
+        closure calls keep their normal call + return lowering.
+
+        A built-in call is recognised by the Call's ``callee_kind``, the
+        same decision ``_emit_user_call`` branches on, so the two cannot
+        drift apart (there is no separate list of intrinsic names)."""
         name = instr.callee_name
         if name in self._variant_to_sum:
             return False
-        if name in self._TAIL_CALL_INTRINSICS:
-            return False
-        # Built-in ``IoError(...)`` construction lowers inline (see
-        # ``_emit_ioerror_construction``); there is no ``$IoError``
-        # function to ``return_call``. Same guard as the routing in
-        # ``_emit_user_call`` so ``return IoError(...)`` in tail
-        # position falls through to the ordinary lowering.
-        if name == "IoError" \
-                and name not in self._user_fn_names \
-                and "IoError" in self._struct_layouts:
+        if instr.calls_builtin():
             return False
         # Honour the lowerer's routing tag (same decision as
         # ``_emit_user_call``): a closure call keeps its normal call +
@@ -2279,11 +2266,15 @@ class WasmEmitter(
         # per-field String store) the same way a struct literal is
         # lowered. Must sit above the ordinary-call path, which would
         # otherwise emit a ``call $IoError`` to a function that does not
-        # exist (wasm-tools "unknown func"). A user function is never
-        # named ``IoError`` (a reserved built-in type name), so this
-        # branch cannot shadow a real call.
-        if instr.callee_name == "IoError" \
-                and instr.callee_name not in self._user_fn_names \
+        # exist (wasm-tools "unknown func").
+        #
+        # This branch and every built-in branch below key on the Call's
+        # ``callee_kind`` (``calls_builtin``), the one built-in identity
+        # decision made at lowering time, and use the name only to say
+        # WHICH built-in. A module-level user function of the same name
+        # is therefore never mistaken for the built-in, exactly as on the
+        # Python backends.
+        if instr.calls_builtin("IoError") \
                 and "IoError" in self._struct_layouts:
             self._emit_ioerror_construction(instr)
             return
@@ -2294,26 +2285,26 @@ class WasmEmitter(
         # this branch above the ordinary-call path so we don't try
         # to ``call $Random`` (no such function exists in the
         # emitted module).
-        if instr.callee_name == "Random":
+        if instr.calls_builtin("Random"):
             self._emit_random_constructor(instr)
             return
         # Built-in free functions that route through host bridges.
         # parse_json / to_json take String / JsonValue and would
         # otherwise miss the ``call $<name>`` path because no Capa
         # function declares them.
-        if instr.callee_name == "parse_json":
+        if instr.calls_builtin("parse_json"):
             self._emit_call_host_json_parse(instr)
             return
-        if instr.callee_name == "to_json":
+        if instr.calls_builtin("to_json"):
             self._emit_call_host_json_to_string(instr)
             return
         # parse_int / parse_float route to runtime helpers
         # ($parse_int / $parse_float). The arg is a String pushed
         # as (ptr, len); the return is an Option<Int> / Option<Float>
         # pointer.
-        if instr.callee_name in ("parse_int", "parse_float") \
-                and len(instr.args) == 1 \
-                and instr.callee_name not in self._user_fn_names:
+        if (instr.calls_builtin("parse_int")
+                or instr.calls_builtin("parse_float")) \
+                and len(instr.args) == 1:
             arg = instr.args[0]
             if arg.kind == "lit_str":
                 offset, length = self._intern_string(arg.literal)
@@ -2330,9 +2321,7 @@ class WasmEmitter(
         # is guest-side so the abort is deterministic; everything after
         # it in this block is dead and validates under Wasm's
         # unreachable-mode typing.
-        if instr.callee_name == "panic" \
-                and len(instr.args) == 1 \
-                and instr.callee_name not in self._user_fn_names:
+        if instr.calls_builtin("panic") and len(instr.args) == 1:
             arg = instr.args[0]
             if arg.kind == "lit_str":
                 offset, length = self._intern_string(arg.literal)
@@ -2345,9 +2334,7 @@ class WasmEmitter(
             return
         # _capa_chr (internal builtin): Int code point -> one-codepoint
         # String, via the $chr runtime helper (multi-value ptr/len).
-        if instr.callee_name == "_capa_chr" \
-                and len(instr.args) == 1 \
-                and instr.callee_name not in self._user_fn_names:
+        if instr.calls_builtin("_capa_chr") and len(instr.args) == 1:
             self._push_value(instr.args[0])
             self._write("call $chr")
             if instr.dst is not None:
@@ -2359,9 +2346,7 @@ class WasmEmitter(
         # _capa_str_span (internal builtin): (List<String> chars, Int a,
         # Int b) -> String, an O(1) (ptr, len) view spanning code points
         # [a, b) of the per-character list, via the $str_span helper.
-        if instr.callee_name == "_capa_str_span" \
-                and len(instr.args) == 3 \
-                and instr.callee_name not in self._user_fn_names:
+        if instr.calls_builtin("_capa_str_span") and len(instr.args) == 3:
             self._push_value(instr.args[0])  # chars: List pointer (i32)
             self._push_value(instr.args[1])  # a: i64
             self._push_value(instr.args[2])  # b: i64
@@ -2374,12 +2359,12 @@ class WasmEmitter(
             return
         # Numeric conversion intrinsics. These lower to one Wasm
         # instruction each; faster (and simpler) than a host bridge.
-        if instr.callee_name == "to_float" and len(instr.args) == 1:
+        if instr.calls_builtin("to_float") and len(instr.args) == 1:
             self._push_value(instr.args[0])
             self._write("f64.convert_i64_s")
             self._store_or_drop_result(instr.dst, "Float")
             return
-        if instr.callee_name == "to_int" and len(instr.args) == 1:
+        if instr.calls_builtin("to_int") and len(instr.args) == 1:
             self._push_value(instr.args[0])
             self._write("i64.trunc_f64_s")
             self._store_or_drop_result(instr.dst, "Int")

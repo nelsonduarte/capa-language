@@ -164,7 +164,7 @@ class _ExpressionsMixin:
                 self._err(
                     f"duplicate parameter name {p.name!r} in lambda", p.pos,
                 )
-            self.scope.define(sym)
+            self._define_local(sym)
             param_names.add(p.name)
 
         # The lambda has no effect on the outer ``_consumed`` set
@@ -1070,6 +1070,10 @@ class _ExpressionsMixin:
             self._err(f"undefined name {e.name!r}{hint}", e.pos)
             return TyUnknown
         self.bindings[id(e)] = sym
+        # Every identifier in a value position comes through here (a call
+        # resolves its callee in ``_check_call`` instead), so this is where
+        # a built-in function used as a value is refused.
+        self._refuse_builtin_value(e, sym)
         # Bare reference to an underscore-prefixed internal builtin
         # (e.g. ``let f = _capa_chr``): rejected like the direct
         # call in ``_check_call``, otherwise the alias would smuggle

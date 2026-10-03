@@ -542,7 +542,7 @@ class _PatternsMixin:
                             self._closure_shadow_message(p.name, enclosing),
                             p.pos,
                         )
-            self.scope.define(
+            self._define_local(
                 Symbol(name=p.name, kind=kind, pos=p.pos, ty=ty)
             )
             return
@@ -816,7 +816,7 @@ class _PatternsMixin:
                                 self._closure_shadow_message(fname, enclosing),
                                 p.pos,
                             )
-                    self.scope.define(
+                    self._define_local(
                         Symbol(
                             name=fname,
                             kind=SymbolKind.LOCAL,
