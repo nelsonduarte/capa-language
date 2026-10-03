@@ -15,7 +15,7 @@ The corpus in ``tests/fixtures/attestation_scope`` holds two shapes: each
 ``no-secret-egress`` policy over ``Stdio``, and each directory under
 ``projects/`` is a whole project with its own policies and, where named,
 ``vendor/`` packages, for the clauses a one-package wrapper cannot reach
-(where a record sits across packages, what a recorded name means). Seven
+(where a record sits across packages, what a recorded name means). Eight
 groups of pins:
 
 - characterization (RED before the key and the constant existed): the key
@@ -23,17 +23,26 @@ groups of pins:
   content-integrity envelopes still verify, the register block is
   generated and the generator's check passes, the register carries
   exactly one block and states the field nowhere outside it, the
-  generator refuses to run against a capa that is not the checkout it
-  sits in or whose scope sentence does not render, and the wording keeps
-  its load-bearing clauses while naming no tier as covering anything;
+  generator's check reports an edit inside the block as drift and
+  regeneration restores it, the generator refuses to run against a capa
+  that is not the checkout it sits in, whose package raises while it is
+  imported or whose scope sentence does not render, and against a
+  register it cannot read, each with a code of its own that is never the
+  drift code, and the wording keeps its load-bearing clauses while naming
+  no tier as covering anything;
 - universe: the capability sets the sentence names are DERIVED from the
   declared tables (the recordable set from the sink table and the one
   panic capability, the never-recordable set from the policy ceiling
   minus it) and hold their current values, the sentence renders every
   derived name in its clause and types none by hand, the renderer refuses
-  an empty set, both panic producers read the one panic capability, the
-  policy reader quantifies over the two axes the sentence covers, and
-  every hand copy of the sink table in ``docs/`` and ``specs/`` equals it;
+  an empty set, both panic producers name the one panic capability and
+  move with it when it changes, the policy reader quantifies over the two
+  axes the sentence covers, and every hand copy of the sink table in
+  ``docs/`` and ``specs/`` equals it;
+- recorder universe: over every builtin method and builtin free function
+  that takes a String, read from ``capa.builtins``, a @secret argument is
+  recorded and warned only at a sink-table position (under its
+  capability) and at the panic builtin (under the panic capability);
 - single source: the sentence's text lives in exactly one module, every
   producer references the constant by name, and no other document in the
   repository restates it;
@@ -56,10 +65,14 @@ groups of pins:
 - producers: exactly three call sites record the fact, each on the
   non-strict branch of its innermost tier test.
 
-Everything runs in-process; no wasm tooling is needed.
+No program of the corpus or of the sweep is run, and no wasm tooling is
+needed. Most pins work in-process; the generator pins and the panic
+producer pin start a Python subprocess over this checkout or over a
+temporary copy of it.
 """
 
 import ast
+import contextlib
 import importlib.util
 import io
 import json
@@ -74,7 +87,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
-from capa import analyze
+from capa import Lexer, Parser, analyze
 from capa.docgen import build_html
 from capa.loader import ModuleLoader
 from capa.manifest import (
@@ -413,6 +426,29 @@ class TestRegister(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    def _main(self, gen, document: Path, args, *patches):
+        """``gen.main(args)`` in-process against ``document``, with the
+        generator's own import-path insertion undone afterwards. Returns
+        ``(rc, stdout, stderr)``."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for patch in (
+                mock.patch.object(gen, "REGISTER", document),
+                mock.patch.object(sys, "path", list(sys.path)),
+                mock.patch.object(sys, "stdout", out),
+                mock.patch.object(sys, "stderr", err),
+                *patches,
+            ):
+                stack.enter_context(patch)
+            rc = gen.main(args)
+        return rc, out.getvalue(), err.getvalue()
+
+    @staticmethod
+    def _other_conditions(gen) -> tuple:
+        """The codes that mean something other than a refusal: up to date,
+        drift, a marker problem, a foreign capa."""
+        return (0, gen.EXIT_DRIFT, gen.EXIT_MARKERS, gen.EXIT_FOREIGN_CAPA)
+
     def test_register_block_is_generated_from_the_constant(self):
         _, sentence = _scope()
         gen = self._generator()
@@ -509,24 +545,137 @@ class TestRegister(unittest.TestCase):
             before = document.read_bytes()
             for args in (["--check"], []):
                 with self.subTest(args=args):
-                    err = io.StringIO()
-                    with mock.patch.dict(sys.modules, {"capa.manifest._scope": unrendered}), \
-                            mock.patch.object(gen, "REGISTER", document), \
-                            mock.patch.object(sys, "path", list(sys.path)), \
-                            mock.patch.object(sys, "stderr", err):
-                        rc = gen.main(args)
+                    rc, _out, err = self._main(
+                        gen, document, args,
+                        mock.patch.dict(sys.modules, {"capa.manifest._scope": unrendered}),
+                    )
                     self.assertNotIn(
-                        rc,
-                        (0, gen.EXIT_DRIFT, gen.EXIT_MARKERS, gen.EXIT_FOREIGN_CAPA),
-                        f"the refusal is reported as another condition:\n{err.getvalue()}",
+                        rc, self._other_conditions(gen),
+                        f"the refusal is reported as another condition:\n{err}",
                     )
                     self.assertEqual(rc, getattr(gen, "EXIT_SCOPE_UNRENDERED", None))
-                    self.assertIn(message, err.getvalue())
-                    self.assertNotIn("marker", err.getvalue().lower())
+                    self.assertIn(message, err)
+                    self.assertNotIn("marker", err.lower())
                     self.assertEqual(
                         document.read_bytes(), before,
                         "the generator wrote the document without a sentence",
                     )
+
+    def test_generator_names_an_error_raised_while_importing_the_package(self):
+        # A copy of this checkout's tools/, docs/ and capa/, with an error
+        # planted in a module that importing the package loads: the
+        # generator must refuse with a code of its own that names the error
+        # (never drift, a marker problem or a foreign capa, never a bare
+        # traceback), and leave the document untouched.
+        gen = self._generator()
+        plants = {
+            "ValueError": 'raise ValueError("planted by the register pins")\n',
+            "ImportError": "import capa_planted_missing_module\n",
+            "RuntimeError": 'raise RuntimeError("planted by the register pins")\n',
+        }
+        with tempfile.TemporaryDirectory(prefix="capa_genpkg_") as tmp:
+            root = Path(tmp)
+            shutil.copytree(
+                PACKAGE, root / "capa", ignore=shutil.ignore_patterns("__pycache__"),
+            )
+            (root / "tools").mkdir()
+            (root / "docs").mkdir()
+            shutil.copyfile(GENERATOR, root / "tools" / GENERATOR.name)
+            shutil.copyfile(REGISTER, root / "docs" / REGISTER.name)
+            before = (root / "docs" / REGISTER.name).read_bytes()
+            loaded = root / "capa" / "analyzer" / "_ifc_tables.py"
+            pristine = loaded.read_bytes()
+            env = dict(os.environ, PYTHONIOENCODING="utf-8")
+            for error, line in plants.items():
+                loaded.write_bytes(pristine + b"\n" + line.encode("utf-8"))
+                for args in (["--check"], []):
+                    with self.subTest(error=error, args=args):
+                        proc = subprocess.run(
+                            [sys.executable, str(root / "tools" / GENERATOR.name), *args],
+                            cwd=str(root), env=env, stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=120,
+                        )
+                        self.assertNotIn(
+                            proc.returncode, self._other_conditions(gen),
+                            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+                        )
+                        self.assertEqual(
+                            proc.returncode, getattr(gen, "EXIT_PACKAGE_RAISED", None),
+                            proc.stderr,
+                        )
+                        self.assertIn(error, proc.stderr)
+                        self.assertNotIn("Traceback", proc.stderr)
+                        self.assertNotIn("marker", proc.stderr.lower())
+                        self.assertEqual(
+                            (root / "docs" / REGISTER.name).read_bytes(), before,
+                            "the generator wrote the document",
+                        )
+
+    def test_generator_refuses_a_register_it_cannot_read(self):
+        gen = self._generator()
+        with tempfile.TemporaryDirectory(prefix="capa_gen_") as tmp:
+            missing = Path(tmp) / REGISTER.name
+            for args in (["--check"], []):
+                with self.subTest(args=args):
+                    rc, _out, err = self._main(gen, missing, args)
+                    self.assertNotIn(rc, self._other_conditions(gen), err)
+                    self.assertEqual(rc, getattr(gen, "EXIT_REGISTER_UNREADABLE", None), err)
+                    self.assertIn("FileNotFoundError", err)
+                    self.assertFalse(missing.exists(), "the generator created the register")
+
+    def test_generator_never_reports_an_unexpected_error_as_drift(self):
+        # An error the generator does not anticipate gets the code for its
+        # own failure, never drift or another condition's code.
+        gen = self._generator()
+
+        def _broken(*_args, **_kwargs):
+            raise TypeError("planted by the register pins")
+
+        with tempfile.TemporaryDirectory(prefix="capa_gen_") as tmp:
+            document = Path(tmp) / REGISTER.name
+            shutil.copyfile(REGISTER, document)
+            before = document.read_bytes()
+            for args in (["--check"], []):
+                with self.subTest(args=args):
+                    rc, _out, err = self._main(
+                        gen, document, args, mock.patch.object(gen, "render_block", _broken),
+                    )
+                    self.assertNotIn(rc, self._other_conditions(gen), err)
+                    self.assertEqual(rc, getattr(gen, "EXIT_GENERATOR_ERROR", None), err)
+                    self.assertIn("TypeError", err)
+                    self.assertEqual(document.read_bytes(), before)
+
+    def test_check_reports_an_edit_inside_the_block_as_drift(self):
+        # The comparison itself: a line planted inside the generated block
+        # is drift under --check, which leaves the document as it is, and
+        # regeneration yields what regenerating the unedited document
+        # yields.
+        gen = self._generator()
+        original = REGISTER.read_bytes()
+        text = original.decode("utf-8")
+        newline = "\r\n" if "\r\n" in text else "\n"
+        head, rest = text.split(gen.BEGIN, 1)
+        block, tail = rest.split(gen.END, 1)
+        planted = (
+            head + gen.BEGIN + block + "  A line planted inside the block."
+            + newline + gen.END + tail
+        ).encode("utf-8")
+        with tempfile.TemporaryDirectory(prefix="capa_gen_") as tmp:
+            reference = Path(tmp) / "reference.md"
+            reference.write_bytes(original)
+            rc, _out, err = self._main(gen, reference, [])
+            self.assertEqual(rc, 0, err)
+            document = Path(tmp) / REGISTER.name
+            document.write_bytes(planted)
+            rc, _out, err = self._main(gen, document, ["--check"])
+            self.assertEqual(rc, gen.EXIT_DRIFT, f"an edit inside the block is not drift:\n{err}")
+            self.assertEqual(document.read_bytes(), planted, "--check wrote the document")
+            rc, _out, err = self._main(gen, document, [])
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(
+                document.read_bytes(), reference.read_bytes(),
+                "regeneration did not remove the planted line",
+            )
 
     def test_generator_check_passes(self):
         self.assertTrue(GENERATOR.is_file(), f"no generator at {GENERATOR}")
@@ -657,6 +806,55 @@ def _sink_table_passages():
                 yield path.relative_to(REPO_ROOT).as_posix(), passage, mentions
 
 
+def _recorded_capabilities(result) -> list[str]:
+    """Every capability the analysis recorded, over all functions, sorted."""
+    return sorted(
+        cap for records in result.unaudited_secret_sinks.values() for cap, _pos in records
+    )
+
+
+def _set_panic_sink_capability(tables: Path, value: str) -> None:
+    """Rewrite, in a COPY of ``_ifc_tables.py``, the value of the one
+    ``_PANIC_SINK_CAP`` assignment (found over the AST, exactly one)."""
+    text = tables.read_text(encoding="utf-8")
+    nodes = [
+        n for n in ast.walk(ast.parse(text))
+        if isinstance(n, (ast.Assign, ast.AnnAssign))
+        and any(
+            isinstance(t, ast.Name) and t.id == "_PANIC_SINK_CAP"
+            for t in (n.targets if isinstance(n, ast.Assign) else [n.target])
+        )
+    ]
+    assert len(nodes) == 1, f"expected one _PANIC_SINK_CAP assignment, found {len(nodes)}"
+    value_node = nodes[0].value
+    assert value_node.lineno == value_node.end_lineno, "the value spans lines"
+    lines = text.splitlines(keepends=True)
+    line = lines[value_node.lineno - 1]
+    lines[value_node.lineno - 1] = (
+        line[:value_node.col_offset] + repr(value) + line[value_node.end_col_offset:]
+    )
+    tables.write_text("".join(lines), encoding="utf-8")
+
+
+# Run in a child interpreter whose first import-path entry is a temporary
+# copy of the package: the records of the named corpus projects, analyzed
+# with that copy through this module's own ``_analyse``.
+_PANIC_RECORDS_CHILD = r"""
+import json, sys
+from pathlib import Path
+copy_root, repo_root, *names = sys.argv[1:]
+sys.path[:0] = [copy_root, repo_root]
+import capa
+assert Path(capa.__file__).resolve().is_relative_to(Path(copy_root).resolve()), capa.__file__
+from tests.test_attestation_scope import PROJECTS, _analyse, _recorded_capabilities
+records = {}
+for name in names:
+    _linked, result, _filename = _analyse(PROJECTS / name)
+    records[name] = _recorded_capabilities(result)
+print(json.dumps(records))
+"""
+
+
 class TestUniverse(unittest.TestCase):
     """The sets the sentence names are derived, never typed: the recordable
     capabilities from the sink table and the one panic capability, the
@@ -729,6 +927,8 @@ class TestUniverse(unittest.TestCase):
     def test_both_panic_producers_read_the_one_panic_capability(self):
         # The direct site records inside ``_check_ifc_panic_sink``; the callee
         # summary attributes inside the branch that recognizes the builtin.
+        # This holds only that each call spells the constant's name; that
+        # both producers move with its value is the next pin.
         sites = [
             (rel, lineno, argument)
             for rel, lineno, function, tests, argument in _capability_arguments()
@@ -744,6 +944,37 @@ class TestUniverse(unittest.TestCase):
                 self.assertIn(
                     "_PANIC_SINK_CAP",
                     {n.id for n in ast.walk(argument) if isinstance(n, ast.Name)},
+                )
+
+    def test_both_panic_producers_move_with_the_one_panic_capability(self):
+        # Behaviour, not spelling: in a copy of the package whose one panic
+        # capability is given a value no capability has, the direct producer
+        # (panic_without_stdio) and the callee-summary producer
+        # (panic_in_callee) must both record that value. A second binding of
+        # the name anywhere a producer reads it keeps the old value there.
+        u = _universe()
+        moved = "PanicSinkCapabilityMoved"
+        members = ("panic_without_stdio", "panic_in_callee")
+        for name in members:
+            with self.subTest(source="this package", project=name):
+                _linked, result, _filename = _analyse(PROJECTS / name)
+                self.assertEqual(_recorded_capabilities(result), [u.panic])
+        with tempfile.TemporaryDirectory(prefix="capa_panic_source_") as tmp:
+            copy = Path(tmp) / "capa"
+            shutil.copytree(PACKAGE, copy, ignore=shutil.ignore_patterns("__pycache__"))
+            _set_panic_sink_capability(copy / "analyzer" / "_ifc_tables.py", moved)
+            proc = subprocess.run(
+                [sys.executable, "-c", _PANIC_RECORDS_CHILD, tmp, str(REPO_ROOT), *members],
+                cwd=tmp, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=300, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            records = json.loads(proc.stdout)
+        for name in members:
+            with self.subTest(source="the copy", project=name):
+                self.assertEqual(
+                    records[name], [moved],
+                    "a panic producer did not move with the one panic capability",
                 )
 
     def test_policy_reader_quantifies_over_the_two_axes_the_sentence_covers(self):
@@ -790,6 +1021,174 @@ class TestUniverse(unittest.TestCase):
                             positions, set(_PUBLIC_SINKS[key]),
                             f"sink positions of {key[0]}.{key[1]}",
                         )
+
+
+# ---------------------------------------------------------------------------
+# Recorder universe: swept over the builtins table
+# ---------------------------------------------------------------------------
+
+# A receiver for each non-capability owner whose methods take a String; a
+# capability receiver is a parameter of that capability's type. An owner
+# with no receiver here makes the sweep fail with its name, never skip it.
+_SWEEP_RECEIVERS = {
+    "String": ("String", '"r"'),
+    "Option": ("Option<Int>", "Some(1)"),
+    "Result": ("Result<Int, Int>", "Ok(1)"),
+}
+
+
+def _sweep_members():
+    """``(owner, name, signature, position)`` for every String parameter of
+    every builtin method (``owner`` its type) and builtin free function
+    (``owner`` None), read from ``capa.builtins``."""
+    from capa.builtins import FREE_FUNCTIONS, METHODS
+    from capa.typesys import TyString
+    for owner, methods in sorted(METHODS.items()):
+        for name, signature, _extra in methods:
+            for position, ty in enumerate(signature.params):
+                if ty == TyString:
+                    yield owner, name, signature, position
+    for name, (signature, _extra) in sorted(FREE_FUNCTIONS.items()):
+        for position, ty in enumerate(signature.params):
+            if ty == TyString:
+                yield None, name, signature, position
+
+
+def _sweep_program(owner, name, signature, position, secret=True):
+    """One function calling ``name`` with a @secret String at ``position``
+    (or, for the public twin, a literal), every other argument a public
+    literal or a capability parameter. None when an owner or a parameter
+    type has no builder here."""
+    from capa.typesys import CAPABILITY_NAMES, TyInt, TyName, TyString, TyVar
+    params, body, receiver = ["k: @secret String"], [], ""
+    if owner is not None:
+        if owner in CAPABILITY_NAMES:
+            params.append(f"r: {owner}")
+        elif owner in _SWEEP_RECEIVERS:
+            annotation, value = _SWEEP_RECEIVERS[owner]
+            body.append(f"    let r: {annotation} = {value}")
+        else:
+            return None
+        receiver = "r."
+    args = []
+    for i, ty in enumerate(signature.params):
+        if i == position:
+            args.append("k" if secret else '"p"')
+        elif ty == TyString:
+            args.append('"p"')
+        elif ty == TyInt or isinstance(ty, TyVar):
+            args.append("1")
+        elif isinstance(ty, TyName) and ty.name in CAPABILITY_NAMES:
+            params.append(f"c{i}: {ty.name}")
+            args.append(f"c{i}")
+        else:
+            return None
+    body.append(f"    let _v = {receiver}{name}({', '.join(args)})")
+    return f"fun probe({', '.join(params)})\n" + "\n".join(body) + "\n"
+
+
+def _sweep_analyse(source: str):
+    """``(accepted, recorded capabilities, warnings, errors)`` of an
+    in-memory program; it is analyzed, never run."""
+    module = Parser(Lexer(source).lex(), source=source).parse_module()
+    result = analyze(module, source=source)
+    return (
+        result.ok, _recorded_capabilities(result),
+        [w.message for w in result.warnings], [e.message for e in result.errors],
+    )
+
+
+class TestRecorderUniverse(unittest.TestCase):
+    """What the recorder recognizes, swept over ``capa.builtins``: a @secret
+    String passed to any builtin method or free function is recorded, and
+    warned, only at a sink-table position (under that sink's capability) and
+    at the panic builtin (under the one panic capability). Bound: a String
+    parameter at a direct call; an operation reached through another
+    parameter type, through a user callee, or not through a builtin call is
+    outside this sweep."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.results, cls.unbuilt = {}, []
+        for owner, name, signature, position in _sweep_members():
+            key = (owner, name, position)
+            source = _sweep_program(owner, name, signature, position)
+            if source is None:
+                cls.unbuilt.append(key)
+                continue
+            cls.results[key] = (signature, _sweep_analyse(source))
+
+    def _label(self, key) -> str:
+        owner, name, position = key
+        return f"{owner + '.' if owner else ''}{name}@{position}"
+
+    def _sink_positions(self, key) -> set:
+        from capa.analyzer._ifc_tables import _PUBLIC_SINKS
+        owner, name, _position = key
+        return set(_PUBLIC_SINKS.get((owner, name), ())) if owner else set()
+
+    def _assert_silent(self, key):
+        signature, (accepted, recorded, warnings, errors) = self.results[key]
+        self.assertEqual(recorded, [], "a @secret argument outside the sink table is recorded")
+        if accepted:
+            self.assertEqual(warnings, [], "a @secret argument outside the sink table warns")
+            return
+        # A refused program says nothing about the recorder: it passes only
+        # when its public twin is refused with the same diagnostics, so the
+        # call's shape, not the secret, is why.
+        owner, name, position = key
+        twin = _sweep_analyse(_sweep_program(owner, name, signature, position, secret=False))
+        self.assertEqual(
+            (twin[0], twin[2], twin[3]), (accepted, warnings, errors),
+            "the program is refused because of the secret",
+        )
+
+    def test_every_member_is_built(self):
+        self.assertTrue(self.results, "the builtins table yields no String parameter")
+        self.assertEqual(
+            [self._label(k) for k in self.unbuilt], [],
+            "the sweep cannot build these members: extend its receiver or argument builder",
+        )
+
+    def test_sink_positions_record_their_capability(self):
+        # The control on the same generator: where the table names a sink
+        # position, the program is accepted and records that capability.
+        sinks = [k for k in self.results if k[2] in self._sink_positions(k)]
+        self.assertTrue(sinks)
+        for key in sinks:
+            with self.subTest(member=self._label(key)):
+                _signature, (accepted, recorded, warnings, _errors) = self.results[key]
+                self.assertTrue(accepted)
+                self.assertEqual(recorded, [key[0]])
+                self.assertTrue(any(_SINK_FLOW_FORMS["sink method"].match(w) for w in warnings))
+
+    def test_no_other_builtin_method_records_or_warns(self):
+        others = [
+            k for k in self.results
+            if k[0] is not None and k[2] not in self._sink_positions(k)
+        ]
+        self.assertTrue(others)
+        for key in others:
+            with self.subTest(member=self._label(key)):
+                self._assert_silent(key)
+
+    def test_the_panic_builtin_is_the_one_free_function_that_records(self):
+        u = _universe()
+        functions = [k for k in self.results if k[0] is None]
+        self.assertTrue(functions)
+        panic = sorted({
+            k[1] for k in functions
+            if any(_SINK_FLOW_FORMS["panic"].match(w) for w in self.results[k][1][2])
+        })
+        self.assertEqual(len(panic), 1, f"free functions with a panic diagnostic: {panic}")
+        for key in functions:
+            with self.subTest(function=self._label(key)):
+                _signature, (accepted, recorded, _warnings, _errors) = self.results[key]
+                if key[1] in panic:
+                    self.assertTrue(accepted)
+                    self.assertEqual(recorded, [u.panic])
+                else:
+                    self._assert_silent(key)
 
 
 # ---------------------------------------------------------------------------
