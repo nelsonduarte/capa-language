@@ -175,7 +175,7 @@ jobs:
         # ties the provenance to the build that actually produced it.
         # The `.sha256` sidecar is deliberately not attested; the digest it
         # contains is already the attestation subject.
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: dist/${{ matrix.asset }}
 
@@ -214,7 +214,7 @@ jobs:
         # they are what a user pipes straight into a shell. They are uploaded
         # verbatim from the checkout, so attesting the checked-out paths
         # attests exactly the bytes that get published.
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: |
             deploy/install.sh
