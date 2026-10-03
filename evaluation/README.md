@@ -46,6 +46,19 @@ machine and are checked within a tolerance band; they only warn unless
 `--strict` is given. The fast studies need no network (the CVE headline
 is recomputed from the committed `cve/decisions.csv`).
 
+`--with-runtime` and `--all` also run the runtime harness, which
+times three downstream demo programs: `policy-eval`, `sbom-watch` and
+`audit-trail-reporter`. They are separate repositories, not part of
+this one. Put a checkout of each, under those directory names, in one
+directory and name that directory with the `CAPA_DEMO_REPOS`
+environment variable. When the variable is not set, the harness looks
+for a `repos` directory next to the compiler's main checkout (from a
+`git worktree`, next to the main checkout, not the worktree). A demo
+that is missing is skipped with a warning. If none of the three is
+found, the harness says where it looked, writes no
+`runtime/results.csv` and exits 3, and `reproduce` lists
+`runtime_macro` among the studies that failed to run and exits 1.
+
 On the day you submit, run this at the release tag: re-anchor the
 baseline with `--update-baseline`, or fix whatever drifted, so the
 paper never cites a number an old run produced.
@@ -66,7 +79,7 @@ From the repo root, with the venv active:
 .venv/Scripts/python -m evaluation.cve.classify
 .venv/Scripts/python -m evaluation.cve.summary
 
-# runtime benchmarks (slice 5)
+# runtime benchmarks (slice 5); needs the demo checkouts, see CAPA_DEMO_REPOS above
 .venv/Scripts/python -m evaluation.runtime.harness
 .venv/Scripts/python -m evaluation.runtime.plot
 ```
