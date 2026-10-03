@@ -31,12 +31,14 @@ from ..pkg._manifest import _CEILING_CAP_NAMES
 # every document's shape; no schema version moves for it.
 UNAUDITED_SECRET_SINKS_SCOPE_KEY = "unaudited_secret_sinks_scope"
 
-# The capabilities a record can name. Each of the recorder's call sites
-# takes its capability from the sink table (directly, or through a callee
-# summary whose attributions read the same table) or is the panic producer,
-# which records the panic sink capability; ``tests/test_attestation_scope.py``
-# pins those sites and that none of them types a capability name. Both
-# values are the analyzer's own, read here.
+# The capabilities a record can name: the sink table's capabilities and the
+# one panic sink capability, both the analyzer's own, read here. What
+# ``tests/test_attestation_scope.py`` holds about the recorder, and no more:
+# it has three call sites, none passing a capability literal; both panic
+# producers record whatever value ``_PANIC_SINK_CAP`` has; and a @secret
+# String passed directly to a builtin method or builtin free function is
+# recorded only at a sink-table position or at the panic builtin. A record
+# made through a user callee is held only by the corpus members' values.
 UNAUDITED_SECRET_SINKS_RECORDABLE_CAPABILITIES: frozenset[str] = (
     _SINK_CAPS | {_PANIC_SINK_CAP}
 )
@@ -78,8 +80,10 @@ def _name_list(names, last_joiner: str) -> str:
 # capability and method name in it is rendered from the values above; the
 # template's literals name none (pinned), so a change to a declared table
 # or to the panic sink capability re-renders the sentence. The prose
-# clauses are held by member pins over the test corpus, which turn red
-# when a member's records or policy results move.
+# clauses (where a record sits, what a recorded name means) are pinned
+# only as the current records and policy results of the corpus members,
+# which turn red when those move: measured true on those members, not
+# proven for every program.
 UNAUDITED_SECRET_SINKS_SCOPE = (
     "unaudited_secret_sinks lists ONLY the explicit secret-to-sink flows the "
     "warn-tier information-flow check REPORTED for this function and "
