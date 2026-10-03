@@ -22,12 +22,15 @@ naming its cause and writes nothing:
 - 3: the ``capa`` package that would supply the constant is not the one in
   this checkout, or there is none (nothing is read from it);
 - 4: this checkout's scope module raises when the key and the sentence are
-  imported from it, for instance because a clause would name an empty set;
-- 5: importing this checkout's ``capa`` package raises (the error is named);
+  imported from it, for instance because a clause would name an empty set
+  (``SystemExit`` included);
+- 5: importing this checkout's ``capa`` package raises, ``SystemExit``
+  included (the error is named);
 - 6: the register document cannot be read or written (the error is named);
 - 7: any other error, a defect of this script (the error is named).
 
-The document's own line endings are preserved.
+Not mapped: an interrupt (``KeyboardInterrupt``) ends the process as an
+interrupt does. The document's own line endings are preserved.
 """
 
 from __future__ import annotations
@@ -95,6 +98,12 @@ class RegisterUnreadable(Refusal):
     code = EXIT_REGISTER_UNREADABLE
 
 
+# What an import of this checkout's package or scope module can raise that
+# is reported as that import's failure: any error, and a SystemExit, which
+# would otherwise end the script with its own code and no message.
+_IMPORT_FAILURES = (Exception, SystemExit)
+
+
 def _named(e: BaseException) -> str:
     return f"{type(e).__name__}: {e}"
 
@@ -113,7 +122,7 @@ def _constants() -> tuple[str, str]:
     own = (REPO_ROOT / "capa" / "__init__.py").is_file()
     try:
         import capa
-    except Exception as e:
+    except _IMPORT_FAILURES as e:
         if own:
             raise PackageRaised(f"importing capa/ raised {_named(e)}") from e
         raise ForeignCapa(f"no capa package beside tools/ ({_named(e)})") from e
@@ -124,7 +133,7 @@ def _constants() -> tuple[str, str]:
         from capa.manifest._scope import (
             UNAUDITED_SECRET_SINKS_SCOPE, UNAUDITED_SECRET_SINKS_SCOPE_KEY,
         )
-    except Exception as e:
+    except _IMPORT_FAILURES as e:
         raise ScopeUnrendered(
             f"capa/manifest/_scope.py does not render its sentence ({_named(e)})",
         ) from e
