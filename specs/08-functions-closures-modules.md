@@ -77,7 +77,7 @@ the metadata is statically inspectable.
 | `deprecated` | `reason`, `since`, `use`, `removed_in` | documentation metadata |
 | `audited` | `date`, `by`, `scope`, `notes` | audit metadata |
 | `vex` | `cve`, `status`, `justification`, `detail`, `first_issued` | VEX metadata |
-| `strict_ifc` | (none) | behavioural (fail-closed IFC) |
+| `strict_ifc` | (none) | behavioural (detected flows become hard errors) |
 | `constant_time` | (none) | behavioural (CWE-208) |
 | `export` | (none) | behavioural (Wasm Component Model export surface) |
 
@@ -85,8 +85,9 @@ The first four are declarative (they feed `--manifest`, `--vex` and
 audit tooling, see
 [29-capability-manifest.md](29-capability-manifest.md)); the last three
 are **behavioural** and are written without arguments (`@strict_ifc()`,
-`@constant_time()`, `@export()`). `@strict_ifc` turns on fail-closed
-information-flow checking for the function (see
+`@constant_time()`, `@export()`). `@strict_ifc` makes every
+detected flow in the function a hard error and turns on the
+implicit-flow checks (see
 [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md));
 `@constant_time` rejects control decisions or indexing that depend on a
 `@secret`; `@export` marks a top-level function for the Wasm Component
@@ -184,8 +185,11 @@ enforced by the **analyzer**, not the parser.
 ### 3.1 Capability parameters
 
 A parameter whose type is a built-in capability (`Stdio`, `Fs`, `Net`,
-...) is the only way authority enters a function: there is no ambient
-authority (see [10-capability-model.md](10-capability-model.md)). The
+...) is one way a built-in capability can reach a function; a field of
+a struct that implements a user-defined capability and a closure that
+captured one (section 5.1) are two others. There is no global
+capability value (see
+[10-capability-model.md](10-capability-model.md)). The
 analyzer requires a declared capability parameter to be **used**;
 otherwise it is an error (prefixing with `_` silences it). The rule is
 in [`capa/analyzer/_items.py`](../capa/analyzer/_items.py) (diagnostic
@@ -632,8 +636,8 @@ The two backends produce identical output.
 
 Authority flow does not change at a module boundary: a function in
 another module that receives `Fs` still needs to receive it by
-parameter from a holder of `Fs`. There is no ambient authority an
-import could inject (see
+parameter from a holder of `Fs`. An import brings functions and types,
+never a capability value (see
 [10-capability-model.md](10-capability-model.md)). `borrow`-ness is
 **not** carried across the module boundary (it is not part of the
 exported interface), so forwarding a `borrow` parameter into a callee

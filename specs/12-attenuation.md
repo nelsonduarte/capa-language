@@ -150,10 +150,10 @@ The same monotonicity holds for `Net` (host-set intersection) and the
 other attenuable caps. The metatheory is formalized in
 [`proofs/CapaAttenuation.agda`](../proofs/CapaAttenuation.agda).
 
-JUDGEMENT. Because the only ways to obtain a capability value are
-`main`'s parameter or an attenuation of an existing value
-([10-capability-model.md](10-capability-model.md) section 3), and each
-attenuation only narrows, the authority scope of any `Fs` value in a
+JUDGEMENT. Because no literal, global or import yields a built-in
+capability value ([10-capability-model.md](10-capability-model.md)
+sections 2 and 3), each `Fs` value in a program derives from the one
+`main` received; and because each attenuation only narrows, the authority scope of any `Fs` value in a
 program is always a subset of what `main` received. No operation
 widens it.
 

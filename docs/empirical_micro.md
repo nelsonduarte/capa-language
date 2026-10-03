@@ -75,7 +75,7 @@ The same logic is split into five functions:
 | Function | Signature shape | Declared capabilities |
 |---|---|---|
 | `parse_config_text` | `(String) -> Config` | *(none)* |
-| `has_field` / `set_field` | pure helpers | *(none)* |
+| `has_field` / `set_field` | helpers over `Config` | *(none)* |
 | `load_local_config` | `(Fs, String) -> Result<Config, IoError>` | `Fs` |
 | `apply_env_overrides` | `(Env, Config) -> Config` | `Env` |
 | `fetch_remote_overrides` | `(Net, String) -> Result<Config, IoError>` | `Net` |
@@ -109,10 +109,10 @@ main:                   ['Stdio']
 Eight functions, eight per-function entries. A reviewer with
 this SBOM in hand knows:
 
-- **What is pure.** `parse_config_text`, `has_field`,
-  `set_field`. Zero capability declarations. The compiler
-  has verified that the body of each cannot touch any
-  ambient authority.
+- **What holds no capability.** `parse_config_text`,
+  `has_field`, `set_field`. Zero capability declarations, and
+  their parameters are strings and plain `Config` records; the
+  manifest finds no capability reachable from any of them.
 
 - **What needs each single capability.** `load_local_config`
   needs `Fs` and only `Fs`. If a future revision quietly adds

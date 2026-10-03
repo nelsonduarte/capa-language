@@ -404,7 +404,8 @@ model, and the narrowing guarantee is proved rather than assumed:
 
 **What this costs, stated precisely.** The mechanised theorems now
 cover both axes: *which* of the ten classes a program can exercise
-(Theorems 1 and 2, at the granularity the manifest declares) and
+(Theorems 1 and 2, for a closed program's initial capability
+environment) and
 *how much* of a class's scope set any capability it holds can
 reach (the attenuation results). What is still not machine-backed
 is per-operation granularity within a class.
@@ -478,9 +479,10 @@ Two things:
   multi-step Manifest Completeness theorem are stated as
   real Agda definitions with no `postulate` declarations
   remaining. CI typechecks the proofs on every change to
-  [`proofs/`](../proofs/), so the positioning document's
-  claim that "the type system is sound, not just convenient"
-  is independently re-checkable rather than aspirational.
+  [`proofs/`](../proofs/), so the λ_cap soundness theorems
+  are independently re-checkable rather than aspirational.
+  They are theorems about the calculus; the translation from
+  full Capa is deferred (Section 7, item 4).
 
 What still belongs in a future writeup:
 - the translation lemma from full Capa (structs, sum types,
@@ -527,10 +529,11 @@ specialised to Capa's two-point lattice and extended with an
 explicit declassification primitive (delimited release in the
 Sabelfeld-Sands sense). The lineage is cited in the references;
 nothing here is novel as a *theorem*. What is load-bearing is
-that the rules of λ_if are a faithful core of what
+how faithfully the rules of λ_if capture what
 [`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py) actually
-does, so that a referee reading "Capa's IFC is sound" has a
-precise statement to check.
+does: that fidelity is argued informally (Section 9.8), not
+proved, so a referee has a precise statement about the model to
+check and an explicit gap between the model and the analyser.
 
 ### 9.1 Syntax of λ_if
 
@@ -860,8 +863,10 @@ cannot and does not rule out the termination channel. Claiming
 termination-*sensitive* noninterference would over-state what
 the implementation enforces. Termination-insensitive
 noninterference is exactly the guarantee a Volpano-Smith-style
-flow type system delivers, and exactly what Capa's analyser
-delivers. The progress / timing channels are out of scope here
+flow type system delivers, and it is what λ_if proves. It is the
+target the analyser's `@strict_ifc` tier is designed against,
+with the model-versus-implementation gap of Section 9.8; it is
+not a theorem about the analyser. The progress / timing channels are out of scope here
 and are partially addressed by the separate `@constant_time`
 discipline (`_ct_reject`, `_check_ct_index`, `_check_ct_arith`
 in `_ifc.py`), which is *not* modelled by λ_if.
@@ -1113,9 +1118,10 @@ trail is orthogonal and not part of the calculus.
 
 ### 9.8 Model-versus-implementation gap
 
-λ_if is a faithful *core*, not a transcription, of
+λ_if is a *core* model, not a transcription, of
 [`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py). The
-fidelity between λ_if and the analyser is argued informally; in
+fidelity between λ_if and the analyser is argued informally, not
+proved; in
 the honesty convention of [`proofs/README.md`](../proofs/README.md),
 **the calculus is what is proved, and we do not claim the Python
 analyser is verified.** What λ_if deliberately abstracts away:
@@ -1166,7 +1172,7 @@ analyser is verified.** What λ_if deliberately abstracts away:
    folds the pc into the stored field's label via
    `_join_pc_if_strict` (the struct analogue of the scalar
    implicit-assign rule of T-Assign), so the strict tier λ_if
-   models enforces it.
+   models checks it.
 
 2. **Mutable-container taint and reference aliasing.**
    `_check_ifc_container_mutation` (List.push / Set.add /
@@ -1208,9 +1214,11 @@ analyser is verified.** What λ_if deliberately abstracts away:
    `_emit_ifc_call_leak`). λ_if models the `@strict_ifc` regime,
    where T-Sink is a hard typing requirement. Under the default
    tier a program that violates T-Sink still compiles (with a
-   warning), so Theorem 3 characterises the guarantee of
-   `@strict_ifc` code specifically, not of every program the
-   compiler accepts.
+   warning), so Theorem 3, a statement about λ_if, speaks to the
+   `@strict_ifc` regime only, and reaches the analyser only
+   through the informal fidelity argument of this section. It is
+   not a statement about every program the compiler accepts, at
+   either tier.
 
 **Mechanisation status.** Section 9 is now mechanised. The Agda
 development for λ_if parallels

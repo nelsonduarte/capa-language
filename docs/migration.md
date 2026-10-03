@@ -20,9 +20,10 @@ The Python file itself never changes. Only the `.capa` file changes.
 
 Capa programs declare their authority in function signatures: a function
 that opens a network socket has `Net` as a parameter; a function that
-reads a file has `Fs`; a function that does neither has neither. The
-compiler emits a manifest that an SBOM consumer (CycloneDX, SPDX, VEX,
-SLSA provenance) can read at per-function granularity.
+reads a file has `Fs`; a function that does neither has neither in its
+signature. The compiler emits a capability manifest, and CycloneDX and SPDX
+documents that carry it at per-function granularity; VEX records your
+`@vex` claims and SLSA provenance records the source digests.
 
 The Python equivalent does not exist. `pip freeze` lists packages, not
 functions; a static analyser is heuristic and the granularity is the
@@ -105,17 +106,17 @@ fun main(stdio: Stdio, fs: Fs, env: Env, net: Net)
 What the manifest says:
 
 ```
-config_field   -> []                          pure
+config_field   -> []                          no capability
 load_config    -> [Fs]
 get_api_key    -> [Env]
-build_url      -> []                          pure
+build_url      -> []                          no capability
 fetch_status   -> [Net]
 save_response  -> [Fs]
 main           -> [Stdio, Fs, Env, Net]       no Unsafe
 ```
 
-The supply-chain audit story is now load-bearing: the SBOM is a true
-per-function authority bound, not a single `Unsafe` blob.
+The supply-chain audit story is now load-bearing: the manifest records
+per-function authority instead of a single `Unsafe` crossing.
 
 ## Bridging tricks for the middle stage
 

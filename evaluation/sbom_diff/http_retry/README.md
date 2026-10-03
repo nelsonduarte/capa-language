@@ -71,5 +71,6 @@ stdlib modules). It would say nothing about which functions
 exercise the network vs which exercise the clock; both are
 conflated under one signature.
 
-The Capa SBOM names both authorities per-function and proves the
-pure function (`compute_backoff_seconds`) cannot touch either.
+The Capa SBOM names both authorities per-function;
+`compute_backoff_seconds` declares no capability, and the compiler
+refuses any capability call in it.

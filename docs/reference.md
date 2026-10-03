@@ -443,23 +443,28 @@ the scrutinee's type arguments.
 
 Capabilities are primitive types representing access to system
 resources (`Stdio`, `Fs`, `Env`, `Clock`, `Random`, `Net`, `Db`,
-`Proc`, `Serve`, `Unsafe`). They are only accessible via function
-parameters, there are no global instances. `Serve` and `Unsafe` run
+`Proc`, `Serve`, `Unsafe`). There are no global instances. A
+capability can reach a function as a parameter, inside a closure that
+captured one, or as a field of a capability-bearing struct (6.2).
+`Serve` and `Unsafe` run
 on the Python backend only; `capa --wasm` rejects a program whose
 signatures reach either (see [`stdlib.md`](stdlib.md)).
 
 ### 6.2. The capability discipline (three layers)
 
-**Structural**: capabilities cannot appear in struct fields,
-variant payloads, function return types, constants, `let`/`var`
-bindings, generic args, or tuples. They only flow through
-parameters. (Exception: a struct that `impl`s a user-defined
+**Structural**: the analyzer refuses a built-in capability type, or a
+`List`, `Map`, `Option`, `Result` or tuple of one, as the declared type
+of a struct field or a variant payload; a built-in capability type, or
+a `List`, `Map`, `Option` or `Result` of one, as the declared type of a
+constant; a capability passed for a generic type parameter, as in
+`id(stdio)`; and a `let`/`var`
+whose right-hand side is a capability parameter (`let b = fs`).
+(Exception: a struct that `impl`s a user-defined
 capability *may* hold built-in caps as fields - the
 "cap-bearing struct" relaxation.)
 
 **Flow**:
-- *No aliasing*: the same capability cannot occupy two argument slots
-  in a single call
+- *No aliasing*: the analyzer refuses `both(stdio, stdio)`
 - *Mandatory use*: capability parameters must be used (or prefixed
   with `_` to silence the warning)
 
@@ -479,7 +484,7 @@ discover consumes in the first iteration.
 
 ```capa
 fun main(stdio: Stdio, fs: Fs)            // multiple
-fun pure(x: Int) -> Int                   // no capabilities (pure)
+fun pure(x: Int) -> Int                   // no capabilities
 fun with_consume(consume cap: MyCap)      // ownership transfer
 ```
 
@@ -513,7 +518,7 @@ annotation. The public sinks are `Stdio.print` / `println` /
 `eprintln`, `Net.get` / `post`, `Fs.write`, `Db.exec` / `query`, and
 `Serve.send` (the payload argument only, not the connection id, which
 the runtime issued rather than the program). A `@secret` value
-reaching a sink-position argument is an information-flow violation: a
+the analysis finds reaching a sink-position argument is reported: a
 warning by default, a hard error inside a function annotated
 `@strict_ifc()` (which also turns on implicit-flow checking, where a
 sink inside a branch guarded by a secret condition is reported).
@@ -536,9 +541,10 @@ single auditable secret-to-public bridge. It is identity at runtime
 and relabels its result `@public`; the `reason` must be a named
 string literal so the manifest can record it. Declassifying a value
 that is not `@secret` is reported as a no-op warning and is excluded
-from the SBOM record. Every *genuine* `@secret -> @public` call site
-is recorded in the SBOM as `declassifications` per function and
-`declassification_sites` in the summary. A `declassify` written
+from the manifest record. Every *genuine* `@secret -> @public` call
+site is recorded in the Capa manifest (`--manifest`) as
+`declassifications` per function and `declassification_sites` in the
+summary. A `declassify` written
 outside any function body, in a top-level `const` initializer, is
 recorded too, under `module_declassifications`; the summary count is
 the module-wide total across both. Identity, not the name, decides:
@@ -567,10 +573,14 @@ capability dispatch. No explicit `@secret` parameter is required for
 the flow to be tracked. Struct labels are per-field: reading a public
 field of a struct that also holds a secret is no longer over-tainted;
 lists, tuples, and maps remain whole-aggregate. Under `@strict_ifc`
-the analyzer additionally enforces implicit flows, secrets that
+the analyzer additionally checks implicit flows, secrets that
 influence control through `if` / `while` / `match` guards and the
 assignments they govern; the default (warn) tier stays focused on
 explicit data flows.
+
+At both tiers the check reports the flows the analysis detects. A
+program that passes it, with or without `@strict_ifc`, is not thereby
+proved free of secret-to-sink flows.
 
 `declassify` is the audited downgrade. The model is backed by a
 machine-checked Agda noninterference proof (termination-insensitive,
@@ -854,7 +864,7 @@ Capa transpiles to Python 3.10+, but the semantics differ:
 
 | Capa | Python |
 |---|---|
-| Capabilities required for I/O | Globals such as `print`, `open` |
+| File, network and console methods live on capability values | Globals such as `print`, `open` |
 | Types checked at compile time | Duck typing |
 | Exhaustive `match` checked | `match` at runtime, no exhaustiveness |
 | Or-patterns with consistent bindings | Or-patterns without bindings |

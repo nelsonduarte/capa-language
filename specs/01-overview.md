@@ -1,7 +1,7 @@
 # 01. What Capa is
 
 > **What this chapter covers.** What Capa is and is not; the thesis in one
-> sentence (authority carried in the types, no ambient authority); the
+> sentence (authority carried in the types, no global capability); the
 > relationship between the language, the compiler and the two backends;
 > where the guarantees hold and where they do not; the honesty posture.
 > It frames the reading of the rest of the set.
@@ -23,21 +23,18 @@ Depends on: nothing.
 ## 1. The thesis in one sentence
 
 Capa is a programming language whose central discipline is: **the
-authority to touch the outside world (read files, open sockets, read the
-environment, run processes) exists only as a typed value that a function
-receives explicitly as a parameter.** There is no ambient authority. A
-function that does not receive the corresponding capability cannot
-exercise the effect, and the compiler rejects the program before it runs.
+authority to call a built-in capability (read files, open sockets, read
+the environment, run processes) is a typed value a function is
+handed.** There is no global capability value, and the compiler rejects
+a call on a capability that is not in scope before the program runs.
 
-The practical consequence is that a function's **signature** is a
-provable upper bound on what it can do. If `fun parse(s: String) -> Ast`
-receives no capability, then `parse` reads no files, opens no network
-connections and reads no environment, and this is checkable from the type
-alone, without reading the body or trusting the author.
+The practical consequence: `fun parse(s: String) -> Ast` takes only a
+`String`, so a call on `fs`, `net` or `env` in its body is refused,
+because none is in scope; a reader sees that from the signature, without
+reading the body or trusting the author.
 
-The minimal demonstration of the absence of ambient authority: a leaf
-function that tries to use `stdio` without having received it does not
-compile.
+The minimal demonstration: a leaf function that tries to use `stdio`
+without having received it does not compile.
 
 ```capa
 // noauth.capa
@@ -61,21 +58,22 @@ noauth.capa:5:10: error: capability parameter 'stdio' is declared but never used
 noauth.capa: 2 errors
 ```
 
-There is no global `stdio` for `leak` to reach: the only way for `leak`
-to print would be to receive `Stdio` as a parameter, and that fact would
-then be visible in its signature and in every call chain up to `main`.
+There is no global `stdio` for `leak` to reach, so the call is refused;
+`greet` in section 3 shows the working form, with `stdio` handed to it
+as a parameter.
 The detailed model is in
 [02-authority-in-types.md](02-authority-in-types.md).
 
 ## 2. What it is for
 
-Capa exists to produce **verifiable supply-chain evidence by
-construction**. From a program (or a product composed of dependencies)
-the compiler derives a manifest of the capabilities each function can
-reach, and materializes supply-chain artefacts (CycloneDX/SPDX SBOM, VEX,
-SLSA provenance) anchored in that manifest. The property that makes them
-useful is that the authority surface is not declared by the author after
-the fact: it is **derived from the types** and proven as an upper bound.
+Capa exists to produce **supply-chain evidence from the compiler**.
+From a program (or a product composed of dependencies) the compiler
+derives a manifest of the capabilities each function holds, after the
+analyzer accepts the program, and CycloneDX/SPDX documents that carry
+it. VEX records the developer's `@vex` claims and provenance records the
+source digests. The property that makes the manifest useful is that the
+authority surface is not declared by the author after the fact: it is
+**derived by the compiler from the type-checked program**.
 
 For the two-function program of section 3 below, `--manifest` emits, per
 function, the declared capabilities, the transitively reachable ones and
@@ -159,11 +157,14 @@ The two backends produce identical output.
 This section is the honesty frame of the set. Every guarantee claim has a
 scope, and the scope is stated.
 
-**The capability discipline** (authority only by parameter; no capability
-is created from nothing) is checked statically by the analyzer and holds
-for every program that passes `--check`. It is the proven core: the
-mechanized theorems live in [`proofs/`](../proofs/README.md), typed in CI
-under `--safe`.
+**The capability discipline** (no literal, global or import yields a
+built-in capability; a call on a capability that is not in scope is
+refused) is
+checked statically by the analyzer for every program that passes
+`--check`. Its core is formalized: the mechanized theorems, about the
+`lambda_cap` calculus, live in [`proofs/`](../proofs/README.md), typed
+in CI under `--safe`; the translation from full Capa to that calculus is
+not mechanized.
 
 **How capabilities are materialized at runtime** differs by backend. On
 the Python backend the **host runtime is trusted**: capabilities are
@@ -203,10 +204,11 @@ The same program runs normally on the Python backend (exit 0, prints
 
 **Information-flow control (IFC)** is a layer distinct from capabilities
 (see [15-ifc-model-and-labels.md](15-ifc-model-and-labels.md)). A flow
-from a `@secret` value to a public sink is a hard error **only under
-`@strict_ifc`**; outside it, the same flow is a **warning**, not an
-error. The analysis is source-level and its rejections are enumerated;
-the exact scope of the guarantee is stated in
+the analysis detects from a `@secret` value to a public sink is a hard
+error **only under `@strict_ifc`**; outside it, the same flow is a
+**warning**, not an error. The analysis is source-level and its
+rejections are enumerated, so passing it is not a proof that no secret
+reaches an output; the exact scope is stated in
 [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md) and in
 [`docs/trust-model.md`](../docs/trust-model.md).
 
@@ -244,9 +246,9 @@ Without the `@strict_ifc()` attribute, the same `leak` produces
   monitor. On the Wasm backend there is additional runtime confinement
   (WASI imports), but the central model is the type, not the sandbox.
 - **Not reliant on an honest author for capabilities.** The authority
-  surface is derived, not declared. An author cannot "forget" to declare
-  an effect the code exercises: if the code exercises it, the capability
-  appears in the signature of some function in the chain.
+  surface is derived, not declared: the manifest is computed from the
+  type-checked program, and a call on a capability that is not in scope
+  does not compile.
 - **Not, yet, a total IFC verifier.** The IFC discipline is opt-in per
   function, its default tier warns rather than rejects, and its
   guarantee is scoped as stated in

@@ -82,6 +82,6 @@ exercise the clock and which are pure; the clock reads in
 purely arithmetic `_refill` under one module-level listing.
 
 The Capa SBOM names `Clock` per-function on `make_bucket` and
-`try_acquire` and proves the pure functions (`fmin`,
-`refill_tokens`, `try_consume`) cannot read the clock; the
+`try_acquire`; the helpers (`fmin`, `refill_tokens`,
+`try_consume`) declare no capability, and the compiler refuses any capability call in them; the
 refill arithmetic is pure given an elapsed time.

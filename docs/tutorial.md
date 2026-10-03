@@ -28,8 +28,8 @@ capa --run hello.capa
 ```
 
 The difference between Capa and "traditional" languages is this: `stdio`
-is not a magical global, it is a **parameter**, and Capa guarantees
-that only functions which receive it can perform I/O.
+is not a magical global, it is a **parameter**, and the compiler refuses
+a call on `stdio` in a function that does not have it in scope.
 
 ### Variables
 
@@ -341,7 +341,8 @@ let r = parse_int(s).ok_or("invalid input")
 ## Chapter 6: Capabilities
 
 Capa's distinctive feature: I/O and system resources are only
-accessible via *capabilities*, values explicitly passed as parameters.
+accessible through *capabilities*, values that reach a function
+explicitly, usually as parameters.
 
 ```capa
 fun main(stdio: Stdio, fs: Fs)
@@ -367,27 +368,31 @@ Available capabilities:
 
 ### Why capabilities?
 
-A function without capability parameters **cannot** perform I/O:
+A call on a capability that is not in scope is refused. `pure` below
+takes only an `Int`, so a `stdio.println(...)` in its body would be
+refused: there is no `stdio` for it to call.
 
 ```capa
 fun pure(x: Int) -> Int
     return x * 2
-    // Cannot call stdio.println, it has no stdio
+    // stdio.println(...) here is refused: no stdio in scope
 ```
 
-This makes code auditable: to know what a function does, you only need
-to look at its signature. "Pure" functions are obvious.
+This makes code auditable: the signature shows the capabilities a
+function is handed as parameters.
 
-### Linearity
+### Aliasing
 
-Capabilities are *linear*, each one can only be passed to one
-function at a time (unless you use `consume` to indicate ownership
-transfer):
+The analyzer refuses `both(stdio, stdio)` below (`consume` marks an
+ownership transfer; see the reference):
 
 ```capa
-fun both(a: Stdio, b: Stdio)  // Error: aliasing
+fun both(a: Stdio, b: Stdio)
     a.println("a")
     b.println("b")
+
+fun main(stdio: Stdio)
+    both(stdio, stdio)    // refused: stdio passed twice
 ```
 
 ---

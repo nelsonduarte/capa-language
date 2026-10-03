@@ -484,7 +484,7 @@ breaking changes and the discipline is still being shaped.
   `TestKnownOverTaintResidual` in the same test file, so the tightening will be a
   deliberate test-updating change.
 
-- *A signed-SBOM `provably_excluded_capabilities` field could falsely certify a
+- *The manifest's `provably_excluded_capabilities` field could falsely certify a
   user capability EXCLUDED when the function obtained it as a body-local (audit
   H-F1).* The per-function `transitively_reachable_capabilities` roll-up unioned
   only `caps_reachable_via_sig` (the function's parameter, return, and `self`
@@ -508,10 +508,9 @@ breaking changes and the discipline is still being shaped.
     `reachable[ConcreteStruct]` at `compute_reachability`'s struct fixpoint, via
     the same `_method_sig_caps` helper the trait-impl path uses, so an
     `impl Factory { fun produce(self) -> Bomb }` charges the caps its inherent
-    methods can hand out to any holder of a `Factory`. This restores the
-    inherent-vs-trait symmetry and closes the inherent-instance-method factory
-    shape for both a `f: Factory` parameter and a body-local receiver, from one
-    source.
+    methods can hand out to any holder of a `Factory`. This closes the
+    inherent-instance-method factory shape for both a `f: Factory` parameter
+    and a body-local receiver, from one source.
 
   The minted authority is SURFACED (precisely named) into
   `transitively_reachable_capabilities` so it drops out of
@@ -528,9 +527,10 @@ breaking changes and the discipline is still being shaped.
   no GHSA (Python-style cadence; a security-fix advisory batches at the next stable
   release). Commits `29f130c`, `52cda33`.
 
-  Honest scope: H-F1 (the signed-SBOM false-exclusion of a body-obtained user
-  capability) is closed for every call form the language actually SUPPORTS, the
-  free-function factory and the inherent-instance-method factory. The related
+  Honest scope: H-F1 (the manifest's false-exclusion of a body-obtained user
+  capability) is closed for the two forms its tests pin, the free-function
+  factory and the inherent-instance-method factory
+  (`TestBodyMintedUserCapability`, `TestInherentImplMethodFactory`). The related
   unsupported `TypeName.method()` associated-call surface is now REJECTED for a
   user struct / sum type by commit `b2dd49e` (`Factory.create()`, `Color.make()`,
   and even `Factory.nonexistent()` fail `--check` with "type '<T>' has no static
@@ -645,7 +645,7 @@ breaking changes and the discipline is still being shaped.
 
 - *The CycloneDX and SPDX SBOMs now carry the resolved `capa.toml`
   dependencies.* `capa --cyclonedx` (CycloneDX 1.6) and `capa --spdx`
-  (SPDX 2.3) emit one component per resolved dependency, each with its name,
+  (SPDX 2.3) emit one component per resolved runtime dependency, each with its name,
   version, and a single package-URL built by the one purl producer
   ([`capa/manifest/_compose.py`](capa/manifest/_compose.py)): a native
   `pkg:github/<owner>/<repo>@<revision>` purl for a github-hosted git
@@ -755,6 +755,22 @@ breaking changes and the discipline is still being shaped.
   (`tests/test_wasm_harness_present.py`, mirroring `test_ifc_harness_present.py`)
   fails loudly when `CAPA_REQUIRE_WASM=1` but the toolchain is absent, and the
   `wasi` job sets that variable.
+
+**Documentation (unreleased).**
+
+- *Documentation claims scoped to what the compiler does at this revision.* The
+  README, the trust model, the regulatory mappings, the language reference, the
+  specification chapters and the evaluation write-ups now state the capability
+  guarantee as the rule the analyzer enforces (a call on a built-in capability
+  that is not in scope is refused, and no constructor, global or import yields
+  one); describe the manifest's capability sets as
+  derived by a manifest pass from the type-checked program rather than as a
+  proof; attribute the Agda theorems to the `lambda_cap` and `lambda_if`
+  calculi; describe the information-flow tiers as reporting the flows the
+  analysis detects; and state what each artefact carries (capability sets in
+  the Capa manifest, CycloneDX and SPDX; `@vex` claims in VEX; source digests
+  in provenance; byte-identity across repeated runs). No compiler behaviour
+  changes.
 
 ## [1.32.0], 2026-08-22
 

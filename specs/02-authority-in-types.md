@@ -30,7 +30,7 @@ Capa's model is an object-capability discipline. The relevant lineage:
   same thing.
 
 Capa transposes this to a statically typed language: the "unforgeable
-reference" is a **value of capability type**, and the rule "cannot be
+reference" is a **value of built-in capability type**, and the rule "cannot be
 fabricated from nothing" is enforced by the analyzer at compile time,
 not by a runtime monitor. The core is formalized in Agda (see
 [`proofs/README.md`](../proofs/README.md)).
@@ -46,27 +46,28 @@ open a socket and exfiltrate `s`, and nothing in the type betrays it.
 All security then depends on auditing the body and trusting the author
 (and every transitive dependency).
 
-Capa removes ambient authority entirely. There is no global `open`;
-there is `Fs.read(path)` on an `Fs` value the function had to
-**receive**.
+Capa removes ambient access to the built-in capabilities. There is no
+global `open`; there is `Fs.read(path)` on an `Fs` value that had to
+**reach** the function.
 
 ## 3. Capabilities as unforgeable values passed by parameter
 
 The two halves of the discipline:
 
-**(a) Authority flows only by parameter.** A capability enters a program
-through the entry point's signature (`fun main(fs: Fs, net: Net, ...)`,
-see [10-capability-model.md](10-capability-model.md)) and propagates by
-being passed as an argument to other functions. A function that does not
-receive it does not have it.
+**(a) Built-in capabilities enter through `main` and are handed on.** A
+capability enters a program through the entry point's signature
+(`fun main(fs: Fs, net: Net, ...)`, see
+[10-capability-model.md](10-capability-model.md)) and can propagate by
+being passed as an argument, held in a field of a struct that implements
+a user-defined capability, or captured by a closure that is then passed.
 
-**(b) A capability can be neither fabricated nor aliased into being.**
-There is no constructor for a built-in capability from data. It cannot
-appear in a `let`/`var` binding from any expression other than the
-parameter itself flowing through calls. Built-in capabilities also
-cannot be returned by a regular function (they only flow "inward"), so
-that the chain from `main` to any capability value stays visible in the
-signatures at every link.
+**(b) A built-in capability cannot be fabricated.** There is no
+constructor or literal for a built-in capability, and no global or
+import yields one; and a `let`/`var` whose right-hand side is a
+capability parameter is refused. A capability passed as an argument is
+visible in the signature at that link; a link that carries it inside a
+function value or a user-defined capability shows that type instead,
+and the manifest accounts for both (section 6).
 
 An attempt to forge `Stdio`:
 
@@ -95,7 +96,7 @@ forge.capa: 3 errors
 ```
 
 Two independent barriers fire: `Stdio` is not a struct type (no literal
-constructs it) and a capability cannot appear in a `let` binding. The
+constructs it) and the `let` that would hold the literal is refused. The
 list of the 10 built-in capabilities has a single source of truth,
 `CAPABILITY_NAMES` in [`capa/typesys.py`](../capa/typesys.py) line 190
 (`Stdio, Fs, Net, Env, Proc, Clock, Random, Db, Serve, Unsafe`).
@@ -112,17 +113,16 @@ the abusive one because authority and designation are separated.
 In the object-capability model the confused deputy disappears by
 construction: a component acts only with the authority **passed to it
 with the request**. If the caller has no `Fs`, it cannot pass `Fs`, and
-the deputy has no ambient `Fs` to use instead. In Capa, the authority a
-function exercises is exactly the intersection of what it receives.
-Designation (the argument) and authority (the capability value) are the
-same thing, which is the definition of the property.
+the deputy has no ambient `Fs` to use instead. In Capa, a call on a
+built-in capability that is not in the caller's scope is refused.
+Designation (the
+argument) and authority (the capability value) are the same thing, which
+is the definition of the property.
 
-JUDGEMENT. This is a direct consequence of (a)+(b) of section 3, not an
-additional mechanism: there is no channel through which unpassed
-authority enters. The empirical confirmation is the `noauth.capa`
+JUDGEMENT. This is a consequence of (a)+(b) of section 3, not an
+additional mechanism. The empirical confirmation is the `noauth.capa`
 example of [01-overview.md](01-overview.md) (a leaf without the
-capability does not compile), reinforced by the manifest's
-`provably_excluded_capabilities` field (section 6).
+capability does not compile).
 
 ## 5. Monotone attenuation
 
@@ -167,13 +167,15 @@ in [12-attenuation.md](12-attenuation.md).
 
 ## 6. From the model to the artefact: the manifest
 
-Because authority lives in the types, the compiler can **derive** (not
-declare) each function's authority surface by reachability analysis over
-the call chain. This is the link between the model and the supply chain:
-the manifest (`--manifest`) records, per function, the declared
+Because built-in authority is carried by typed values, the compiler can
+**derive** (not ask the author to declare) a per-function capability
+record from the type-checked program: a manifest pass reads each
+function's capability-typed parameters and what its signature types and
+body reach. This is the link between the model and the supply chain: the
+manifest (`--manifest`) records, per function, the declared
 capabilities, the transitively reachable ones, and the **provably
-excluded** ones, plus a flag that the authority is provable from the
-types.
+excluded** ones, plus a flag saying whether the authority is provable
+from the types.
 
 An excerpt of the manifest of `thread.capa` (the same program as in
 [01-overview.md](01-overview.md)):
@@ -192,11 +194,16 @@ $ python -m capa --manifest thread.capa
 ...
 ```
 
-`provably_excluded_capabilities` is the strong statement: the
-capabilities the function **demonstrably does not reach**, derived from
-the types and not from the author's word. This is the fact the
-supply-chain artefacts (SBOM, VEX, provenance) carry. The envelope, its
-composition into products with dependencies, and signing are in
+`provably_excluded_capabilities` lists the capabilities the manifest
+pass found no path to from the function's signature types and body. It
+is derived by the compiler, not written by the author, and it is a
+derived statement rather than a machine-checked proof.
+`authority_provable_from_types: true` means the function crosses no
+`Unsafe` and no function type is reachable from its signature or from a
+value its body constructs. The
+manifest, CycloneDX and SPDX carry the exclusion set; VEX and provenance
+do not. The envelope, its composition into products with dependencies,
+and the signable digest are in
 [29-capability-manifest.md](29-capability-manifest.md).
 
 ## 7. How IFC complements the model
@@ -209,36 +216,41 @@ question of **information-flow control (IFC)**, a distinct and
 complementary layer.
 
 Capa adds a two-point lattice with labels `@secret` (top) and `@public`
-(bottom, the default) in type position, and a noninterference analysis:
-a `@secret` must not reach a public sink without an explicit
-`declassify`. This layer does not replace capabilities; it stacks on top
+(bottom, the default) in type position, and an information-flow
+analysis designed against a noninterference model: a `@secret` should
+not reach a public sink without an explicit `declassify`. This layer does not replace capabilities; it stacks on top
 of them. A `@secret` value that never reaches a sink is harmless; a
 `Net` capability with no secrets flowing to it is harmless; IFC governs
 the intersection.
 
 Under `@strict_ifc`, the flow `@secret -> Stdio.println` is a hard
 error; without the attribute it is a warning (see the `ifc.capa` runs in
-[01-overview.md](01-overview.md)). The scope of the guarantee: the
-noninterference check is a hard error only under `@strict_ifc`, the
-discipline is opt-in per function, and the analysis is source-level with
-enumerated rejections (no points-to analysis). The full statement is in
+[01-overview.md](01-overview.md)). The scope: a detected flow is a hard
+error only under `@strict_ifc`, the discipline is opt-in per function,
+and the analysis is source-level with enumerated rejections (no
+points-to analysis), so an accepted program is not thereby proved
+noninterferent. The full statement is in
 [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md) and in
 [`docs/trust-model.md`](../docs/trust-model.md).
 
 ## 8. What the model guarantees, and what it does not
 
-- **Guarantees** (static, every program that passes `--check`): no
-  function exercises authority it did not receive; authority cannot be
-  fabricated; attenuation is monotone; the authority surface is
-  derivable from the types.
+- **Checked statically** (`--check`): a call on a built-in
+  capability that is not in scope is refused; no constructor or literal
+  produces a built-in capability, and no global or import yields one;
+  attenuation is monotone. The `lambda_cap` core of these rules is
+  formalized in Agda; the translation from full Capa to that core is
+  not mechanized.
 - **Does not guarantee by itself**: that the runtime materializing the
   capabilities is intact. On the Python backend the host runtime is
   **trusted** (capabilities are Python objects). On the Wasm backend the
   boundary is the set of WASI imports, narrower, but the central model
   remains the type (see
   [23-wasi-and-runtime-attenuation.md](23-wasi-and-runtime-attenuation.md)).
-- **Does not guarantee** noninterference outside `@strict_ifc`; under
-  `@strict_ifc` the guarantee holds with the scope stated in
+- **Does not guarantee** noninterference, at either tier: under
+  `@strict_ifc` the analyzer applies the checks the `lambda_if` model
+  describes and makes every detected flow a hard error, with the scope
+  stated in
   [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md).
 
 ---

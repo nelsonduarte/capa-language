@@ -135,8 +135,8 @@ fun main(stdio: Stdio)
     // your code here
 ```
 
-The `stdio` parameter is a *capability*, only functions that receive
-it can perform I/O. Other available capabilities: `fs` (filesystem),
+The `stdio` parameter is a *capability*: the compiler refuses a call
+on `stdio` in a function that does not have it in scope. Other available capabilities: `fs` (filesystem),
 `env` (environment variables), `clock` (time), `random` (random
 numbers), `net` (outbound HTTP), `db` (SQLite), `proc` (subprocesses),
 `serve` (inbound TCP), and `unsafe` (the Python escape hatch). Full

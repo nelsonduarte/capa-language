@@ -44,8 +44,7 @@ two via-helper facts, but ZERO of the ten dispatch / data facts. The
 correction to record is command_registry: Phase 1b guessed CodeQL would
 resolve the constant dict; it does not.
 
-How the Capa side carries the authority, by construction (verified in
-each manifest):
+How the Capa side records the authority (verified in each manifest):
   - the handler / factory functions name the capability in their
     signature (Net / Fs / Env);
   - the registration / assembly site holds the capabilities it captures
@@ -64,5 +63,5 @@ the dispatcher with the handler's authority: on each 1b pair T3 attributes
 which also miss the two dispatcher facts. Capa's advantage is in Q2: on
 each dispatcher fact Capa reports provably_excluded_capabilities = []
 (false-clears 0/4), while both tools clear it under closed-world semantics
-(false-clear 2/4). The separation is the sound non-clearance in Q2, not
+(false-clear 2/4). The separation is the non-clearance in Q2, not
 extra attribution in Q1.

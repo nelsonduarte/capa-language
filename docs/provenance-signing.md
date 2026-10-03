@@ -84,8 +84,9 @@ The output is a single JSON document:
 }
 ```
 
-The `invocationId` is deterministic for a given source content
-and filename, so reproducible builds get matching attestations.
+The `invocationId` is deterministic, not derived from the clock:
+repeated runs produce the same `invocationId`, and with
+`SOURCE_DATE_EPOCH` set the whole attestation matches.
 
 ---
 
@@ -226,20 +227,24 @@ slsa-verifier verify-artifact \
 
 A verifier that recovers the source SHA-256 from the
 attestation, then computes the SHA-256 of the .capa source
-locally, and compares the two, knows the artefact came from
-exactly that source through the declared build process.
+locally, and compares the two, knows these are the sources the
+attestation names. The attestation carries no digest of a built
+artefact; binding a deployed artefact to these sources needs a
+separate attestation over that artefact.
 
 ---
 
 ## What this gets you under each framework
 
 - **CRA Annex I Part I (2)(f)** (integrity of data and
-  programs): signed provenance is the standard evidence that
-  the SBOM and the source were not tampered with after
-  building.
+  programs): signed provenance is evidence that the listed
+  source files were not changed after the attestation was
+  signed; the SBOM and any built binary need their own signed
+  digests.
 - **NIS2 Article 21(2)(d)** (supply chain security): a
-  supplier shipping signed provenance allows the operator to
-  verify the binary came from the declared source.
+  supplier shipping signed provenance lets the operator verify
+  which source files the supplier attested to; on its own it
+  does not bind a binary to them.
 - **DORA Articles 28-30** (ICT third-party risk): same
   argument, financial-sector specific.
 - **NIST SSDF PS.2.1** (make software integrity verification
@@ -254,9 +259,11 @@ exactly that source through the declared build process.
   `--spdx`), not this attestation. See
   [`docs/regulatory.md`](regulatory.md) for the task-by-task
   grading and for why no SSDF cell reads "direct".
-- **OWASP SCVS Domain 6** (Pedigree and Provenance): L1
-  satisfies baseline, signed provenance lifts toward L2 and
-  L3 of SCVS depending on the signing infrastructure.
+- **OWASP SCVS Domain 6** (Pedigree and Provenance): the
+  attestation is an input to the provenance controls; how far
+  it carries an organisation toward an SCVS level depends on
+  the signing infrastructure and on what else the organisation
+  documents.
 
 For the broader regulatory mapping see
 [`docs/regulatory.md`](regulatory.md).

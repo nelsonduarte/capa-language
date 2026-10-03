@@ -170,7 +170,7 @@ extern_component_decl = [ "pub" ] "extern" "component" IDENT "from" STRING
 
 The `uses_clause` (optional, after the return type of a trait or
 capability method) declares the capability atoms the method may exercise
-(`uses [Net]`, or `uses []` for pure); `uses` is contextual. A
+(`uses [Net]`, or `uses []` for none); `uses` is contextual. A
 user-defined capability is implemented as a trait (`impl X for Type`);
 the analyzer relaxes two structural rules only for the cap-bearing
 struct (it may hold built-in capabilities as fields, and a regular
@@ -179,7 +179,9 @@ function may return it). See
 
 An `extern component` declares a typed FOREIGN Wasm Component Model
 boundary. The declaration is parsed and type-checked, the component is
-recorded in the SBOM as an authority-unknown element, and on the Wasm
+recorded in the Capa manifest as an authority-unknown element (how
+`--compose-sbom` composes it is in
+[29-capability-manifest.md](29-capability-manifest.md)), and on the Wasm
 backend a call to it is dispatched at runtime into a sandboxed child
 instance whose Component Model linker registers only the capability
 interfaces the call grants

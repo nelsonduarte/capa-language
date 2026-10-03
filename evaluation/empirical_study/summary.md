@@ -6,9 +6,9 @@
 > measured from their actual emitted manifest, is in
 > [`depth/README.md`](depth/README.md). Depth shows the richness, scale,
 > and authority concentration of the per-function SBOM on real code:
-> 88-94 % of functions provably pure, no sensitive axis held by more than
-> 4.3 % of functions, 625 and 2,295 sound provably-excluded facts that no
-> dependency SBOM expresses.
+> 88-94 % of functions hold no capability, no sensitive axis held by
+> more than 4.3 % of functions, 625 and 2,295 provably-excluded entries
+> that no dependency SBOM expresses.
 
 
 Run over 25 hand-Python / Capa pairs: the 20 Phase-1a pairs in
@@ -45,7 +45,7 @@ no way to know `F` can exercise `C`. **Lower is better.**
 | T1 dependency / PURL SBOM (package granularity) | **48 / 48** | clears every function (no per-function granularity at all) |
 | T2 good-faith pattern heuristic (Semgrep) | **12 / 48** | clears every fact it cannot see (absence = exclusion) |
 | T2b good-faith dataflow (CodeQL 2.25.6) | **10 / 48** | clears the ten dispatcher facts it cannot resolve |
-| **T3 Capa by construction** | **0 / 48** | clears nothing it has not **soundly proved** absent |
+| **T3 Capa by construction** | **0 / 48** | clears only what its manifest lists as provably excluded; no listed exclusion was exercised on this corpus |
 
 This is the real argument for Capa, and **adding the best real dataflow
 tool sharpens it rather than dulling it.** CodeQL false-clears **10/48**:
@@ -57,14 +57,14 @@ CodeQL's native output has no explicit-exclusion field, so absence is the
 only signal it can give, exactly as for Semgrep.
 
 Capa's manifest, by contrast, gives each `(F, C)` **three** states -
-*reachable*, *provably-excluded* (sound, proved in Agda), or
-*not-determined* - and a false-clearance can only arise from the
-provably-excluded state. Because that state is **sound** (used ⊆
-declared; used ∩ provably-excluded = ∅), it never contains an axis the
-function actually exercises. The ten dispatcher facts land in
-*not-determined*, not *excluded*, so Capa clears nothing: **0
-false-clearances by construction**. Both real tools clear every
-dispatcher they cannot see.
+*reachable*, *provably-excluded* (the compiler's derived exclusion
+set), or *not-determined* - and a false-clearance can only arise from
+the provably-excluded state. On this corpus that state contained no axis
+a function actually exercises: a measurement over these 48 facts, not a
+theorem about the field (the Agda theorems are about the λ_cap
+calculus). The ten dispatcher facts land in *not-determined*, not
+*excluded*, so Capa clears nothing: **0 false-clearances on this
+corpus**. Both real tools clear every dispatcher they cannot see.
 
 A skeptic could ask whether it is fair to give Capa an exclusion field
 and deny one to Semgrep and CodeQL. The honest answer: a consumer who
@@ -72,11 +72,10 @@ and deny one to Semgrep and CodeQL. The honest answer: a consumer who
 closed-world - exactly the only reading available for Semgrep's and
 CodeQL's output, where absence = exclusion - would **also** false-clear
 all ten dispatchers. What separates Capa is not a softer scoring rule
-applied to it: it is that Capa **offers** a *sound* exclusion channel
-(`provably_excluded`, with an explicit *provably-excluded* vs
-*not-determined* distinction) a consumer can rely on, while both real
-tools carry only positive detections and no sound way to answer the
-exclusion question. CodeQL is the strongest dataflow tool we could put on
+applied to it: it is that Capa **offers** an explicit exclusion channel
+(`provably_excluded`, with a *provably-excluded* vs *not-determined*
+distinction), while both real tools carry only positive detections and
+no way to answer the exclusion question. CodeQL is the strongest dataflow tool we could put on
 the same corpus, and it still leaves the dispatcher blank. The
 per-treatment difference in how the rule is worded is a consequence of
 the different output formats, not a scoring bias.
@@ -91,13 +90,15 @@ analysis would have to **over-approximate** the runtime dispatch - assume
 `getattr` target, every registered callback - which is imprecise in
 general and **degenerates to "any capability" as soon as the table is
 populated from outside the module** (plugins, `getattr` on a computed
-name, a tag from deserialized input). Capa sidesteps the dichotomy: it
-carries the authority in the handler closure's **type**, so the
-dispatcher's record is sound *and* precise without resolving the runtime
-target at all. This is not a claim that dataflow *cannot in principle*
-recover any single case; it is that the real tools, run in good faith,
-lose, and the sound alternative is the imprecise over-approximation Capa
-replaces with types.
+name, a tag from deserialized input). Capa sidesteps the dichotomy: the
+registration site's signature names the capabilities it captures into
+the handlers, and a function that takes function values gets no
+exclusion claim, so the dispatcher's record claims nothing rather than
+clearing it, without resolving the runtime target at all. This is not a
+claim that dataflow *cannot in principle* recover any single case; it is
+that the real tools, run in good faith, lose, and the sound alternative
+is the imprecise over-approximation Capa avoids by making no claim about
+the dispatcher.
 
 ## The modest result: positive-attribution recall (Q1)
 
@@ -145,7 +146,7 @@ Semgrep heuristic, the CodeQL dataflow, and Capa.
 |---|---|---|---|---|
 | **direct** | `direct` | yes / no | yes / no | yes / no |
 | **via-helper** | `via-helper` | no / **yes** | **yes** / no | **yes** / no |
-| **via-dispatch / via-data** | `via-dispatch`, `via-data` | no / **yes** | no / **yes** | no / **no** (sound) |
+| **via-dispatch / via-data** | `via-dispatch`, `via-data` | no / **yes** | no / **yes** | no / **no** |
 
 * On **direct** facts all three attribute (Q1) and none false-clear (Q2).
 * On **via-helper** facts Semgrep misses and (closed-world) false-clears;
@@ -216,7 +217,7 @@ beats Semgrep, because it follows the local call edge.
 | tagged_factory | run_action | Fs | via-data | no | no | no | **yes** | **yes** | no | misses |
 | tagged_factory | run_action | Net | via-data | no | no | no | **yes** | **yes** | no | misses |
 
-Every row has `T3 fc = no`: the soundness guarantee made visible. The
+Every row has `T3 fc = no` on this corpus. The
 two `via-helper` rows show `T2b attr = T3 attr = yes` (CodeQL follows the
 local call edge; Capa carries the helper's authority on the caller's
 type), so neither false-clears them. The ten dispatcher rows show `T2b
@@ -251,15 +252,16 @@ constant dict at the least-dynamic end to the deserialized tag at the
 most-dynamic. A sound analysis would have to over-approximate every
 subscript / `getattr` / loop call to all values the container can hold,
 which is imprecise in general and degenerates to "any capability" once
-the table is populated from outside the module. Capa carries the
-authority in the closure's type instead, with no points-to budget and no
+the table is populated from outside the module. Capa names the captured
+capabilities in the registration site's signature instead, and makes no
+exclusion claim for the dispatcher, with no points-to budget and no
 constant-table precondition.
 
 ## Corpus distribution
 
 | Category | Count | Pairs |
 |---|---|---|
-| Pure (zero capability facts) | 7 | colorama, csv_parser, humanize, pathspec, slugify, tabulate, textwrap |
+| Capability-free (zero capability facts) | 7 | colorama, csv_parser, humanize, pathspec, slugify, tabulate, textwrap |
 | Purely direct (T2 ties Capa on Q1) | 11 | config_loader, disk_cache, dotenv, env_loader, glob_walker, http_retry, ini_loader, rate_limiter, secret_rotator, short_uuid, url_fetch |
 | Indirection, via-helper (dataflow resolves) | 2 | log_forwarder, session_token |
 | Indirection, via-dispatch / via-data (needs types) | 5 | command_registry, event_bus, middleware_chain, reflect_dispatch, tagged_factory |
@@ -274,16 +276,16 @@ constant-table precondition.
 - On **positive attribution (Q1) Capa ties the best dataflow tool
   exactly**: CodeQL and Capa both attribute 38/48, against Semgrep's
   36/48. The honest message is three-way parity at the top: Capa does
-  **not** see more than CodeQL. Capa is sound, not omniscient, and does
-  not vouch which handler a dispatcher runs - and neither does CodeQL.
+  **not** see more than CodeQL. Capa is not omniscient, and
+  does not vouch which handler a dispatcher runs - and neither does CodeQL.
 - The decisive result is **false-clearance (Q2)**: Capa commits **0
   false-clearances** under closed-world SBOM semantics, against **10 for
   CodeQL**, 12 for Semgrep, and 48 for the dependency SBOM. The two real
   dataflow / pattern tools leave the dispatcher silently blank, which a
-  closed-world SBOM reader takes as cleared. Capa never clears a function
-  incorrectly because it distinguishes *provably-excluded* (sound, proved
-  in Agda: used ⊆ declared, used ∩ provably-excluded = ∅) from
-  *not-determined*. The dispatcher functions (`dispatch`, `emit`,
+  closed-world SBOM reader takes as cleared. On this corpus Capa clears no
+  function incorrectly, because it distinguishes *provably-excluded* (the
+  compiler's derived exclusion set, which here contained no exercised
+  capability) from *not-determined*. The dispatcher functions (`dispatch`, `emit`,
   `run_action`, `run_pipeline`) report `provably_excluded = []`, so no
   axis is cleared -- the honest record that their authority depends on
   what was registered into the table they receive.
@@ -294,7 +296,8 @@ constant-table precondition.
   tools optimize precision and accept false-negatives, but for an SBOM
   the false-negative is the dangerous direction; the sound alternative
   is an over-approximation that degenerates with external dispatch
-  targets. Capa replaces that trade-off with types.
+  targets. Capa avoids that trade-off by making no exclusion claim
+  about the dispatcher.
 
 **Corrected this phase:**
 

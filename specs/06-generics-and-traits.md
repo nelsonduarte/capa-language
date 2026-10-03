@@ -6,7 +6,8 @@
 > (declaration, `impl`, and traits used as a type, Capa's limited
 > polymorphism mechanism, since `<T: Trait>` bounds are deferred); the
 > monomorphisation the backends use; and how generics interact with
-> capabilities (a capability is never a type argument). Verified
+> capabilities (a capability substituted for a type parameter is
+> refused). Verified
 > examples of a generic struct, a trait with two impls, and
 > instantiation by inference.
 
@@ -261,14 +262,12 @@ a generic form outside the covered scope receives the loud
 "no Wasm encoding" class of error from the backend, not a wrong
 result.
 
-## 6. Generics and capabilities: a capability is never a type argument
+## 6. Generics and capabilities: a capability as a type argument is refused
 
 This is the contact point between generics and the authority model of
-[02-authority-in-types.md](02-authority-in-types.md). A built-in
-capability **only flows as a bare top-level value** (a direct
-parameter named in the type). It cannot be substituted into a generic
-type parameter, because that would hide the authority flow from the
-signature. The analyzer refuses it in two places: substituting an
+[02-authority-in-types.md](02-authority-in-types.md). Substituting a
+built-in capability **into a generic type parameter is refused**,
+because that would hide the authority flow from the signature. The analyzer refuses it in two places: substituting an
 argument in a generic call, and a return type instantiating to a
 capability ([`capa/analyzer/_discipline.py`](../capa/analyzer/_discipline.py)
 line 638).
@@ -324,7 +323,7 @@ it exercises with a `uses [...]` clause
 - [05-base-and-composite-types.md](05-base-and-composite-types.md):
   the records and sum types that become generic here.
 - [02-authority-in-types.md](02-authority-in-types.md): why a
-  capability is never a type argument (section 6).
+  capability as a type argument is refused (section 6).
 - [07-pattern-matching.md](07-pattern-matching.md): the `match` that
   consumes generic `Option`/`Result` variants.
 - [13-user-defined-capabilities.md](13-user-defined-capabilities.md):

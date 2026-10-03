@@ -44,8 +44,9 @@ Three reasons:
    both as components and would say nothing about which
    function exercises the disk. The matcher and path helpers,
    which are pure, would be bundled into the same SBOM row as
-   the walker. Capa narrows `Fs` to `walk_dir` per-function and
-   proves the matcher and path helpers cannot touch the disk.
+   the walker. Capa narrows `Fs` to `walk_dir` per-function,
+   declares no capability for the matcher and path helpers, and
+   the compiler refuses any capability call in them.
 
 ## Functions
 
@@ -68,6 +69,6 @@ the pure helpers (`_matches_suffix`, and the implicit
 `os.path.join` calls) would be bundled into the same SBOM row
 as the walker.
 
-The Capa SBOM names `Fs` per-function on `walk_dir` and proves
-the pure helpers (`matches_suffix`, `basename`, `join_path`)
-cannot touch the disk.
+The Capa SBOM names `Fs` per-function on `walk_dir`, and the
+helpers (`matches_suffix`, `basename`, `join_path`) declare no
+capability; the compiler refuses any capability call in them.

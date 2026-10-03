@@ -116,10 +116,10 @@ were out of its scope; they are in different states today.
   defined, but a forged integer for an UNDECLARED cap now resolves to
   no entry, or to the wrong-type entry a declared cap occupies, and
   fails the typed handle-table lookup, so the privileged op denies at
-  the call. The declared capability set is therefore a runtime-enforced
-  UPPER BOUND on the authority the artifact can exercise, on all three
-  hosts: the core `--run --wasm` host, the AOT `capa run-aot` path, and
-  the Component host. Mechanized on all three in
+  the call. An artifact can therefore exercise a handle-bearing
+  capability only if it declares it in its `capa:main-cap-types`
+  binding, on all three hosts: the core `--run --wasm` host, the AOT
+  `capa run-aot` path, and the Component host. Mechanized on all three in
   `TestUndeclaredCapabilityHasNoRoot` in
   [`tests/test_wasm_cap_binding.py`](../../tests/test_wasm_cap_binding.py),
   with the bootstrap-omission unit in

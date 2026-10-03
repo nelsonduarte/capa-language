@@ -38,16 +38,18 @@ Depends on: [29-capability-manifest.md](29-capability-manifest.md).
 ## 1. Two emitters, one manifest, one identity source
 
 `--cyclonedx` and `--spdx` are NOT independent analyses: they are two
-FORMAT WRAPPERS over exactly the internal manifest
+FORMAT PROJECTIONS of the internal manifest
 [29-capability-manifest.md](29-capability-manifest.md) describes. Each
-calls `build_manifest` and then RE-EXPRESSES that manifest in the
-shape its target format demands (`_spdx.py` docstring: "Companion to
-`_cyclonedx.py`. Emits the same per-function capability metadata in
-SPDX 2.3 JSON"). Design consequence: everything chapter 29 says about
-the four per-function capability fields, the voided exclusion proof,
-and the `CAPABILITY_NAMES` source of truth holds for BOTH SBOMs
-without re-derivation; this chapter describes only the format
-projection.
+calls `build_manifest` and then RE-EXPRESSES the per-function
+declared, transitively reachable and provably-excluded capability sets
+and `has_unsafe` in the shape its target format demands (`_spdx.py`
+docstring: "Companion to `_cyclonedx.py`. Emits the same per-function
+capability metadata in SPDX 2.3 JSON"). They carry a subset of the
+manifest's fields; the Capa manifest is the complete record. Design
+consequence: what chapter 29 says about those four per-function
+capability fields and the `CAPABILITY_NAMES` source of truth holds for
+BOTH SBOMs without re-derivation; this chapter describes only the
+format projection.
 
 There is a SECOND single source, specific to `capa.toml` dependencies:
 the identity of each resolved dependency (name, version, purl) is
@@ -190,10 +192,9 @@ The document is assembled in `build_cyclonedx` (`_cyclonedx.py` line
 }
 ```
 
-The `serialNumber` is a deterministic UUIDv5 derived from the display
-filename (root-relative) plus the source's sha256, NOT from the
-timestamp, so two runs of the same project produce the same serial
-(SBOM-diff friendly). The `metadata` block (measured):
+The `serialNumber` is a deterministic UUIDv5, NOT derived from the
+timestamp, so repeated runs produce the same serial (SBOM-diff
+friendly). The `metadata` block (measured):
 
 ```
 "metadata": {
@@ -321,8 +322,7 @@ no granularity below `package`, so each function is a package with
 ```
 
 The `documentNamespace` is, like the CycloneDX serial, a
-deterministic UUIDv5 URN of name plus source sha256, not of the
-timestamp. Each package carries `licenseConcluded` /
+deterministic UUIDv5 URN, not derived from the timestamp. Each package carries `licenseConcluded` /
 `licenseDeclared` / `copyrightText` as `NOASSERTION`:
 compliance-grade consumers (OpenChain, strict SPDX validation) refuse
 a package without these three fields, and SPDX 2.3 blesses
@@ -400,10 +400,10 @@ code, the non-negotiable backstop.)
 ## 6. The capability layer: the honest added value
 
 An ordinary SBOM enumerates components and dependencies. What Capa
-adds, and no other SBOM emitter produces by construction, is each
-component's AUTHORITY read from the type system: each function
-carries, in-band, its DECLARED, TRANSITIVELY REACHABLE and PROVABLY
-EXCLUDED capability sets (the four fields of
+adds is a per-function capability layer computed by the compiler from
+type-checked signatures: each function carries, in-band, its DECLARED,
+TRANSITIVELY REACHABLE and PROVABLY EXCLUDED capability sets and
+`has_unsafe` (the four fields of
 [29-capability-manifest.md](29-capability-manifest.md)). This travels
 as `capa:*` properties in CycloneDX and as `capa:<key>=<value>`
 annotations in SPDX, in a namespace that SBOM tooling unaware of Capa
@@ -444,10 +444,10 @@ The SAME content in SPDX, as annotations of the
 `SPDXRef-Fn-main.capa-main` package (one `OTHER` /
 `annotator: "Tool: capa"` annotation per pair).
 
-The `provably_excluded` set is the strong guarantee: `main` receives
-only `Stdio`, so the types PROVE it cannot exercise `Net`, `Fs`,
-`Proc`, and so on (the nine exclusions = `CAPABILITY_NAMES` minus
-`{Stdio}`). Besides the capability fields, the function-to-capability
+For this `main`, which receives only `Stdio` and no function value,
+the nine exclusions (`CAPABILITY_NAMES` minus `{Stdio}`) are the
+manifest pass's derived set: it found no path to another capability
+from the signature types or body. Besides the capability fields, the function-to-capability
 membership is ALSO encoded as a graph edge (the CycloneDX `dependsOn`
 / the SPDX `DEPENDS_ON` of sections 4.2/5.1), so graph tooling sees
 the authority chain, not just a flat property. A user capability
@@ -459,12 +459,12 @@ their opposite trust levels (the same pair
 [29-capability-manifest.md](29-capability-manifest.md) section 2.2
 describes).
 
-JUDGEMENT. This authority layer is the genuine contribution: a
-CAPABILITY-ANNOTATED SBOM, where each component's authority falls out
-of the analyzer "for free", something another language does not emit
-because the authority graph is not in its type system. It is a claim
-about what the TYPES prove, not a regulatory-conformity claim
-(section 7).
+JUDGEMENT. This authority layer is what distinguishes these documents
+from a dependency-only SBOM: a CAPABILITY-ANNOTATED SBOM, where each
+function's capability sets are computed by the compiler from the
+type-checked program rather than declared by the author or inferred by
+a separate scanner. It is a statement about what the compiler derived,
+not a regulatory-conformity claim (section 7).
 
 ---
 
@@ -473,8 +473,8 @@ about what the TYPES prove, not a regulatory-conformity claim
 **Determinism (measured).** With `SOURCE_DATE_EPOCH=1700000000`, two
 runs of `--cyclonedx` over the same project gave identical bytes
 (same sha256), and likewise `--spdx`. The CycloneDX serial and the
-SPDX namespace are deterministic UUIDv5 of name+source, not of the
-clock; the timestamp derives from `SOURCE_DATE_EPOCH`. Note: the
+SPDX namespace are deterministic, not derived from the clock; the
+timestamp derives from `SOURCE_DATE_EPOCH`. Note: the
 SBOMs are printed with `json.dumps(..., indent=2)` (readable), NOT in
 the key-sorted canonical form of chapter 29's S1 envelope; the
 measured byte stability comes from the builder already sorting lists

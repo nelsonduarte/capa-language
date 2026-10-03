@@ -51,8 +51,8 @@ well on one and badly on the other.
   Identical criterion for all four: `C` appears in the treatment's
   output **for `F`** (not merely somewhere in the pair). This is a
   **modest** measure. On it Capa does **not** beat the best dataflow
-  tool - it **ties** it (CodeQL and Capa both 38/48): Capa is **sound,
-  not omniscient**, and like CodeQL it declines to say which handler a
+  tool - it **ties** it (CodeQL and Capa both 38/48): Capa is
+  **not omniscient**, and like CodeQL it declines to say which handler a
   dispatcher will run, so it does not positively attribute a handler's
   authority to the dispatcher.
 
@@ -72,19 +72,22 @@ well on one and badly on the other.
     field**, so absence is the only signal it gives, read closed-world as
     exclusion -> false-clears exactly the facts it misses.
   - **T3**: Capa's manifest gives each `(F, C)` **three** states:
-    *reachable* (attributed), *provably-excluded* (sound, proved in
-    Agda), or *not-determined*. Capa false-clears `(F, C)` **only if `C`
-    is in `F`'s `provably_excluded_capabilities` while `F` truly
-    exercises `C`** - which never happens, because provably-excluded is
-    sound (used ⊆ declared; used ∩ provably-excluded = ∅). For the
-    dispatchers `provably_excluded = []`, so no axis is cleared:
-    **zero** false-clearances. The harness **computes** this from the
-    real manifest rather than asserting it.
+    *reachable* (attributed), *provably-excluded* (the compiler's
+    derived exclusion set), or *not-determined*. Capa false-clears
+    `(F, C)` **only if `C` is in `F`'s `provably_excluded_capabilities`
+    while `F` truly exercises `C`** - which did not happen for any of
+    the 48 facts of this corpus. For the dispatchers
+    `provably_excluded = []`, so no axis is cleared: **zero**
+    false-clearances. The harness **computes** this from the real
+    manifest rather than asserting it; it is a measurement on this
+    corpus, not a theorem about the field (the Agda theorems are about
+    the λ_cap calculus).
 
 **The result, in one line:** Capa's advantage is **not** attributing
-more (Q1, where it ties the best dataflow tool exactly) - it is **never
-clearing a function incorrectly** under closed-world semantics, because
-it distinguishes *provably excluded* from *not determined*.
+more (Q1, where it ties the best dataflow tool exactly) - it is
+**clearing no function incorrectly on this corpus** under closed-world
+semantics, because it distinguishes *provably excluded* from *not
+determined*.
 
 **On the format asymmetry (a fair-scoring objection).** It is reasonable
 to ask whether giving Capa a `provably_excluded` field but scoring T2 /
@@ -93,11 +96,10 @@ T2b by absence is a scoring bias. It is not. A consumer who **ignored**
 exactly the only reading Semgrep's and CodeQL's output admit (absence =
 exclusion) - would **also** false-clear all ten dispatchers. The
 separation is not that the metric applies a softer rule to Capa; it is
-that Capa **offers** a *sound* exclusion channel (`provably_excluded`,
-with the explicit *provably-excluded* vs *not-determined* distinction) a
-consumer can rely on, while both real tools' native output has only
-positive detections and no sound way to answer the exclusion question at
-all. The per-treatment difference in the operational rule above is a
+that Capa **offers** an explicit exclusion channel
+(`provably_excluded`, with the *provably-excluded* vs *not-determined*
+distinction), while both real tools' native output has only positive
+detections and no way to answer the exclusion question at all. The per-treatment difference in the operational rule above is a
 consequence of the different output formats, not a thumb on the scale.
 
 **Why a sound tool would have to over-approximate (and degrade).** A
@@ -110,11 +112,14 @@ the container holds, every `getattr` target, every registered callback.
 That is imprecise in general and **degenerates to "any capability" once
 the table is populated from outside the module** (plugins, a `getattr`
 on a computed name, a tag from deserialized input). Capa sidesteps the
-dichotomy by carrying authority in the handler closure's **type**, so the
-dispatcher's record is sound *and* precise without resolving the runtime
-target. This is **not** a claim that dataflow can never recover any
-single case; it is that the real tools, run in good faith, lose, and the
-sound alternative is the over-approximation Capa replaces with types.
+dichotomy: the registration site's signature names the capabilities it
+captures into the handlers, and a function that takes function values
+gets no exclusion claim, so the dispatcher's record claims nothing
+rather than clearing it, without resolving the runtime target. This is
+**not** a claim that dataflow can never recover any single case; it is
+that the real tools, run in good faith, lose, and the sound alternative
+is the over-approximation Capa avoids by making no claim about the
+dispatcher.
 
 ### Python <-> Capa function correspondence (Q1)
 
@@ -152,8 +157,8 @@ built semi-automatically and then **read by hand against every
    by calling a local helper that holds the sink.
 3. Both were **cross-checked against the Capa manifest** of the
    `capa.capa` side (`declared_capabilities` = sink on the function;
-   `transitively_reachable_capabilities` = reachable through the call
-   graph) to anchor the axis set per pair.
+   `transitively_reachable_capabilities` = what the manifest pass
+   derives from the signature and body) to anchor the axis set per pair.
 4. **`via-dispatch` / `via-data` facts** (Phase 1b) are the authority a
    `naive.py` dispatcher reaches **transitively** when it invokes the
    handler that the runtime callable / data tag selects. Each was read
@@ -176,7 +181,7 @@ built semi-automatically and then **read by hand against every
    *Known divergences* below; the ground truth follows the **Python
    code that is being scored**, not the prose.
 
-The 7 pure pairs (`colorama`, `csv_parser`, `humanize`, `pathspec`,
+The 7 capability-free pairs (`colorama`, `csv_parser`, `humanize`, `pathspec`,
 `slugify`, `tabulate`, `textwrap`) contribute **zero** facts by design:
 no function in them exercises any capability. They are kept in the run so
 the distribution count over all 25 pairs is honest.
@@ -244,10 +249,12 @@ the harness reads only that CSV, so it stays deterministic and CI-safe
 regenerate.
 
 ### T3 Capa by construction
-The per-function manifest from `python -m capa --manifest`. For **Q1**,
-Capa attributes `C` to `F` iff `C` is in `F`'s
-`transitively_reachable_capabilities` (declared + reachable through the
-call graph). This is scored **per named function**, against the
+("Capa by construction" is the harness's label for this treatment,
+`T3_capa_by_construction` in the CSVs.) The per-function manifest from
+`python -m capa --manifest`. For **Q1**, Capa attributes `C` to `F` iff
+`C` is in `F`'s `transitively_reachable_capabilities` (declared, plus
+what the manifest pass finds reachable through signature types and the
+body). This is scored **per named function**, against the
 `capa_function` from the ground truth - **not** as pair-level axis
 coverage. The honest consequence: Capa attributes the two `via-helper`
 facts (the helper's authority is on the caller's type) but does **not**
@@ -255,11 +262,11 @@ attribute the ten dispatcher facts, because it does not resolve which
 handler runs. So on Q1 Capa **ties CodeQL exactly** (both 38/48), and
 beats Semgrep only by the two via-helper facts.
 
-For **Q2**, the manifest's `provably_excluded_capabilities` is the sound
-exclusion set (proved in Agda). Capa false-clears `(F, C)` only if `C`
-is in that set while `F` truly exercises `C`; this never happens, and
-the dispatchers carry `provably_excluded = []`, so Capa false-clears
-**zero** facts. This is where Capa separates from **both** real tools:
+For **Q2**, the manifest's `provably_excluded_capabilities` is the
+compiler's derived exclusion set. Capa false-clears `(F, C)` only if `C`
+is in that set while `F` truly exercises `C`; this did not happen on
+this corpus, and the dispatchers carry `provably_excluded = []`, so Capa
+false-clears **zero** of the 48 facts. This is where Capa separates from **both** real tools:
 Semgrep and CodeQL, read closed-world, false-clear every dispatcher fact
 they cannot see (12 and 10 respectively), while Capa reports those axes
 as **not-determined** (neither reachable nor provably-excluded) and
@@ -280,10 +287,12 @@ therefore clears nothing.
 - **The real result is Q2 (false-clearance), and there Capa is 0/48.**
   Under closed-world SBOM semantics T1 false-clears all 48, Semgrep the
   12 facts it misses, **CodeQL the 10 dispatcher facts**, and Capa
-  **none** - because it distinguishes *provably-excluded* (sound) from
-  *not-determined*. That zero is the guarantee: used ⊆ declared and
-  used ∩ provably-excluded = ∅, proved in Agda. The separation holds
-  against the best dataflow tool, not only the pattern heuristic.
+  **none** - because it distinguishes *provably-excluded* from
+  *not-determined*. That zero is a measurement on this 48-fact corpus
+  (on it, no exercised capability was in a provably-excluded set); it
+  is not a theorem about the field, and the Agda theorems are about
+  the λ_cap calculus. The separation holds against the best dataflow
+  tool, not only the pattern heuristic.
 - **On direct calls, all three real-ish tools tie Capa on Q1.** For
   every `direct` fact T2, T2b, and T3 all attribute. Capa does not win
   the easy cases.
@@ -335,8 +344,8 @@ answered Q2.
   fact (one T2, T2b, or T3 fails to attribute), with per-treatment
   `t2_attributes` / `t2b_attributes` / `t3_attributes`, the closed-world
   `t2_false_clears` / `t2b_false_clears` / `t3_false_clears` verdicts
-  (note `t3_false_clears` is `no` on every row - the soundness guarantee
-  made visible), the `how` cause, the conservative class-level
+  (note `t3_false_clears` is `no` on every row of this corpus), the
+  `how` cause, the conservative class-level
   `dataflow_would_resolve` flag (`via-helper` yes; `via-dispatch` /
   `via-data` no), and a `t2b_codeql` column carrying the **literal**
   CodeQL verdict (`attributes` for the 2 via-helper facts, `misses` for
@@ -430,7 +439,7 @@ attribute. That absence is itself the security property.
 **Where the corpus now stands:** the 20 Phase-1a pairs make the
 **granularity** point over T1 (per-function vs per-package). On **Q1
 (positive attribution)** the best dataflow tool and Capa are at an
-**exact tie** (CodeQL 38/48, Capa 38/48, Semgrep 36/48): Capa is sound,
+**exact tie** (CodeQL 38/48, Capa 38/48, Semgrep 36/48): Capa is
 not omniscient, and does not see more than CodeQL. The real result is
 **Q2 (false-clearance)**: under closed-world SBOM semantics T1
 false-clears all 48, Semgrep the 12 facts it misses, **CodeQL the 10
@@ -443,4 +452,6 @@ the constant dict the Phase-1b note had wrongly expected it to resolve.
 The honest framing: dataflow tools optimize precision and accept
 false-negatives, which is the wrong trade for an SBOM; a sound analysis
 would have to over-approximate runtime dispatch and degrade with external
-targets; Capa captures the authority via types instead.
+targets; Capa names the captured capabilities in the registration
+site's signature and makes no exclusion claim for the dispatcher
+instead.

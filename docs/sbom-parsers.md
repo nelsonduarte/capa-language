@@ -231,8 +231,8 @@ capabilities against a policy JSON file in two ways:
   per-function and a structural violation in the same run.
 
 This is the demonstrable pitch of Capa's supply-chain story: the
-SBOM is true *by construction* (the compiler rejects any program
-whose capability footprint exceeds its declarations), the parser
+SBOM's capability sets come from the compiler (which rejects a program
+in which a function calls a capability that is not in scope), the parser
 gives you a typed view of it, the validator catches authoring
 errors before they reach an auditor, and the audit consumer reduces
 the auditor's question to a finite syntactic comparison.
@@ -287,10 +287,11 @@ python -m unittest tests.test_transpiler.TestTranspileExamples.test_sbom_capabil
 
 ## See also
 
-- [`docs/positioning.md`](positioning.md) -- why the SBOM Capa emits
-  has a property no other ecosystem's SBOM has.
+- [`docs/positioning.md`](positioning.md) -- what is and is not
+  distinctive about the SBOM Capa emits.
 - [`docs/regulatory.md`](regulatory.md) -- which CRA / NIS2 / DORA
-  / NIST SSDF / OWASP SCVS requirements each Capa artefact satisfies.
+  / NIST SSDF / OWASP SCVS requirements each Capa artefact is evidence
+  toward.
 - [`docs/cra.md`](cra.md) -- article-by-article CRA mapping.
 - [`examples/sbom_diff.capa`](../examples/sbom_diff.capa) -- diff
   two CycloneDX SBOMs by per-function capability widening /

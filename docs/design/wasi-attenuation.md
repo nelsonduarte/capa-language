@@ -17,9 +17,9 @@ compiler-proved.
 
 The goal is to reconcile Capa's DYNAMIC attenuation model with the
 STATIC capability model of WASI Preview 2 (WASI P2) without losing the
-load-bearing claim of the language: that
-`provably_excluded_capabilities` in the manifest is a real guarantee,
-not merely a guest-side promise the runtime trusts.
+load-bearing property of the language: that
+`provably_excluded_capabilities` in the manifest stays a statement the
+compiler derives, not merely a guest-side promise the runtime trusts.
 
 This is distinct from, and complementary to, the existing experimental
 `--wasi` mode. That mode (documented in `docs/design/wasi_mode.md`)
@@ -126,20 +126,19 @@ boundary (audit slice 25; history in
 The guarantee is the product of two distinct layers.
 
 STATIC layer (the type system, in `capa/analyzer/_discipline.py`):
-capabilities flow ONLY through function parameters. They cannot be
-hidden in data structures, returned by ordinary functions, or bound
-to `let` / `var` slots (`_check_no_capability` at
-`capa/analyzer/_discipline.py:213-226`), and a capability cannot be
-aliased twice within a single call (`_check_no_aliasing` at
-`capa/analyzer/_discipline.py:187-211`). On top of this the manifest
+a call on a built-in capability that is not in scope is refused; the
+analyzer refuses a built-in capability type as the declared type of a
+struct field (outside a capability-bearing struct), a variant payload
+or a constant, and a `let` / `var` whose right-hand side is a
+capability parameter (`_check_no_capability`); and it refuses
+`both(stdio, stdio)` (`_check_no_aliasing`). On top of this the manifest
 computes `provably_excluded_capabilities` from the function signature
 plus a closed-world reachability bound
 (`capa/manifest/_funrec.py:475-528`, written out at
 `capa/manifest/_funrec.py:607`; reachability map in
-`capa/manifest/_reachability.py`). The computation is CONSERVATIVE: it
-DOWNGRADES the exclusion claim to the empty list whenever it cannot be
-honored, specifically when `Unsafe` is in scope or a `Fun(...)` type
-appears in the signature (closures can carry a captured cap the type
+`capa/manifest/_reachability.py`). It empties the exclusion list
+when `Unsafe` is in scope or a `Fun(...)` type appears in the
+signature (closures can carry a captured cap the type
 system does not track:
 `capa/manifest/_funrec.py:470-520`), and it folds in caps reachable
 through cap-bearing structs via the per-impl reachability map.
@@ -149,13 +148,12 @@ object on Python, the handle on Wasm) and is enforced per call. There
 is no "widen" operation anywhere in the model; every `restrict_*`
 returns a strictly-narrower or equal instance.
 
-KEY POINT: the type system guarantees the PRESENCE or ABSENCE of a
-capability at a function boundary (whether `main`'s Fs ever reaches a
-given function at all). The CONTENT of a concrete restriction (which
-prefixes, hosts, or keys it admits) is a RUNTIME value, decided by the
-sequence of `restrict_*` calls actually executed. The static layer
-proves the shape of the authority graph; the dynamic layer carries the
-concrete narrowing.
+KEY POINT: the type system checks which capability values are in
+scope at a function boundary. The CONTENT of a concrete restriction
+(which prefixes, hosts, or keys it admits) is a RUNTIME value, decided
+by the sequence of `restrict_*` calls actually executed. The static
+layer checks the shape of the authority graph; the dynamic layer
+carries the concrete narrowing.
 
 ## 3. The WASI Preview 2 restriction models
 
@@ -273,10 +271,10 @@ the Level 2 ceiling (`inherit_env`).
 LEVEL 2, the FINE ATTENUATION, the in-program narrowings below the
 ceiling (`restrict_to`, `restrict_to_keys`, the Clock deadline). This
 is:
-- PROVED by the compiler. `provably_excluded_capabilities` still holds
-  unchanged (`capa/manifest/_funrec.py:475-528`); the static
-  discipline that makes the proof sound
-  (`capa/analyzer/_discipline.py:187-226`) is untouched.
+- Unchanged on the compiler side. The derivation of
+  `provably_excluded_capabilities` is unchanged
+  (`capa/manifest/_funrec.py:475-528`); the static discipline it
+  relies on (`capa/analyzer/_discipline.py:187-226`) is untouched.
 - REINFORCED by the runtime on the CAPA host (the handle table
   re-checks every call:
   `capa/runtime/_wasm_component_host.py:335-363`).

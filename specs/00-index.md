@@ -61,7 +61,7 @@ translation; where the two differ, this set governs.
 
 | # | File | Subject |
 |---|---|---|
-| 10 | [10-capability-model.md](10-capability-model.md) | How authority enters and propagates; no ambient authority |
+| 10 | [10-capability-model.md](10-capability-model.md) | How authority enters and propagates; no ambient access to the built-in capabilities |
 | 11 | [11-builtin-capabilities.md](11-builtin-capabilities.md) | The exact ten, their methods, Python-only members |
 | 12 | [12-attenuation.md](12-attenuation.md) | `restrict_to` and kin; monotonicity; runtime enforcement |
 | 13 | [13-user-defined-capabilities.md](13-user-defined-capabilities.md) | `capability`, the implementor pattern, the cap-bearing relaxation |

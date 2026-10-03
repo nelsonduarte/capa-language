@@ -7,7 +7,7 @@
 > (`println`/`eprintln`, `Net.post`, `Fs.write`, `panic`, parameters
 > that reach sinks); the `declassify(value, reason: "...")` operation
 > as the audited exit hatch, and the fact that it is a runtime NO-OP
-> (all the soundness lives in the analyzer). Every rule is demonstrated
+> (all the checking lives in the analyzer). Every rule is demonstrated
 > with a real, executed example.
 
 **Version documented.** `main` at commit `8e2c609` (`capa 1.32.0` plus
@@ -233,12 +233,12 @@ token is s3cr3t
 **The runtime NO-OP.** `declassify` changes nothing about the value at
 run time. On the Wasm backend the lowering returns the value directly
 without emitting any `Call` instruction; the `@secret -> @public`
-relabel and the SBOM audit record are compile-time only
+relabel and the manifest audit record are compile-time only
 ([`capa/ir/_lower_expr.py`](../capa/ir/_lower_expr.py) lines 609 to
 630; the gate keys on the callee's binding identity, so a user-defined
 `fun declassify(...)` that shadows the built-in is lowered as an
 ordinary call). On the Python backend a real identity `declassify`
-call remains. The central consequence: **all IFC soundness lives in
+call remains. The central consequence: **all IFC checking lives in
 the analyzer**, not in a runtime monitor. The identical output above
 confirms it (the value is the same with or without `declassify`).
 
@@ -265,20 +265,23 @@ deadclass.capa: ok (1 items, 7 expressions typed, 4 bindings)
 
 ## 8. What the model guarantees, and what it does not
 
-- **Guarantees** (under `@strict_ifc`, see
-  [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md)):
-  noninterference for the two-point lattice, formalized in
+- **What is proved, and for what**: noninterference for the two-point
+  lattice is proved for the `lambda_if` calculus of
+  [`docs/semantics.md`](../docs/semantics.md) section 9, formalized in
   [`proofs/CapaNoninterference.agda`](../proofs/CapaNoninterference.agda)
   (Theorem 3 without `declassify`, Theorem 4, delimited release, with
-  `declassify`). The core is the `lambda_if` calculus of
-  [`docs/semantics.md`](../docs/semantics.md) section 9.
+  `declassify`). Under `@strict_ifc` (see
+  [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md)) the
+  analyzer applies the checks `lambda_if` models; its fidelity to the
+  model is argued informally (`docs/semantics.md` section 9.8), so an
+  accepted `@strict_ifc` function is not thereby proved noninterferent.
 - **Does not guarantee** integrity or input taint (the lattice is
   confidentiality; section 2).
-- Outside `@strict_ifc`, a `@secret -> sink` flow is a **warning**,
-  not an error. The theorems cover the core calculus; the
-  implementation's guarantee is scoped as stated in
+- Outside `@strict_ifc`, a detected `@secret -> sink` flow is a
+  **warning**, not an error. The theorems cover the core calculus; the
+  implementation's scope is stated in
   [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md) section
-  8.3 and in [`docs/trust-model.md`](../docs/trust-model.md): the
+  8.1 and in [`docs/trust-model.md`](../docs/trust-model.md): the
   analysis is source-level, its rejections are enumerated, and the
   discipline is opt-in per function.
 

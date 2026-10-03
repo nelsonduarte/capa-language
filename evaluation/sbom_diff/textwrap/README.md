@@ -46,7 +46,7 @@ Three reasons:
    PURL-based SBOM for the file says literally nothing about
    the file's behaviour. The Capa version, by contrast, names
    every helper and declares zero capabilities per function,
-   with the compiler proving each one pure.
+   with the compiler refusing any capability call in each.
 
 ## Functions
 

@@ -5,9 +5,8 @@
 > struct that wraps built-in authority in a field (the "cap-bearing
 > struct" relaxation), and the factory that produces it. The invariant
 > that keeps the authority chain readable in the types (an implementor
-> MUST be given the built-in authority it wraps), the rules that
-> prevent smuggling (`Unsafe` never; no capability containers;
-> built-ins still cannot be returned), and how these capabilities
+> MUST be given the built-in authority it wraps), the limits on the
+> relaxation (`Unsafe` never; no capability containers), and how these capabilities
 > appear in the manifest. The built-ins are in
 > [11-builtin-capabilities.md](11-builtin-capabilities.md).
 
@@ -35,7 +34,8 @@ wrapping one or more built-ins.
 
 `capability X` declares a type the discipline treats as a capability
 (it reaches the analyzer as `SymbolKind.CAPABILITY`, identical to a
-built-in: no aliasing, no storage in plain bindings, and so on), while
+built-in: `let dup = mailer` on a capability parameter is refused, as
+for a built-in), while
 `trait X` arrives as `SymbolKind.TRAIT`; method dispatch and `impl`
 checking are the same in both cases
 ([`capa/analyzer/_declarations.py`](../capa/analyzer/_declarations.py)).
@@ -116,9 +116,10 @@ relaxation**: a struct that **implements a user capability** may hold
 built-in capability fields. It is because `SmtpMailer` implements
 `SendEmail` that it could declare `net: Net`.
 
-The effect is that the built-in authority a user capability grants is
-never invisible: to construct it you must supply the authority it
-wraps, and that passing shows up in the factory's signature.
+The effect is that constructing an implementor needs the built-in
+authority it wraps in scope: building `SmtpMailer { net: ... }` needs a
+`Net` value, which in this example shows up in the factory's
+signature.
 
 A struct declaring `net: Net` without implementing any user
 capability is refused:
@@ -145,8 +146,7 @@ plain_field.capa: 1 error
 
 ## 4. The limits of the relaxation (what stays forbidden)
 
-The cap-bearing relaxation is narrow on purpose. Three limits close
-the smuggling routes:
+The cap-bearing relaxation is narrow on purpose. Two limits apply:
 
 **(a) `Unsafe` never**, not even in a cap-bearing struct. `Unsafe` is
 the FFI hatch, not an attenuable built-in; wrapping it would hide the
@@ -175,18 +175,12 @@ unsafe_field.capa: 1 error
 BARE capability (`net: Net`), not a container (`caps: List<Net>`),
 which would hide authority like any other container.
 
-**(c) Built-ins still cannot be returned.** A factory may return a
-BARE user capability (it is an ordinary Capa value; only built-ins
-are forbidden in return position), but not a built-in, and not a user
-capability wrapped in a container (`-> List<Logger>`). That is why
-`make_smtp_mailer -> SmtpMailer` is accepted while
-`grab(fs: Fs) -> Fs` is not
-([10-capability-model.md](10-capability-model.md) section 3).
+A factory may return a BARE user capability (it is an ordinary Capa
+value): that is why `make_smtp_mailer -> SmtpMailer` is accepted.
 
 ## 5. How they appear in the manifest
 
-The manifest recognizes user capabilities as first-class citizens and
-keeps the authority chain explicit: a function that declares only
+The manifest records user capabilities: a function that declares only
 `SendEmail` shows `Net` in its transitively reachable capabilities,
 because the implementor wraps it.
 

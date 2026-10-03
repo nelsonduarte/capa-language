@@ -22,8 +22,8 @@ What depth adds is the other half of the argument, all read from the
    `capa_claimdesk` that is six package rows. Capa's manifest is a map
    over **213 functions**, app and vendored alike. The per-function
    facts a dependency SBOM does not express number in the thousands.
-2. **Richness.** Per-function capabilities, *sound* provably-excluded
-   facts, IFC declassification sites, `@constant_time` functions, and a
+2. **Richness.** Per-function capabilities, provably-excluded
+   entries, IFC declassification sites, `@constant_time` functions, and a
    typestate protocol, none of which any dependency SBOM carries.
 3. **Concentration.** What fraction of functions actually hold authority.
    This supplies data for the [`docs/positioning.md`](../../../docs/positioning.md)
@@ -50,12 +50,12 @@ end of this file.
 A payment-security core: HMAC-SHA256 integrity over `capa_hash`, fraud
 scoring, IBAN/PAN masking, `@secret` field handling, and an append-only
 audit log. Entrypoint `main.capa`; one runtime dependency (`capa_hash`,
-pure, zero-capability) plus a dev-dependency (`capa_test`).
+zero-capability) plus a dev-dependency (`capa_test`).
 
 | Metric | Value |
 |---|---|
 | Functions analysed (app + vendored) | 70 |
-| Pure (zero reachable capabilities) | **66 / 70 (94.3 %)** |
+| No reachable capability (the extractor's `pure` metric) | **66 / 70 (94.3 %)** |
 | Provably-excluded `(function, capability)` facts | **625** |
 | Reachable `(function, capability)` facts | 5 |
 | Declassification sites (IFC) | 6 |
@@ -78,13 +78,14 @@ Capability reach (functions that transitively reach each axis):
 | Proc | 0 | 0.0 % |
 | Unsafe | 0 | 0.0 % |
 
-**Concentration: extreme.** 66 of 70 functions are provably pure. Only
+**Concentration: extreme.** 66 of 70 functions have no reachable
+capability. Only
 **3 functions (4.3 %)** reach `Fs` (the audit-log write path), 2 reach
 `Stdio`, and **no function reaches `Net`, `Db`, `Proc`, or `Unsafe`** at
 all. The entire crypto core (the 28 functions of the vendored `capa_hash`
-dependency) is pure. An auditor reviewing this program for filesystem authority
-reads 3 functions out of 70 and is done; the build has *proved* the other
-67 cannot touch the disk.
+dependency) holds no capability. An auditor reviewing this program for filesystem authority
+reads 3 functions out of 70; the manifest lists `Fs` among the
+provably-excluded capabilities of the other 67.
 
 ## capa_claimdesk (insurance / claims processing engine)
 
@@ -97,7 +98,7 @@ analysed, 131 are the application's own and 82 are vendored.
 | Metric | Value |
 |---|---|
 | Functions analysed (app + vendored) | 213 |
-| Pure (zero reachable capabilities) | **187 / 213 (87.8 %)** |
+| No reachable capability (the extractor's `pure` metric) | **187 / 213 (87.8 %)** |
 | Provably-excluded `(function, capability)` facts | **2,295** |
 | Reachable `(function, capability)` facts | 48 |
 | Declassification sites (IFC) | 3 |
@@ -122,7 +123,8 @@ Capability reach (functions that transitively reach each axis):
 | Logger (user-defined) | 9 | 4.2 % |
 | Notifier (user-defined) | 5 | 2.3 % |
 
-**Concentration: strong, even at scale.** 87.8 % of functions are pure.
+**Concentration: strong, even at scale.** 87.8 % of functions have no
+reachable capability.
 The most-reached sensitive axis is `Db` on **5 functions (2.3 %)**; `Net`
 on 2 (0.9 %), `Fs` on 4 (1.9 %), `Proc` on 3 (1.4 %), `Unsafe` on none.
 A program of 213 functions concentrates database authority in five of
@@ -136,8 +138,8 @@ the nine built-ins.
 
 Across both programs, the worst-case sensitive-axis concentration is
 paymentguard's `Fs` at **4.3 %** (3 of 70). No sensitive axis in either
-program is held by more than ~4 % of functions, and the pure fraction is
-**88-94 %**. This is direct, auditable evidence for the positioning
+program is held by more than ~4 % of functions, and the fraction with no
+reachable capability is **88-94 %**. This is direct, auditable evidence for the positioning
 claim. It is reported as measured; `test_extract.py` pins the 5 % ceiling
 to the data, not to a target chosen in advance.
 
@@ -156,11 +158,12 @@ gap, at program scale:
 The delta is the entire per-function map. A dependency SBOM for
 `capa_claimdesk` tells a consumer that the program uses CSV, hashing,
 CLI, logging, and datetime libraries. It cannot tell the consumer that
-exactly two functions reach the network, that the SHA-256 core is pure,
-or that 187 functions are provably side-effect-free. Capa's manifest
-states all of that, and the provably-excluded facts are **sound** (used
-&sube; declared, used &cap; provably-excluded = &empty;, mechanised in
-Agda), which is the column no heuristic SBOM generator can fill.
+exactly two functions hold `Net`, that the SHA-256 core holds no
+capability, or that 187 functions have no reachable capability. Capa's
+manifest states all of that, together with the compiler's derived
+exclusion set per function, a column a dependency SBOM does not have.
+(The Agda theorems are about the λ_cap calculus, not about this
+field.)
 
 ## Indirection in the wild
 
@@ -180,14 +183,14 @@ resolved target. A CodeQL-style points-to analysis would face the same
 trait-object opacity here it faced on the synthetic dispatchers.
 
 **The honest qualifier:** in this instance the laundering is benign,
-because **all three reporter implementations are pure** (zero
+because **all three reporter implementations are capability-free** (zero
 capabilities). The dispatch carries no authority to launder, so Capa's
 record (the trait carries no capability, the dispatcher reaches none) is
-both sound and correct without resolving the runtime target. That is the
+correct for this program without resolving the runtime target. That is the
 point worth reporting plainly: the indirection-as-laundering *risk* is
 demonstrated on the synthetic pairs, where a handler does hold authority;
 the case studies show the same dispatch *structure* arising naturally in
-a real program, and Capa typing it soundly, but they do not happen to
+a real program, and Capa recording it without resolving the target, but they do not happen to
 contain a hostile authority-laundering path. The rest of both programs is
 largely direct call structure. Depth is about richness and scale on a
 real program, not about manufacturing more indirection than the programs
