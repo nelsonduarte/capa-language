@@ -72,5 +72,5 @@ which are pure parsing and field extraction; all four are
 conflated under a single public signature.
 
 The Capa SBOM names `Net` per-function on `fetch_text` and
-`fetch_json`, and proves the URL validator (`is_https_url`) and
-the field extractor (`extract_field`) cannot touch the network.
+`fetch_json`; the URL validator (`is_https_url`) and the field
+extractor (`extract_field`) declare no capability, and the compiler refuses any capability call in them.

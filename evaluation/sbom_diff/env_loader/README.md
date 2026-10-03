@@ -74,6 +74,6 @@ nothing about which function exercises the environment read,
 nor that two of the helpers in the file are pure.
 
 The Capa SBOM names `Env` per-function on `load_settings` and
-`load_validated`, attributes `Stdio + Env` to `main`, and
-proves the pure functions (`strip_prefix`, `validate_required`)
-cannot touch the environment.
+`load_validated` and attributes `Stdio + Env` to `main`; the
+helpers (`strip_prefix`, `validate_required`) declare no
+capability, and the compiler refuses any capability call in them.

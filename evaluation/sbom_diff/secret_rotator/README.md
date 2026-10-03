@@ -94,8 +94,8 @@ the pure helpers `_is_fresh` and `_make_state` are invisible to
 the PURL view as separately attributable units.
 
 The Capa SBOM names both authorities per-function on
-`make_rotator` and `get_secret`, attributes `Stdio` to `main`,
-and proves the pure functions (`is_fresh`, `refresh_state`)
-cannot touch either of them; the freshness check is pure given a
+`make_rotator` and `get_secret` and attributes `Stdio` to
+`main`; the helpers (`is_fresh`, `refresh_state`) declare no
+capability, and the compiler refuses any capability call in them; the freshness check is pure given a
 `(cached_at, now, ttl)` triple and the state-update is pure
 given `(state, fresh_value, now)`.

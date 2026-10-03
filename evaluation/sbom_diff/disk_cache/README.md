@@ -101,7 +101,7 @@ authorities are conflated under each of `cache_get` and
 PURL view as a separately attributable unit.
 
 The Capa SBOM names both authorities per-function on `cache_get`
-and `cache_set`, attributes `Stdio` to `main`, and proves the
-pure functions (`is_fresh`, `parse_cached_entry`,
-`format_cache_entry`) cannot touch any of them; the freshness
+and `cache_set` and attributes `Stdio` to `main`; the helpers
+(`is_fresh`, `parse_cached_entry`, `format_cache_entry`) declare no
+capability, and the compiler refuses any capability call in them; the freshness
 check is pure given a `(stored_ts, now)` pair.

@@ -93,8 +93,9 @@ reads in `generate_token` and `is_token_valid`, and the pure
 helpers (`_format_token`, `_parse_token`) would all be conflated
 under the two module-level listings.
 
-The Capa SBOM names `Random` and `Clock` per-function and proves
-the pure helpers (`default_alphabet`, `format_token`,
-`parse_token`, `is_expired`) cannot touch either authority; the
+The Capa SBOM names `Random` and `Clock` per-function; the
+helpers (`default_alphabet`, `format_token`, `parse_token`,
+`is_expired`) declare no capability, and the compiler refuses any
+capability call in them; the
 parsing and the expiry comparison are pure given the parsed
 token and an explicit `now`.

@@ -84,8 +84,8 @@ capability. Only
 `Stdio`, and **no function reaches `Net`, `Db`, `Proc`, or `Unsafe`** at
 all. The entire crypto core (the 28 functions of the vendored `capa_hash`
 dependency) holds no capability. An auditor reviewing this program for filesystem authority
-reads 3 functions out of 70 and is done; the build has *proved* the other
-67 cannot touch the disk.
+reads 3 functions out of 70; the manifest lists `Fs` among the
+provably-excluded capabilities of the other 67.
 
 ## capa_claimdesk (insurance / claims processing engine)
 

@@ -78,6 +78,6 @@ the `Fs` axis is invisible to the PURL view because the only
 import that exercises it (the bare `open` builtin) is not a
 named module a PURL SBOM tracks.
 
-The Capa SBOM names both authorities per-function and proves
-the pure functions (`escape_for_json`, `format_as_json`) cannot
-touch either.
+The Capa SBOM names both authorities per-function; the helpers
+(`escape_for_json`, `format_as_json`) declare no capability, and
+the compiler refuses any capability call in them.
