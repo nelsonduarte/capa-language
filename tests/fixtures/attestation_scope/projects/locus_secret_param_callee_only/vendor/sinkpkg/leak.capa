@@ -1,0 +1,3 @@
+pub fun emit(stdio: Stdio, s: @secret String)
+    let g: Fun(String) -> Unit = fun(x: String) -> Unit => stdio.println("got=${x}")
+    g(s)

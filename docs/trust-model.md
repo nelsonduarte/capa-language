@@ -347,6 +347,50 @@ separately.
   by construction a statement that the source carries the annotation and
   claims nothing further.
 
+<!-- BEGIN GENERATED: unaudited_secret_sinks scope (tools/gen_trust_register.py) -->
+- **What `unaudited_secret_sinks` attests.** unaudited_secret_sinks
+  lists ONLY the explicit secret-to-sink flows the warn-tier
+  information-flow check REPORTED for this function and RECORDED with a
+  sink capability (a @secret value passed as a sink argument, or to a
+  callee parameter whose sink capability the analysis attributed, with
+  no declassify); a reported flow whose sink capability the analysis did
+  not attribute is not recorded, and neither is one reported outside
+  every function body (a module-level const initializer). Every
+  per-package value derived from it inherits this scope. The check
+  recognizes as sinks only the built-in methods Db.exec, Db.query,
+  Fs.write, Net.get, Net.post, Serve.send, Stdio.eprintln, Stdio.print,
+  Stdio.println and the panic builtin (recorded as Stdio whether or not
+  the function holds Stdio); through a callee it matches a sink by
+  method name, not receiver type, so another type's method of the same
+  name can be recorded under that sink's capability, and a recorded name
+  is not evidence that the package holds that capability. Any other
+  operation is outside this field, so a recorded capability is always
+  one of Db, Fs, Net, Serve, Stdio, and a no-secret-egress policy that
+  names only Clock, Env, Proc or Random has nothing in this field to
+  match (its declassify co-residence check still applies to those
+  names). A flow is recorded against the function in whose body the
+  check saw the @secret value, and that function's package: at the
+  CALLER for a @secret argument whose callee sink the analysis
+  attributed, inside the callee for a parameter or field the callee
+  declares @secret; one flow may be recorded against the caller, the
+  callee or both, and a policy scoped to a package sees only the records
+  charged to that package. An empty list is NOT a proof of absence in
+  either direction: implicit (control-flow) flows are never recorded at
+  any tier, including under @strict_ifc; the explicit check itself has
+  documented misses (SECURITY.md and its advisories) and that list is
+  not closed; a function refused under @strict_ifc produces no artifact,
+  and an accepted @strict_ifc function can still leak; and a manifest
+  built without the analysis result carries an empty list by
+  construction. Read [] as 'the warn-tier explicit check recorded
+  nothing', never as 'cannot leak'.
+
+  Every `--manifest`, `--manifest-digest`, `--compose-sbom` and
+  `--conformance-report` document carries this sentence verbatim under
+  the top-level `unaudited_secret_sinks_scope` key. This entry is
+  generated from `capa/manifest/_scope.py`: change the constant there
+  and run `python tools/gen_trust_register.py`.
+<!-- END GENERATED: unaudited_secret_sinks scope -->
+
 - **Compromise of the GitHub release channel or a signing key.** The
   registry root key and a dependency's `verify_key` are trust anchors: an
   attacker who holds the corresponding private key can produce signatures

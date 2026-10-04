@@ -1,0 +1,17 @@
+[[policy]]
+id = "nse_proc"
+name = "no secret egress (nse_proc)"
+kind = "no-secret-egress"
+capabilities = ["Proc"]
+
+[[policy]]
+id = "nse_clock_env_random"
+name = "no secret egress (nse_clock_env_random)"
+kind = "no-secret-egress"
+capabilities = ["Clock", "Env", "Random"]
+
+[[policy]]
+id = "nse_stdio"
+name = "no secret egress (nse_stdio)"
+kind = "no-secret-egress"
+capabilities = ["Stdio"]

@@ -1,0 +1,5 @@
+[[policy]]
+id = "nse_net"
+name = "no secret egress (nse_net)"
+kind = "no-secret-egress"
+capabilities = ["Net"]

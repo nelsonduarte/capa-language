@@ -1,0 +1,26 @@
+[[policy]]
+id = "nse_root"
+name = "no secret egress (nse_root)"
+kind = "no-secret-egress"
+capabilities = ["Stdio"]
+package = "rootpkg"
+
+[[policy]]
+id = "nse_mid"
+name = "no secret egress (nse_mid)"
+kind = "no-secret-egress"
+capabilities = ["Stdio"]
+package = "midpkg"
+
+[[policy]]
+id = "nse_sink"
+name = "no secret egress (nse_sink)"
+kind = "no-secret-egress"
+capabilities = ["Stdio"]
+package = "sinkpkg"
+
+[[policy]]
+id = "nse_all"
+name = "no secret egress (nse_all)"
+kind = "no-secret-egress"
+capabilities = ["Stdio"]

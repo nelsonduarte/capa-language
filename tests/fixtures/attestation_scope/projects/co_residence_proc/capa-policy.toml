@@ -1,0 +1,5 @@
+[[policy]]
+id = "nse_proc"
+name = "no secret egress (nse_proc)"
+kind = "no-secret-egress"
+capabilities = ["Proc"]

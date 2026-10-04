@@ -1,0 +1,5 @@
+[[policy]]
+id = "nse_all"
+name = "no secret egress (nse_all)"
+kind = "no-secret-egress"
+capabilities = ["Stdio"]

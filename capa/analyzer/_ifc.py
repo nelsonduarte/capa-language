@@ -40,7 +40,7 @@ from .. import capa_ast as A
 from .. import _labels as L
 from ._callables import fun_key, lambda_key, method_key
 from ._ifc_tables import (
-    _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
+    _PUBLIC_SINKS, _PANIC_SINK_CAP, _CONTAINER_MUTATORS, _SECRET_SOURCES,
     _VARIABLE_TIME_OPS, _SHORT_CIRCUIT_COMPARE_OPS,
     _CT_INDEX_METHODS, _CT_SHORT_CIRCUIT_METHODS,
     _pattern_bound_names, _prefix_compatible,
@@ -3138,12 +3138,11 @@ class _IfcMixin:
                 self._err(msg, e.args[0].pos)
             else:
                 self._warn(msg, e.args[0].pos)
-                # Feature #6 (B1): panic writes its message to stderr -- the
-                # analyzer frames it as a public sink "exactly like
-                # Stdio.eprintln" -- so the un-audited egress is via Stdio.
-                # (panic itself needs no capability, but the secret still
-                # leaves the program through the stderr stream Stdio owns.)
-                self._record_unaudited_secret_sink("Stdio", e.args[0].pos)
+                # Feature #6 (B1): record the un-audited flow under the one
+                # panic sink capability, ``_PANIC_SINK_CAP``, which the
+                # callee-summary panic producer attributes too (see its
+                # definition for why that capability).
+                self._record_unaudited_secret_sink(_PANIC_SINK_CAP, e.args[0].pos)
         if (
             getattr(self, "_strict_ifc", False)
             and L.normalize(getattr(self, "_pc_label", L.PUBLIC)) == L.SECRET
@@ -3768,14 +3767,17 @@ class _IfcMixin:
         the callee. Warn by default, hard error under ``@strict_ifc``,
         matching the intra-procedural tier.
 
-        ``sink_caps`` is the set of built-in sink CAPABILITIES that the
-        SPECIFIC sink-reaching parameter the secret was routed to reaches
-        inside the callee (feature #6, B1) -- the callee's per-parameter
-        IFC summary looked up at that parameter, NOT the whole-callable
-        union, so a secret that reaches only Net is never tagged with a
-        sibling parameter's Fs. On the warn tier the un-audited leak is
-        recorded against the CALLER (the function at this warn site) with
-        each of those capabilities as the egress reached."""
+        ``sink_caps`` is the set of sink CAPABILITIES that the SPECIFIC
+        sink-reaching parameter the secret was routed to reaches inside the
+        callee (feature #6, B1) -- the callee's per-parameter IFC summary
+        looked up at that parameter, NOT the whole-callable union, so a
+        secret that reaches only Net is never tagged with a sibling
+        parameter's Fs. On the warn tier this site records the flow against
+        the function being checked, which here is the CALLER of ``callee``,
+        once per capability in ``sink_caps`` (none when the set is empty).
+        Where records sit across a caller and its callees, and what a
+        recorded capability name means, is stated once, in
+        ``capa.manifest._scope``."""
         msg = (
             f"information-flow: a @secret value is passed to {callee} as "
             f"{param}, which reaches a public sink inside {callee} (it "
@@ -3797,10 +3799,13 @@ class _IfcMixin:
         """Record (feature #6, B1) a WARN-tier un-audited secret->public
         -sink flow for the function currently being checked: the sink
         CAPABILITY reached and the source position, keyed by the enclosing
-        ``FunDecl``'s identity. Purely observational -- it never changes a
-        warn-or-error decision. Only called on the warn tier, so a recorded
-        flow is by construction un-audited (a strict-IFC flow is an error,
-        and a declassified value is public and never reaches here)."""
+        ``FunDecl``'s identity. A site with no enclosing function (code
+        outside every function body, such as a module-level const
+        initializer) has no such key and is not recorded. Purely
+        observational -- it never changes a warn-or-error decision. Only
+        called on the warn tier, so a recorded flow is by construction
+        un-audited (a strict-IFC flow is an error, and a declassified value
+        is public and never reaches here)."""
         if not cap_name:
             return
         fid = getattr(self, "_cur_fun_id", 0)

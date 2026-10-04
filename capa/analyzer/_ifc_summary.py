@@ -188,7 +188,8 @@ from .. import capa_ast as A
 from .._builtin_identity import builtin_call, module_scope_names
 from ._callables import fun_key, method_key
 from ._ifc_tables import (
-    _PUBLIC_SINKS, _CONTAINER_MUTATORS, _SECRET_SOURCES,
+    _PUBLIC_SINKS, _SINK_CAPS, _PANIC_SINK_CAP,
+    _CONTAINER_MUTATORS, _SECRET_SOURCES,
     _VARIABLE_TIME_OPS, _SHORT_CIRCUIT_COMPARE_OPS,
     _CT_INDEX_METHODS, _CT_SHORT_CIRCUIT_METHODS,
     _pattern_bound_names, _prefix_compatible,
@@ -267,14 +268,6 @@ _MAX_FIELD_PATH = 5
 _SECRET_SOURCE_CAPS: frozenset = frozenset(cap for cap, _m in _SECRET_SOURCES)
 _SECRET_SOURCE_METHODS: frozenset = frozenset(m for _c, m in _SECRET_SOURCES)
 
-# The built-in sink CAPABILITY type names (Stdio / Net / Fs / Db / Serve),
-# derived from ``_PUBLIC_SINKS``. Used by the strict implicit-flow
-# (sink-reaching-pc) recognition to decide, TYPE-AWARELY, whether a
-# method-call receiver is a real built-in sink capability -- so
-# ``xs.get(i)`` on a ``List`` receiver is never mistaken for ``Net.get``,
-# the by-name collision the pc bit must not over-report on.
-_SINK_CAPS: frozenset = frozenset(cap for cap, _m in _PUBLIC_SINKS)
-
 
 # A callable's parameters, in the canonical order the analyzer uses:
 # for a method, index 0 is ``self`` and the explicit parameters follow
@@ -317,11 +310,12 @@ def compute_ifc_summaries(
       migrates to, bounded by ``_MAX_FIELD_PATH`` so the fixpoint stays
       finite.
     * ``sink_caps``: ``{callable_key: {param_idx: frozenset(sink
-      capability name)}}`` -- PER PARAMETER, the built-in sink
-      CAPABILITIES (Stdio / Net / Fs / Db) that THAT parameter's value
-      reaches inside the body, directly or transitively. Parallel to
-      ``sink_summaries`` (only a parameter present in the sink-reaching
-      set has an entry) and computed on the SAME fixpoint. Purely
+      capability name)}}`` -- PER PARAMETER, the sink CAPABILITIES (each a
+      ``_SINK_CAPS`` member, or ``_PANIC_SINK_CAP`` for ``panic``) that
+      THAT parameter's value reaches inside the body, directly or
+      transitively. Parallel to ``sink_summaries`` (only a parameter
+      present in the sink-reaching set has an entry) and computed on the
+      SAME fixpoint. Purely
       observational (feature #6, B1): it lets a cross-function
       un-audited-leak recording tag the leak with the concrete egress
       capability the SPECIFIC sink-reaching parameter the secret was
@@ -401,10 +395,11 @@ class _SummaryBuilder:
         self._module_names = module_scope_names(module)
         # callable_key -> set of sink-reaching param indices.
         self.summaries: dict = {}
-        # callable_key -> {param idx -> set of built-in sink CAPABILITY
-        # names (Stdio / Net / Fs / Db) that THAT PARAMETER's value reaches
-        # inside the body, directly or transitively}. PER PARAMETER, parallel
-        # to ``summaries`` (only a sink-reaching parameter gets an entry) and
+        # callable_key -> {param idx -> set of sink CAPABILITY names (each a
+        # ``_SINK_CAPS`` member, or ``_PANIC_SINK_CAP`` for ``panic``) that
+        # THAT PARAMETER's value reaches inside the body, directly or
+        # transitively}. PER PARAMETER, parallel to ``summaries`` (only a
+        # sink-reaching parameter gets an entry) and
         # computed on the SAME fixpoint, but PURELY OBSERVATIONAL: it never
         # feeds a sink-reaching / warn-or-error decision. Consulted only by
         # the cross-function un-audited-leak RECORDING (feature #6, B1) so
@@ -2810,14 +2805,14 @@ class _SummaryBuilder:
             # body that panics is sink-reaching under its own control flow
             # regardless of the message's label.
             self._cur_reaches_sink_pc = True
-            # Observational (feature #6, B1): ``panic`` writes its message
-            # to stderr, treated as Stdio egress (matching the
-            # intra-procedural panic sink). Attribute Stdio to each param
-            # flowing into the message, so a cross-function or transitive
-            # @secret-through-panic leak records ``Stdio`` -- keeping the
+            # Observational (feature #6, B1): attribute the panic sink
+            # capability (``_PANIC_SINK_CAP``, the one value the direct
+            # panic producer in ``_ifc`` records too) to each param flowing
+            # into the message, so a cross-function or transitive
+            # @secret-through-panic flow is recorded under it -- keeping the
             # completeness invariant that every reaching-growth site pairs
             # with a capability attribution.
-            self._attribute_sink_caps(arg_srcs[0], ("Stdio",))
+            self._attribute_sink_caps(arg_srcs[0], (_PANIC_SINK_CAP,))
             # Read-side (Stage 2): record the sunk access path of the
             # panicked message, so a whole-struct arg is intersected
             # field-precisely at the call site.

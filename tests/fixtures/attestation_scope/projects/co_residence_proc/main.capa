@@ -1,0 +1,6 @@
+fun main(env: Env, stdio: Stdio, proc: Proc)
+    let k = env.get("API_KEY").unwrap_or("none")
+    let shown = declassify(k, reason: "audited demo")
+    stdio.println(shown)
+    let r = proc.exec("python", "[\"-c\", \"print(1)\"]")
+    stdio.println("done")
