@@ -101,6 +101,32 @@ def assert_specs_cover(test) -> None:
     )
 
 
+#: Every TYPE-NAMESPACE declaration kind, as a top-level item whose ONLY
+#: occurrence of ``{N}`` is the declared name. ``{P}`` is ``pub `` or empty.
+#: The 14 built-in FUNCTION names are reserved for these too (built-in TYPE
+#: names such as ``Range`` are a separate class and stay legal).
+TYPE_DECLS: dict[str, str] = {
+    "struct": "{P}type {N} {{ k: Int }}\n",
+    "sum": "{P}type {N} =\n    Qa\n    Qb\n",
+    "variant": "{P}type Qsum =\n    {N}\n    Qb\n",
+    "variant_payload": "{P}type Qsum =\n    {N}(Int)\n    Qb\n",
+    "typestate": "{P}typestate {N} {{ k: Int }}\n    Qa\n    Qb\n",
+    "trait": "{P}trait {N}\n    fun go(self) -> Int\n",
+    "capability": "{P}capability {N}\n    fun go() -> Unit\n",
+    "extern_component": (
+        '{P}extern component {N} from "vendor/qc.wasm"\n'
+        "    fun go(n: Int) -> Int\n"
+    ),
+}
+
+
+def type_decl(kind: str, name: str, *, pub: bool = False) -> str:
+    """The ``kind`` declaration of ``name``. ``extern component`` takes no
+    ``pub`` (it is module-visible by construction)."""
+    p = "pub " if pub and kind != "extern_component" else ""
+    return TYPE_DECLS[kind].replace("{P}", p).format(N=name)
+
+
 def fun_type(spec: dict) -> str:
     return f"Fun({spec['ptys']}) -> {spec['ret']}"
 

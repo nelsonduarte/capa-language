@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 from ..tokens import Pos
-from ._base import Item, Node
+from ._base import Item, LinkedName, Node
 
 if TYPE_CHECKING:
     from ._exprs import Expr
@@ -61,10 +61,16 @@ class Import(Item):
     path: list[str]
     alias: Optional[str] = None
     selectors: Optional[list[tuple[str, Optional[str]]]] = None
+    # Selected original name -> position of its ``as`` alias token, for
+    # diagnostics that concern the alias itself. Empty when no selector
+    # carries an alias, or for a synthetic AST.
+    alias_positions: dict[str, Pos] = field(
+        default_factory=dict, repr=False, compare=False,
+    )
 
 
 @dataclass(kw_only=True)
-class ConstDecl(Item):
+class ConstDecl(Item, LinkedName):
     name: str
     type_expr: TypeExpr
     value: Expr
@@ -77,18 +83,6 @@ class ConstDecl(Item):
     # ``None`` means the parser did not record it (older code paths,
     # synthetic AST in tests).
     name_pos: Optional[Pos] = None
-    # Set by the module loader when it RENAMES a top-level item while
-    # linking (privacy mangling, a selective import hiding it or binding
-    # it under an ``as`` alias), so the analyzer still sees the names
-    # the author wrote: ``declared_name`` is the name at the declaration
-    # (``None`` when the item still carries it), ``alias_pos`` the
-    # position of the ``import ... (x as y)`` selector that bound the
-    # current name (``None`` when no alias did). Read by the reserved
-    # built-in name rule (``capa.analyzer._builtin_names``).
-    declared_name: Optional[str] = field(
-        default=None, repr=False, compare=False,
-    )
-    alias_pos: Optional[Pos] = field(default=None, repr=False, compare=False)
 
 
 @dataclass(kw_only=True)
@@ -100,7 +94,7 @@ class Field(Node):
 
 
 @dataclass(kw_only=True)
-class TypeStruct(Item):
+class TypeStruct(Item, LinkedName):
     """type Name { field: T, ... }
 
     ``is_linear`` marks a must-consume type (roadmap S1): a value of a
@@ -119,7 +113,7 @@ class TypeStruct(Item):
 
 
 @dataclass(kw_only=True)
-class Variant(Node):
+class Variant(Node, LinkedName):
     """Variant of a sum type. Zero or more payload types.
 
     Examples
@@ -134,7 +128,7 @@ class Variant(Node):
 
 
 @dataclass(kw_only=True)
-class TypeSum(Item):
+class TypeSum(Item, LinkedName):
     """type Name =
         Variant1
         Variant2(T)
@@ -148,7 +142,7 @@ class TypeSum(Item):
 
 
 @dataclass(kw_only=True)
-class TypestateDecl(Item):
+class TypestateDecl(Item, LinkedName):
     """typestate Name
         State1
         State2
@@ -215,7 +209,7 @@ class MethodSig(Node):
 
 
 @dataclass(kw_only=True)
-class TraitDecl(Item):
+class TraitDecl(Item, LinkedName):
     """A trait declaration. If ``is_capability`` is True, the declaration
     used the ``capability`` keyword instead of ``trait``: the declared
     name is registered as a capability (subject to the capability
@@ -232,7 +226,7 @@ class TraitDecl(Item):
 
 
 @dataclass(kw_only=True)
-class ExternComponent(Item):
+class ExternComponent(Item, LinkedName):
     """A typed foreign-component declaration (feature #4, F1)::
 
         extern component Bureau from "vendor/bureau.wasm"
@@ -284,7 +278,7 @@ class Attribute(Node):
 
 
 @dataclass(kw_only=True)
-class FunDecl(Item):
+class FunDecl(Item, LinkedName):
     """Function declaration (top-level or method inside an impl)."""
     name: str
     type_params: list[str] = field(default_factory=list)
@@ -295,18 +289,6 @@ class FunDecl(Item):
     attributes: list[Attribute] = field(default_factory=list)
     doc: Optional[str] = None
     name_pos: Optional[Pos] = None
-    # Set by the module loader when it RENAMES a top-level item while
-    # linking (privacy mangling, a selective import hiding it or binding
-    # it under an ``as`` alias), so the analyzer still sees the names
-    # the author wrote: ``declared_name`` is the name at the declaration
-    # (``None`` when the item still carries it), ``alias_pos`` the
-    # position of the ``import ... (x as y)`` selector that bound the
-    # current name (``None`` when no alias did). Read by the reserved
-    # built-in name rule (``capa.analyzer._builtin_names``).
-    declared_name: Optional[str] = field(
-        default=None, repr=False, compare=False,
-    )
-    alias_pos: Optional[Pos] = field(default=None, repr=False, compare=False)
 
 
 @dataclass(kw_only=True)

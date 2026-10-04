@@ -1096,7 +1096,10 @@ def _apply_selective_import(
             if name is not None and name in rename:
                 _rename_item(
                     it, rename[name],
-                    alias_pos=imp.pos if name in selected_originals else None,
+                    alias_pos=(
+                        imp.alias_positions.get(name, imp.pos)
+                        if name in selected_originals else None
+                    ),
                 )
             # A hidden sum type's variant declarations are renamed
             # too, so the analyzer registers the variants under their
@@ -1104,28 +1107,27 @@ def _apply_selective_import(
             if isinstance(it, A.TypeSum):
                 for v in it.variants:
                     if v.name in rename:
-                        v.name = rename[v.name]
+                        _rename_item(v, rename[v.name])
         _PrivateRenameWalker(rename).visit_module(module)
     return visible
 
 
 def _rename_item(
-    item: "A.Item", new_name: str, *, alias_pos: Optional[Pos] = None,
+    item: "A.LinkedName", new_name: str, *, alias_pos: Optional[Pos] = None,
 ) -> None:
-    """Rename a top-level ``item`` in place while linking.
+    """Rename a declaration (a named top-level item or a sum variant) in
+    place while linking.
 
-    The ONE place the loader renames a declaration. A value item (a
-    ``fun`` or ``const``) keeps the name its author wrote in
-    ``declared_name``, and an item an ``import ... (x as y)`` selector
-    bound under a new name records that selector's position in
-    ``alias_pos``, so the analyzer judges the names the author actually
-    wrote (built-in names are reserved in every linked file) and points
-    at the right file and line."""
-    if isinstance(item, (A.FunDecl, A.ConstDecl)):
-        if item.declared_name is None:
-            item.declared_name = item.name
-        if alias_pos is not None:
-            item.alias_pos = alias_pos
+    The ONE place the loader renames a declaration. The declaration keeps
+    the name its author wrote in ``declared_name``, and one an
+    ``import ... (x as y)`` selector bound under a new name records the
+    alias's position in ``alias_pos``, so the analyzer judges the names
+    the author actually wrote (built-in names are reserved in every
+    linked file) and points at the right file, line and column."""
+    if item.declared_name is None:
+        item.declared_name = item.name
+    if alias_pos is not None:
+        item.alias_pos = alias_pos
     item.name = new_name
 
 

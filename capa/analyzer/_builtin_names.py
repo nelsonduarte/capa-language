@@ -9,10 +9,13 @@ This mixin enforces that at the analyzer's binder doors and answers
   (parameters, lambda parameters, ``let`` / ``var`` / ``for`` / ``match``
   pattern binders, struct-pattern shorthands). A reserved name is
   refused here; nothing else defines a local.
-- ``_refuse_reserved_item``: the module-level twin, for a top-level
-  ``fun`` / ``const`` in any linked file, judged by the name its author
-  wrote (``declared_name``) and, for an ``import ... (x as y)`` alias, by
-  the alias at the import that bound it.
+- ``_refuse_reserved_item``: the module-level twin, for every name a
+  top-level item declares in any linked file (read off the one item
+  table, ``capa._builtin_identity.item_declarations``), judged by the
+  name its author wrote and, for an ``import ... (x as y)`` alias, by
+  the alias itself. A value declaration may not take any built-in name;
+  a type-namespace declaration may not take a built-in function's name
+  (``is_reserved_for``).
 - ``_refuse_builtin_value``: a built-in FUNCTION used as a value.
 - ``_is_builtin_call``: built-in identity for a call, decided by
   :func:`capa._builtin_identity.builtin_call` over the module's top-level
@@ -28,7 +31,8 @@ from .._builtin_identity import (
     builtin_call,
     builtin_value_message,
     is_builtin_symbol,
-    is_reserved_name,
+    is_reserved_for,
+    item_declarations,
     module_scope_names,
     reserved_name_message,
 )
@@ -36,10 +40,13 @@ from .._builtin_identity import (
 
 class _BuiltinNamesMixin:
 
-    def _refuse_reserved(self, name: str, binder: str, pos) -> None:
-        """Record the reserved-name diagnostic when ``name`` is a built-in
-        global name. The single rule every door below applies."""
-        if is_reserved_name(name):
+    def _refuse_reserved(
+        self, name: str, binder: str, pos, kind: str = "",
+    ) -> None:
+        """Record the reserved-name diagnostic when a binder of ``kind``
+        (default: a value binder) may not take ``name``. The single rule
+        every door below applies."""
+        if is_reserved_for(name, kind or binder):
             self._err(reserved_name_message(name, binder), pos)
 
     def _define_local(self, sym) -> None:
@@ -52,13 +59,14 @@ class _BuiltinNamesMixin:
         self.scope.define(sym)
 
     def _refuse_reserved_item(self, item) -> None:
-        """Refuse a module-level ``fun`` / ``const`` that takes a built-in
-        name, in whichever linked file declares it."""
-        binder = "function" if isinstance(item, A.FunDecl) else "constant"
-        declared = item.declared_name or item.name
-        self._refuse_reserved(declared, binder, item.name_pos or item.pos)
-        if item.name != declared and item.alias_pos is not None:
-            self._refuse_reserved(item.name, "import alias", item.alias_pos)
+        """Refuse every name a top-level ``item`` declares that its kind
+        may not take, in whichever linked file declares it."""
+        for d in item_declarations(item):
+            self._refuse_reserved(d.source_name, d.kind, d.pos)
+            if d.name != d.source_name and d.alias_pos is not None:
+                self._refuse_reserved(
+                    d.name, "import alias", d.alias_pos, kind=d.kind,
+                )
 
     def _refuse_builtin_value(self, e: A.Ident, sym) -> None:
         """A built-in function may only be called, never used as a value

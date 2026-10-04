@@ -25,24 +25,31 @@ once:
   (a binding whose position is the built-in position). Where a caller
   has both, they must agree, and :func:`check_agreement` fails closed
   when they do not;
-- :func:`is_reserved_name` and the two diagnostics -- the reservation the
-  decision relies on.
+- :func:`item_declarations` -- the one table of what each top-level item
+  declares, read by both the decision and the reservation;
+- :func:`is_reserved_name` / :func:`is_reserved_for` and the two
+  diagnostics -- the reservation the decision relies on.
 
 The IR carries the decision on every ``Call`` as a declared field
 (``Call.callee_kind``), so the backends read it instead of re-deciding
 by name.
 
-Declaring a TYPE with a built-in name (``type Range { ... }``) is not
-refused here; such a declaration is a top-level item, so the decision
-above already treats the name as the user's.
+A type-namespace declaration (a struct or sum type, a variant, a
+typestate, a trait, a capability, an extern component) may not take a
+built-in FUNCTION name either. Declaring one with a built-in TYPE name
+(``type Range { ... }``) is a separate matter and is not refused here;
+such a declaration is a top-level item, so the decision above already
+treats the name as the user's.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Callable, Iterable, Optional
 
 from . import capa_ast as A
+from .tokens import Pos
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +80,27 @@ def is_reserved_name(name: str) -> bool:
     return name in builtin_global_names()
 
 
+#: Declaration kinds in the TYPE namespace. They may not take a built-in
+#: FUNCTION name (a call of that name would otherwise reach the
+#: declaration). Built-in TYPE names (``Range``) are a separate class and
+#: are not reserved for them.
+TYPE_NAMESPACE_KINDS = frozenset({
+    "type", "variant", "typestate", "trait", "capability",
+    "extern component",
+})
+
+
+def is_reserved_for(name: str, kind: str) -> bool:
+    """True when a declaration of ``kind`` may not take ``name``: a
+    type-namespace declaration may not take a built-in function's name,
+    every other binder (value declarations, locals, parameters, aliases of
+    values) may not take any built-in global name."""
+    if kind in TYPE_NAMESPACE_KINDS:
+        from .builtins import FREE_FUNCTIONS
+        return name in FREE_FUNCTIONS
+    return is_reserved_name(name)
+
+
 def reserved_name_message(name: str, binder: str) -> str:
     """The one diagnostic for a binder that takes a built-in name."""
     from .builtins import FREE_FUNCTIONS
@@ -98,50 +126,92 @@ def builtin_value_message(name: str) -> str:
 
 
 class UnknownItemError(TypeError):
-    """A top-level AST item class is not registered in :data:`_ITEM_NAMES`.
+    """A top-level AST item class is not registered in :data:`_ITEM_DECLS`.
 
     Raised rather than skipped: an unregistered item could declare a name
     the identity decision would then not see."""
 
 
-def _named(item) -> tuple[str, ...]:
-    return (item.name,)
+@dataclass(frozen=True)
+class Declaration:
+    """One module-scope name a top-level item declares.
+
+    - ``name``: the visible (linked) name, the one calls resolve to;
+    - ``source_name``: the name its author wrote (they differ when the
+      loader renamed the declaration while linking);
+    - ``kind``: what is declared (``"function"``, ``"constant"``,
+      ``"type"``, ``"variant"``, ``"typestate"``, ``"trait"``,
+      ``"capability"``, ``"extern component"``);
+    - ``pos``: where the name is written;
+    - ``alias_pos``: where an ``import ... (x as y)`` alias bound
+      ``name``, or ``None``."""
+
+    name: str
+    source_name: str
+    kind: str
+    pos: Pos
+    alias_pos: Optional[Pos]
 
 
-def _sum_names(item: A.TypeSum) -> tuple[str, ...]:
+def _declaration(node, kind: str) -> Declaration:
+    return Declaration(
+        name=node.name,
+        source_name=node.declared_name or node.name,
+        kind=kind,
+        pos=node.name_pos or node.pos,
+        alias_pos=node.alias_pos,
+    )
+
+
+def _as(kind: str) -> Callable[[A.Item], tuple[Declaration, ...]]:
+    return lambda item: (_declaration(item, kind),)
+
+
+def _trait(item: A.TraitDecl) -> tuple[Declaration, ...]:
+    return (_declaration(
+        item, "capability" if item.is_capability else "trait",
+    ),)
+
+
+def _sum(item: A.TypeSum) -> tuple[Declaration, ...]:
     # A sum type declares its own name and each variant constructor.
-    return (item.name, *(v.name for v in item.variants))
+    return (
+        _declaration(item, "type"),
+        *(_declaration(v, "variant") for v in item.variants),
+    )
 
 
-def _no_names(item) -> tuple[str, ...]:
+def _nothing(item) -> tuple[Declaration, ...]:
     return ()
 
 
-#: EVERY top-level item class, mapped to the names it declares in the
-#: module scope. Mirrors the analyzer's global collection; the analyzer
-#: asserts the two agree on every program it accepts
-#: (``_BuiltinNamesMixin._assert_module_scope_agrees``).
-_ITEM_NAMES: dict[type, Callable[[A.Item], tuple[str, ...]]] = {
-    A.Import: _no_names,
-    A.ImplBlock: _no_names,
-    A.ConstDecl: _named,
-    A.FunDecl: _named,
-    A.TypeStruct: _named,
-    A.TypestateDecl: _named,
-    A.TraitDecl: _named,
-    A.ExternComponent: _named,
-    A.TypeSum: _sum_names,
+#: EVERY top-level item class, mapped to the module-scope names it
+#: declares. The ONE table both the identity decision
+#: (:func:`module_scope_names`) and the reserved-name refusal
+#: (``capa.analyzer._builtin_names``) read. The analyzer asserts it agrees
+#: with the analyzer's own global registration on every program that
+#: collects without error (``_BuiltinNamesMixin._assert_module_scope_agrees``).
+_ITEM_DECLS: dict[type, Callable[[A.Item], tuple[Declaration, ...]]] = {
+    A.Import: _nothing,
+    A.ImplBlock: _nothing,
+    A.ConstDecl: _as("constant"),
+    A.FunDecl: _as("function"),
+    A.TypeStruct: _as("type"),
+    A.TypestateDecl: _as("typestate"),
+    A.ExternComponent: _as("extern component"),
+    A.TraitDecl: _trait,
+    A.TypeSum: _sum,
 }
 
 
-def item_declared_names(item: A.Item) -> tuple[str, ...]:
-    """The module-scope names one top-level ``item`` declares."""
-    handler = _ITEM_NAMES.get(type(item))
+def item_declarations(item: A.Item) -> tuple[Declaration, ...]:
+    """The module-scope declarations of one top-level ``item``."""
+    handler = _ITEM_DECLS.get(type(item))
     if handler is None:
         raise UnknownItemError(
             f"{type(item).__name__} is not registered in "
-            f"capa._builtin_identity._ITEM_NAMES; register the names it "
-            f"declares (``_no_names`` when it declares none)"
+            f"capa._builtin_identity._ITEM_DECLS; register the names it "
+            f"declares (``_nothing`` when it declares none)"
         )
     return handler(item)
 
@@ -149,10 +219,9 @@ def item_declared_names(item: A.Item) -> tuple[str, ...]:
 def module_scope_names(module: A.Module) -> frozenset[str]:
     """Every name ``module`` declares at top level (the linked, visible
     names, so a selective-import alias counts under its alias)."""
-    names: set[str] = set()
-    for item in module.items:
-        names.update(item_declared_names(item))
-    return frozenset(names)
+    return frozenset(
+        d.name for item in module.items for d in item_declarations(item)
+    )
 
 
 # ---------------------------------------------------------------------------

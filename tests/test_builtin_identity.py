@@ -47,6 +47,8 @@ from tests._builtin_name_corpus import (
     builtin_global_names,
     parse,
     renamed,
+    TYPE_DECLS,
+    type_decl,
     user_fun,
 )
 
@@ -529,6 +531,128 @@ class TestIdentityProducerAgreement(unittest.TestCase):
         self.assertGreater(seen_ast, 50)
         self.assertGreater(seen_ir, 20)
         self.assertEqual(disagree, [])
+
+
+# ---------------------------------------------------------------------------
+# The guards around the one decision.
+# ---------------------------------------------------------------------------
+
+
+def _calls_named(module, name: str):
+    from capa import capa_ast as A
+    return [
+        n for n in A.walk(module)
+        if isinstance(n, A.Call) and isinstance(n.callee, A.Ident)
+        and n.callee.name == name
+    ]
+
+
+class TestIdentityGuards(unittest.TestCase):
+
+    def test_exit_analysis_reads_the_identity_decision(self):
+        # ``panic("x")`` here names a declared TYPE, not the built-in abort,
+        # so the function does not diverge and is missing its return. (The
+        # type declaration itself is refused too; the analysis continues.)
+        src = (
+            "type panic { m: String }\n\n"
+            "fun f() -> Int\n"
+            "    panic(\"x\")\n"
+        )
+        from capa import analyze
+        r = analyze(parse(src), source=src)
+        self.assertTrue(
+            any("not every path ends in `return`" in e.message
+                for e in r.errors),
+            [e.message for e in r.errors],
+        )
+
+    def test_a_binding_that_disagrees_with_the_decision_is_refused(self):
+        from capa._builtin_identity import IdentityDisagreement, builtin_call
+        from capa.analyzer import Symbol, SymbolKind
+        from capa.builtins import BUILTIN_POS
+        call = _calls_named(parse("fun f()\n    let z = to_int(1.5)\n"), "to_int")[0]
+        user = Symbol(name="to_int", kind=SymbolKind.FUNCTION, pos=call.pos)
+        builtin = Symbol(
+            name="to_int", kind=SymbolKind.FUNCTION, pos=BUILTIN_POS,
+        )
+        # The module declares nothing: the decision is "built-in", so a
+        # binding to a user symbol disagrees.
+        with self.assertRaises(IdentityDisagreement):
+            builtin_call(call, frozenset(), bindings={id(call.callee): user})
+        # The module declares ``to_int``: the decision is "user", so a
+        # binding to the built-in disagrees.
+        with self.assertRaises(IdentityDisagreement):
+            builtin_call(
+                call, frozenset({"to_int"}),
+                bindings={id(call.callee): builtin},
+            )
+        # Agreement passes in both directions.
+        self.assertTrue(builtin_call(
+            call, frozenset(), bindings={id(call.callee): builtin},
+        ))
+        self.assertFalse(builtin_call(
+            call, frozenset({"to_int"}), bindings={id(call.callee): user},
+        ))
+
+    def test_module_scope_guard_fires_on_a_missing_name(self):
+        from capa.analyzer import Analyzer
+        src = "trait Shape\n    fun go(self) -> Int\n\nfun f() -> Int\n    return 1\n"
+        m = parse(src)
+        az = Analyzer(source=src)
+        az._install_builtins()
+        az._init_module_scope(m)
+        az._collect_globals(m)
+        az._assert_module_scope_agrees()  # consistent: no error
+        az._module_scope_names = az._module_scope_names - {"Shape"}
+        with self.assertRaises(AssertionError):
+            az._assert_module_scope_agrees()
+
+    def test_every_declaration_kind_takes_its_name_from_the_builtin(self):
+        # For every kind of top-level declaration that can take a built-in
+        # function's name, the identity decision says "not the built-in"
+        # on every path: the module-scope names, the analyzer's own read,
+        # and the IR lowered with no analysis. A control with no
+        # declaration says "built-in" on the same paths.
+        from capa import analyze
+        from capa._builtin_identity import module_scope_names
+        from capa.ir import lower
+        from capa.ir._nodes import Call
+        from capa.ir._walk import walk_module
+        from capa.analyzer import Analyzer
+        wrong, cases = [], 0
+
+        def paths(src, name):
+            m = parse(src)
+            in_scope = name in module_scope_names(m)
+            az = Analyzer(source=src)
+            az.analyze(m)
+            call = _calls_named(m, name)[0]
+            analyzer_says = az._is_builtin_call(call, name)
+            try:
+                ir = lower(parse(src))
+                ir_says = [
+                    i.calls_builtin() for _f, i in walk_module(ir)
+                    if isinstance(i, Call) and i.callee_name == name
+                ]
+            except Exception as e:  # noqa: BLE001 - recorded, compared
+                ir_says = [f"<{type(e).__name__}>"]
+            return in_scope, analyzer_says, ir_says
+
+        for kind in TYPE_DECLS:
+            for name in builtin_function_names():
+                cases += 1
+                use = (
+                    "fun use_it()\n"
+                    f"    let r = {name}({FUNCTION_SPECS[name]['args']})\n"
+                )
+                got = paths(type_decl(kind, name) + "\n" + use, name)
+                if got[0] is not True or got[1] is not False or True in got[2]:
+                    wrong.append(f"{kind}:{name}: {got}")
+                ctrl = paths(use, name)
+                if ctrl[0] is not False or ctrl[1] is not True:
+                    wrong.append(f"control:{kind}:{name}: {ctrl}")
+        self.assertEqual(cases, len(TYPE_DECLS) * 14)
+        self.assertEqual(wrong, [])
 
 
 if __name__ == "__main__":

@@ -71,6 +71,9 @@ class _DeclarationsMixin:
         from . import Symbol, SymbolKind
 
         for item in module.items:
+            # Every name an item declares goes through the one
+            # reserved-name door first (``_builtin_names``).
+            self._refuse_reserved_item(item)
             if isinstance(item, A.Import):
                 # ``import`` is resolved by ``capa.loader.ModuleLoader``
                 # before the module reaches the analyzer: imported
@@ -82,7 +85,6 @@ class _DeclarationsMixin:
                 # symbol so the analyzer just ignores the directive.
                 continue
             elif isinstance(item, A.ConstDecl):
-                self._refuse_reserved_item(item)
                 # Type resolved in the next sub-pass once all
                 # top-level decls are registered.
                 self._declare_global(
@@ -162,7 +164,6 @@ class _DeclarationsMixin:
                 )
                 self._declare_global(sym)
             elif isinstance(item, A.FunDecl):
-                self._refuse_reserved_item(item)
                 self._declare_global(
                     Symbol(
                         name=item.name, kind=SymbolKind.FUNCTION,

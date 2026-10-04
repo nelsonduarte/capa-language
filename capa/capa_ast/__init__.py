@@ -33,7 +33,7 @@ The full set is re-exported here so that existing
 
 from __future__ import annotations
 
-from ._base import Expr, Item, Node, Pattern, Stmt, TypeExpr
+from ._base import Expr, Item, LinkedName, Node, Pattern, Stmt, TypeExpr
 from ._exprs import (
     Become,
     BinOp,

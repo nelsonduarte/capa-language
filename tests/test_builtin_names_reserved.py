@@ -9,8 +9,11 @@ FUNCTION may not be used as a value. With the names reserved, whether a
 call names the built-in is a fact about module scope alone, which every
 phase and every backend has.
 
-Declaring a TYPE with a built-in name is a separate matter and is not
-refused here (see the negatives).
+A type-namespace declaration (a struct or sum type, a variant, a
+typestate, a trait, a capability, an extern component) may not take one
+of the built-in FUNCTION names either. Declaring one with a built-in TYPE
+name (``type Range``) is a separate matter and is not refused here (see
+the negatives).
 
 The cases are GENERATED over the analyzer's own built-in table (see
 ``tests/_builtin_name_corpus.py``) crossed with every binder kind. Each
@@ -33,6 +36,8 @@ from tests._builtin_name_corpus import (
     fun_type,
     renamed,
     same_file,
+    TYPE_DECLS,
+    type_decl,
     user_fun,
 )
 
@@ -292,6 +297,125 @@ class TestReservedBindersDependency(unittest.TestCase):
             missed, [],
             f"{len(missed)} of {cases} dependency binders were not refused",
         )
+
+    def test_import_alias_refusal_points_at_the_alias(self):
+        main = "import helperpkg.util (noop, other as to_int)\n\nfun main()\n    noop()\n"
+        p = Project({"main.capa": main, _DEP: _DEP_TAIL})
+        try:
+            _, r = p.analyze()
+        finally:
+            p.close()
+        hits = [e for e in r.errors if reserved_marker("to_int") in e.message]
+        self.assertEqual(len(hits), 1, [e.message for e in r.errors])
+        self.assertEqual(
+            (hits[0].pos.line, hits[0].pos.col),
+            (1, main.index("to_int") + 1),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Type-namespace declarations (owner decision 2026-10-04): a struct, sum
+# type, variant, typestate, trait, capability or extern component may not
+# take one of the built-in FUNCTION names either, in the root or in any
+# dependency. Built-in TYPE names (``Range``) are a separate class.
+# ---------------------------------------------------------------------------
+
+
+def _type_decl_dep_shapes(kind: str) -> dict[str, tuple[dict[str, str], str]]:
+    """shape -> (files with ``{N}``, the file the refusal must name)."""
+    pub = type_decl(kind, "{N}", pub=True)
+    priv = type_decl(kind, "{N}")
+    return {
+        "dep_pub": ({"main.capa": _ROOT_WHOLE, _DEP: pub + "\n" + _DEP_TAIL}, _DEP),
+        "dep_private": ({"main.capa": _ROOT_WHOLE, _DEP: priv + "\n" + _DEP_TAIL}, _DEP),
+        "transitive_pub": ({
+            "main.capa": _ROOT_WHOLE,
+            _DEP: "import innerpkg.inner as inner\n\n" + _DEP_TAIL,
+            _INNER: pub,
+        }, _INNER),
+        "dep_unselected": ({
+            "main.capa": "import helperpkg.util (noop)\n\nfun main()\n    noop()\n",
+            _DEP: pub + "\n" + _DEP_TAIL,
+        }, _DEP),
+    }
+
+
+class TestReservedTypeDeclarations(unittest.TestCase):
+    """PIN-REFUSE for type-namespace declarations: every declaration kind x
+    every built-in FUNCTION name, root and dependency; the renamed twin is
+    accepted."""
+
+    def test_root_type_declarations_refuse_every_function_name(self):
+        missed, broken, cases = [], [], 0
+        for kind in TYPE_DECLS:
+            for name in builtin_function_names():
+                cases += 1
+                _, rx = analyze_source(type_decl(kind, name))
+                if not _has(rx, reserved_marker(name)):
+                    missed.append(f"{kind}:{name}")
+                _, rr = analyze_source(type_decl(kind, renamed(name)))
+                if not rr.ok:
+                    broken.append(f"{kind}:{rr.errors[0].message[:90]}")
+        self.assertEqual(cases, len(TYPE_DECLS) * 14)
+        self.assertEqual(broken, [], "controls must stay accepted")
+        self.assertEqual(missed, [], f"{len(missed)} of {cases} accepted")
+
+    def test_dependency_type_declarations_are_refused_in_their_file(self):
+        missed, wrong_file, broken, cases = [], [], [], 0
+        for kind in TYPE_DECLS:
+            for shape, (files, where) in _type_decl_dep_shapes(kind).items():
+                for name in builtin_function_names():
+                    cases += 1
+                    px = Project(_fill(files, name))
+                    try:
+                        _, rx = px.analyze()
+                    finally:
+                        px.close()
+                    hits = [
+                        e for e in rx.errors
+                        if reserved_marker(name) in e.message
+                    ]
+                    if not hits:
+                        missed.append(f"{shape}:{kind}:{name}")
+                    elif not any(
+                        same_file(e.filename, px.path(where)) for e in hits
+                    ):
+                        wrong_file.append(f"{shape}:{kind}:{name}")
+                    pr = Project(_fill(files, renamed(name)))
+                    try:
+                        _, rr = pr.analyze()
+                    finally:
+                        pr.close()
+                    if not rr.ok:
+                        broken.append(
+                            f"{shape}:{kind}: {rr.errors[0].message[:90]}"
+                        )
+        self.assertEqual(cases, len(TYPE_DECLS) * 4 * 14)
+        self.assertEqual(broken, [], "controls must stay accepted")
+        self.assertEqual(wrong_file, [], "refusal must name the binder's file")
+        self.assertEqual(missed, [], f"{len(missed)} of {cases} accepted")
+
+    def test_type_import_alias_is_refused_at_the_alias(self):
+        missed = []
+        for name in builtin_function_names():
+            main = (
+                f"import helperpkg.util (noop, Qtype as {name})\n\n"
+                "fun main()\n    noop()\n"
+            )
+            p = Project({
+                "main.capa": main,
+                _DEP: "pub type Qtype { k: Int }\n\n" + _DEP_TAIL,
+            })
+            try:
+                _, r = p.analyze()
+            finally:
+                p.close()
+            hits = [e for e in r.errors if reserved_marker(name) in e.message]
+            if not hits or (hits[0].pos.line, hits[0].pos.col) != (
+                1, main.index(f"as {name}") + 4,
+            ) or not same_file(hits[0].filename, p.path("main.capa")):
+                missed.append(name)
+        self.assertEqual(missed, [])
 
 
 # ---------------------------------------------------------------------------
