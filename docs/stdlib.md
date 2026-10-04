@@ -5,8 +5,9 @@ Capa program, no imports required.
 
 The names of the built-in functions, types, capabilities and variants
 are reserved: a program may not reuse them for its own variables,
-parameters, constants or functions, and a built-in function is called,
-never passed as a value. Methods are not affected. See
+constants or module-level functions, or for the parameters of a
+function, method or lambda that has a body, and a built-in function is
+called, never passed as a value. Method names are not affected. See
 [`reference.md`](reference.md) section 3.4 for the exact rule.
 
 ---

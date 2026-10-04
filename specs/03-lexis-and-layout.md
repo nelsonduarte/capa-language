@@ -181,9 +181,10 @@ elsewhere.
 **Reserved built-in names (not lexical).** The names of the built-in
 functions, types, capabilities and variants (`panic`, `to_int`, `Int`,
 `Stdio`, `Some`, ...) lex as ordinary `IDENT` tokens, but semantic
-analysis refuses them as the name of a variable, parameter, pattern
-binder, constant or module-level function, and refuses a built-in
-function's name for a type-level declaration. That rule, and the
+analysis refuses them as the name of a variable, a parameter of a
+function, method or lambda with a body, a pattern binder, a constant or
+a module-level function, and refuses a built-in function's name for a
+type-level declaration. That rule, and the
 single source of the name set, are in
 [08-functions-closures-modules.md](08-functions-closures-modules.md)
 section 8.

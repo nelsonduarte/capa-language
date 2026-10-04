@@ -42,11 +42,12 @@ written `()` in both type and expression position. The five primitives
 are seeded as symbols in the global scope by `register_builtins` in
 [`capa/builtins.py`](../capa/builtins.py) (a fact with direct
 consequence in [07-pattern-matching.md](07-pattern-matching.md)). Their
-names are reserved built-in names: no variable, parameter, pattern
-binder, constant or module-level function may take one (see
+names are reserved built-in names: no variable, parameter of a
+function, method or lambda with a body, pattern binder, constant or
+module-level function may take one (see
 [08-functions-closures-modules.md](08-functions-closures-modules.md)
-section 8). That rule does not refuse a TYPE declaration named like a
-built-in type.
+section 8). That rule does not refuse a type-level declaration named
+like a built-in type.
 
 Declaring and printing a value of each type, on both backends:
 

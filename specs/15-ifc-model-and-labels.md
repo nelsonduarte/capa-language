@@ -238,9 +238,11 @@ relabel and the manifest audit record are compile-time only
 (`_lower_call` in [`capa/ir/_lower_expr.py`](../capa/ir/_lower_expr.py);
 the gate keys on the call's built-in identity, decided once from module
 scope by [`capa/_builtin_identity.py`](../capa/_builtin_identity.py),
-and `declassify` is a reserved name that no user function, variable,
-constant or type can take, see [08-functions-closures-modules.md](08-functions-closures-modules.md)
-section 8). On the Python backend a real identity `declassify`
+and `declassify` is a reserved name that no module-level function,
+variable, constant or type-level declaration can take, see
+[08-functions-closures-modules.md](08-functions-closures-modules.md)
+section 8; a method named `declassify` is an ordinary method, and the
+rule does not cover generic type parameters). On the Python backend a real identity `declassify`
 call remains. The central consequence: **all IFC checking lives in
 the analyzer**, not in a runtime monitor. The identical output above
 confirms it (the value is the same with or without `declassify`).

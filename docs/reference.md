@@ -258,20 +258,28 @@ names, `Net` and `Result` are reserved.
 The rule holds in the program and in every module it imports, its
 dependencies included:
 
-- A `let` or `var` variable, a function or method parameter, a lambda
-  parameter, a loop variable, a pattern binder (in `let`, `for` and
-  `match`, including the struct-pattern shorthand `P { x }`), a `const`
-  and a module-level `fun` may not take any reserved name. Neither may
-  the alias of a selective import (`import m (f as panic)`).
+- A `let` or `var` variable, a parameter of a function, method or
+  lambda that has a body, a loop variable, a pattern binder (in `let`,
+  `for` and `match`, including the struct-pattern shorthand `P { x }`),
+  a `const` and a module-level `fun` may not take any reserved name.
+  Neither may the alias of a selectively imported function or constant
+  (`import m (f as panic)`).
 - A `type`, a variant, a `typestate`, a `trait`, a `capability` and an
-  `extern component` may not take the name of a built-in **function**.
-  Such a declaration named like a built-in type (`type Range { ... }`)
-  is not refused by this rule.
+  `extern component` may not take the name of a built-in **function**,
+  and neither may the alias of a selectively imported type. Any other
+  built-in name is not refused for these by this rule: a built-in type,
+  capability or variant name (`type Range { ... }`, `capability Stdio`)
+  is accepted here.
 - A built-in function may only be called. It cannot be used as a value
   (stored, passed or returned); wrap the call in a lambda instead.
 
-The reason is one identity per built-in name: since no binder can take
-a built-in's name, whether a call names the built-in is decided once,
+The parameters of a signature without a body (a `trait` or
+`capability` method signature, an `extern component` function) bind
+nothing and are not refused by this rule.
+
+The reason is one identity per built-in name: since no variable,
+parameter, pattern binder, constant or module-level function can take a
+built-in's name, whether a call names the built-in is decided once,
 from the module's top-level declarations, and the analyzer and every
 backend read that one decision.
 
@@ -321,10 +329,18 @@ The variant names `Ok`, `Err`, `Some` and `None` are refused by a
 separate rule with its own diagnostic (`variant 'Ok' is reserved
 (collides with the built-in Result::Ok constructor). ...`). The rule
 above is pinned by
-[`tests/test_builtin_names_reserved.py`](../tests/test_builtin_names_reserved.py),
-which crosses each binder kind it lists with every reserved name, in
-the root program and in dependencies, each against an accepted twin
-that differs only in the name. See
+[`tests/test_builtin_names_reserved.py`](../tests/test_builtin_names_reserved.py).
+In the root program it crosses each binder kind it lists with every
+reserved name, except three `match` shapes (a bare binder, a variant
+payload binder, a struct field pattern), which it crosses only with
+the names that do not start with a capital letter (a capitalised bare
+name in a `match` arm is a variant pattern, not a binder). It crosses a
+shorter list of dependency
+shapes (top-level functions and constants, a local, a parameter,
+selective-import aliases, a transitive dependency) with every reserved
+name, the type-level declarations with every built-in function name,
+and every value position with every built-in function. Each refused
+case has an accepted twin that differs only in the name. See
 [`specs/08-functions-closures-modules.md`](../specs/08-functions-closures-modules.md)
 section 8 for the mechanism.
 
@@ -644,10 +660,11 @@ summary. A `declassify` written
 outside any function body, in a top-level `const` initializer, is
 recorded too, under `module_declassifications`; the summary count is
 the module-wide total across both. Only the built-in counts. Its name
-is reserved (section 3.4), so no variable, parameter, constant,
-function or type in the program or its dependencies can be named
-`declassify`; a method of that name on a user type is an ordinary
-method and produces no record and no relabelling.
+is reserved (section 3.4), so in the program and its dependencies no
+variable, constant, module-level function or type-level declaration,
+and no parameter of a function, method or lambda with a body, can be
+named `declassify`. A method of that name on a user type is an
+ordinary method and produces no record and no relabelling.
 
 ```capa
 fun leak(env: Env, stdio: Stdio)

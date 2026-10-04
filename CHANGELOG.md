@@ -685,19 +685,24 @@ breaking changes and the discipline is still being shaped.
   built-in types (`Int`, `String`, `Option`, `Range`, `IoError`, `JsonValue`,
   ...), the built-in capabilities (`Stdio`, `Fs`, ...) and the built-in variants
   (`Some`, `None`, `Ok`, `Err`, `JNull`, ...) are reserved names:
-  - no `let` / `var` variable, function or method parameter, lambda parameter,
-    loop variable, pattern binder (struct-pattern shorthand included), `const`
-    or module-level `fun` may take one, and neither may the alias of a
-    selective import;
-  - a type, variant, typestate, trait, capability or extern component may not
-    take the name of a built-in function (one named like a built-in type, such
-    as `type Range { ... }`, is not refused by this rule);
+  - no `let` / `var` variable, parameter of a function, method or lambda that
+    has a body, loop variable, pattern binder (struct-pattern shorthand
+    included), `const` or module-level `fun` may take one, and neither may the
+    alias of a selectively imported function or constant;
+  - a type, variant, typestate, trait, capability or extern component, and the
+    alias of a selectively imported type, may not take the name of a built-in
+    function (any other built-in name, such as `type Range { ... }` or
+    `capability Stdio`, is not refused for these by this rule);
   - a built-in function may only be called, never used as a value.
+
+  The parameters of a signature without a body (a trait or capability method
+  signature, an extern component function) bind nothing and are not refused.
 
   The rule holds in the program and in every dependency, and a refusal is
   reported in the file that holds the declaration. The reason is one identity
-  per built-in name across the analyzer and every backend: since no binder can
-  take a built-in's name, whether a call names the built-in is decided once,
+  per built-in name across the analyzer and every backend: since no local
+  binder and no top-level value can take a built-in's name, whether a call
+  names the built-in is decided once,
   from the module's top-level declarations, and every phase reads that one
   decision. The reserved set has one source, what `register_builtins` in
   [`capa/builtins.py`](capa/builtins.py) installs, read by

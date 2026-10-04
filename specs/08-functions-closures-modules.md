@@ -682,16 +682,22 @@ Two classes of declaration, two rules (`is_reserved_for` in
 `capa/_builtin_identity.py`):
 
 - **Value binders take no reserved name.** A `let` / `var` variable, a
-  function or method parameter, a lambda parameter, a `for` variable, a
-  pattern binder in `let`, `for` or `match` (struct-pattern shorthand
-  included), a module-level `const`, a module-level `fun` (with or
-  without `pub`) and the alias of a selective import of one of these.
+  parameter of a function, method or lambda that has a body, a `for`
+  variable, a pattern binder in `let`, `for` or `match` (struct-pattern
+  shorthand included), a module-level `const`, a module-level `fun`
+  (with or without `pub`) and the alias of a selectively imported
+  function or constant.
 - **Type-namespace declarations take no built-in FUNCTION name.** A
   struct or sum type, a variant, a `typestate`, a `trait`, a
   `capability`, an `extern component` (the set `TYPE_NAMESPACE_KINDS`),
-  and the alias of a selective import of one of these. A declaration of
-  this class named like a built-in TYPE (`type Range { ... }`) is not
-  refused by this rule.
+  and the alias of a selectively imported type. Any other built-in name
+  (a built-in type, capability or variant name, such as
+  `type Range { ... }` or `capability Stdio`) is not refused for a
+  declaration of this class by this rule.
+
+The parameters of a signature without a body (a `trait` or
+`capability` method signature, an `extern component` function) bind
+nothing and are not refused.
 
 And a built-in FUNCTION may only be called, never used as a value
 (`_refuse_builtin_value` in
@@ -709,16 +715,24 @@ there.
 
 ### 8.2 Why
 
-Because no binder can take a built-in's name, whether an identifier
-names the built-in never depends on lexical scope. It is a fact about
+Because no local binder and no top-level value can take a built-in's
+name, whether a called identifier names the built-in never depends on
+lexical scope. It is a fact about
 module scope alone: a built-in-named callee is the built-in exactly when
 the linked module declares no top-level item of that name
 (`builtin_callee` / `builtin_call` in `capa/_builtin_identity.py`). That
 fact is available in every phase without the analyzer's bindings: the
 cross-function summary pass, IR lowering, the Python transpiler and the
 manifest. IR lowering records the decision on each call as
-`Call.callee_kind` ([`capa/ir/_nodes.py`](../capa/ir/_nodes.py)), and
-the backends read that field instead of deciding again by name. Where
+`Call.callee_kind` ([`capa/ir/_nodes.py`](../capa/ir/_nodes.py)). The
+Wasm emitter ([`capa/ir/_emit_wasm/`](../capa/ir/_emit_wasm/)) and the
+check that decides whether the bundled JSON helpers are needed
+([`capa/ir/_builtin_json.py`](../capa/ir/_builtin_json.py)) read that
+field instead of deciding again by name. The Python transpiler
+([`capa/transpiler/`](../capa/transpiler/)) does not read the IR field:
+it calls the same decision, `builtin_call` over `module_scope_names`,
+directly. (Consumers found by searching `capa/` for the field and for
+the two functions.) Where
 the analyzer's own binding is available it must agree with the
 decision; `check_agreement` raises `IdentityDisagreement` (a compiler
 defect, raised rather than compiled) when it does not.

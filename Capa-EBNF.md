@@ -162,7 +162,7 @@ digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
 
 Additional restriction: an identifier cannot equal a reserved word (see Section 3.5). This restriction is checked in the lexer, which classifies as `KEYWORD` those tokens that correspond to reserved words.
 
-A second, semantic restriction is not part of the lexical grammar: the names of the built-in functions, types, capabilities and variants (`panic`, `to_int`, `Int`, `Stdio`, `Some`, ...) are ordinary `IDENT` tokens, but the analyzer refuses them as the name of a variable, parameter, pattern binder, constant or module-level function, and refuses a built-in function's name for a type, variant, typestate, trait, capability or extern component. The rule and the single source of the name set are in [`docs/reference.md`](docs/reference.md) section 3.4.
+A second, semantic restriction is not part of the lexical grammar: the names of the built-in functions, types, capabilities and variants (`panic`, `to_int`, `Int`, `Stdio`, `Some`, ...) are ordinary `IDENT` tokens, but the analyzer refuses them as the name of a variable, a parameter of a function, method or lambda that has a body, a pattern binder, a constant or a module-level function, and refuses a built-in function's name for a type, variant, typestate, trait, capability or extern component. The rule and the single source of the name set are in [`docs/reference.md`](docs/reference.md) section 3.4.
 
 Practical notes. A leading underscore is allowed (`_x` is a valid identifier), and by convention indicates an intent of non-use. Identifiers starting with a digit are impossible by construction. Identifiers in Capa are case-sensitive: `user` and `User` are distinct identifiers.
 
