@@ -54,7 +54,7 @@ translation; where the two differ, this set governs.
 | 05 | [05-base-and-composite-types.md](05-base-and-composite-types.md) | Scalars, structs, sums, tuples, Option/Result, containers, equality |
 | 06 | [06-generics-and-traits.md](06-generics-and-traits.md) | Type parameters, traits, impl, monomorphisation |
 | 07 | [07-pattern-matching.md](07-pattern-matching.md) | `match`, patterns, exhaustiveness, destructuring and its type check |
-| 08 | [08-functions-closures-modules.md](08-functions-closures-modules.md) | Functions, the seven attributes, `consume`/`borrow`, closures, modules |
+| 08 | [08-functions-closures-modules.md](08-functions-closures-modules.md) | Functions, the seven attributes, `consume`/`borrow`, closures, modules, reserved built-in names |
 | 09 | [09-expressions-and-control.md](09-expressions-and-control.md) | Precedence, control flow, `?`, operator semantics |
 
 ### C. Capabilities
