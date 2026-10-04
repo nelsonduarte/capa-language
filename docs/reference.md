@@ -277,9 +277,9 @@ The parameters of a signature without a body (a `trait` or
 `capability` method signature, an `extern component` function) bind
 nothing and are not refused by this rule.
 
-The reason is one identity per built-in name: since no variable,
-parameter, pattern binder, constant or module-level function can take a
-built-in's name, whether a call names the built-in is decided once,
+The reason is one identity per built-in name: since no local binder
+and no top-level value can take a built-in's name, whether a call
+names the built-in is decided once,
 from the module's top-level declarations, and the analyzer and every
 backend read that one decision.
 
