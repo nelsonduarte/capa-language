@@ -10,7 +10,10 @@ them here breaks the load-time import cycle between those two modules
 (``_ifc_summary`` imported the tables from ``_ifc`` at module level;
 ``_ifc`` imported ``INTERNAL_SECRET`` / ``_bind`` / ``methods_by_name``
 back through function-local imports purely to dodge the cycle). Both
-now import everything they need from here at module level.
+now import everything they need from here at module level. The sink
+capabilities derived from the sink table and the one panic sink
+capability live here too, beside the table, so every reader (either
+pass, and the manifest's scope statement) takes them from one place.
 """
 
 from __future__ import annotations
@@ -56,6 +59,25 @@ _PUBLIC_SINKS: dict[tuple[str, str], set[int]] = {
     # tests/test_unaudited_secret_sink_fact.py when this landed.
     ("Serve", "send"):     {1},
 }
+
+# The capabilities that own a ``_PUBLIC_SINKS`` method, derived from the
+# table so the table stays their one source. The strict implicit-flow
+# (sink-reaching-pc) recognition in ``_ifc_summary`` reads it TYPE-AWARELY:
+# there a method call counts only when its receiver resolves to one of
+# these capabilities, so ``xs.get(i)`` on a ``List`` is not ``Net.get``
+# to that recognition. The summary's sink-capability ATTRIBUTION is by
+# method name instead and does not consult this set; what that means for
+# a recorded capability is stated in ``capa.manifest._scope``, which also
+# reads this set to derive the capabilities a record can name.
+_SINK_CAPS: frozenset = frozenset(cap for cap, _m in _PUBLIC_SINKS)
+
+# The capability a ``@secret`` message reaching the builtin ``panic`` is
+# recorded under: the message goes to stderr, the stream that capability
+# owns, although ``panic`` itself needs no capability. The ONE place this
+# lives: the direct panic producer in ``_ifc``, the callee-summary panic
+# producer in ``_ifc_summary`` and the scope sentence of
+# ``capa.manifest._scope`` all read it.
+_PANIC_SINK_CAP: str = "Stdio"
 
 # Built-in capability methods that PRODUCE secret data -- the sources.
 # Their result is labelled ``@secret`` regardless of argument labels,

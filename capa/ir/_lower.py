@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .. import capa_ast as A
+from .._builtin_identity import module_scope_names
 from ._nodes import (
     Module, Function, Param, Value, Instr,
     AssignConst, Reassign, BinOp, UnaryOp, Call, MethodCall,
@@ -58,15 +59,15 @@ class Lowerer(
     ):
         self.types = types or {}
         # The analyzer's ``id(Ident) -> Symbol`` binding map
-        # (``AnalysisResult.bindings``), threaded through so the
-        # declassify lowering can resolve the callee by BINDING
-        # identity rather than by name (see ``_lower_call``). Kept as
-        # ``None`` (not ``{}``) when the caller has no analysis in hand:
-        # the shared ``is_declassify_call`` predicate treats ``None`` as
-        # the name-only floor but an empty dict as "no binding here is
-        # the builtin", which would wrongly turn even the BUILT-IN
-        # ``declassify`` into a call to a function that does not exist.
+        # (``AnalysisResult.bindings``), or ``None`` when the caller has
+        # no analysis in hand. Built-in identity does not depend on it
+        # (it is decided from ``_scope_names``, see ``_lower_call``);
+        # when supplied it is checked to AGREE with that decision.
         self._bindings = bindings
+        # Every name the module declares at top level, the one input
+        # built-in identity is decided from (``capa._builtin_identity``).
+        # Set by ``lower_module``.
+        self._scope_names: frozenset[str] = frozenset()
         # Per-function state, reset on entry to each FunDecl.
         self._counter: dict = {"n": 0}
         self._instrs: list[Instr] = []
@@ -166,6 +167,7 @@ class Lowerer(
             for item in module.items
             if isinstance(item, (A.ConstDecl, A.FunDecl))
         }
+        self._scope_names = module_scope_names(module)
         # Feature #4 (F2a): index the typed foreign-component
         # declarations by name so a ``Bureau.submit(...)`` call site
         # lowers to a ForeignCall (see ``_lower_method_call``).

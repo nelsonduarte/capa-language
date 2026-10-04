@@ -1,0 +1,6 @@
+fun boom(s: String)
+    panic(s)
+
+fun main(env: Env)
+    let k = env.get("API_KEY").unwrap_or("none")
+    boom(k)

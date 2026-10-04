@@ -108,6 +108,25 @@ def methodcall_may_panic(instr) -> bool:
     return recv_ty.split("<", 1)[0] in ("Option", "Result")
 
 
+def module_reaches_panic(module) -> bool:
+    """True when ``module`` can reach the host ``panic``: a call of the
+    BUILT-IN ``panic`` (by the Call's ``callee_kind``, so a module function
+    of the same name does not count) or an Option / Result ``unwrap`` /
+    ``expect``, whose value-less arm reaches ``$panic``.
+
+    The ONE answer to "does this module import ``capa:host/panic``": the
+    core-wasm discovery pass and the WIT world both ask it, so the core
+    imports and the WIT interfaces cannot disagree (the Component Model
+    link would fail if they did)."""
+    from .._nodes import Call
+    from .._walk import walk_module
+    return any(
+        (isinstance(instr, Call) and instr.calls_builtin("panic"))
+        or methodcall_may_panic(instr)
+        for _fn, instr in walk_module(module)
+    )
+
+
 class _OptionEmissionMixin:
     def _emit_option_method_call(self, instr: MethodCall) -> None:
         """Dispatch a method on an ``Option<T>`` or ``Result<T, E>``
@@ -136,14 +155,14 @@ class _OptionEmissionMixin:
             return
         if method in ("unwrap", "expect"):
             # ``unwrap`` / ``expect`` emit ``call $panic`` on the
-            # value-less arm. ``$panic`` is the host import; a user
-            # function literally named ``panic`` is emitted as ``$panic``
-            # too, so the two would collide and the module would be
-            # invalid. The Python backend is immune (the runtime calls
-            # its own ``panic`` directly), so rather than miscompile we
-            # surface the conflict precisely. Shadowing ``panic`` while
-            # also calling ``.unwrap()`` is pathological; this keeps the
-            # backend honest instead of silently diverging.
+            # value-less arm. ``$panic`` is the host import; a module
+            # function named ``panic`` would be emitted as ``$panic`` too,
+            # so the two would collide and the module would be invalid.
+            # ``panic`` is a reserved built-in name, so the analyzer
+            # refuses such a function; this guard covers a module lowered
+            # without the analyzer and fails loud rather than miscompile.
+            # It is a check on the emitted function NAMESPACE, not a
+            # built-in identity decision.
             if "panic" in self._user_fn_names:
                 raise WasmEmissionError(
                     f"{sum_name}.{method} cannot be lowered while a "

@@ -1,0 +1,12 @@
+const TOKEN: @secret String = "s3cr3t"
+type Bag { shown: String, hidden: String }
+impl Bag
+    fun reveal(self) -> String
+        return self.shown
+fun leak(stdio: Stdio, secret: @secret String)
+    var bag: Bag = Bag { shown: "pub", hidden: "h" }
+    let f: Fun() -> Unit = fun() -> Unit => stdio.println(bag.reveal())
+    bag.shown = secret
+    f()
+fun main(stdio: Stdio)
+    leak(stdio, TOKEN)

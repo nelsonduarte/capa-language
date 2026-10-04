@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from . import capa_ast as A
+from .builtins import UNSAFE_BRIDGE_FUNCTIONS
 from .manifest import build_manifest, display_filename
 from .manifest._reachability import (
     _caps_via_type,
@@ -59,10 +60,11 @@ from .manifest._strings import _root_type_name
 from .tokens import Pos
 
 
-# The only builtins that consume an ``Unsafe`` token. A function whose
-# Unsafe is genuinely exercised must, directly or transitively, reach one
-# of these.
-_BRIDGE_CALLS = ("py_import", "py_invoke")
+# The only builtins that consume an ``Unsafe`` token, derived from the
+# built-in table by signature. A function whose Unsafe is genuinely
+# exercised must, directly or transitively, reach one of these. Built-in
+# names are reserved, so a call record naming one is the built-in.
+_BRIDGE_CALLS = UNSAFE_BRIDGE_FUNCTIONS
 
 # A callee we can resolve against the module's top-level functions must
 # be a plain identifier (method calls stringify as ``recv.method`` and

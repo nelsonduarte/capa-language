@@ -22,6 +22,7 @@ from ..errors import LexerError
 from ..lexer import Lexer
 from ..parser import Parser, ParserError
 from ..tokens import KEYWORDS
+from ..builtins import PUBLIC_FREE_FUNCTIONS
 from ..typesys import CAPABILITY_NAMES, TyFun, TyName, ty_str
 from .context import LspContext, walk
 
@@ -41,11 +42,9 @@ _BUILTIN_TYPES = [
 # added here, so neither was offered by the editor.
 _BUILTIN_CAPABILITIES = sorted(CAPABILITY_NAMES)
 _BUILTIN_VARIANTS = ["Some", "None", "Ok", "Err"]
-_BUILTIN_FUNCTIONS = [
-    "parse_int", "parse_float", "to_int", "to_float",
-    "new_map", "new_set", "parse_json", "to_json",
-    "py_import", "py_invoke", "panic",
-]
+# Functions are derived from the built-in table for the same reason as
+# capabilities: every public built-in function is completable.
+_BUILTIN_FUNCTIONS = list(PUBLIC_FREE_FUNCTIONS)
 
 
 @dataclass
@@ -98,8 +97,8 @@ def compute_completions(
 
 def _floor_completions() -> list[Completion]:
     """Keywords + built-ins. Always present so the suggestion list
-    never goes dark on a half-typed line. Types, variants and
-    functions are curated; capabilities are derived from the
+    never goes dark on a half-typed line. Types and variants are
+    curated; capabilities and functions are derived from the
     checker's registry so they cannot go stale."""
     out: list[Completion] = []
     for kw in KEYWORDS:

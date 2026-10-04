@@ -1,0 +1,10 @@
+fun pick_eq<T>(xs: List<T>, y: T) -> Result<T, String>
+    if xs.contains(y)
+        return Err("m")
+    return Ok(y)
+
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    let ys = [0].map(fun (x: Int) -> Int => if k.starts_with("s") then 3 else 9)
+    stdio.println("hit=${pick_eq(ys, 3).is_err()}")

@@ -56,6 +56,7 @@ from __future__ import annotations
 from typing import Mapping, Optional
 
 from .. import capa_ast as A
+from .._builtin_identity import module_scope_names
 from ..tokens import Pos
 from ..typesys import Ty
 
@@ -237,6 +238,10 @@ class Transpiler(
         # consumer is a ``.get``) so callers can pass the analyzer's
         # ``dict[int, Symbol]`` without tripping dict invariance.
         self.bindings: Mapping[int, object] = bindings or {}
+        # Every name the module declares at top level: the one input
+        # built-in identity is decided from (``capa._builtin_identity``).
+        # Set from the whole module before any item is emitted.
+        self._scope_names: frozenset[str] = frozenset()
         # Set of type names with a ``fun to_string(self) -> String``
         # declared in an impl block. The interpolated-string emitter
         # consults this to route ``${value}`` of such a type through
@@ -271,6 +276,7 @@ class Transpiler(
     def transpile(self, module: A.Module) -> str:
         self.em.lines.append(_PRELUDE.format(filename=self.filename).rstrip())
         self.em.blank()
+        self._scope_names = module_scope_names(module)
 
         # Pre-pass: discover every (type_name) with a
         # ``fun to_string(self) -> String`` declared in an impl
@@ -442,6 +448,7 @@ def transpile_repl(
     of a prior-turn struct would miss its ``to_string()``.
     """
     t = Transpiler(filename="<repl>", types=types, bindings=bindings)
+    t._scope_names = module_scope_names(module)
 
     # Pre-pass (a): Display protocol. Mirror transpile()'s loop so a
     # ${value} of a type with `fun to_string(self) -> String` routes

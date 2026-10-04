@@ -214,7 +214,11 @@ var_stmt = "var" IDENT   [ ":" type ] "=" expression NEWLINE
 only makes sense for a simple variable). Parser `_parse_let_stmt`
 ([`capa/parser/_statements.py`](../capa/parser/_statements.py) line 82)
 and `_parse_var_stmt` (line 96). The type annotation is optional
-(inferred from the RHS) except where inference does not reach.
+(inferred from the RHS) except where inference does not reach. Neither
+a `let` / `var` name nor a `for` variable may be a reserved built-in
+name (`panic`, `to_int`, `Int`, ...); see
+[08-functions-closures-modules.md](08-functions-closures-modules.md)
+section 8.
 
 Compound assignment (`=`, `+=`, `-=`, `*=`, `/=`, `%=`) applies to an
 lvalue (name, field, or index); only a `var` variable (or a mutable

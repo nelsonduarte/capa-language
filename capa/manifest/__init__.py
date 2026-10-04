@@ -44,6 +44,11 @@ The package is split internally:
   manifest / composed-SBOM artifacts, matched by the stable
   ``(container, name)`` identity and wrapped in the S1 content-integrity
   envelope (feature #2).
+- :mod:`._scope` - the ONE statement of what the ``unaudited_secret_sinks``
+  family is entitled to claim (``UNAUDITED_SECRET_SINKS_SCOPE``), carried
+  verbatim under ``UNAUDITED_SECRET_SINKS_SCOPE_KEY`` by every document
+  that emits the family and generated into the ``docs/trust-model.md``
+  register by ``tools/gen_trust_register.py``.
 - :mod:`._policy` - ORGANIZATION capability-compliance policies
   (feature #6, P1/P2): a product-level ``capa-policy.toml`` declares a
   FIXED set of predicate kinds (exclusion, product-subset, purity,
@@ -92,6 +97,7 @@ from ._provenance import (
     CAPA_BUILD_TYPE, CAPA_BUILDER_ID, SLSA_PREDICATE_TYPE,
     build_provenance,
 )
+from ._scope import UNAUDITED_SECRET_SINKS_SCOPE, UNAUDITED_SECRET_SINKS_SCOPE_KEY
 from ._spdx import SPDX_SPEC_VERSION, build_spdx
 from ._strings import _ty_text
 from ._timestamp import SourceDateEpochError, resolve_build_timestamp
@@ -100,6 +106,8 @@ from ._vex import build_vex_document, build_vex_entries
 
 __all__ = [
     "SCHEMA_VERSION",
+    "UNAUDITED_SECRET_SINKS_SCOPE",
+    "UNAUDITED_SECRET_SINKS_SCOPE_KEY",
     "CANONICALIZATION_SCHEME",
     "CONTENT_INTEGRITY_KEY",
     "DIGEST_ALGORITHM",

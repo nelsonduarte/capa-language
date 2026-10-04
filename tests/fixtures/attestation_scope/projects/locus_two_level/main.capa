@@ -1,0 +1,5 @@
+import midpkg.fwd as fwd
+
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    fwd.forward(stdio, k)

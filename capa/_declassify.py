@@ -33,9 +33,11 @@ and they disagreed in both directions:
 This module owns every half of the answer so the three cannot drift
 again:
 
-- :func:`is_declassify_call` -- the identity predicate. The analyzer's
-  ``_is_declassify_call`` delegates here, and so does the manifest
-  collector.
+- :func:`is_declassify_call` -- the identity predicate, a thin view of
+  :func:`capa._builtin_identity.builtin_call` (where every built-in's
+  identity is decided). The analyzer's ``_is_declassify_call``, the
+  cross-function summary pass, IR lowering and the manifest collector
+  all ask it.
 - :func:`declassification_site` -- the identity predicate plus the
   RECORDABLE shape and the "the value really is ``@secret``" filter,
   returning the raw parts of a manifest record.
@@ -54,10 +56,11 @@ from typing import Callable, Optional
 
 from . import _labels as L
 from . import capa_ast as A
+from ._builtin_identity import builtin_call
 from .tokens import Pos
 
 #: The built-in's source-level name. Matching this name is NECESSARY but
-#: never SUFFICIENT: identity of the binding decides (see
+#: never SUFFICIENT: the module-scope identity decision decides (see
 #: :func:`is_declassify_call`).
 DECLASSIFY = "declassify"
 
@@ -160,54 +163,19 @@ def module_expression_roots(module: A.Module) -> list[ExprRoot]:
     return roots
 
 
-def is_builtin_symbol(sym) -> bool:
-    """True when ``sym`` is a BUILT-IN binding (its position is the
-    synthetic built-in position rather than a real source location).
-
-    The one encoding of "this name still means the built-in", shared by
-    every caller below."""
-    if sym is None:
-        return False
-    from .builtins import BUILTIN_POS
-    return getattr(sym, "pos", None) == BUILTIN_POS
-
-
-def is_declassify_call(
-    node,
-    bindings: Optional[dict[int, object]] = None,
-    *,
-    module_scope=None,
-) -> bool:
+def is_declassify_call(node, module_names, bindings=None) -> bool:
     """True when ``node`` is a call to the BUILT-IN ``declassify``.
 
-    The name is NECESSARY but never SUFFICIENT: a user-defined
-    ``fun declassify(...)`` (or any other shadowing binding) is NOT a
-    declassification, and treating it as one puts a phantom audited
-    disclosure into a conformance artifact alongside the un-audited leak
-    the analyzer correctly reports -- a self-contradictory claim.
-
-    Identity is established from the most precise source the caller has:
-
-    - ``bindings`` -- the analyzer's ``id(Ident) -> Symbol`` map
-      (``AnalysisResult.bindings``). PER CALL SITE, so it sees a LOCAL
-      shadow too. What the analyzer's body walk and the manifest use.
-    - ``module_scope`` -- anything with ``.lookup(name)`` (the analyzer's
-      global scope). MODULE SCOPE only, for the cross-function summary
-      pass, which runs BEFORE the body walk populates ``bindings``.
-    - neither -- the name alone. A floor, NOT audit-grade, used only by
-      the analysis-free manifest callers (docgen, the LSP code lens, the
-      Wasm capability side-table, the migrator), none of which read the
-      declassification surface. Every artifact-producing CLI path
-      supplies ``bindings``."""
-    if not isinstance(node, A.Call):
-        return False
-    if not isinstance(node.callee, A.Ident) or node.callee.name != DECLASSIFY:
-        return False
-    if bindings is not None:
-        return is_builtin_symbol(bindings.get(id(node.callee)))
-    if module_scope is not None:
-        return is_builtin_symbol(module_scope.lookup(DECLASSIFY))
-    return True
+    The name is NECESSARY but never SUFFICIENT: identity is decided by
+    :func:`capa._builtin_identity.builtin_call`, the one place built-in
+    identity is decided. ``module_names`` is the module's top-level name
+    set (:func:`capa._builtin_identity.module_scope_names`), which every
+    caller has on every path, so there is no name-only floor. Built-in
+    names are reserved, so a program the analyzer accepts declares no
+    ``declassify`` of its own; the module-scope rule still answers for a
+    module that was never analyzed. ``bindings`` (the analyzer's
+    ``id(Ident) -> Symbol`` map), when supplied, is checked to agree."""
+    return builtin_call(node, module_names, DECLASSIFY, bindings=bindings)
 
 
 @dataclass(frozen=True)
@@ -226,6 +194,7 @@ class SiteParts:
 def declassification_site(
     node,
     *,
+    module_names,
     bindings: Optional[dict[int, object]] = None,
     expr_labels: Optional[dict[int, str]] = None,
 ) -> Optional[SiteParts]:
@@ -234,7 +203,8 @@ def declassification_site(
     Three conditions, all necessary:
 
     1. ``node`` is a call to the BUILT-IN ``declassify``
-       (:func:`is_declassify_call`);
+       (:func:`is_declassify_call` over ``module_names``, the module's
+       top-level names; ``bindings`` is only checked to agree);
     2. it has the RECORDABLE shape -- the value positionally, then
        ``reason:`` as a plain string literal. The analyzer rejects every
        other shape with a hard error, so this is defensive: a malformed
@@ -247,7 +217,7 @@ def declassification_site(
        disclosures that never happen. When ``expr_labels`` is ``None``
        (an analysis-free manifest) every syntactic site is recorded, the
        historical behaviour."""
-    if not is_declassify_call(node, bindings):
+    if not is_declassify_call(node, module_names, bindings):
         return None
     if len(node.args) != 2 or len(node.arg_names) != 2:
         return None

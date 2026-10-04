@@ -5,7 +5,8 @@
 > `consume`/`borrow` qualifiers); return types and the
 > return-on-every-path rule; closures/lambdas and capture; the module
 > system (`import`, `pub`/private visibility, and the unqualified,
-> alias-qualified and selective call forms). Anchored in the real
+> alias-qualified and selective call forms); the reserved built-in
+> names (section 8). Anchored in the real
 > parser, analyzer and loader, with examples executed on both backends.
 
 **Version documented.** `main` at commit `8e2c609` (`capa 1.32.0` plus
@@ -465,7 +466,8 @@ function calls, no mutation, no capability-dependent operations). Type
 checking and the propagation of the `@secret`/`@public` label to the
 global symbol are in `_check_const`
 ([`capa/analyzer/_items.py`](../capa/analyzer/_items.py)). `pub`
-exports the const to importing modules (section 7).
+exports the const to importing modules (section 7). A const may not
+take a reserved built-in name (section 8).
 
 ## 7. Modules, `import` and visibility
 
@@ -632,6 +634,9 @@ PI = 3.14159
 
 The two backends produce identical output.
 
+A selector's `as` alias is a declaration of the importing file and is
+judged by the reserved-name rule of section 8 at the alias itself.
+
 ### 7.5 The capability discipline crosses modules
 
 Authority flow does not change at a module boundary: a function in
@@ -643,6 +648,242 @@ never a capability value (see
 exported interface), so forwarding a `borrow` parameter into a callee
 from another module fails closed ([`capa/_borrow.py`](../capa/_borrow.py),
 FORWARDING section of the module docstring).
+
+## 8. Reserved built-in names
+
+The transcripts in this section were run on 2026-10-04, later than the
+commit named at the top of this chapter, `python -m capa` importing a
+`git archive` extraction of the tree that carries the rule.
+
+### 8.1 The rule
+
+The names of the built-in globals are reserved. The reserved set has
+one source: whatever `register_builtins`
+([`capa/builtins.py`](../capa/builtins.py)) installs in the global
+scope. `builtin_global_names`
+([`capa/_builtin_identity.py`](../capa/_builtin_identity.py)) obtains
+it by RUNNING that registration against a recording scope, so the set
+cannot drift from what the analyzer binds. It holds the built-in free
+functions (the `FREE_FUNCTIONS` table, including two
+compiler-internal ones whose names start with `_capa_`), the primitive
+types, the built-in capabilities, the other built-in types, `JsonValue`
+and the built-in variants. To print it:
+
+```
+python -c "from capa._builtin_identity import builtin_global_names; print(sorted(builtin_global_names()))"
+```
+
+`TestReservedNameSet` in
+[`tests/test_builtin_names_reserved.py`](../tests/test_builtin_names_reserved.py)
+pins its size (47) and a sample of members, so a change to the
+built-in table is a visible event.
+
+Two classes of declaration, two rules (`is_reserved_for` in
+`capa/_builtin_identity.py`):
+
+- **Value binders take no reserved name.** A `let` / `var` variable, a
+  parameter of a function, method or lambda that has a body, a `for`
+  variable, a pattern binder in `let`, `for` or `match` (struct-pattern
+  shorthand included), a module-level `const`, a module-level `fun`
+  (with or without `pub`) and the alias of a selectively imported
+  function or constant.
+- **Type-namespace declarations take no built-in FUNCTION name.** A
+  struct or sum type, a variant, a `typestate`, a `trait`, a
+  `capability`, an `extern component` (the set `TYPE_NAMESPACE_KINDS`),
+  and the alias of a selectively imported type. Any other built-in name
+  (a built-in type, capability or variant name, such as
+  `type Range { ... }` or `capability Stdio`) is not refused for a
+  declaration of this class by this rule.
+
+The parameters of a signature without a body (a `trait` or
+`capability` method signature, an `extern component` function) bind
+nothing and are not refused.
+
+And a built-in FUNCTION may only be called, never used as a value
+(`_refuse_builtin_value` in
+[`capa/analyzer/_builtin_names.py`](../capa/analyzer/_builtin_names.py)).
+
+The rule applies to every linked file: the root program, a direct
+dependency, a transitive one, and a dependency item the importer did
+not select. A refusal is reported in the file that holds the
+declaration. Method names and struct field names are not module-scope
+or lexical binders and are not affected.
+
+In a `match` arm a bare capitalised name is a variant pattern, not a
+binder, so `match` refuses only the reserved names that can be binders
+there.
+
+### 8.2 Why
+
+Because no local binder and no top-level value can take a built-in's
+name, whether a called identifier names the built-in never depends on
+lexical scope. It is a fact about
+module scope alone: a built-in-named callee is the built-in exactly when
+the linked module declares no top-level item of that name
+(`builtin_callee` / `builtin_call` in `capa/_builtin_identity.py`). That
+fact is available in every phase without the analyzer's bindings: the
+cross-function summary pass, IR lowering, the Python transpiler and the
+manifest. IR lowering records the decision on each call as
+`Call.callee_kind` ([`capa/ir/_nodes.py`](../capa/ir/_nodes.py)). The
+Wasm emitter ([`capa/ir/_emit_wasm/`](../capa/ir/_emit_wasm/)) and the
+check that decides whether the bundled JSON helpers are needed
+([`capa/ir/_builtin_json.py`](../capa/ir/_builtin_json.py)) read that
+field instead of deciding again by name. The Python transpiler
+([`capa/transpiler/`](../capa/transpiler/)) does not read the IR field:
+it calls the same decision, `builtin_call` over `module_scope_names`,
+directly. (Consumers found by searching `capa/` for the field and for
+the two functions.) Where
+the analyzer's own binding is available it must agree with the
+decision; `check_agreement` raises `IdentityDisagreement` (a compiler
+defect, raised rather than compiled) when it does not.
+
+### 8.3 Mechanism
+
+All in [`capa/analyzer/_builtin_names.py`](../capa/analyzer/_builtin_names.py):
+
+- `_define_local` is the one door every lexical binder goes through
+  (parameters, lambda parameters, `let` / `var` / `for` / `match`
+  pattern binders, struct-pattern shorthands); it applies the rule
+  before defining the name.
+- `_refuse_reserved_item` runs for every top-level item of every
+  linked file while the globals are collected. It reads the names an
+  item declares off the one table `_ITEM_DECLS` in
+  `capa/_builtin_identity.py`, judging the name the author wrote and,
+  for a selective-import alias, the alias itself. An item class missing
+  from that table raises `UnknownItemError` instead of being skipped.
+- `_assert_module_scope_agrees` fails closed when the table's
+  enumeration of top-level names differs from what the analyzer
+  registered, on every module whose globals collect without error.
+
+### 8.4 Diagnostics
+
+A variable, and a constant whose reserved name is not a function:
+
+```capa
+// reserved.capa
+fun main(stdio: Stdio)
+    let panic = 2
+    stdio.println("${panic}")
+```
+
+```
+$ python -m capa --check reserved.capa
+reserved.capa:3:9: error: 'panic' is the name of a built-in function and is reserved, so it cannot name a variable; rename the variable
+   3 |     let panic = 2
+               ^
+
+reserved.capa: 1 error
+```
+
+```capa
+// reserved_const.capa
+const Random: Int = 1
+
+fun main(stdio: Stdio)
+    stdio.println("${Random}")
+```
+
+```
+$ python -m capa --check reserved_const.capa
+reserved_const.capa:2:7: error: 'Random' is the name of a built-in name and is reserved, so it cannot name a constant; rename the constant
+   2 | const Random: Int = 1
+             ^
+
+reserved_const.capa: 1 error
+```
+
+A built-in function used as a value:
+
+```capa
+// value.capa
+fun main()
+    let xs = [1.5, 2.5]
+    let ys = xs.map(to_int)
+```
+
+```
+$ python -m capa --check value.capa
+value.capa:4:21: error: the built-in function 'to_int' cannot be used as a value; call it directly, or wrap the call in a lambda
+   4 |     let ys = xs.map(to_int)
+                           ^
+
+value.capa: 1 error
+```
+
+A local in a dependency (`main.capa` imports `helperpkg.util (scale)`,
+and `helperpkg/util.capa` binds `let to_float = n * 10`). The CLI
+prints the dependency file's full path with the host's separator,
+abbreviated here as `<project>/`:
+
+```
+$ python -m capa --check main.capa
+<project>/helperpkg/util.capa:2:9: error: 'to_float' is the name of a built-in function and is reserved, so it cannot name a variable; rename the variable
+   2 |     let to_float = n * 10
+               ^
+
+main.capa: 1 error
+```
+
+The binder word in the message follows the declaration: `variable`,
+`parameter`, `constant`, `function`, `type`, `variant`, `capability`
+and `import alias` are among those observed.
+
+### 8.5 What the tests pin, and the bound
+
+[`tests/test_builtin_names_reserved.py`](../tests/test_builtin_names_reserved.py)
+generates its cases from the analyzer's own built-in table, crossed
+with every binder kind it lists: root binders (more than 900 cases),
+dependency binders (direct, private, unselected, aliased in and out,
+transitive), the type-namespace kinds against every built-in function
+name in the root and in dependencies, the selective-import alias of a
+type, and every value position (`let`, `var`, list and tuple elements,
+positional and named arguments, method arguments, `return`, a `const`
+initializer, a lambda body, a `match` arm, an `if` expression, a struct
+field) against every built-in function. Every refused case has a twin
+that differs only in the name and must stay accepted, so a refusal
+cannot come from anything but the name. It also pins what stays legal:
+direct calls of every built-in function, a built-in called inside a
+lambda, methods and struct fields named like built-ins, `type Range`,
+and names that only contain a built-in name.
+[`tests/test_builtin_identity.py`](../tests/test_builtin_identity.py)
+pins the identity decision: that the analyzer, the module-scope
+decision and the IR `callee_kind` agree on a corpus of accepted
+programs, that the guards fire, and that the backends read the one
+decision.
+
+The bound: the binder kinds above are the ones the analyzer's two doors
+cover and the test module enumerates. A binder form this section does
+not list is not claimed by it.
+
+A program that avoids the reserved names compiles and runs as before.
+This one uses a method and a field named like built-ins and wraps
+`to_int` in a lambda:
+
+```capa
+// reserved_ok.capa
+type Gauge { panic: Int }
+
+impl Gauge
+    fun to_int(self) -> Int
+        return self.panic
+
+fun main(stdio: Stdio)
+    let limit = 2
+    let g = Gauge { panic: 7 }
+    let Gauge { panic: p } = g
+    let xs = [1.5, 2.5]
+    let ys = xs.map(fun (x: Float) -> Int => to_int(x))
+    stdio.println("${limit} ${g.to_int()} ${p} ${ys.length()}")
+```
+
+```
+$ python -m capa --run reserved_ok.capa
+2 7 7 2
+$ python -m capa --wasm --run reserved_ok.capa
+2 7 7 2
+$ python -m capa --wasm --component --wasi --run reserved_ok.capa
+2 7 7 2
+```
 
 ---
 

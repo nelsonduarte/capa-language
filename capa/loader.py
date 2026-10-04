@@ -1088,20 +1088,47 @@ def _apply_selective_import(
                 rename[v.name] = f"{prefix}__sel__{v.name}"
 
     if rename:
-        # Rename declarations in place, then rewrite references.
+        # Rename declarations in place, then rewrite references. A
+        # selected item renamed here took an ``as`` alias, bound at this
+        # import; every other rename hides an unselected item.
         for it in all_pub_items:
             name = _item_name(it)
             if name is not None and name in rename:
-                it.name = rename[name]
+                _rename_item(
+                    it, rename[name],
+                    alias_pos=(
+                        imp.alias_positions.get(name, imp.pos)
+                        if name in selected_originals else None
+                    ),
+                )
             # A hidden sum type's variant declarations are renamed
             # too, so the analyzer registers the variants under their
             # mangled names and the originals leave the global scope.
             if isinstance(it, A.TypeSum):
                 for v in it.variants:
                     if v.name in rename:
-                        v.name = rename[v.name]
+                        _rename_item(v, rename[v.name])
         _PrivateRenameWalker(rename).visit_module(module)
     return visible
+
+
+def _rename_item(
+    item: "A.LinkedName", new_name: str, *, alias_pos: Optional[Pos] = None,
+) -> None:
+    """Rename a declaration (a named top-level item or a sum variant) in
+    place while linking.
+
+    The ONE place the loader renames a declaration. The declaration keeps
+    the name its author wrote in ``declared_name``, and one an
+    ``import ... (x as y)`` selector bound under a new name records the
+    alias's position in ``alias_pos``, so the analyzer judges the names
+    the author actually wrote (built-in names are reserved in every
+    linked file) and points at the right file, line and column."""
+    if item.declared_name is None:
+        item.declared_name = item.name
+    if alias_pos is not None:
+        item.alias_pos = alias_pos
+    item.name = new_name
 
 
 def _mangle_private_items(
@@ -1143,7 +1170,7 @@ def _mangle_private_items(
         # All five item types that carry ``is_pub`` also expose a
         # ``name`` attribute. Updating it in place is the only
         # change at the declaration site.
-        item.name = new_name
+        _rename_item(item, new_name)
     if rename:
         _PrivateRenameWalker(rename).visit_module(module)
     return rename

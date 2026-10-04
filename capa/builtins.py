@@ -534,6 +534,43 @@ FREE_FUNCTIONS: dict[str, tuple[TyFun, list[str]]] = {
 }
 
 
+# Views of ``FREE_FUNCTIONS`` that other modules need. Each is DERIVED
+# from the table above, never restated, so a new built-in function joins
+# every list it belongs to by being added here once.
+
+#: Built-in functions that are part of the language surface (offered by
+#: editor completion). The underscore-prefixed ones are compiler-internal
+#: plumbing for the bundled JSON parser.
+PUBLIC_FREE_FUNCTIONS: tuple[str, ...] = tuple(
+    name for name in FREE_FUNCTIONS if not name.startswith("_")
+)
+
+#: Built-in functions that consume an ``Unsafe`` token: the Python
+#: interop bridge, recognised by its signature.
+UNSAFE_BRIDGE_FUNCTIONS: tuple[str, ...] = tuple(
+    name for name, (fty, _tparams) in FREE_FUNCTIONS.items()
+    if TyName("Unsafe") in fty.params
+)
+
+#: Built-in functions with NO same-named function in the Python runtime
+#: (``capa.runtime``), each for a stated reason: ``new_map`` / ``new_set``
+#: compile to collection literals, and ``_capa_str_span`` exists only for
+#: the bundled JSON parser, which the Python backend never lowers. Every
+#: other built-in function is exported by the runtime under its own name
+#: (``capa.runtime`` derives that part of its ``__all__`` from this).
+NO_PYTHON_RUNTIME_FUNCTIONS: frozenset[str] = frozenset({
+    "new_map", "new_set", "_capa_str_span",
+})
+
+
+def python_runtime_functions() -> tuple[str, ...]:
+    """The built-in functions the Python runtime exports by name."""
+    return tuple(
+        name for name in FREE_FUNCTIONS
+        if name not in NO_PYTHON_RUNTIME_FUNCTIONS
+    )
+
+
 # Variant constructors registered in the global scope. The payload
 # type uses TyVar literals tied to the owning sum type's type
 # params; an empty tuple means the variant has no payload.

@@ -1,0 +1,6 @@
+[package]
+name = "midpkg"
+version = "1.0.0"
+
+[dependencies.sinkpkg]
+path = "../sinkpkg"

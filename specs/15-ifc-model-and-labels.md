@@ -150,8 +150,8 @@ constsec.capa: ok (2 items, 4 expressions typed, 2 bindings)
 
 A public sink is a capability method that exfiltrates data out of the
 program. The `_PUBLIC_SINKS` table
-([`capa/analyzer/_ifc_tables.py`](../capa/analyzer/_ifc_tables.py)
-line 35) is the source of truth, with the (0-based) argument positions
+([`capa/analyzer/_ifc_tables.py`](../capa/analyzer/_ifc_tables.py))
+is the source of truth, with the (0-based) argument positions
 that are sinks:
 
 | Capability.method | Sink positions |
@@ -165,8 +165,8 @@ that are sinks:
 
 Besides the capability methods, `panic(message)` is treated as a
 public sink (it writes the message to stderr;
-`_check_ifc_panic_sink`,
-[`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py) line 3032),
+`_check_ifc_panic_sink` in
+[`capa/analyzer/_ifc.py`](../capa/analyzer/_ifc.py)),
 exactly like `Stdio.eprintln`.
 
 JUDGEMENT (why these positions and not others). Query methods / pure
@@ -235,10 +235,14 @@ token is s3cr3t
 run time. On the Wasm backend the lowering returns the value directly
 without emitting any `Call` instruction; the `@secret -> @public`
 relabel and the manifest audit record are compile-time only
-([`capa/ir/_lower_expr.py`](../capa/ir/_lower_expr.py) lines 609 to
-630; the gate keys on the callee's binding identity, so a user-defined
-`fun declassify(...)` that shadows the built-in is lowered as an
-ordinary call). On the Python backend a real identity `declassify`
+(`_lower_call` in [`capa/ir/_lower_expr.py`](../capa/ir/_lower_expr.py);
+the gate keys on the call's built-in identity, decided once from module
+scope by [`capa/_builtin_identity.py`](../capa/_builtin_identity.py),
+and `declassify` is a reserved name that no module-level function,
+variable, constant or type-level declaration can take, see
+[08-functions-closures-modules.md](08-functions-closures-modules.md)
+section 8; a method named `declassify` is an ordinary method, and the
+rule does not cover generic type parameters). On the Python backend a real identity `declassify`
 call remains. The central consequence: **all IFC checking lives in
 the analyzer**, not in a runtime monitor. The identical output above
 confirms it (the value is the same with or without `declassify`).

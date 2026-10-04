@@ -31,7 +31,7 @@ from typing import List, Optional
 
 from ._cap_binding import main_handle_cap_types, wit_cap_slot_name
 from ._cap_discovery import classify_cap_method
-from ._nodes import Module, Call
+from ._nodes import Module
 from ._walk import walk_module
 
 
@@ -834,21 +834,13 @@ from ._python_only_caps import find_rejection as find_python_only_rejection
 
 
 def _module_calls_panic(module: Module) -> bool:
-    """True when the module reaches the BUILTIN ``panic`` free
-    function, in which case the WIT world must import the
-    ``capa:host/panic`` interface (the core module declares the
-    matching import; see ``_emit_wasm.__init__``). Mirrors the
-    Wasm emitter's ``_uses_panic`` discovery exactly, including
-    the shadowing rule: a user-defined ``panic`` function wins
-    and produces no import."""
-    if any(fn.name == "panic" for fn in module.functions):
-        return False
-    from ._emit_wasm._option import methodcall_may_panic
-    return any(
-        (isinstance(instr, Call) and instr.callee_name == "panic")
-        or methodcall_may_panic(instr)
-        for _fn, instr in walk_module(module)
-    )
+    """True when the module reaches the host ``panic``, in which case the
+    WIT world must import the ``capa:host/panic`` interface. The answer is
+    :func:`capa.ir._emit_wasm._option.module_reaches_panic`, the same
+    function the core module's import discovery asks, so the two cannot
+    disagree."""
+    from ._emit_wasm._option import module_reaches_panic
+    return module_reaches_panic(module)
 
 
 # Experimental WASI mode: a DOCUMENTATION snapshot of the Random / Clock

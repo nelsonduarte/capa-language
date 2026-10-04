@@ -32,7 +32,8 @@ FIXED, enumerated set of predicate kinds:
                              egress capability from one package, whether via
                              an AUDITED declassify+egress co-residence or an
                              UN-AUDITED raw secret->egress-sink flow the
-                             information-flow analysis proved (the
+                             warn-tier information-flow check recorded,
+                             within the scope :mod:`._scope` states (the
                              exfiltration-path prohibition) (feature #6,
                              P2 + B1).
 
@@ -65,6 +66,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..pkg._manifest import _CEILING_CAP_NAMES
+from ._scope import UNAUDITED_SECRET_SINKS_SCOPE, UNAUDITED_SECRET_SINKS_SCOPE_KEY
 
 if sys.version_info >= (3, 11):
     import tomllib as _toml
@@ -471,6 +473,11 @@ def evaluate_policies(
             "TOP failure (a positively observed violation still fails). pass "
             "is product-wide: false if ANY policy fails."
         ),
+        # What a no-secret-egress result is entitled to claim on its
+        # un-audited half: the composed sets it quantifies over derive
+        # from the manifest's ``unaudited_secret_sinks``, whose scope is
+        # the one sentence of ``._scope``, carried in band.
+        UNAUDITED_SECRET_SINKS_SCOPE_KEY: UNAUDITED_SECRET_SINKS_SCOPE,
     }
 
 
@@ -872,27 +879,25 @@ def _eval_no_secret_egress(pol, composed, paths):
 
     * UN-AUDITED raw leak (B1): a package whose OWN un-audited
       secret->egress-sink set intersects the declared egress set -- a raw
-      @secret value the IFC analysis proved reaches an egress sink (e.g.
-      ``net.post(url, token)``) with NO ``declassify``. Capa's
-      secret-to-public-sink check is warn-only by default (a hard error only
-      under ``@strict_ifc``); this materializes that warn-tier fact as a
-      first-class per-package leak set. Because a strict-IFC flow is a
-      compile error (no manifest is produced), every recorded flow in a
-      COMPILED program is by construction un-audited and non-strict, so the
-      recorded set is EXACTLY the un-audited leaks in the shipped code.
+      @secret value the warn-tier information-flow check REPORTED reaching
+      an egress sink (e.g. ``net.post(url, token)``) with NO ``declassify``.
+      That set is the per-package roll-up of the manifest's per-function
+      ``unaudited_secret_sinks``; a recorded flow is one the warn-tier
+      check reported (it may be a documented sound over-report), and what
+      the ABSENCE of a record is entitled to claim is stated once, in
+      :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE`, which the report
+      carries verbatim under :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE_KEY`.
 
     A TOP in-scope package (its declassification status, capability set,
     and/or leak set unknown) FAILS CLOSED with ``authority_unknown`` unless
     ``allow_unknown`` is set; a named absent package is ``unsatisfiable``.
 
-    What this proves, precisely: no secret value reaches a declared egress
-    capability from one package, audited or not. The two authorities (unmask
-    + send) are separated across packages AND no un-audited raw secret->sink
-    flow to a declared egress capability exists in any in-scope package. The
-    honest residual is now the IFC analysis's own detection completeness (a
-    secret the flow analysis fails to track cannot be recorded), NOT the
-    warn-vs-strict distinction: a raw leak no longer needs ``@strict_ifc`` to
-    be caught by this predicate."""
+    What this proves, precisely: no in-scope package both declassifies
+    secret data and holds a declared egress capability (the co-residence
+    half, computed from the recorded declassify sites and the
+    over-approximating composed capability set), and no RECORDED un-audited
+    secret->sink flow lands on a declared egress capability (the B1 half,
+    bounded by the scope sentence referenced above and not restated here)."""
     egress = set(pol.params["capabilities"])
     display = sorted(egress)
     target = pol.params["package"]

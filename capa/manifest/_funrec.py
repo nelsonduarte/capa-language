@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from .. import capa_ast as A
 from .._borrow import borrow_escapes, is_fun_typed_param
+from .._builtin_identity import module_scope_names
 from .._declassify import FUNCTION_KINDS, module_expression_roots
 from .._owned_obligation import (
     field_roots_from_module,
@@ -35,6 +36,7 @@ from ._reachability import (
     caps_reachable_via_sig,
     compute_reachability,
 )
+from ._scope import UNAUDITED_SECRET_SINKS_SCOPE, UNAUDITED_SECRET_SINKS_SCOPE_KEY
 from ._strings import _contains_fun_type, _root_type_name, _ty_text
 
 
@@ -375,14 +377,13 @@ def build_manifest(
     have run the analyser first; this builder does not re-validate
     attributes or types.
 
-    ``bindings`` is the analyser's ``id(Ident) -> Symbol`` map
-    (``AnalysisResult.bindings``). When supplied, a ``declassify`` site
-    is recognised by the IDENTITY of its callee binding rather than by
-    its name, so a user-defined ``fun declassify(...)`` does not produce
-    a phantom declassification record. Every artifact-producing CLI path
-    supplies it; the analysis-free callers (docgen, the LSP code lens,
-    the Wasm capability side-table, the migrator) do not read the
-    declassification surface at all.
+    A ``declassify`` site is recognised by built-in IDENTITY, decided
+    from the module's own top-level names
+    (:func:`capa._builtin_identity.module_scope_names`), never by the
+    callee's name alone, so it is decided the same way with or without
+    an analysis. ``bindings`` is the analyser's ``id(Ident) -> Symbol``
+    map (``AnalysisResult.bindings``); when supplied it is checked to
+    agree with that decision.
 
     ``expr_labels`` is the analyser's ``id(expr) -> label`` map
     (``AnalysisResult.expr_labels``). When supplied, the
@@ -400,10 +401,13 @@ def build_manifest(
     ``unaudited_secret_sinks`` (feature #6, B1) is the analyzer's
     ``AnalysisResult.unaudited_secret_sinks`` (``id(FunDecl)`` -> list of
     ``(sink capability, source Pos)``): the WARN-tier un-audited
-    secret->public-sink flows. When supplied, each function record carries
-    the ``unaudited_secret_sinks`` evidence for its body; when omitted (a
+    secret->public-sink flows it recorded. When supplied, each function
+    record carries the records keyed to that function; when omitted (a
     manifest built without the accompanying analysis) the field is an
-    empty list, the historical shape.
+    empty list, the historical shape. What that field is entitled to
+    claim is stated once, in :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE`,
+    and carried in every manifest under the top-level
+    :data:`._scope.UNAUDITED_SECRET_SINKS_SCOPE_KEY`.
     """
     if capa_version is None:
         from .. import __version__ as capa_version
@@ -482,6 +486,9 @@ def build_manifest(
     # information for the SBOM and for F2 to later flip to bounded.
     from ..foreign import extern_component_names
     foreign_names: set[str] = extern_component_names(module)
+    # The module's top-level names: the one input built-in identity is
+    # decided from (``capa._builtin_identity``).
+    module_names = module_scope_names(module)
     foreign_components_block = _foreign_components_block(module)
 
     # Build per-function records. Walks both top-level funs and
@@ -511,6 +518,7 @@ def build_manifest(
                 container=None, implicit_cap=None,
                 reachable=reachable, unprovable=unprovable,
                 linear_names=linear_names, field_roots=field_roots,
+                module_names=module_names,
                 bindings=bindings,
                 expr_labels=expr_labels,
                 foreign_names=foreign_names,
@@ -530,6 +538,7 @@ def build_manifest(
                     implicit_cap=implicit,
                     reachable=reachable, unprovable=unprovable,
                     linear_names=linear_names, field_roots=field_roots,
+                    module_names=module_names,
                     bindings=bindings,
                     expr_labels=expr_labels,
                     foreign_names=foreign_names,
@@ -544,7 +553,8 @@ def build_manifest(
     # block; the summary counts BOTH so the artifact's
     # ``declassification_sites`` is the module-wide total it claims to be.
     module_declassifications = _module_declassifications(
-        module, filename, bindings=bindings, expr_labels=expr_labels,
+        module, filename, module_names=module_names, bindings=bindings,
+        expr_labels=expr_labels,
     )
 
     summary = {
@@ -604,6 +614,10 @@ def build_manifest(
         # runtime that makes the bound SOUND is F2.
         "foreign_components": foreign_components_block,
         "functions": functions,
+        # What the per-function ``unaudited_secret_sinks`` lists above are
+        # entitled to claim, stated once in ``._scope`` and carried in band
+        # so the reader of the artefact has it. Additive: no schema bump.
+        UNAUDITED_SECRET_SINKS_SCOPE_KEY: UNAUDITED_SECRET_SINKS_SCOPE,
         # Roadmap S2.5: the audited @secret -> @public bridges that sit
         # OUTSIDE any function body (a top-level ``const`` initializer).
         # Same record shape as a function record's ``declassifications``
@@ -630,6 +644,7 @@ def _module_declassifications(
     module: A.Module,
     filename: str,
     *,
+    module_names,
     bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
 ) -> list[dict[str, Any]]:
@@ -661,7 +676,8 @@ def _module_declassifications(
             continue
         sites: list[dict[str, Any]] = []
         _collect_declassifications(
-            root.node, sites, bindings=bindings, expr_labels=expr_labels,
+            root.node, sites, module_names=module_names, bindings=bindings,
+            expr_labels=expr_labels,
         )
         if not sites:
             continue
@@ -752,6 +768,7 @@ def _fun_record(
     unprovable: Optional[set[str]] = None,
     linear_names: Optional[set[str]] = None,
     field_roots: Optional[dict[str, list[str]]] = None,
+    module_names,
     bindings: Optional[dict[int, Any]] = None,
     expr_labels: Optional[dict[int, str]] = None,
     foreign_names: Optional[set[str]] = None,
@@ -1040,21 +1057,20 @@ def _fun_record(
     # secret data cross to a public sink.
     declassifications: list[dict[str, Any]] = []
     _collect_declassifications(
-        fn.body, declassifications,
+        fn.body, declassifications, module_names=module_names,
         bindings=bindings, expr_labels=expr_labels,
     )
 
-    # Feature #6 (B1): the UN-AUDITED @secret -> public-sink flows the IFC
-    # analysis surfaced as WARN-tier diagnostics for this function, keyed by
-    # the FunDecl's identity in ``unaudited_secret_sinks`` (the analyzer's
-    # ``AnalysisResult.unaudited_secret_sinks``). Each entry records the
-    # egress ``capability`` reached and the function-local source ``pos``
+    # Feature #6 (B1): the WARN-tier flows the analysis RECORDED for this
+    # function, keyed by the FunDecl's identity in ``unaudited_secret_sinks``
+    # (the analyzer's ``AnalysisResult.unaudited_secret_sinks``). Each entry
+    # records the egress ``capability`` and the function-local source ``pos``
     # (``<line>:<col>``, no path -- the owning file is prepended in the
     # composed roll-up, exactly as for ``declassifications``). Deterministic:
-    # de-duplicated and sorted by (capability, pos). A raw secret reaching an
-    # egress capability with NO declassify is an un-audited leak the
-    # ``no-secret-egress`` policy treats as a concrete violation; an empty
-    # list means the analysis found no such flow in this function's body.
+    # de-duplicated and sorted by (capability, pos). A recorded flow is one the
+    # ``no-secret-egress`` policy treats as a concrete violation; what the
+    # list, and an empty one, is entitled to claim is stated once, in
+    # ``._scope``, and carried in every manifest.
     unaudited_sinks_out: list[dict[str, str]] = []
     if unaudited_secret_sinks:
         seen_sinks: set[tuple[str, str]] = set()

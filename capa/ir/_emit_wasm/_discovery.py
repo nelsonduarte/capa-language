@@ -268,16 +268,9 @@ class _DiscoveryMixin:
         return False
 
     def _uses_parse_int(self, module: Module) -> bool:
-        # A user-defined ``parse_int`` shadows the builtin: emit the
-        # user function instead of the runtime helper (matches the
-        # Python backend, where the user's function wins).
-        if any(fn.name == "parse_int" for fn in module.functions):
-            return False
         return self._uses_builtin_free_fn(module, "parse_int")
 
     def _uses_parse_float(self, module: Module) -> bool:
-        if any(fn.name == "parse_float" for fn in module.functions):
-            return False
         return self._uses_builtin_free_fn(module, "parse_float")
 
     def _uses_capa_chr(self, module: Module) -> bool:
@@ -287,8 +280,6 @@ class _DiscoveryMixin:
         runs after ``_builtin_json.inject_into`` splices the parser
         functions in, so the call inside ``__cj_parse_string`` is
         visible here."""
-        if any(fn.name == "_capa_chr" for fn in module.functions):
-            return False
         return self._uses_builtin_free_fn(module, "_capa_chr")
 
     def _uses_str_span(self, module: Module) -> bool:
@@ -299,36 +290,23 @@ class _DiscoveryMixin:
         after ``_builtin_json.inject_into`` splices the parser
         functions in, so the calls inside ``__cj_parse_string`` /
         ``__cj_finish_number`` are visible here."""
-        if any(fn.name == "_capa_str_span" for fn in module.functions):
-            return False
         return self._uses_builtin_free_fn(module, "_capa_str_span")
 
     def _uses_panic(self, module: Module) -> bool:
-        """Gates the ``capa:host/panic`` import emission. A
-        user-defined ``panic`` shadows the builtin (the user
-        function is emitted and called instead), matching the
-        Python backend and the parse_int rule above.
-
-        Besides a direct ``panic(...)`` call, an Option / Result
-        ``unwrap`` / ``expect`` reaches ``$panic`` on its value-less
-        arm, so the import must also be emitted when one is present.
-        Shadowing a user ``panic`` still wins (it has no host import)."""
-        if any(fn.name == "panic" for fn in module.functions):
-            return False
-        if self._uses_builtin_free_fn(module, "panic"):
-            return True
-        from ._option import methodcall_may_panic
-        return any(
-            methodcall_may_panic(instr)
-            for _fn, instr in walk_module(module)
-        )
+        """Gates the ``capa:host/panic`` import emission. The answer is
+        :func:`._option.module_reaches_panic`, the one the WIT world
+        reads too."""
+        from ._option import module_reaches_panic
+        return module_reaches_panic(module)
 
     def _uses_builtin_free_fn(self, module: Module, name: str) -> bool:
-        """True if any function / impl-method / lambda body Calls
-        ``name``. Used to gate emission of optional runtime
+        """True if any function / impl-method / lambda body calls the
+        BUILT-IN ``name`` (by the Call's ``callee_kind``: a module
+        function of the same name is the user's, and is emitted and
+        called as such). Used to gate emission of optional runtime
         helpers like ``$parse_int`` / ``$parse_float``."""
         return any(
-            isinstance(instr, Call) and instr.callee_name == name
+            isinstance(instr, Call) and instr.calls_builtin(name)
             for _fn, instr in walk_module(module)
         )
 
@@ -379,7 +357,7 @@ class _DiscoveryMixin:
         touch-point pulls in the ``system-seed`` host import via
         the lazy-init path."""
         for _fn, instr in walk_module(module):
-            if isinstance(instr, Call) and instr.callee_name == "Random":
+            if isinstance(instr, Call) and instr.calls_builtin("Random"):
                 return True
             if isinstance(instr, MethodCall):
                 cap = instr.cap_used
@@ -637,7 +615,7 @@ class _DiscoveryMixin:
             # the program only ever constructs Random without
             # calling a method on it.
             if (isinstance(instr, Call)
-                    and instr.callee_name == "Random"):
+                    and instr.calls_builtin("Random")):
                 self._used_caps.add(("Random", "system_seed"))
             # parse_json / to_json used to route through a synthetic
             # ``Json`` host capability with canonical-ABI imports.

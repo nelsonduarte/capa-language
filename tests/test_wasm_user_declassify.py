@@ -11,10 +11,15 @@ printed the user function's result under ``--run`` (Python) and the
 untouched first argument under ``--run --wasm``, both exit 0, no
 diagnostic -- a silent backend divergence.
 
-The gate now keys on the callee's BINDING identity via the shared
+The gate now keys on built-in IDENTITY via the shared
 ``capa._declassify.is_declassify_call`` predicate (the one the analyzer
-and the manifest already use), so only the built-in is stripped. These
-tests pin:
+and the manifest already use), so only the built-in is stripped.
+
+``declassify`` is now a reserved built-in name, so ``--check`` refuses a
+user function of that name outright. The programs below are compiled past
+that refusal (their only diagnostic), the way the compiler's
+analysis-free lowering paths compile a module, to pin that the lowering
+still reads the one module-scope identity decision. These tests pin:
 
 - the lowering itself (no Wasm toolchain needed): a user ``declassify``
   leaves a ``Call`` in the CIR, the built-in leaves none;
@@ -37,6 +42,7 @@ import unittest
 from capa import Lexer, Parser, analyze, transpile
 from capa.ir import compile_wasm, lower
 from capa.ir._nodes import Call
+from tests._builtin_name_corpus import assert_only_reserved_refusals
 
 
 # A user function named ``declassify`` whose return value ("USERFUNC_RAN")
@@ -83,12 +89,12 @@ def _has_wasmtime_py() -> bool:
 
 
 def _parse_and_analyze(src: str):
+    """Analyze ``src``. A user ``declassify`` is refused (a reserved
+    name); that refusal must be the only diagnostic."""
     module = Parser(Lexer(src).lex(), source=src).parse_module()
     result = analyze(module, source=src)
     if not result.ok:
-        raise AssertionError(
-            f"analyzer errors: {[e.message for e in result.errors]}"
-        )
+        assert_only_reserved_refusals(result)
     return module, result
 
 
@@ -152,6 +158,13 @@ def _run_wasm(src: str) -> str:
 
 class TestUserDeclassifyLowering(unittest.TestCase):
     """CIR-level checks. No Wasm toolchain needed, so these always run."""
+
+    def test_user_declassify_is_refused_by_the_analyzer(self):
+        for src in (_USER_DECLASSIFY_SRC, _USER_DECLASSIFY_ARITY1_SRC):
+            module = Parser(Lexer(src).lex(), source=src).parse_module()
+            result = analyze(module, source=src)
+            self.assertFalse(result.ok)
+            assert_only_reserved_refusals(result)
 
     def test_user_declassify_lowers_to_a_call(self):
         # The user function must be invoked: a Call to ``declassify``

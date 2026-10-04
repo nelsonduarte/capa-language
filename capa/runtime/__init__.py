@@ -36,6 +36,7 @@ is the names re-exported here and named in ``__all__``.
 
 from __future__ import annotations
 
+from ..builtins import python_runtime_functions as _python_runtime_functions
 from ._capabilities import (
     Clock,
     Db,
@@ -106,6 +107,9 @@ from ._safety import (
 
 
 __all__ = [
+    # Every built-in function with a runtime twin, derived from the
+    # compiler's built-in table (see the guard below the list).
+    *_python_runtime_functions(),
     "Ok",
     "Err",
     "Result",
@@ -123,12 +127,6 @@ __all__ = [
     "Db",
     "Serve",
     "Unsafe",
-    "py_import",
-    "py_invoke",
-    "to_float",
-    "to_int",
-    "panic",
-    "declassify",
     "_propagate_err",
     "_capa_iadd",
     "_capa_isub",
@@ -145,5 +143,16 @@ __all__ = [
     "_capa_substring",
     "_capa_to_lower",
     "_capa_to_upper",
-    "_capa_chr",
 ]
+
+# Fail closed: the derived names must all be bound here. A built-in
+# function added to the table without a runtime twin (and without being
+# listed in ``NO_PYTHON_RUNTIME_FUNCTIONS``) stops the import rather
+# than shipping a runtime that cannot run the program.
+_missing_twins = [n for n in _python_runtime_functions() if n not in globals()]
+if _missing_twins:
+    raise ImportError(
+        f"capa.runtime has no implementation of the built-in function(s) "
+        f"{_missing_twins}"
+    )
+del _missing_twins

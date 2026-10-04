@@ -1,0 +1,14 @@
+fun pick(k: String) -> Int
+    if k.starts_with("s")
+        return 1
+    return 0
+
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    var i: Int = 0
+    while i < 5
+        i = i + 1
+        stdio.println("tick")
+        if pick(k) == 1
+            break

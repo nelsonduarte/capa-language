@@ -12,7 +12,8 @@ for IDE features.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 from ..tokens import Pos
 
@@ -27,6 +28,30 @@ class Node:
 class Item(Node):
     """Top-level declaration: import, type, trait, impl, fun, const."""
     pass
+
+
+@dataclass(kw_only=True)
+class LinkedName:
+    """The source name of a declaration the module loader may rename.
+
+    Mixed into every node that declares a module-scope name (the named
+    top-level items and the variants of a sum type). The loader sets these
+    when it RENAMES such a declaration while linking (privacy mangling, a
+    selective import hiding it or binding it under an ``as`` alias), so
+    the analyzer still sees the names the author wrote:
+
+    - ``declared_name``: the name at the declaration (``None`` while the
+      node still carries it);
+    - ``alias_pos``: the position of the ``as`` alias in the
+      ``import ... (x as y)`` selector that bound the current name
+      (``None`` when no alias did).
+
+    Read by the reserved built-in name rule
+    (``capa._builtin_identity.item_declarations``)."""
+    declared_name: Optional[str] = field(
+        default=None, repr=False, compare=False,
+    )
+    alias_pos: Optional[Pos] = field(default=None, repr=False, compare=False)
 
 
 @dataclass(kw_only=True)

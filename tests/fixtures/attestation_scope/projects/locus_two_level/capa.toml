@@ -1,0 +1,9 @@
+[package]
+name = "rootpkg"
+version = "1.0.0"
+
+[dependencies.midpkg]
+path = "vendor/midpkg"
+
+[dependencies.sinkpkg]
+path = "vendor/sinkpkg"

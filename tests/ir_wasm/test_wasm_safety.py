@@ -389,14 +389,21 @@ class TestWasmSafetyTraps(unittest.TestCase):
         self.assertEqual(buf.getvalue(), "None\n")
 
     # ---- Bug #7: user-defined parse_int / parse_float shadow the
-    # builtin (no "duplicate func identifier" parse error) ----------
+    # builtin (no "duplicate func identifier" parse error). Both names
+    # are reserved now, so ``--check`` refuses such a function; compiled
+    # past that refusal, the module function still wins on Wasm. ----
 
     def _run_main_stdout(self, src: str) -> str:
         import io
         import sys
         from capa.runtime._wasm_host import WasmHost
-        _, types, ast_mod = _parse_lower(src)
-        blob = compile_wasm(ast_mod, types=types)
+        from capa import Lexer, Parser, analyze
+        from tests._builtin_name_corpus import assert_only_reserved_refusals
+        ast_mod = Parser(Lexer(src).lex(), source=src).parse_module()
+        result = analyze(ast_mod, source=src)
+        if not result.ok:
+            assert_only_reserved_refusals(result)
+        blob = compile_wasm(ast_mod, types=result.types)
         host = WasmHost()
         buf = io.StringIO()
         saved = sys.stdout
@@ -429,6 +436,19 @@ class TestWasmSafetyTraps(unittest.TestCase):
             '    stdio.println("${v}")\n'
         )
         self.assertEqual(self._run_main_stdout(src), "1.5\n")
+
+    def test_user_parse_int_and_parse_float_are_refused(self):
+        from capa import Lexer, Parser, analyze
+        from tests._builtin_name_corpus import assert_only_reserved_refusals
+        for name in ("parse_int", "parse_float"):
+            src = (
+                f'fun {name}(s: String) -> Int\n'
+                '    return 99\n'
+            )
+            mod = Parser(Lexer(src).lex(), source=src).parse_module()
+            result = analyze(mod, source=src)
+            self.assertFalse(result.ok, name)
+            assert_only_reserved_refusals(result)
 
     def test_builtin_parse_int_still_works_when_not_shadowed(self):
         # Control: with no user definition the builtin helper must

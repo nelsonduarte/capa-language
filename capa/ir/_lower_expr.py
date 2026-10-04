@@ -16,12 +16,14 @@ Audit P1 refactor: split per AST family.
 from __future__ import annotations
 
 from .. import capa_ast as A
-from .._declassify import is_declassify_call
+from .._builtin_identity import builtin_call
+from .._declassify import DECLASSIFY
 from ._capa_types import BUILTIN_CAPS
 from ._lower_helpers import (
     _type_name, _ty_to_str, _unwrap_try_payload_ty, UnsupportedInIR,
 )
 from ._nodes import (
+    CALLEE_BUILTIN, CALLEE_CLOSURE, CALLEE_DIRECT,
     AssignConst, BinOp, Call, FieldAccess, FormatStr, If, Index, MakeLambda,
     MakeList, MakeMap, MakeRange, MakeSet, MakeStruct, MakeTuple, Match,
     MatchArm, MethodCall, Param, Reassign, Return,
@@ -585,15 +587,25 @@ class _LowerExprMixin:
         # the source name, the emitter sees a non-Fun local of that
         # name, and falls through to ``call $f`` against a function
         # that does not exist ("unknown func" at wasm-tools parse).
+        # Built-in identity, decided ONCE here from module scope
+        # (``capa._builtin_identity``; built-in names are reserved for
+        # every binder, so no local can stand in for one). The decision
+        # rides on the Call as ``callee_kind`` and every backend reads it.
+        # The analyzer's binding, when threaded in, is checked to agree.
+        builtin = builtin_call(e, self._scope_names, bindings=self._bindings)
         resolved_callee = self._resolve_name(callee_name)
-        if resolved_callee != callee_name and resolved_callee in self._locals:
+        if (
+            not builtin
+            and resolved_callee != callee_name
+            and resolved_callee in self._locals
+        ):
             callee_name = resolved_callee
         # Capa exposes ``new_map()`` / ``new_set()`` as builtins that
         # construct empty collections. They have no runtime function
         # of the same name, so we recognise them here and emit
         # dedicated MakeMap / MakeSet instructions; the Python
         # emitter renders these as literal ``{}`` / ``set()``.
-        if callee_name in ("new_map", "new_set") and not e.args:
+        if builtin and callee_name in ("new_map", "new_set") and not e.args:
             dst = fresh_local(self._counter)
             result_ty = (
                 _ty_to_str(self.types.get(id(e)))
@@ -614,19 +626,9 @@ class _LowerExprMixin:
         # SBOM audit record are compile-time only; the reason literal
         # is dropped from the IR. (The Python backend keeps a real
         # runtime ``declassify`` identity call via the transpiler.)
-        #
-        # The gate keys on the callee's BINDING identity, not its name:
-        # a user-defined ``fun declassify(value, reason)`` shadows the
-        # built-in and must be lowered as an ordinary call and actually
-        # invoked. ``is_declassify_call`` is the one predicate the
-        # analyzer and the manifest already share; with the analyzer's
-        # bindings threaded in (``self._bindings``) it resolves the
-        # built-in by ``BUILTIN_POS`` and rejects the shadow. Without
-        # bindings (internal ceiling lowerings) it falls back to the
-        # name-only floor, matching the prior behaviour. The extra
-        # arity guard preserves the historical name-only path exactly
-        # (a genuine built-in call is always two-argument).
-        if is_declassify_call(e, self._bindings) and len(e.args) == 2:
+        # Only the BUILT-IN is stripped; the arity guard keeps the
+        # historical shape exactly (a built-in call is two-argument).
+        if builtin and callee_name == DECLASSIFY and len(e.args) == 2:
             return self._lower_expr(e.args[0])
         args = [self._lower_expr(arg) for arg in e.args]
         result_ty = "Unknown"
@@ -643,24 +645,28 @@ class _LowerExprMixin:
         # pointer, and the Err-payload store treats it as a scalar rather
         # than a pointer-shaped value. The Python backend is unaffected
         # (its Call rendering does not consult the dst type).
-        if callee_name == "IoError" and (
+        if builtin and callee_name == "IoError" and (
             not result_ty
             or result_ty in ("Unknown", "?")
             or result_ty.startswith("?")
         ):
             result_ty = "IoError"
-        route = self._classify_call_route(e.callee.name, resolved_callee)
+        kind = (
+            CALLEE_BUILTIN if builtin
+            else self._classify_call_route(e.callee.name, resolved_callee)
+        )
         dst = fresh_local(self._counter)
         self._locals[dst] = result_ty
         self._instrs.append(
-            Call(dst=dst, callee_name=callee_name, args=args, route=route)
+            Call(dst=dst, callee_name=callee_name, args=args, callee_kind=kind)
         )
         return Value(kind="local", name=dst, ty=result_ty)
 
     def _classify_call_route(self, orig_name: str, resolved: str):
-        """Decide direct-vs-closure routing for a call at LOWERING time,
-        recorded on the ``Call`` node so both Wasm emitter sites honour
-        the decision instead of re-guessing from the flat
+        """Decide direct-vs-closure routing for a call to a callee that is
+        NOT a built-in, at LOWERING time. The answer is the Call's
+        ``callee_kind`` (and so its derived ``route``), which both Wasm
+        emitter sites honour instead of re-guessing from the flat
         ``Function.locals`` type map (which intentionally keeps a dead
         lambda-body local's ``Fun`` type for the closure emitter, and so
         would mis-route a same-named enclosing call).
@@ -674,43 +680,27 @@ class _LowerExprMixin:
         module-function name AND a Fun parameter must route to the
         parameter, not to the module function.
 
-        Returns ``"closure"`` / ``"direct"``, or ``None`` when the callee
-        is none of those (not a live local, not a Fun-typed param, not a
-        module-level symbol). ``None`` is only the absence of a tag: it
-        does NOT mean the callee is a built-in / intrinsic / variant
-        constructor, and no return value here makes such a callee
-        shadow-safe. The Wasm emitter consults ``route`` ONLY in its
-        closure-vs-direct routing, which runs AFTER the by-name
-        special-case branches of ``_emit_user_call`` (variant
-        constructors, ``IoError``, ``Random``, ``parse_json`` /
-        ``to_json``, ``parse_int`` / ``parse_float``, ``panic``,
-        ``to_int`` / ``to_float``, ``_capa_chr``, ``_capa_str_span``)
-        have each returned, keyed only on the callee name. (``new_map`` /
-        ``new_set`` never reach this classifier: ``_lower_call``
-        intercepts them into MakeMap / MakeSet upstream, no Call, no
-        route.) So a live-local or Fun-param shadow of one of those
-        built-in names is classified ``"closure"`` here, yet Wasm still
-        runs the built-in while Python honours the shadow -- a silent
-        wrong value, or a Wasm validation failure, from a
-        ``--check``-clean program. That divergence, and the parallel
-        ``new_map`` / ``new_set`` shadow, is a KNOWN-OPEN, pre-existing
-        residual this routing tag does not close. For an ordinary
-        unclassified callee, the emitter's ``Function.locals`` fallback
-        covers the rest.
+        Returns ``CALLEE_CLOSURE`` / ``CALLEE_DIRECT``, or ``None`` when
+        the callee is none of those. Built-in callees never reach here:
+        ``_lower_call`` decides built-in identity first, from module
+        scope, and tags those Calls ``CALLEE_BUILTIN``. A local or a
+        parameter never stands in for a built-in, because the analyzer
+        refuses every binder that takes a built-in name, so the lexical
+        resolution below only ever routes user callees.
         """
         # CLOSURE: a live local shadows any same-named module symbol, so
         # the callee is the local (its type is Fun, the analyzer having
         # vetted it callable). This also covers the alpha-renamed outer
         # binding and, inside a lambda body, a captured enclosing local.
         if resolved in self._live_locals:
-            return "closure"
+            return CALLEE_CLOSURE
         # CLOSURE: a Fun-typed parameter (covers a captured enclosing
         # parameter too, since the lambda snapshots ``_params``). Checked
         # BEFORE the module rule so a Fun param that shares a module
         # function's name routes to the parameter.
         pty = self._params.get(orig_name)
         if pty is not None and pty.startswith("Fun"):
-            return "closure"
+            return CALLEE_CLOSURE
         # DIRECT: a module-level symbol (function or const) that is none
         # of the above.
         # known-open: a module const whose value is a Fun classifies
@@ -720,7 +710,7 @@ class _LowerExprMixin:
         # callee callable is a separate open gap; it is intentionally left
         # to fail loud rather than silently produce a value.
         if orig_name in self._module_names:
-            return "direct"
+            return CALLEE_DIRECT
         return None
 
     def _lower_call_expr_callee(self, e: A.Call) -> Value:
@@ -762,7 +752,7 @@ class _LowerExprMixin:
         self._instrs.append(
             Call(
                 dst=dst, callee_name=callee_name, args=args,
-                route="closure",
+                callee_kind=CALLEE_CLOSURE,
             )
         )
         return Value(kind="local", name=dst, ty=result_ty)

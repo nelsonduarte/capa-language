@@ -1,0 +1,5 @@
+const TOKEN: @secret String = "s3cr3t"
+const EMIT: Fun(Stdio) -> Unit = fun(io: Stdio) -> Unit => io.println("v=${TOKEN}")
+
+fun main(stdio: Stdio)
+    EMIT(stdio)

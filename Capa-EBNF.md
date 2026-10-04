@@ -162,6 +162,8 @@ digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
 
 Additional restriction: an identifier cannot equal a reserved word (see Section 3.5). This restriction is checked in the lexer, which classifies as `KEYWORD` those tokens that correspond to reserved words.
 
+A second, semantic restriction is not part of the lexical grammar: the names of the built-in functions, types, capabilities and variants (`panic`, `to_int`, `Int`, `Stdio`, `Some`, ...) are ordinary `IDENT` tokens, but the analyzer refuses them as the name of a variable, a parameter of a function, method or lambda that has a body, a pattern binder, a constant or a module-level function, and refuses a built-in function's name for a type, variant, typestate, trait, capability or extern component. The rule and the single source of the name set are in [`docs/reference.md`](docs/reference.md) section 3.4.
+
 Practical notes. A leading underscore is allowed (`_x` is a valid identifier), and by convention indicates an intent of non-use. Identifiers starting with a digit are impossible by construction. Identifiers in Capa are case-sensitive: `user` and `User` are distinct identifiers.
 
 ### 3.4 Literals
@@ -513,7 +515,7 @@ state_name = IDENT NEWLINE
 
 A value of a typestate type is written with the state index `Name[State]` (see Section 5.8) and constructed with the state-annotated struct literal `Name[State] { ... }` (see Section 5.12.5); a state transition is expressed with `become(value, State)` (see Section 5.12.5). The set of legal transitions and the state of a value at each program point are checked by the analyzer, not the grammar.
 
-The variant name is syntactically any `IDENT`, but four names are **reserved** and rejected at semantic-analysis time: `Ok`, `Err`, `Some`, and `None`. These are the constructors of the built-in `Result<T, E>` and `Option<T>` sum types; a user-declared variant reusing one of them would silently shadow the built-in constructor at every later use site. The compiler refuses the declaration with a diagnostic that names the colliding built-in and suggests an alternative (for example `Compliant` / `Success` in place of `Ok`). This is a name-resolution constraint, not a grammar rule, so it is noted here rather than encoded in the production above. The built-in JSON variants (`JNull`, `JBool`, `JNum`, `JStr`, `JArr`, `JObj`) are not reserved.
+The variant name is syntactically any `IDENT`, but four names are **reserved** and rejected at semantic-analysis time: `Ok`, `Err`, `Some`, and `None`. These are the constructors of the built-in `Result<T, E>` and `Option<T>` sum types; a user-declared variant reusing one of them would silently shadow the built-in constructor at every later use site. The compiler refuses the declaration with a diagnostic that names the colliding built-in and suggests an alternative (for example `Compliant` / `Success` in place of `Ok`). This is a name-resolution constraint, not a grammar rule, so it is noted here rather than encoded in the production above. The built-in JSON variants (`JNull`, `JBool`, `JNum`, `JStr`, `JArr`, `JObj`) are not reserved as variant names. A variant may not, however, take the name of a built-in function (`panic`, `to_json`, ...), under the separate reserved built-in name rule (see Section 3.3).
 
 > **DECISION: CLEAR SEPARATION BETWEEN STRUCT AND SUM**
 >

@@ -39,10 +39,15 @@ and each one is a predefined `TyName`:
 `Unit` is not a member of `PRIMITIVE_NAMES`: it is its own singleton in
 the type system (`_TyUnitSingleton`, `capa/typesys.py` line 102),
 written `()` in both type and expression position. The five primitives
-**cannot be redefined** by the programmer; they are seeded as symbols in
-the global scope in [`capa/builtins.py`](../capa/builtins.py) line 572
-(a fact with direct consequence in
-[07-pattern-matching.md](07-pattern-matching.md)).
+are seeded as symbols in the global scope by `register_builtins` in
+[`capa/builtins.py`](../capa/builtins.py) (a fact with direct
+consequence in [07-pattern-matching.md](07-pattern-matching.md)). Their
+names are reserved built-in names: no variable, parameter of a
+function, method or lambda with a body, pattern binder, constant or
+module-level function may take one (see
+[08-functions-closures-modules.md](08-functions-closures-modules.md)
+section 8). That rule does not refuse a type-level declaration named
+like a built-in type.
 
 Declaring and printing a value of each type, on both backends:
 
@@ -292,6 +297,15 @@ resv.capa:4:5: error: variant 'None' is reserved (collides with the built-in Opt
 
 resv.capa: 2 errors
 ```
+
+A variant (like every type-level declaration) also may not take the
+name of a built-in function (`panic`, `to_json`, ...), under the
+reserved built-in name rule of
+[08-functions-closures-modules.md](08-functions-closures-modules.md)
+section 8, with that rule's own diagnostic (`'to_json' is the name of a
+built-in function and is reserved, so it cannot name a variant; rename
+the variant`). The built-in JSON variant names (`JNull`, ...) are not
+function names, so neither rule refuses them as variant names.
 
 ## 7. Tuples
 

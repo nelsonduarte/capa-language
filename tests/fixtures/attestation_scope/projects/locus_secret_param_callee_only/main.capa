@@ -1,0 +1,5 @@
+import sinkpkg.leak as leak
+
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    leak.emit(stdio, k)

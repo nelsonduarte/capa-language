@@ -71,6 +71,9 @@ class _DeclarationsMixin:
         from . import Symbol, SymbolKind
 
         for item in module.items:
+            # Every name an item declares goes through the one
+            # reserved-name door first (``_builtin_names``).
+            self._refuse_reserved_item(item)
             if isinstance(item, A.Import):
                 # ``import`` is resolved by ``capa.loader.ModuleLoader``
                 # before the module reaches the analyzer: imported

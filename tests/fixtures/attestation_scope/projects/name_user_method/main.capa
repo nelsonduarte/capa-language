@@ -1,0 +1,13 @@
+type Mailer { tag: Int }
+
+impl Mailer
+    fun post(self, url: String, body: String) -> Int
+        return 0
+
+fun send(m: Mailer, s: String) -> Int
+    return m.post("u", s)
+
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("API_KEY").unwrap_or("none")
+    let n = send(Mailer { tag: 1 }, k)
+    stdio.println("done")

@@ -81,6 +81,15 @@ binds `name` and `age` directly (shorthand), while
 sub-pattern. Patterns nest: `Click(Point { x, y })` matches a `Click`
 variant whose payload is a `Point`, binding `x` and `y`.
 
+Every name a pattern binds, in `match`, `let` or `for`, shorthand
+included, follows the reserved built-in name rule
+([08-functions-closures-modules.md](08-functions-closures-modules.md)
+section 8): it may not be a built-in name such as `panic` or `to_int`.
+So a struct field named like a built-in (`type H { panic: Int }`,
+which is legal) is destructured under another name, `H { panic: p }`,
+not with the shorthand `H { panic }`. In a `match` arm a bare
+capitalised name is a variant pattern, not a binder.
+
 Nested patterns (a variant containing a struct), a guard over a
 binding, and struct destructuring in a `for`, on both backends:
 
@@ -235,8 +244,8 @@ sdwrong.capa:12:9: error: destructuring pattern names 'Point', but the value has
 
 A struct pattern over an `Int` (and likewise `String`, `Bool`) is
 rejected at `--check` with the same diagnostic; the five primitives
-are seeded as struct-kind symbols
-([`capa/builtins.py`](../capa/builtins.py) line 572), so the
+are seeded as struct-kind symbols (`register_builtins` in
+[`capa/builtins.py`](../capa/builtins.py)), so the
 struct-mismatch guard recognizes them:
 
 ```capa

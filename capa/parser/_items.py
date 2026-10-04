@@ -266,21 +266,27 @@ class _ItemsMixin:
             )
         alias: Optional[str] = None
         selectors: Optional[list[tuple[str, Optional[str]]]] = None
+        alias_positions: dict = {}
         if self._check(T.LPAREN):
             # Selective import: ``import foo (a, b as c)`` brings only
             # the listed pub items, each optionally renamed via ``as``.
-            selectors = self._parse_import_selectors()
+            selectors = self._parse_import_selectors(alias_positions)
         elif self._match(T.KW_AS):
             alias = self._expect(T.IDENT, "expected alias name").text
         self._expect_eos("after import declaration")
-        return A.Import(pos=start, path=path, alias=alias, selectors=selectors)
+        return A.Import(
+            pos=start, path=path, alias=alias, selectors=selectors,
+            alias_positions=alias_positions,
+        )
 
     def _parse_import_selectors(
-        self,
+        self, alias_positions: dict,
     ) -> list[tuple[str, Optional[str]]]:
         """Parse ``(a, b as c, ...)`` after an import path. Each entry
         is a pub symbol name with an optional ``as`` rename. Requires
-        at least one selector; a trailing comma is tolerated."""
+        at least one selector; a trailing comma is tolerated. The
+        position of each ``as`` alias is recorded in ``alias_positions``,
+        keyed by the selected name."""
         self._expect(T.LPAREN, "expected '(' to begin selective import list")
         selectors: list[tuple[str, Optional[str]]] = []
         while not self._check(T.RPAREN):
@@ -289,9 +295,11 @@ class _ItemsMixin:
             )
             sel_alias: Optional[str] = None
             if self._match(T.KW_AS):
-                sel_alias = self._expect(
+                alias_tok = self._expect(
                     T.IDENT, "expected a name after 'as' in selective import",
-                ).text
+                )
+                sel_alias = alias_tok.text
+                alias_positions[name_tok.text] = alias_tok.start
             selectors.append((name_tok.text, sel_alias))
             if not self._match(T.COMMA):
                 break

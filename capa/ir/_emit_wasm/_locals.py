@@ -766,7 +766,7 @@ class _LocalsCollectionMixin:
                     if instr.return_type not in ("Unit", "Int", "Bool", "Float"):
                         has_indirect_cap_call = True
                 if isinstance(instr, Call):
-                    if instr.callee_name == "parse_json":
+                    if instr.calls_builtin("parse_json"):
                         # parse_json / to_json land as Capa-source
                         # function calls (``$__capa_parse_json`` /
                         # ``$__capa_to_json``); no host import, no
@@ -774,7 +774,7 @@ class _LocalsCollectionMixin:
                         # bodies already declare via the normal
                         # variant / List / Map paths.
                         pass
-                    elif instr.callee_name == "to_json":
+                    elif instr.calls_builtin("to_json"):
                         pass
                     elif instr.callee_name in self._variant_to_sum:
                         # Variant-construction Call with payloads. The
