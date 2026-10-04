@@ -60,6 +60,10 @@ break continue return import const type trait impl
 capability true false and or not consume borrow
 ```
 
+The names of the built-in functions, types, capabilities and variants
+are not keywords, but they are reserved for most declarations; see
+section 3.4.
+
 ### 1.6. Literals
 
 | Type | Examples |
@@ -237,6 +241,93 @@ xs.push(42)                 // mutation
 1 + 2                       // value discarded (valid but useless)
 ```
 
+### 3.4. Reserved built-in names
+
+The names of the built-in globals are reserved: the built-in
+functions (`panic`, `declassify`, `to_int`, `parse_json`, ...), the
+built-in types (`Int`, `String`, `List`, `Option`, `Range`, `IoError`,
+`JsonValue`, ...), the built-in capabilities (`Stdio`, `Fs`, `Net`,
+...) and the built-in variants (`Some`, `None`, `Ok`, `Err`, `JNull`,
+...). Those lists are examples. The reserved set is exactly what
+`register_builtins` in [`capa/builtins.py`](../capa/builtins.py)
+installs in the global scope, which `builtin_global_names` in
+[`capa/_builtin_identity.py`](../capa/_builtin_identity.py) reads by
+running it. Names are case-sensitive: `net` and `result` are ordinary
+names, `Net` and `Result` are reserved.
+
+The rule holds in the program and in every module it imports, its
+dependencies included:
+
+- A `let` or `var` variable, a function or method parameter, a lambda
+  parameter, a loop variable, a pattern binder (in `let`, `for` and
+  `match`, including the struct-pattern shorthand `P { x }`), a `const`
+  and a module-level `fun` may not take any reserved name. Neither may
+  the alias of a selective import (`import m (f as panic)`).
+- A `type`, a variant, a `typestate`, a `trait`, a `capability` and an
+  `extern component` may not take the name of a built-in **function**.
+  Such a declaration named like a built-in type (`type Range { ... }`)
+  is not refused by this rule.
+- A built-in function may only be called. It cannot be used as a value
+  (stored, passed or returned); wrap the call in a lambda instead.
+
+The reason is one identity per built-in name: since no binder can take
+a built-in's name, whether a call names the built-in is decided once,
+from the module's top-level declarations, and the analyzer and every
+backend read that one decision.
+
+Each refusal is a hard error at `--check`, reported in the file that
+holds the declaration, also when that file is a dependency:
+
+```capa
+fun main(stdio: Stdio)
+    let panic = 2
+    stdio.println("${panic}")
+```
+
+```
+reserved.capa:2:9: error: 'panic' is the name of a built-in function and is reserved, so it cannot name a variable; rename the variable
+```
+
+For a reserved name that is not a function, the message reads
+`'Random' is the name of a built-in name and is reserved, so it cannot
+name a constant; rename the constant`. A built-in function used as a
+value (`let f = to_int`) gets `the built-in function 'to_int' cannot be
+used as a value; call it directly, or wrap the call in a lambda`.
+
+Not affected: method names, struct field names, and names that only
+contain a built-in name (`my_panic`, `to_int2`). A field named like a
+built-in cannot be destructured with the shorthand, which would bind a
+variable of that name; bind it under another name instead. This
+program is accepted and prints `2 7 7 2` on the Python, Wasm and
+Component Model backends alike:
+
+```capa
+type Gauge { panic: Int }
+
+impl Gauge
+    fun to_int(self) -> Int
+        return self.panic
+
+fun main(stdio: Stdio)
+    let limit = 2
+    let g = Gauge { panic: 7 }
+    let Gauge { panic: p } = g
+    let xs = [1.5, 2.5]
+    let ys = xs.map(fun (x: Float) -> Int => to_int(x))
+    stdio.println("${limit} ${g.to_int()} ${p} ${ys.length()}")
+```
+
+The variant names `Ok`, `Err`, `Some` and `None` are refused by a
+separate rule with its own diagnostic (`variant 'Ok' is reserved
+(collides with the built-in Result::Ok constructor). ...`). The rule
+above is pinned by
+[`tests/test_builtin_names_reserved.py`](../tests/test_builtin_names_reserved.py),
+which crosses each binder kind it lists with every reserved name, in
+the root program and in dependencies, each against an accepted twin
+that differs only in the name. See
+[`specs/08-functions-closures-modules.md`](../specs/08-functions-closures-modules.md)
+section 8 for the mechanism.
+
 ---
 
 ## 4. Expressions
@@ -365,6 +456,11 @@ untyped parameter that is *not* passed to a higher-order function
 is a clear error asking for an annotation; write `fun (x: Int) -> Int
 => x + 1` instead. A missing **return** type alone is always inferred
 from the body, with or without a higher-order context.
+
+A built-in function is not a value, so it cannot be passed to a
+higher-order function directly (`xs.map(to_int)` is refused); pass a
+lambda that calls it, `xs.map(fun (x: Float) -> Int => to_int(x))`
+(section 3.4).
 
 ### 4.5. The `?` operator
 
@@ -547,10 +643,11 @@ site is recorded in the Capa manifest (`--manifest`) as
 summary. A `declassify` written
 outside any function body, in a top-level `const` initializer, is
 recorded too, under `module_declassifications`; the summary count is
-the module-wide total across both. Identity, not the name, decides:
-a user-defined function called `declassify` is an ordinary function
-and produces no record (nor any relabelling, so a secret routed
-through it still reports as a leak).
+the module-wide total across both. Only the built-in counts. Its name
+is reserved (section 3.4), so no variable, parameter, constant,
+function or type in the program or its dependencies can be named
+`declassify`; a method of that name on a user type is an ordinary
+method and produces no record and no relabelling.
 
 ```capa
 fun leak(env: Env, stdio: Stdio)
@@ -770,7 +867,9 @@ A selector that names a symbol the target does not declare, or
 declares without `pub`, is a load-time error
 (`module 'foo' has no public symbol 'X'`). Renaming a sum type's
 **variants** is not yet supported; select the type unrenamed when
-you need its constructors.
+you need its constructors. A selector's alias is a declaration in the
+importing file, so it follows the reserved-name rule of section 3.4:
+`import foo (a as panic)` is refused at the alias.
 
 ### 7.2. Module resolution order
 

@@ -151,9 +151,25 @@ Besides capabilities, each function records: the demangled signature
 `is_linear`; `return_type`); `linear_obligations`; the `attributes`;
 `constant_time`; the `calls` list with the attenuation `args_flow`;
 the audited `declassifications` (the `@secret -> @public` bridges);
-and the `unaudited_secret_sinks` (raw warn-tier secret-to-sink flows
-the IFC analysis surfaced; see
+and the `unaudited_secret_sinks` (warn-tier secret-to-sink flows the
+IFC analysis recorded; see
 [16-ifc-analyzer-and-tiers.md](16-ifc-analyzer-and-tiers.md)).
+
+**What `unaudited_secret_sinks` attests.** Every document that carries
+this field or the per-package values derived from it (`--manifest`,
+its `--manifest-digest` form, `--compose-sbom` and
+`--conformance-report`) also carries, under the top-level
+`unaudited_secret_sinks_scope` key, one sentence stating what the field
+is entitled to claim. The sentence has one source,
+`UNAUDITED_SECRET_SINKS_SCOPE` in
+[`capa/manifest/_scope.py`](../capa/manifest/_scope.py); the register
+entry in [`docs/trust-model.md`](../docs/trust-model.md) is generated
+from it by [`tools/gen_trust_register.py`](../tools/gen_trust_register.py),
+and [`tests/test_attestation_scope.py`](../tests/test_attestation_scope.py)
+fails when the two differ. Read the sentence there; it is deliberately
+not copied here. (Measured on 2026-10-04 on a fixture project: each of
+the four flags above emitted the key once; `--cyclonedx` and `--spdx`
+emitted neither the field nor the key.)
 
 **What `constant_time` attests.** Replicated from the public register
 ([`docs/trust-model.md`](../docs/trust-model.md), "Outside the threat

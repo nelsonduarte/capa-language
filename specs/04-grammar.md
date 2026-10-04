@@ -139,6 +139,13 @@ line 38). For example, declaring a variant `Ok(Int)` produces:
 reserved.capa:2:5: error: variant 'Ok' is reserved (collides with the built-in Result::Ok constructor). Rename this variant. Common alternatives: Compliant, Success, Hit, Ready.
 ```
 
+Separately, no type, variant, typestate, trait, capability or extern
+component may take the name of a built-in function (`panic`, `to_int`,
+...), and no variable, parameter, pattern binder, constant or
+module-level function may take any built-in name; see
+[08-functions-closures-modules.md](08-functions-closures-modules.md)
+section 8. Like the variant rule, this is semantic, not a grammar rule.
+
 Detail in [05-base-and-composite-types.md](05-base-and-composite-types.md)
 and [07-pattern-matching.md](07-pattern-matching.md).
 

@@ -657,6 +657,74 @@ breaking changes and the discipline is still being shaped.
   additionally renders the dependency graph as `DEPENDS_ON` relationships.
   Commits `92b95c2`, `e682610`, `420a366`, `2440597`.
 
+- *Every artefact that carries `unaudited_secret_sinks` also states what that
+  field is entitled to claim.* `--manifest`, its `--manifest-digest` form,
+  `--compose-sbom` and `--conformance-report` carry one sentence under a new
+  top-level `unaudited_secret_sinks_scope` key. It says which flows the field
+  records, which sinks and capabilities a record can name, where a record is
+  charged, and how an empty list is to be read, and it covers the per-package
+  values derived from the field (`attributed_unaudited_secret_sinks`,
+  `unaudited_secret_sink_capabilities`) and the `no-secret-egress` policy result
+  evaluated over them. The key is additive; no schema version moves. The
+  sentence has one source, `UNAUDITED_SECRET_SINKS_SCOPE` in
+  [`capa/manifest/_scope.py`](capa/manifest/_scope.py), which renders the sink
+  and capability names from the analyzer's own tables rather than spelling
+  them out. The register entry for the field in
+  [`docs/trust-model.md`](docs/trust-model.md) is generated from the same
+  constant by [`tools/gen_trust_register.py`](tools/gen_trust_register.py)
+  (`--check` exits 1 when the entry differs from the constant; each refusal
+  condition has its own exit code, listed in the script's docstring). Pinned
+  by [`tests/test_attestation_scope.py`](tests/test_attestation_scope.py),
+  which also fails when the entry is stale or the sentence is copied into
+  another document.
+
+**Changed (unreleased).**
+
+- ***Source-breaking:*** *the names of the built-in globals are reserved.* The
+  built-in functions (`panic`, `declassify`, `to_int`, `parse_json`, ...), the
+  built-in types (`Int`, `String`, `Option`, `Range`, `IoError`, `JsonValue`,
+  ...), the built-in capabilities (`Stdio`, `Fs`, ...) and the built-in variants
+  (`Some`, `None`, `Ok`, `Err`, `JNull`, ...) are reserved names:
+  - no `let` / `var` variable, function or method parameter, lambda parameter,
+    loop variable, pattern binder (struct-pattern shorthand included), `const`
+    or module-level `fun` may take one, and neither may the alias of a
+    selective import;
+  - a type, variant, typestate, trait, capability or extern component may not
+    take the name of a built-in function (one named like a built-in type, such
+    as `type Range { ... }`, is not refused by this rule);
+  - a built-in function may only be called, never used as a value.
+
+  The rule holds in the program and in every dependency, and a refusal is
+  reported in the file that holds the declaration. The reason is one identity
+  per built-in name across the analyzer and every backend: since no binder can
+  take a built-in's name, whether a call names the built-in is decided once,
+  from the module's top-level declarations, and every phase reads that one
+  decision. The reserved set has one source, what `register_builtins` in
+  [`capa/builtins.py`](capa/builtins.py) installs, read by
+  `builtin_global_names` in
+  [`capa/_builtin_identity.py`](capa/_builtin_identity.py). Each refusal is a
+  hard error at `--check`: `error: 'panic' is the name of a built-in function
+  and is reserved, so it cannot name a variable; rename the variable` (for a
+  name that is not a function, `'Random' is the name of a built-in name and is
+  reserved, so it cannot name a constant; rename the constant`), and `error:
+  the built-in function 'to_int' cannot be used as a value; call it directly,
+  or wrap the call in a lambda`. Methods, struct fields, and names that only
+  contain a built-in name (`my_panic`) are unaffected.
+
+  A program that uses one of these names must rename it, and a built-in passed
+  as a value becomes a lambda that calls it
+  (`fun (x: Float) -> Int => to_int(x)`). Measured cost: none of the 205 files
+  under [`examples/`](examples/) and none of 1338 `.capa` files in 38
+  downstream repositories draws the new diagnostics. Each file was checked
+  through the CLI, where its `--check` output is identical with and without
+  the rule, and also analysed on its own, without its imports, where the 1540
+  files that parse draw no reserved-name refusal. Pinned by
+  [`tests/test_builtin_names_reserved.py`](tests/test_builtin_names_reserved.py)
+  and [`tests/test_builtin_identity.py`](tests/test_builtin_identity.py).
+  Documented in [`docs/reference.md`](docs/reference.md) section 3.4 and
+  [`specs/08-functions-closures-modules.md`](specs/08-functions-closures-modules.md)
+  section 8.
+
 **Fixed / test nets (unreleased).**
 
 - *The guard nets that came with the stdlib increment, each proven to bite

@@ -178,6 +178,16 @@ clause) are **not** in `KEYWORDS`: the lexer emits them as `IDENT` and
 the parser recognizes them by position. They remain valid identifiers
 elsewhere.
 
+**Reserved built-in names (not lexical).** The names of the built-in
+functions, types, capabilities and variants (`panic`, `to_int`, `Int`,
+`Stdio`, `Some`, ...) lex as ordinary `IDENT` tokens, but semantic
+analysis refuses them as the name of a variable, parameter, pattern
+binder, constant or module-level function, and refuses a built-in
+function's name for a type-level declaration. That rule, and the
+single source of the name set, are in
+[08-functions-closures-modules.md](08-functions-closures-modules.md)
+section 8.
+
 ## 5. Literals
 
 ### 5.1 Integers (`INT_LIT`)
