@@ -1,16 +1,16 @@
-// Net.get returns Result<String, IoError>. The host bridge mirrors
-// Python's ``urllib.request.urlopen`` exactly, so a ``file://`` URL
-// reads the same bytes on both backends and produces byte-identical
-// output. The body decode uses ``errors="replace"`` so non-UTF-8
-// responses do not crash either side.
+// Net.get returns Result<String, IoError>. The Python backend and the
+// host bridge share the one Net object.
 //
-// Parity strategy: the program writes a small text fixture via
-// ``Fs.write`` first, then ``net.get(file:///...)`` reads it back
-// through the network capability. Both backends end up touching the
-// same on-disk bytes, so the run is deterministic without needing
-// a pre-existing fixture or any HTTP server. The fixture path lives
-// under ``/tmp/`` (the conventional ``Fs`` write target reused by
-// ``fs_demo.capa``).
+// STALE PREMISE, kept as a record: this example was written when a
+// ``file://`` URL read the local file through Net. Since 1.20.0 Net
+// speaks http / https only, so ``net.get("file:///...")`` below returns
+// Err("Net capability does not permit scheme 'file': a Net capability
+// speaks http/https only") on --run, --wasm --run and
+// --wasm --component --run alike, and the Err arm prints its "BUG:"
+// line to stderr. Stdout ("wrote fixture") is still identical across
+// the backends, which is all the parity tests compare; they do not
+// exercise a successful Net.get. The fixture path lives under ``/tmp/``
+// (the conventional ``Fs`` write target reused by ``fs_demo.capa``).
 
 fun main(stdio: Stdio, fs: Fs, net: Net)
     let path = "/tmp/capa_wasm_net_get_fixture.txt"

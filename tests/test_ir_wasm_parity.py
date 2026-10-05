@@ -1444,12 +1444,13 @@ class TestPythonWasmParity(unittest.TestCase):
         self._assert_parity("allows_inline.capa")
 
     def test_net_get(self):
-        # Slice 3 (2026-05): ``Net.get`` end-to-end. The example
-        # writes a deterministic fixture via ``Fs.write`` then
-        # reads it back via ``net.get("file:///...")``. Both
-        # backends touch the same on-disk bytes through Python's
-        # ``urllib.request.urlopen``, so the round-trip is byte-
-        # identical without needing an HTTP fixture.
+        # Slice 3 (2026-05) wrote this as a ``Net.get`` round-trip
+        # through ``net.get("file:///...")``. Since 1.20.0 Net speaks
+        # http / https only, so that call returns Err on both
+        # backends and the example's Err arm writes to stderr. This
+        # test compares stdout only ("wrote fixture"), so it still
+        # passes but no longer exercises a successful Net.get; see
+        # the header of examples/wasm/net_get.capa.
         self._assert_parity("net_get.capa")
 
     def test_net_restrict(self):

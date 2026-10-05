@@ -124,8 +124,9 @@ pub fun make_search(net: Net, domain: String) -> StubSearch
     }
 ```
 
-The `StubSearch` value carried inside `SearchWeb` can only reach
-`domain`. If a future refactor accidentally introduces a request
+The `StubSearch` value carried inside `SearchWeb` can only request
+the host name `domain`, on the URL and on every redirect hop. If a
+future refactor accidentally introduces a request
 to a different host, the runtime rejects it before any system
 call is made (`fail-closed`). The same shape applies to the
 mailer (narrowed to one SMTP host).

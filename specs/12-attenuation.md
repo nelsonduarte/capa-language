@@ -62,7 +62,8 @@ which removes the authority to "obtain unpredictable randomness". The
 
 ## 3. Each attenuator only narrows: the `Net` example
 
-`Net.restrict_to(host)` limits the reachable host set; the function
+`Net.restrict_to(host)` limits the set of host names a request may
+name, on the URL and on every redirect hop; the function
 that receives the restricted `Net` queries it but cannot widen it:
 
 ```capa
@@ -86,12 +87,34 @@ allows evil.example.com? false
 ```
 
 The two backends produce identical output. `Net` attenuation is by
-**host** (set membership), not by URL prefix: `restrict_to` stores the
-host set and `allows(h)` answers `h in set`
+**host name** (set membership), not by URL prefix: `restrict_to` stores
+the host-name set and `allows(h)` answers `h in set`
 ([`capa/runtime/_capabilities.py`](../capa/runtime/_capabilities.py),
-`Net.restrict_to` at line 889). The `get`/`post` gate extracts the
-host from the URL and checks it against the set, and re-checks the
-same set on every redirect hop, so a `302` to another host is refused.
+`Net.restrict_to` at line 889). Because `restrict_to` intersects, a
+narrowed set holds at most one host name. The `get`/`post` gate
+(`Net._gate`, line 929) extracts the host name from the URL and checks
+it against the set, and the redirect handler (`_redirect_handler`,
+line 715) re-checks the same set on every redirect hop, so a `302` to
+another host name is refused; the scheme is bounded to `http` / `https`
+on the first request and on every hop. This is pinned by
+[`tests/test_net_hop_gate.py`](../tests/test_net_hop_gate.py) on the
+Python backend and the `capa:host` bridge. Under `--wasi` no redirect is
+followed at all: any `3xx` is `Err`
+([`tests/wasi/test_wasi_net.py`](../tests/wasi/test_wasi_net.py),
+`TestWasiNetRedirectFailClosed`).
+
+What the check compares is the name, so three things are outside it,
+by the current design: the port (a redirect to the same host name on
+another port is followed), the choice between `http` and `https` on the
+same host name (an `https` request redirected to `http` is followed),
+and the address the name resolves to (each hop resolves the name again).
+All three were measured on the Python backend and the `capa:host`
+bridge (2026-10-05, `1.32.0` and `main`, Python 3.14 on Windows, local
+servers, with the DNS answer simulated in-process). The port case is
+also what `test_redirect_to_permitted_host_still_works` in
+`tests/test_net_hop_gate.py` exercises (the redirecting server and the
+target listen on different ports of `127.0.0.1`); a search of that file
+and of `tests/wasi/test_wasi_net.py` found no test for the other two.
 
 ## 4. Monotonicity: chaining can only narrow
 
