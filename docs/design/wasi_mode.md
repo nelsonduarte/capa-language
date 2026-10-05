@@ -1003,9 +1003,11 @@ and gives **predictable, auditable** behaviour, aligned with **CRA**
 (secure-by-default) and **NIS2** (predictable / auditable handling).
 
 A program that genuinely needs to follow a redirect must do so
-**explicitly** -- read the (non-2xx) `Err`, derive the new URL itself, and
-issue a fresh `net.get` against it, which then passes through the host
-ceiling + allow-list gates like any other request.
+**explicitly**: the `Err` carries no `Location` (its message is the fixed
+`HTTP GET failed` / `HTTP POST failed`), so the program has to know the
+next URL by other means and issue a fresh `net.get` against it, which
+then passes through the host ceiling + allow-list gates like any other
+request.
 
 **The Python oracle / `capa:host` used to have exactly the bypass this
 section describes** (2026-07): urllib followed a `Location` to a host the
@@ -1017,9 +1019,10 @@ through an opener that **re-checks the same capability on every hop**
 scheme is `Err` and the forbidden peer is never contacted
 (`tests/test_net_hop_gate.py`). **What still differs between the
 backends is only the PERMITTED hop**: `--wasi` refuses it too, because
-its request parts (scheme / authority / path) are resolved from a
-**literal** URL at compile time and a `Location` header is only known at
-run time, so the guest has nothing to build the next request from. The
+the status gate above turns every `3xx` into `Err` before any
+`Location` is read. That holds for a literal URL and for a dynamic one
+granted with `--allow-host`: a `302` from the granted host to itself is
+`Err` in both cases. The
 divergence is therefore **`--wasi` is strictly more restrictive on a
 redirect whose target the capability permits**, and the three backends
 **agree** on every hop the capability forbids.

@@ -616,6 +616,16 @@ A `Net` received from `main` is unrestricted; restrictions accumulate
 through `restrict_to`. The result of `restrict_to` is a fresh
 capability instance and can be bound in a `let`/`var`.
 
+The set holds host **names**. `get` and `post` check the host name of
+the URL and again the host name of every `3xx` redirect hop, so a
+redirect to a name outside the set returns the host-deny `Err` without
+contacting it; the scheme is bounded to `http` / `https` on the first
+request and on every hop. The port, the choice between `http` and
+`https` on the same host name, and the address the name resolves to are
+not part of the check. Under `--wasi` no redirect is followed: any
+`3xx` is `Err`. See [`specs/12-attenuation.md`](../specs/12-attenuation.md)
+section 3.
+
 ```capa
 fun fetch(net: Net) -> Result<String, IoError>
     return net.get("https://api.example.com/users")

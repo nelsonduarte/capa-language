@@ -336,8 +336,9 @@ preserves the host/capability guarantee (secure-by-default; CRA / NIS2
 aligned). The Python / `capa:host` side closed the same bypass in 2026-07
 by re-checking the capability (host AND scheme) on EVERY hop, so all three
 backends now agree on a FORBIDDEN hop; they differ only on a PERMITTED
-one, which `--wasi` cannot follow because its request parts come from a
-compile-time literal URL. See `docs/design/wasi_mode.md`, "Redirects are
+one, which `--wasi` does not follow because the status gate turns every
+3xx into `Err`, for a literal URL and for a dynamic one granted with
+`--allow-host` alike. See `docs/design/wasi_mode.md`, "Redirects are
 fail-closed (anti-SSRF)".
 The ASYMMETRY with Fs / Env is the load-bearing honesty here: the static Net
 CEILING is the set of HOSTS the program names as a string LITERAL in

@@ -80,8 +80,8 @@ fun main(stdio: Stdio, fs: Fs, net: Net)
     stdio.println("sent via unrestricted Net to 127.0.0.1:8000")
 
     // --- Attenuated use. We narrow the capabilities before
-    // handing them off. A rogue IPC library can now only reach
-    // the host we authorised; even if its body tries to POST
+    // handing them off. A rogue IPC library can now only request
+    // the host name we authorised; even if its body tries to POST
     // to evil.example.com or read ~/.npmrc, the runtime gating
     // on the attenuated capability rejects the call before any
     // syscall happens.
