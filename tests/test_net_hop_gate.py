@@ -559,8 +559,9 @@ class TestBackendParity(unittest.TestCase):
     third implementation, in the guest, which refuses ANY non-2xx and so
     never follows a redirect at all: on a forbidden hop all three agree on
     Err, and --wasi is strictly more restrictive on a PERMITTED hop, which
-    it cannot follow because its request parts are resolved at compile
-    time from a literal URL and a runtime ``Location`` is not one. See
+    it does not follow because its status gate turns every 3xx into Err
+    before any ``Location`` is read, for a literal URL and for a dynamic
+    one granted with ``--allow-host`` alike. See
     docs/design/wasi_mode.md."""
 
     def test_python_backend_refuses_the_forbidden_hop(self):

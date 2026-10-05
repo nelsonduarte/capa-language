@@ -62,7 +62,8 @@ which removes the authority to "obtain unpredictable randomness". The
 
 ## 3. Each attenuator only narrows: the `Net` example
 
-`Net.restrict_to(host)` limits the reachable host set; the function
+`Net.restrict_to(host)` limits the set of host names a request may
+name, on the URL and on every redirect hop; the function
 that receives the restricted `Net` queries it but cannot widen it:
 
 ```capa

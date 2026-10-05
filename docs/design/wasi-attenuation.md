@@ -328,8 +328,10 @@ The status gate is FAIL-CLOSED on any non-2xx: only `200..=299` yields
 `Ok(body)`; ANY other status (3xx redirects, <200, 4xx, 5xx) is `Err`
 WITHOUT reading the body, and the guest does NOT follow redirects. This is
 a DELIBERATE, more-restrictive DIVERGENCE from the urllib oracle /
-`capa:host` (which follow a redirect whose target host the SAME capability
-permits, and surface only 4xx/5xx as errors): following a redirect
+`capa:host` (which refuse a redirect whose target host name the SAME
+capability does not permit, and otherwise leave the hop to urllib:
+measured, a GET 301/302 is followed and a POST 302 is re-sent as a GET,
+while a GET 300 and a POST 307/308 surface as Err): following a redirect
 UNCHECKED would let an allowed host redirect to a host outside the Net
 ceiling + allow-list (an SSRF / host-authority bypass), so refusing 3xx
 preserves the host/capability guarantee (secure-by-default; CRA / NIS2

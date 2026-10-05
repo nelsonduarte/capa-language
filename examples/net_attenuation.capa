@@ -2,11 +2,11 @@
 // the flow-layer pillar of the discipline.
 //
 // `main` receives a Net with full authority. We then narrow it to a
-// single host and propagate the narrowed cap to a helper. The helper
-// cannot reach any other host, not because of a sandbox, but because
-// its parameter type *carries* the restriction. The static analyzer
-// confirms only that Net is propagated correctly; the runtime
-// enforces the host check before any system call.
+// single host name and propagate the narrowed cap to a helper. The
+// helper cannot request any other host name, not because of a
+// sandbox, but because its parameter type *carries* the restriction.
+// The static analyzer confirms only that Net is propagated correctly;
+// the runtime enforces the host check before any system call.
 //
 // This example uses the `allows` query (which performs no IO) so that
 // the demonstration is deterministic and offline. The same `Net` value
