@@ -33,6 +33,7 @@ failure above stops being the intended state in the one environment that
 is supposed to exercise the harnesses.
 """
 
+import importlib
 import os
 import unittest
 from pathlib import Path
@@ -41,12 +42,21 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: The Wasm soundness harnesses this guard keeps honest. Named as
-#: ``module.ClassName`` so the pin below reads as documentation too.
+#: The Wasm soundness harnesses this guard keeps honest, as
+#: ``module:ClassName``, so the pin below reads as documentation too. The
+#: instruments' Wasm legs join the two capability harnesses: each is the
+#: one place its leg runs, and a skip there would be the same silent loss.
 _WASM_SOUNDNESS_HARNESSES = (
-    "TestWasmRuntimeSubsetOfManifest",
-    "TestWasmAttenuationHonoured",
+    "tests.test_properties:TestWasmRuntimeSubsetOfManifest",
+    "tests.test_properties:TestWasmAttenuationHonoured",
+    "tests.instruments.test_absolute:AbsoluteOracleWasmLeg",
+    "tests.instruments.test_analysis_execution:AnalysisExecutionWasmLeg",
 )
+
+
+def _harness_class(name: str):
+    module_name, class_name = name.split(":")
+    return getattr(importlib.import_module(module_name), class_name)
 
 
 def _wasm_is_required() -> bool:
@@ -73,8 +83,8 @@ class WasmSoundnessHarnessesCannotSilentlyNotRunTests(unittest.TestCase):
             _HAVE_WASM_TOOLCHAIN,
             "CAPA_REQUIRE_WASM=1 but the Wasm toolchain (wasm-tools + "
             "wasmtime) was not detected, so the Wasm capability-soundness "
-            "harnesses (TestWasmRuntimeSubsetOfManifest, "
-            "TestWasmAttenuationHonoured) would skip silently and the "
+            "harnesses (the capability harnesses and the instruments' "
+            "Wasm legs, named in _WASM_SOUNDNESS_HARNESSES) would skip silently and the "
             "suite runs no Wasm soundness evidence. Fix the toolchain "
             "install in the environment that sets CAPA_REQUIRE_WASM.",
         )
@@ -89,10 +99,9 @@ class WasmSoundnessHarnessesCannotSilentlyNotRunTests(unittest.TestCase):
                 "CAPA_REQUIRE_WASM is not set; the harnesses may skip "
                 "honestly on a toolchain-less host."
             )
-        import tests.test_properties as props
         for name in _WASM_SOUNDNESS_HARNESSES:
             with self.subTest(harness=name):
-                cls = getattr(props, name)
+                cls = _harness_class(name)
                 self.assertFalse(
                     getattr(cls, "__unittest_skip__", False),
                     f"{name} is marked skip while CAPA_REQUIRE_WASM=1; a "

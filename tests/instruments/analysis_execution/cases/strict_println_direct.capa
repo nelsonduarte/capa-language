@@ -1,0 +1,5 @@
+// expect: FLAGGED-CONFIRMED
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let k = env.get("K").unwrap_or("")
+    stdio.println(k)

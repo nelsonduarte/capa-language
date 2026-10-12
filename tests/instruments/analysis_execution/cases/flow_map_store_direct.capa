@@ -1,0 +1,15 @@
+// expect: FLAGGED-CONFIRMED
+type Store { m: Map<String, String> }
+impl Store
+    fun put(self, v: String) -> Int
+        self.m.set("k", v)
+        return 1
+    fun show(self) -> String
+        return self.m.get("k").unwrap_or("")
+fun keep(s: Store, v: String) -> Int
+    return s.put(v)
+fun main(env: Env, stdio: Stdio)
+    let s = Store { m: new_map() }
+    let k = env.get("K").unwrap_or("")
+    let n = keep(s, k)
+    stdio.println(s.show())

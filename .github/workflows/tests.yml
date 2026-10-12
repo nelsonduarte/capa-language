@@ -58,7 +58,24 @@ jobs:
           pip install -e . --no-deps
 
       - name: Run the test suite
+        # tests/instruments runs here too: the absolute rule oracle on its
+        # check and IR legs with a command-line route sample, the evaluator
+        # anchors and self-test, the grammar completeness pin, the
+        # analysis-vs-execution twins on the Python legs and the strict
+        # condition-position family. Their Wasm legs run in the wasi job.
         run: python -m unittest discover tests -v
+
+      - name: Register ratchet (shrink-only against the pushed range's base)
+        # The known-outcome register may only shrink: every entry of the
+        # candidate must be present, with the same outcome, in the register
+        # of the BASE of the pushed range (the push event's `before` sha, or
+        # a pull request's base sha), never HEAD~1. One matrix leg is enough;
+        # the rule is about the file, not the platform.
+        if: startsWith(matrix.os, 'ubuntu') && matrix.python == '3.12'
+        shell: bash
+        env:
+          RATCHET_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: scripts/instrument_ratchet.sh "$RATCHET_BASE_SHA"
 
       - name: Smoke run a few examples
         shell: bash
@@ -178,6 +195,10 @@ jobs:
           python -c "import importlib.metadata as m; print('wasmtime', m.version('wasmtime'))"
 
       - name: Run the test suite (WASI tests now execute)
+        # With the toolchain present the instruments' Wasm legs run here
+        # (AbsoluteOracleWasmLeg, AnalysisExecutionWasmLeg); they are
+        # named in tests/test_wasm_harness_present.py, so a skip in this
+        # job is a loud failure, not a silent loss of evidence.
         run: python -m unittest discover tests -v
 
       - name: Wasm/Python example parity gate

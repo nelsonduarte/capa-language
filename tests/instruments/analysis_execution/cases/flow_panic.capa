@@ -1,0 +1,5 @@
+// expect: FLAGGED-CONFIRMED
+fun main(stdio: Stdio, env: Env)
+    let k = env.get("K").unwrap_or("none")
+    stdio.println("before")
+    panic(k)

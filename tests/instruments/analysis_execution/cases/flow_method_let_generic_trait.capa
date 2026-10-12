@@ -1,0 +1,21 @@
+// expect: FLAGGED-CONFIRMED
+trait Sink
+    fun push(self, v: String) -> Int
+    fun label(self) -> String
+type Bag { items: List<String> }
+impl Sink for Bag
+    fun push(self, v: String) -> Int
+        self.items.push(v)
+        return 1
+    fun label(self) -> String
+        return self.items.get(0).unwrap_or("")
+fun ident<T>(x: T) -> T
+    return x
+fun store(b: Sink, v: String) -> Int
+    let t = ident(b)
+    return t.push(v)
+fun main(env: Env, stdio: Stdio)
+    let b = Bag { items: [] }
+    let k = env.get("K").unwrap_or("")
+    let n = store(b, k)
+    stdio.println(b.label())

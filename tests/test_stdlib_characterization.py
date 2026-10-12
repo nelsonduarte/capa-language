@@ -29,22 +29,30 @@ WHAT THIS ASSERTS
   including the known-divergent ones (their divergence is Wasm-only). Runs
   without the Wasm toolchain.
 - ``TestKnownDivergent``: the programs in ``_KNOWN_DIVERGENT`` are
-  RECORDED as defects, never blessed as correct. Each test pins the exact
-  divergence measured today and says what to do when it goes red because
-  the backends now agree (promote the program to ``_AGREEING``).
+  RECORDED as defects, never blessed as correct. The list is DERIVED from
+  the instrument register (``tests/instrument_register.json``, instrument
+  ``stdlib_characterization``): each entry pins the exact per-backend
+  vector (exit class and stdout) of EVERY leg, the Python legs included,
+  as the key the register stores, and the generic test asserts that the
+  three legs still produce exactly those vectors. When it goes red
+  because the backends now agree the defect is fixed: delete the entry
+  and promote the program to ``_AGREEING``; when it goes red because a
+  leg changed its answer, re-measure, do not re-pin. The structural
+  assertions a key cannot express (the non-NaN subsequence lost its order;
+  the Wasm failure names the un-emitted callee) stay as hand-written
+  tests the entry points at through its ``pins`` field.
 - ``TestKnownDivergentIsPinned``: every ``_KNOWN_DIVERGENT`` member is
-  actually pinned by one of those tests. Pentest finding F5: a program
-  could be added to the list with no pin at all, and the suite stayed
-  green (measured EXIT=0), so a divergence could be RECORDED without
-  anyone asserting what it is -- which is the whole point of the list.
-  The pins are read out of ``TestKnownDivergent``'s own source, so this
-  is not a second hand-kept list that could drift from the first.
-  The reverse direction (a pin left behind after a program is promoted
-  to ``_AGREEING``) deliberately gets NO guard here: it is already
-  caught three ways by tests that ship today -- the inventory test, the
-  agreement test, and the stale pin itself, which asserts the divergent
-  output and fails once the program agrees. A fourth mechanism for it
-  would be a mirror of knowledge that already has one owner.
+  pinned by construction (an entry has no shape without an outcome), and
+  every pin an entry points at exists and names the member. Pentest
+  finding F5: a program could be added to the list with no pin at all,
+  and the suite stayed green (measured EXIT=0), so a divergence could be
+  RECORDED without anyone asserting what it is -- which is the whole point
+  of the list. The reverse direction (a pin left behind after a program
+  is promoted to ``_AGREEING``) deliberately gets NO guard here: it is
+  already caught three ways by tests that ship today -- the inventory
+  test, the agreement test, and the stale pin itself, which fails once
+  the program agrees. A fourth mechanism for it would be a mirror of
+  knowledge that already has one owner.
 - ``TestCapabilitySurface``: the manifest's capability and obligation
   surface for every corpus program is exactly the Stdio the program
   declares, with no linear obligation. The manifest's ``calls`` list is
@@ -70,6 +78,11 @@ from capa.manifest import build_manifest
 from capa.typesys import CAPABILITY_NAMES, TyName
 
 from tests._declared_methods import declared_methods
+from tests.instruments._outcome import norm_text, wrong
+from tests.instruments._register import (
+    PUBLIC_REGISTER, composite_vector, entry_key, load, member_id, members, split_key,
+)
+from tests.instruments._runner import Program, run_legs
 from tests.test_ir_wasm_parity import (
     _capture_stdout,
     _has_wasm_tools,
@@ -99,14 +112,26 @@ _AGREEING: tuple[str, ...] = (
 
 #: Programs whose Wasm behaviour DIFFERS from the two Python paths today.
 #: Each is a measured, pre-existing defect (design section 9; contest F2;
-#: the NaN member found by the qa gate), pinned exactly by a dedicated
-#: test in ``TestKnownDivergent`` so the suite records the defect instead
-#: of locking it in as correct.
-_KNOWN_DIVERGENT: tuple[str, ...] = (
-    "known_divergent_sorted_by_inconsistent.capa",
-    "known_divergent_sorted_by_nan.capa",
-    "known_divergent_generic_closure_param.capa",
-)
+#: the NaN member found by the qa gate), recorded in the instrument
+#: register with the exact vector of every leg; the list is DERIVED from
+#: the register so the inventory and the pins cannot disagree.
+_STDLIB_INSTRUMENT = "stdlib_characterization"
+_THREE_BACKENDS = "three_backends"
+_REGISTER: dict = load(PUBLIC_REGISTER)
+_KNOWN_DIVERGENT: tuple[str, ...] = tuple(members(_REGISTER, _STDLIB_INSTRUMENT))
+
+
+def _registered_entry(filename: str) -> tuple[str, dict]:
+    """The register key and entry of a known-divergent program; the key
+    carries the program's hash, so an edited program has no entry."""
+    key = entry_key(_STDLIB_INSTRUMENT, member_id(filename, _source(filename)), _THREE_BACKENDS)
+    if key not in _REGISTER:
+        raise AssertionError(
+            f"{filename} is in the corpus but its text no longer matches its "
+            f"register entry (the member identity carries the program hash); "
+            f"re-measure and re-register it: {key}"
+        )
+    return key, _REGISTER[key]
 
 
 def _source(filename: str) -> str:
@@ -233,57 +258,53 @@ class TestThreeBackendAgreement(unittest.TestCase):
 )
 class TestKnownDivergent(unittest.TestCase):
     """Pre-existing cross-backend defects, RECORDED here so nobody
-    mistakes them for correct behaviour. Each test pins today's exact
-    outputs. When one goes red because the backends now AGREE, the
-    defect has been fixed: move the program to ``_AGREEING`` and delete
-    the pin, do not re-pin the new output."""
+    mistakes them for correct behaviour. The register entry of each
+    program pins today's exact per-leg vectors; the generic test below
+    re-measures them through the bounded runner. When it goes red because
+    the backends now AGREE, the defect has been fixed: delete the entry
+    (which promotes the program to ``_AGREEING``), do not re-pin the new
+    output. The structural assertions stay as hand-written tests."""
 
-    def test_sorted_by_inconsistent_comparator_is_recorded_not_blessed(self):
-        # .claude/STDLIB_DESIGN.md section 9, decision 2: the byte-identity
-        # promise of sorted_by holds only for a consistent total order.
-        # Python's Timsort and the Wasm bottom-up merge sort visit
-        # different comparison sequences, so an inconsistent comparator
-        # settles on different permutations.
-        src = _source("known_divergent_sorted_by_inconsistent.capa")
-        py, cir, wasm = _three_backend_outputs(src)
-        self.assertEqual(py, "1|2|3|4|5|6|\n")
-        self.assertEqual(cir, py)
-        self.assertEqual(
-            wasm, "6|5|4|3|2|1|\n",
-            "the Wasm sorted_by output for an inconsistent comparator "
-            "changed; if it now equals the Python output the divergence is "
-            "fixed: promote the program to _AGREEING",
-        )
+    LEGS = ("run", "ir", "wasm")
 
-    def test_sorted_by_nan_is_recorded_not_blessed(self):
-        # The same class reached through a VALUE: NaN compares false
-        # against everything, so a comparator built from < and > answers
-        # 0 for it against anything and stops being a total order.
-        #
+    @classmethod
+    def setUpClass(cls):
+        programs = [Program(name, _CORPUS / name) for name in _KNOWN_DIVERGENT]
+        cls.rows = run_legs(_CORPUS.parent.parent, cls.LEGS, programs, workdir=_CORPUS) if programs else {}
+
+    def _vectors(self, filename: str) -> dict:
+        out = {}
+        for leg in self.LEGS:
+            row = self.rows[(filename, leg)]
+            out[leg] = [row["outcome"], norm_text(row["stdout"])]
+        return out
+
+    def test_every_registered_divergence_holds_on_every_leg(self):
+        for filename in _KNOWN_DIVERGENT:
+            with self.subTest(program=filename):
+                key, entry = _registered_entry(filename)
+                observed = self._vectors(filename)
+                self.assertEqual(
+                    wrong(composite_vector(observed)), entry["outcome"],
+                    f"{filename}: a leg no longer produces its registered vector.\n"
+                    f"registered: {entry.get('vectors')}\nobserved:   {observed}\n"
+                    "If the three legs now agree the divergence is fixed: delete "
+                    f"the entry {key} (the program joins _AGREEING). If one leg "
+                    "changed its answer, re-measure and record the new defect; "
+                    "never re-pin silently.",
+                )
+                distinct = {observed[leg][0] + observed[leg][1] for leg in self.LEGS}
+                self.assertGreater(len(distinct), 1, f"{filename}: the legs agree; the entry is FIXED")
+
+    def test_sorted_by_nan_non_nan_subsequence_lost_its_order(self):
         # FIVE elements, not four, and the count is load-bearing. At
         # four the outputs differ only in where NaN sits, which reads as
         # a cosmetic ordering question and is what let this defect be
         # discussed as one. At five the real damage shows: on the Python
         # paths the CLEAN elements come out 2.0, 1.0, 3.0, 4.0, which is
-        # not sorted. The assertion below therefore pins the exact
-        # strings AND, separately, the fact that the non-NaN
-        # subsequence has lost its order, so a change that moved NaN but
-        # left the corruption cannot turn this green.
-        src = _source("known_divergent_sorted_by_nan.capa")
-        py, cir, wasm = _three_backend_outputs(src)
-        self.assertEqual(py, "2.0|nan|1.0|3.0|4.0|\n")
-        self.assertEqual(cir, py)
-        self.assertEqual(
-            wasm, "1.0|2.0|nan|3.0|4.0|\n",
-            "the Wasm sorted_by output for a NaN element changed; if it now "
-            "equals the Python output the divergence is fixed: promote the "
-            "program to _AGREEING",
-        )
-        # What the divergence IS, asserted rather than left implicit.
-        clean = [
-            part for part in py.strip().split("|")
-            if part not in ("", "nan")
-        ]
+        # not sorted. That is the defect this program records.
+        py = self._vectors("known_divergent_sorted_by_nan.capa")["run"][1]
+        clean = [part for part in py.strip().split("|") if part not in ("", "nan")]
         self.assertNotEqual(
             clean, sorted(clean, key=float),
             "the Python paths no longer corrupt the order of the non-NaN "
@@ -292,69 +313,66 @@ class TestKnownDivergent(unittest.TestCase):
             "and promote, do not re-pin",
         )
 
-    def test_generic_closure_param_is_recorded_not_blessed(self):
+    def test_generic_closure_param_failure_names_the_callee(self):
         # .claude/STDLIB_CONTEST_1.md F2: a generic function with a
         # closure-typed parameter runs on both Python paths but the Wasm
         # backend emits a module that references the never-emitted
         # specialisation, so assembly fails naming the callee.
-        src = _source("known_divergent_generic_closure_param.capa")
-        py = _capture_stdout(lambda: _run_python(src))
-        cir = _capture_stdout(lambda: _run_cir(src))
-        self.assertEqual(py, "1 a\n")
-        self.assertEqual(cir, py)
-        with self.assertRaises(Exception) as caught:
-            _capture_stdout(lambda: _run_wasm(src))
+        row = self.rows[("known_divergent_generic_closure_param.capa", "wasm")]
+        self.assertNotEqual(row["outcome"], "OK")
         self.assertIn(
-            "sort_any", str(caught.exception),
+            "sort_any", row["exc"],
             "the Wasm failure no longer names the un-emitted generic "
-            "callee; if the program now runs, the defect is fixed: promote "
-            "it to _AGREEING",
+            "callee; if the program now runs, the defect is fixed: delete "
+            "its register entry",
         )
 
 
 class TestKnownDivergentIsPinned(unittest.TestCase):
     """Pentest finding F5, the UNPINNED direction.
 
-    ``_KNOWN_DIVERGENT`` records a program as a defect; a
-    ``TestKnownDivergent`` method is what says WHAT the defect is.
-    Nothing tied the two together, so a fourth member could be listed
-    with no pin and the module stayed green: the divergence would be
-    excused from ``TestThreeBackendAgreement`` while being asserted
-    nowhere. That is a licence to silence a new cross-backend
-    disagreement by adding one line.
-
-    The pinned set is DERIVED from the source of the pin methods rather
-    than listed again here, so the two views cannot disagree. Note that
-    ``TestKnownDivergent`` skips without the Wasm toolchain, and this
-    check must NOT: whether a member is pinned is a property of the
-    test module, not of the host, so it runs everywhere.
+    An entry of the register IS the pin (it has no shape without an
+    outcome), so a program cannot be listed as divergent without its
+    divergence being asserted. What can still drift is the structural
+    assertion an entry points at: every ``pins`` name must be a test of
+    ``TestKnownDivergent`` whose source names the member, and every
+    structural test must be pointed at by an entry. Whether a member is
+    pinned is a property of the module, not of the host, so this runs
+    without the Wasm toolchain.
     """
 
-    @staticmethod
-    def _pinned_programs() -> set[str]:
-        """Every corpus filename named in the source of a
-        ``TestKnownDivergent`` pin method."""
-        pinned: set[str] = set()
-        for name in dir(TestKnownDivergent):
-            if not name.startswith("test_"):
-                continue
-            source = inspect.getsource(getattr(TestKnownDivergent, name))
-            pinned |= {
-                member for member in _KNOWN_DIVERGENT if member in source
-            }
-        return pinned
+    GENERIC_PIN = "test_every_registered_divergence_holds_on_every_leg"
 
-    def test_every_known_divergent_program_has_a_pin(self):
-        unpinned = sorted(set(_KNOWN_DIVERGENT) - self._pinned_programs())
+    def test_every_pin_an_entry_points_at_exists_and_names_the_member(self):
+        for filename in _KNOWN_DIVERGENT:
+            key, entry = _registered_entry(filename)
+            for pin in entry.get("pins", []):
+                with self.subTest(program=filename, pin=pin):
+                    method = getattr(TestKnownDivergent, pin, None)
+                    self.assertIsNotNone(method, f"{key} points at a test that does not exist: {pin}")
+                    self.assertIn(filename, inspect.getsource(method), f"{pin} does not name {filename}")
+
+    def test_every_structural_test_is_pointed_at_by_an_entry(self):
+        pointed = set()
+        for filename in _KNOWN_DIVERGENT:
+            pointed |= set(_registered_entry(filename)[1].get("pins", []))
+        structural = {
+            name for name in dir(TestKnownDivergent)
+            if name.startswith("test_") and name != self.GENERIC_PIN
+        }
         self.assertEqual(
-            unpinned, [],
-            "a program is listed in _KNOWN_DIVERGENT with no test in "
-            "TestKnownDivergent naming it, so its divergence is excused "
-            "from TestThreeBackendAgreement without anyone asserting "
-            "what the divergence IS. Add a pin method that names the "
-            "file and asserts today's exact per-backend output, or move "
-            f"the program to _AGREEING: {unpinned}",
+            sorted(structural - pointed), [],
+            "a structural pin names no register entry; either point an "
+            "entry at it or delete it with the defect it recorded",
         )
+
+    def test_every_register_entry_is_a_corpus_file(self):
+        on_disk = {p.name for p in _CORPUS.glob("*.capa")}
+        for filename in _KNOWN_DIVERGENT:
+            self.assertIn(filename, on_disk)
+        for key in _REGISTER:
+            if split_key(key)[0] == _STDLIB_INSTRUMENT:
+                self.assertEqual(split_key(key)[2], _THREE_BACKENDS)
 
 
 class TestCapabilitySurface(unittest.TestCase):

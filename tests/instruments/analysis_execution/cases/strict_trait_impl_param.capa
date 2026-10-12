@@ -1,0 +1,23 @@
+// expect: FLAGGED-CONFIRMED
+trait Greeter
+    fun greet(self, s: String) -> String
+
+type Keyed { part: String }
+
+impl Greeter for Keyed
+    fun greet(self, s: String) -> String
+        return "${self.part}${s}"
+
+fun make(env: Env) -> Keyed
+    let k = env.get("K").unwrap_or("")
+    return Keyed { part: k }
+
+@strict_ifc()
+fun use_it(stdio: Stdio, g: Greeter)
+    let r = g.greet("hi")
+    stdio.println(r)
+
+@strict_ifc()
+fun main(stdio: Stdio, env: Env)
+    let g = make(env)
+    use_it(stdio, g)

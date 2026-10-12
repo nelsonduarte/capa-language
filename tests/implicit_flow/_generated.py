@@ -281,3 +281,55 @@ def generate_mixed():
                         continue
                     name = f"g5_{kind}_{'-'.join(chain)}_{sink}_{'-'.join(arms)}"
                     yield name, _build(kind, chain, sink, list(arms)), expect(kind, chain, sink)
+
+
+# ---------------------------------------------------------------------------
+# The CONDITION-POSITION class: the secret at the construct's OWN condition.
+#
+# The early-exit class above puts the SECRET at an early-exit condition
+# under PUBLIC enclosing constructs. The missing axis is the construct's
+# own condition: for every position that can carry one, a ``@strict_ifc``
+# program whose condition is secret with a public sink in the governed
+# body (REFUSE), and its public twin, the same program with a public
+# condition and no secret read (ACCEPT). ``--check`` only; nothing here is
+# ever run. The table maps a position name to its body with ``{C}`` where
+# the condition goes; a private extension may add positions.
+# ---------------------------------------------------------------------------
+
+_COND_HEAD_SECRET = (
+    "@strict_ifc()\n"
+    "fun main(stdio: Stdio, env: Env)\n"
+    '    let k = env.get("K").unwrap_or("")\n'
+)
+_COND_HEAD_PUBLIC = (
+    "@strict_ifc()\n"
+    "fun main(stdio: Stdio, _env: Env)\n"
+    '    let k = "unused"\n'
+)
+_COND_SINK = 'stdio.println("x")'
+_COND_SECRET = 'k == "a"'
+_COND_PUBLIC = '"z" == "a"'
+
+CONDITION_POSITIONS = {
+    "if_cond": "    if {C}\n        " + _COND_SINK + "\n",
+    "elif2_cond": "    if 1 == 2\n        stdio.println(\"p\")\n    elif {C}\n        " + _COND_SINK + "\n",
+    "elif3_cond": ("    if 1 == 2\n        stdio.println(\"p\")\n    elif 2 == 3\n        stdio.println(\"q\")\n"
+                   "    elif {C}\n        " + _COND_SINK + "\n"),
+    "else_after_elif": ("    if 1 == 2\n        stdio.println(\"p\")\n    elif {C}\n        stdio.println(\"q\")\n"
+                        "    else\n        " + _COND_SINK + "\n"),
+    "while_cond": "    var i = 0\n    while {C} and i < 1\n        " + _COND_SINK + "\n        i = i + 1\n",
+    "match_scrut": "    match {C}\n        true -> " + _COND_SINK + "\n        false -> stdio.println(\"q\")\n",
+    "and_rhs": "    if 1 == 1 and {C}\n        " + _COND_SINK + "\n",
+    "or_rhs": "    if 1 == 2 or {C}\n        " + _COND_SINK + "\n",
+    "not_cond": "    if not {C}\n        " + _COND_SINK + "\n",
+    "nested_if": "    if 1 == 1\n        if {C}\n            " + _COND_SINK + "\n",
+}
+
+
+def generate_conditions(positions=None):
+    """Every (position, secret | public) program of the condition-position
+    class. Yields ``(name, source, verdict)``."""
+    table = CONDITION_POSITIONS if positions is None else positions
+    for name, body in table.items():
+        yield (name + "_sec", _COND_HEAD_SECRET + body.replace("{C}", _COND_SECRET), REFUSE)
+        yield (name + "_pub", _COND_HEAD_PUBLIC + body.replace("{C}", _COND_PUBLIC), ACCEPT)
