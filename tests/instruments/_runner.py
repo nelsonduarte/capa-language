@@ -114,9 +114,18 @@ def run_leg(tree, leg: str, programs: list, bound: float = PROGRAM_BOUND_S,
     parent_hash = package_hash(tree)[0]
     workdir = Path(workdir) if workdir is not None else Path(programs[0].path).parent
     rows: dict = {}
+    listfile = workdir / ("list_%s_%d.txt" % (leg, os.getpid()))
+    try:
+        _drive(tree, leg, programs, bound, listfile, child, parent_hash, rows)
+    finally:
+        if listfile.exists():
+            listfile.unlink()
+    return rows
+
+
+def _drive(tree, leg, programs, bound, listfile, child, parent_hash, rows) -> None:
     i = 0
     while i < len(programs):
-        listfile = workdir / ("list_%s_%d.txt" % (leg, os.getpid()))
         with open(listfile, "w", encoding="utf-8") as fh:
             for p in programs[i:]:
                 fh.write("%s\t%s\t%s\n" % (p.name, p.path, p.cwd or ""))
@@ -182,7 +191,6 @@ def run_leg(tree, leg: str, programs: list, bound: float = PROGRAM_BOUND_S,
             if i >= len(programs):
                 proc.wait(timeout=60)
                 break
-    return rows
 
 
 def run_cli_leg(tree, leg: str, programs: list, bound: float = PROGRAM_BOUND_S,

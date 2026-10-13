@@ -69,6 +69,8 @@ not a second runner.
 from __future__ import annotations
 
 import inspect
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -270,7 +272,11 @@ class TestKnownDivergent(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         programs = [Program(name, _CORPUS / name) for name in _KNOWN_DIVERGENT]
-        cls.rows = run_legs(_CORPUS.parent.parent, cls.LEGS, programs, workdir=_CORPUS) if programs else {}
+        work = Path(tempfile.mkdtemp(prefix="capa_stdlib_"))
+        try:
+            cls.rows = run_legs(_CORPUS.parent.parent, cls.LEGS, programs, workdir=work) if programs else {}
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
     def _vectors(self, filename: str) -> dict:
         out = {}
