@@ -113,6 +113,7 @@ def run_leg(tree, leg: str, programs: list, bound: float = PROGRAM_BOUND_S,
     tree = os.path.abspath(str(tree))
     parent_hash = package_hash(tree)[0]
     workdir = Path(workdir) if workdir is not None else Path(programs[0].path).parent
+    workdir.mkdir(parents=True, exist_ok=True)
     rows: dict = {}
     listfile = workdir / ("list_%s_%d.txt" % (leg, os.getpid()))
     try:

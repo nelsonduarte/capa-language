@@ -23,7 +23,11 @@ if [ -z "$base_sha" ] || [ "$base_sha" = "00000000000000000000000000000000000000
   exit $?
 fi
 
-git fetch --no-tags --depth=1 origin "$base_sha"
+# A depth-1 checkout does not hold the base commit; fetch it by its full sha
+# (what the event carries) unless it is already present.
+if ! git cat-file -e "$base_sha^{commit}" 2>/dev/null; then
+  git fetch --no-tags --depth=1 origin "$base_sha"
+fi
 if git cat-file -e "$base_sha:$register" 2>/dev/null; then
   git show "$base_sha:$register" > "$base_file"
   echo "base register: $base_sha:$register"
