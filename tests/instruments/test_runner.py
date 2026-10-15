@@ -104,6 +104,11 @@ class ProvenanceControls(unittest.TestCase):
         for row in rows.values():
             self.assertNotEqual(row["outcome"], "VOID", row)
 
+    def test_a_command_line_child_that_lies_about_its_hash_voids_every_row(self):
+        rows = RU.run_cli_leg(REPO_ROOT, "cli_check", self.programs, child=FIXTURES / "lying_cli_child.py")
+        self.assertEqual({r["outcome"] for r in rows.values()}, {"VOID"})
+        self.assertEqual(len(rows), len(self.programs))
+
 
 class RouteAgreementTests(unittest.TestCase):
     def test_divergence_and_not_comparable(self):

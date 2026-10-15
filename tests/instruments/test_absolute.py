@@ -87,6 +87,29 @@ class AbsoluteOraclePythonLegs(_Oracle, unittest.TestCase):
         self.assertEqual(len(self.oracle.outcomes), len(self.programs) * len(self.LEGS))
 
 
+class GrammarPinNegatives(unittest.TestCase):
+    """The pin must be able to say RED: a corpus that produces almost
+    nothing lists what it lacks, and an exclusion the corpus contradicts is
+    named as stale."""
+
+    def test_a_trivial_corpus_is_uncovered(self):
+        from tests.instruments.absolute._rule import HEADER, MAIN
+        result = pin([HEADER + MAIN + '    stdio.println("x")\n'])
+        self.assertFalse(result.green)
+        self.assertIn("IfExpr", result.uncovered)
+        self.assertIn("WhileStmt", result.uncovered)
+        self.assertEqual(result.stale, [])
+
+    def test_a_produced_class_listed_as_excluded_is_stale(self):
+        from tests.instruments.absolute._rule import EXCLUDED, HEADER, MAIN
+        src = HEADER + MAIN + "    let v = (if true then 1 else 2)\n" + '    stdio.println("${v}")\n'
+        planted = dict(EXCLUDED)
+        planted["IfExpr"] = "planted: the corpus contradicts this"
+        result = pin([src], excluded=planted)
+        self.assertFalse(result.green)
+        self.assertEqual(result.stale, ["IfExpr"])
+
+
 def _have_wasm_toolchain() -> bool:
     from tests.test_properties import _HAVE_WASM_TOOLCHAIN
     return _HAVE_WASM_TOOLCHAIN

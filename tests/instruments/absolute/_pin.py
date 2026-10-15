@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+from typing import Optional
 
 from tests.instruments.absolute._rule import EXCLUDED, HEADER
 
@@ -80,7 +81,11 @@ class PinResult:
             self.uncovered, self.stale))
 
 
-def pin(sources) -> PinResult:
+def pin(sources, excluded: Optional[dict] = None) -> PinResult:
+    """``excluded`` defaults to the grammar's ``EXCLUDED``; a test may pass
+    its own table to prove a stale exclusion is reported."""
+    if excluded is None:
+        excluded = EXCLUDED
     all_classes = node_classes()
     seen, guards, n = set(), 0, 0
     for src in sources:
@@ -93,6 +98,6 @@ def pin(sources) -> PinResult:
     for bn in BASES:
         total = sorted(c for c, b in all_classes.items() if b == bn)
         produced[bn] = {"total": len(total), "produced": sorted(c for c in total if c in seen)}
-        uncovered += [c for c in total if c not in seen and c not in EXCLUDED]
-    stale = sorted(c for c in EXCLUDED if c in seen)
+        uncovered += [c for c in total if c not in seen and c not in excluded]
+    stale = sorted(c for c in excluded if c in seen)
     return PinResult(produced, uncovered, stale, guards, n)

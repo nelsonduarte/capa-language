@@ -45,7 +45,8 @@ def _main() -> None:
     h, n = package_hash(tree)
     print(json.dumps({"prov": prov_file, "hash": h, "files": n}), flush=True)
 
-    from tests.implicit_flow._harness import _IFC_ERROR, check_source
+    from tests.implicit_flow._harness import check_source, ifc_errors, ifc_warnings
+    from tests.instruments.release_differential import manifest_of_source
     from tests.test_ir_wasm_parity import _run_cir, _run_python, _run_wasm
     thunks = {"run": _run_python, "ir": _run_cir, "wasm": _run_wasm}
 
@@ -60,17 +61,6 @@ def _main() -> None:
             if os.path.abspath(fn).startswith(runtime_dir):
                 return True
         return False
-
-    def manifest_of(src: str, name: str) -> str:
-        from capa.manifest import build_manifest
-        res = check_source(src)
-        if not res.ok:
-            return json.dumps({"_refused": True})
-        from capa import Lexer, Parser
-        mod = Parser(Lexer(src).lex(), source=src).parse_module()
-        doc = build_manifest(mod, filename=name, bindings=res.bindings,
-                             expr_labels=res.expr_labels)
-        return json.dumps(doc, default=str, sort_keys=True)
 
     for line in open(listfile, encoding="utf-8"):
         line = line.rstrip("\n")
@@ -89,11 +79,9 @@ def _main() -> None:
             continue
         errors = [x.message for x in res.errors]
         if leg == "check":
-            warnings = [getattr(x, "message", str(x)) for x in res.warnings]
             print(json.dumps({"file": name, "leg": leg, "phase": "check", "ok": res.ok,
-                              "n_errors": len(errors), "n_warnings": len(warnings),
-                              "ifc_errors": sum(1 for m in errors if _IFC_ERROR.search(m)),
-                              "ifc_warnings": sum(1 for m in warnings if _IFC_ERROR.search(m)),
+                              "n_errors": len(errors), "n_warnings": len(res.warnings),
+                              "ifc_errors": len(ifc_errors(res)), "ifc_warnings": len(ifc_warnings(res)),
                               "errors": errors[:5], "s": time.perf_counter() - t0}), flush=True)
             continue
         if not res.ok:
@@ -102,7 +90,7 @@ def _main() -> None:
             continue
         if leg == "manifest":
             try:
-                doc = manifest_of(src, name)
+                doc = json.dumps(manifest_of_source(src, name), default=str, sort_keys=True)
             except BaseException as e:
                 print(json.dumps({"file": name, "leg": leg, "phase": "compile", "exc": type(e).__name__,
                                   "msg": str(e)[:300], "s": time.perf_counter() - t0}), flush=True)

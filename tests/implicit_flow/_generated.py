@@ -323,6 +323,9 @@ CONDITION_POSITIONS = {
     "or_rhs": "    if 1 == 2 or {C}\n        " + _COND_SINK + "\n",
     "not_cond": "    if not {C}\n        " + _COND_SINK + "\n",
     "nested_if": "    if 1 == 1\n        if {C}\n            " + _COND_SINK + "\n",
+    # The iterable itself is chosen by the condition: the number of times the
+    # body runs, and so the sink, depends on the secret.
+    "for_iter": "    let xs = if {C} then [1] else [1, 2]\n    for x in xs\n        " + _COND_SINK + "\n",
 }
 
 

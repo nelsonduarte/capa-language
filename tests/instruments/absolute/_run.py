@@ -18,7 +18,8 @@ from tests.instruments._outcome import ACCEPT, check_outcome, run_outcome
 from tests.instruments._private import load_module
 from tests.instruments._register import member_id
 from tests.instruments._runner import CLI_LEGS, run_legs
-from tests.instruments.absolute import _rule as R
+from tests.instruments.absolute import _anchors as AN, _kinds as K
+from tests.instruments.absolute._gen import Gen
 from tests.instruments.absolute._corpus import (
     PUBLIC_CORPORA, expectation, source_text, write_anchor_programs, write_corpus,
 )
@@ -60,11 +61,11 @@ class Configuration:
     private: bool = False
 
 
-def anchors_for(g: R.Gen) -> list:
+def anchors_for(g: Gen) -> list:
     """The anchors built from THIS generator's builders (public, plus the
     extension's when loaded), so a mutant installed on ``g`` is what the
     anchors evaluate."""
-    out = R.anchors(g)
+    out = AN.anchors(g)
     ext = load_module("absolute_kinds")
     if ext is not None:
         out += ext.anchors(g)
@@ -73,8 +74,8 @@ def anchors_for(g: R.Gen) -> list:
 
 def configuration() -> Configuration:
     ext = load_module("absolute_kinds")
-    kinds = dict(R.PUBLIC_KINDS) if ext is None else ext.extend(dict(R.PUBLIC_KINDS))
-    g = R.Gen(random.Random(0), kinds)
+    kinds = dict(K.PUBLIC_KINDS) if ext is None else ext.extend(dict(K.PUBLIC_KINDS))
+    g = Gen(random.Random(0), kinds)
     cfg = Configuration(kinds, anchors_for(g), list(PUBLIC_CORPORA))
     if ext is not None:
         cfg.extension_corpora = list(ext.CORPORA)
@@ -100,7 +101,7 @@ def generate(cfg: Configuration, workdir) -> list:
     workdir = Path(workdir)
     programs = []
     for spec in cfg.corpora:
-        programs += write_corpus(workdir / spec.name, spec, R.PUBLIC_KINDS, cfg.anchors)
+        programs += write_corpus(workdir / spec.name, spec, K.PUBLIC_KINDS, cfg.anchors)
     for spec in cfg.extension_corpora:
         programs += write_corpus(workdir / spec.name, spec, cfg.kinds, cfg.anchors)
     programs += write_anchor_programs(workdir / "anchors", cfg.anchors)

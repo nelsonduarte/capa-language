@@ -8,7 +8,8 @@ the anchor table is a second statement of the rule, written by hand.
 import random
 import unittest
 
-from tests.instruments.absolute import _rule as R
+from tests.instruments.absolute import _anchors as AN, _rule as R
+from tests.instruments.absolute._gen import Gen
 from tests.instruments.absolute._evaluator_mutants import MUTANTS
 from tests.instruments.absolute._run import anchors_for, configuration
 
@@ -18,15 +19,15 @@ class EvaluatorSelfTest(unittest.TestCase):
     def setUpClass(cls):
         cls.cfg = configuration()
 
-    def generator(self) -> R.Gen:
-        return R.Gen(random.Random(0), self.cfg.kinds)
+    def generator(self) -> Gen:
+        return Gen(random.Random(0), self.cfg.kinds)
 
     def test_true_evaluator_reproduces_every_anchor(self):
-        fails = R.check_anchors(self.generator(), self.cfg.anchors)
+        fails = AN.check_anchors(self.generator(), self.cfg.anchors)
         self.assertEqual(fails, [], [(a.title, want, got) for a, want, got in fails])
 
     def test_every_clause_has_an_anchor_or_is_a_gap_of_the_loaded_grammar(self):
-        gaps = R.clauses_without_anchor(self.cfg.anchors, self.cfg.kinds)
+        gaps = AN.clauses_without_anchor(self.cfg.anchors, self.cfg.kinds)
         holes = {c: kinds for c, kinds in gaps.items() if kinds}
         self.assertEqual(holes, {}, "clauses exercised by a loaded kind but pinned by no anchor: %s" % holes)
         if self.cfg.private:
@@ -41,7 +42,7 @@ class EvaluatorSelfTest(unittest.TestCase):
             apply(g)
             # The anchors are rebuilt from the MUTATED generator: the anchor's
             # expectation is hand-written text, its evaluator is the mutant's.
-            fails = R.check_anchors(g, anchors_for(g))
+            fails = AN.check_anchors(g, anchors_for(g))
             with self.subTest(mutant=name):
                 self.assertTrue(fails, "evaluator mutant %s fails no anchor: a hole in the anchor table" % name)
             if not fails:

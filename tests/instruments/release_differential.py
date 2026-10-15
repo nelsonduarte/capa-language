@@ -36,6 +36,7 @@ import re
 import sys
 from pathlib import Path
 
+from tests.implicit_flow._harness import check_source
 from tests.instruments._outcome import NOT_RUN, OK, outcome_type
 from tests.instruments._runner import PROGRAM_BOUND_S, Program, run_cli_leg, run_leg
 
@@ -46,6 +47,21 @@ _MANIFEST_VOLATILE = frozenset({
     "content_integrity", "digest", "from_digest", "to_digest", "capa_version",
     "compiler_version", "generated_at", "timestamp", "source_path", "path", "source",
 })
+
+
+def manifest_of_source(src: str, name: str) -> dict:
+    """The manifest document of one program, built in process by the
+    compiler imported here: THE one way the instruments obtain a manifest
+    (the manifest leg of the runner's child and the tests both use it).
+    A program the checker refuses yields ``{"_status": "REFUSED"}``, a
+    status the manifest differ never sees."""
+    from capa import Lexer, Parser
+    from capa.manifest import build_manifest
+    res = check_source(src)
+    if not res.ok:
+        return {"_status": "REFUSED"}
+    mod = Parser(Lexer(src).lex(), source=src).parse_module()
+    return build_manifest(mod, filename=name, bindings=res.bindings, expr_labels=res.expr_labels)
 
 
 def scrub_line(line: str) -> str:

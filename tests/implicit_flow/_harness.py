@@ -78,6 +78,13 @@ def ifc_errors(result: AnalysisResult) -> list:
     return [e for e in result.errors if _IFC_ERROR.search(e.message)]
 
 
+def ifc_warnings(result: AnalysisResult) -> list:
+    """The information-flow diagnostics raised at the WARN tier: the same
+    classifier as ``ifc_errors`` over the warnings list, so a consumer that
+    needs the tier reads both through one regex."""
+    return [w for w in result.warnings if _IFC_ERROR.search(w.message)]
+
+
 def other_errors(result: AnalysisResult) -> list:
     return [e for e in result.errors if not _IFC_ERROR.search(e.message)]
 

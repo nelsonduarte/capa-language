@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from tests.implicit_flow._harness import _IFC_ERROR, check_source
+from tests.implicit_flow._harness import check_source, ifc_errors, ifc_warnings
 from tests.instruments._outcome import (
     BROKEN, CORRECT, OK, REFUSED, TIMEOUT, VOID, outcome_type, wrong,
 )
@@ -103,12 +103,8 @@ class Analysis:
 
 def analyse(src: str) -> Analysis:
     res = check_source(src)
-    errors = [e.message for e in res.errors]
-    warnings = [getattr(w, "message", str(w)) for w in res.warnings]
-    ifc_e = sum(1 for m in errors if _IFC_ERROR.search(m))
-    ifc_w = sum(1 for m in warnings if _IFC_ERROR.search(m))
-    tier = "ERROR" if ifc_e else ("WARN" if ifc_w else "SILENT")
-    return Analysis(res.ok, tier, "@strict_ifc" in src, tuple(errors))
+    tier = "ERROR" if ifc_errors(res) else ("WARN" if ifc_warnings(res) else "SILENT")
+    return Analysis(res.ok, tier, "@strict_ifc" in src, tuple(e.message for e in res.errors))
 
 
 def build_twin(src: str, marker: str = MARKER, fault: Optional[str] = None) -> tuple:

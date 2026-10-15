@@ -7,17 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.implicit_flow._harness import check_source
 from tests.instruments import release_differential as D
 from tests.instruments._provenance import REPO_ROOT
 
-
-def _manifest(src: str, name: str) -> dict:
-    from capa import Lexer, Parser
-    from capa.manifest import build_manifest
-    res = check_source(src)
-    mod = Parser(Lexer(src).lex(), source=src).parse_module()
-    return build_manifest(mod, filename=name, bindings=res.bindings, expr_labels=res.expr_labels)
+_manifest = D.manifest_of_source
 
 
 class ScrubTests(unittest.TestCase):
@@ -53,10 +46,13 @@ class ScrubTests(unittest.TestCase):
 
 class ManifestLayersTests(unittest.TestCase):
     def test_a_dropped_capability_is_seen_by_both_layers(self):
-        with_fs = "pub fun go(fs: Fs, stdio: Stdio)\n    stdio.println(\"x\")\nfun main(stdio: Stdio)\n    stdio.println(\"y\")\n"
+        with_fs = ("pub fun go(fs: Fs, stdio: Stdio)\n    let e = fs.exists(\"x\")\n    stdio.println(\"${e}\")\n"
+                   "fun main(stdio: Stdio)\n    stdio.println(\"y\")\n")
         without = "pub fun go(stdio: Stdio)\n    stdio.println(\"x\")\nfun main(stdio: Stdio)\n    stdio.println(\"y\")\n"
         base = {"p.capa": _manifest(with_fs, "p.capa")}
         cand = {"p.capa": _manifest(without, "p.capa")}
+        self.assertNotIn("_status", base["p.capa"], "the base program must be accepted by the checker")
+        self.assertNotIn("_status", cand["p.capa"])
         d = D.diff_manifest(base, cand)
         self.assertEqual(len(d["layer1"]), 1, d)
         self.assertEqual(len(d["layer2"]), 1, d)

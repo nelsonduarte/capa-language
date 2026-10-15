@@ -9,7 +9,8 @@ table (RED). A new clause lands with its anchor and a mutant here.
 from __future__ import annotations
 
 from tests.instruments._outcome import ABORT
-from tests.instruments.absolute._rule import Abort, Gen, Return, chk, idiv, imod
+from tests.instruments.absolute._gen import Gen
+from tests.instruments.absolute._rule import Abort, Return, chk, idiv, imod
 
 
 def gm4_untaken_else(g: Gen) -> None:

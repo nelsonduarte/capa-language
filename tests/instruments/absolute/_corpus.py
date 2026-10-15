@@ -19,7 +19,10 @@ from typing import Optional
 
 from tests.instruments._outcome import ABORT, OK, expectation_text, expected_of
 from tests.instruments._runner import Program
-from tests.instruments.absolute._rule import HEADER, MAIN, STMT, Gen, anchors, check_anchors, program
+from tests.instruments.absolute._anchors import anchors, check_anchors
+from tests.instruments.absolute._gen import Gen
+from tests.instruments.absolute._kinds import program
+from tests.instruments.absolute._rule import HEADER, MAIN, STMT
 
 
 @dataclass(frozen=True)

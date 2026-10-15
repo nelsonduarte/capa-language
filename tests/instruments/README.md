@@ -61,22 +61,26 @@ guard carrying a call `BROKEN` on the IR leg only (the one shape the CIR
 Python emitter refuses today; when that gap closes the control must be
 replaced or retired with its class). Two fixture children (`fixtures/`)
 prove that a child lying about its hash or importing from another tree
-voids its rows. The evaluator self-test plants twenty one-clause errors in
-the evaluator and requires each to fail a hand-written anchor.
+voids its rows. The evaluator self-test plants one-clause errors in the
+evaluator (``absolute/_evaluator_mutants.MUTANTS``, nineteen in the public
+configuration) and requires each to fail a hand-written anchor.
 
 ## Where the legs run
 
 - The `test` matrix (no Wasm toolchain): the check and IR legs over the
-  corpora, anchors and controls, a 20-program sample of `capa --ir --run`
-  for route agreement, the Python legs of the twins, the condition-position
-  family, and the ratchet step on one leg.
+  corpora, anchors and controls, the route sample of `capa --ir --run`
+  (every anchor program plus the first ten of each generated corpus: 69
+  programs, about 0.3 s each on the development machine), the Python legs
+  of the twins, the condition-position family, and the ratchet step on one
+  leg.
 - The `wasi` job: the Wasm leg and `--wasm --run` sample, and the Wasm leg
   of the twins. Both classes are named in `tests/test_wasm_harness_present.py`,
   so a skip there is a loud failure.
 
 Measured on the development machine (win32, sequential): the check and IR
-legs over 309 programs take about 10 s, the Wasm leg about 13 s, the route
-sample about 6 s, the twins about 3 s per backend set. The bound is a
+legs over 309 programs take about 10 s, the Wasm leg about 13 s, each
+route sample about 21 s, the twins about 3 s per backend set; the whole
+`test_absolute` module (both leg classes) about 77 s. The bound is a
 fixed floor of `PROGRAM_BOUND_S` seconds per (program, leg); the slowest
 program measured 0.07 s unloaded and 0.32 s under load; a hang costs about
 the bound plus a child restart per hanging (program, leg).
