@@ -4,7 +4,9 @@ the executable bit, or the Linux runner fails with "Permission denied".
 
 The mode is read from the git index (``git ls-files -s``), which is what a
 checkout on the runner reproduces; the working tree on Windows does not
-carry the bit, so a file-system check would pass here and fail there.
+carry the bit, so a file-system check would pass here and fail there. A
+tree that is not a git checkout (an archive extraction) has no index to
+read, so the check skips there and says so; CI runs on a checkout.
 """
 
 import re
@@ -49,6 +51,8 @@ class DirectlyInvokedScriptsAreExecutable(unittest.TestCase):
         self.assertTrue(directly_invoked_scripts(), "no workflow step invokes a script directly; the guard is vacuous")
 
     def test_every_directly_invoked_script_has_the_executable_bit(self):
+        if not (REPO_ROOT / ".git").exists():
+            self.skipTest("not a git checkout: the executable bit lives in the git index")
         for script, sites in directly_invoked_scripts().items():
             with self.subTest(script=script):
                 self.assertEqual(
