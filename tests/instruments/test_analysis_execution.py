@@ -188,6 +188,10 @@ class DecideTable(unittest.TestCase):
         seen = self._row(stdout=T.MARKER + "\n")
         unseen = self._row(stdout="public\n")
         broken = self._row(outcome="BROKEN")
+        # A leg that never ran the twin: its text may still carry the marker
+        # (a compiler error quoting the source), which is not a delivery.
+        broken_quoting = self._row(outcome="BROKEN", stderr="error near " + T.MARKER)
+        aborted = self._row(outcome="ABORT:RuntimeError", stdout="public\n")
         table = [
             ("silent, marker seen on a leg", "SILENT", False, {"run": seen, "ir": unseen}, T.MISMATCH),
             ("silent, every leg ran, marker unseen", "SILENT", False, {"run": unseen, "ir": unseen}, T.CLEAN),
@@ -202,6 +206,15 @@ class DecideTable(unittest.TestCase):
              {"run": self._row(outcome="ABORT:RuntimeError", exc=T.MARKER), "ir": seen}, T.FLAGGED_CONFIRMED),
             ("a timeout passes through", "SILENT", False, {"run": self._row(outcome="TIMEOUT"), "ir": unseen}, "TIMEOUT"),
             ("a void passes through", "WARN", False, {"run": self._row(outcome="VOID"), "ir": seen}, "VOID"),
+            # Only a leg that RAN to the end counts as ran: an aborted leg
+            # leaves a silent case partial, never clean.
+            ("silent, a leg aborted without the marker", "SILENT", False, {"run": aborted, "ir": unseen},
+             T.TWIN_PARTIAL),
+            # A BROKEN leg's text never counts as seen, in either tier.
+            ("flagged, the marker only in a broken leg's text", "WARN", False, {"run": broken_quoting, "ir": seen},
+             T.FLAGGED_UNCONFIRMED),
+            ("silent, the marker only in a broken leg's text", "SILENT", False, {"run": broken_quoting, "ir": unseen},
+             T.TWIN_PARTIAL),
         ]
         for title, tier, strict, rows, want in table:
             with self.subTest(case=title):
