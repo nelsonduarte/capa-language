@@ -20,7 +20,9 @@ backslash-newline continues the line, comments are dropped, the body of a
 here-document is not read and the target of a redirection is not a command.
 Not read: backquoted commands, a command whose path is built from a
 variable or an expression, a block under an explicit ``shell:`` other than
-bash or sh, and the argument of a prefix that takes one (``sudo -u <user>``).
+bash or sh, the argument of a prefix that takes one (``sudo -u <user>``),
+and a command after a leading redirection that names a file descriptor
+(``2> err.txt ./x.sh``).
 
 The mode is read from the git index (``git ls-files -s``), which is what a
 checkout on the runner reproduces; the working tree on Windows does not
@@ -45,6 +47,7 @@ _OPERATOR_CHARS = "();<>|&\n"
 _PREFIX_WORDS = frozenset({"if", "then", "else", "elif", "do", "while", "until", "!", "{",
                            "time", "exec", "env", "nohup", "sudo", "command"})
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_REDIRECTION = re.compile(r"(?:&>+|[<>]+[&|]?)$")
 _HEREDOC = re.compile(r"(?<!<)<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _SHELLS = ("bash", "sh")
 
@@ -94,9 +97,14 @@ def command_words(script: str) -> list:
     words, at_start, redirect_target = [], True, False
     for tok in lex:
         if tok and all(c in _OPERATOR_CHARS for c in tok):
-            if tok[0] in "<>":
+            # One run of operator characters may end a command and open a
+            # redirection at once (a newline then `>`): split off the
+            # trailing redirection operator, if any, and read both parts.
+            m = _REDIRECTION.search(tok)
+            if m:
                 redirect_target = True
-            else:
+                tok = tok[:m.start()]
+            if tok:
                 at_start = True
             continue
         if redirect_target:
@@ -182,14 +190,15 @@ class CommandPositionReader(unittest.TestCase):
 
     def test_after_operators_assignments_and_prefixes(self):
         script = ("set -e && ./a/one.sh; FOO=1 ./a/two.sh | ./a/three.sh\n"
-                  "if ./a/four.sh; then\n  exec ./a/five.sh\nfi\nx=$(./a/six.sh)\nenv -i ./a/seven.sh\n")
+                  "if ./a/four.sh; then\n  exec ./a/five.sh\nfi\nx=$(./a/six.sh)\nenv -i ./a/seven.sh\n"
+                  "> out/log.txt ./a/eight.sh\n")
         self.assertEqual([w for w in command_words(script) if "/" in w],
                          ["./a/one.sh", "./a/two.sh", "./a/three.sh", "./a/four.sh", "./a/five.sh",
-                          "./a/six.sh", "./a/seven.sh"])
+                          "./a/six.sh", "./a/seven.sh", "./a/eight.sh"])
 
     def test_arguments_continuations_comments_heredocs_and_redirections_are_not_commands(self):
         script = ("bash scripts/a.sh\npython tools/b.py \\\n  deploy/c.spec\n"
-                  "echo hi # ./scripts/d.sh\n# ./scripts/e.sh\n"
+                  "echo hi # done; ./scripts/d.sh\n# note && ./scripts/e.sh\n"
                   "cat <<'EOF'\n./scripts/f.sh\nEOF\nsort < data/g.txt > out/h.txt\n"
                   "echo 'a; ./scripts/i.sh'\n")
         self.assertEqual([w for w in command_words(script) if "/" in w], [])
