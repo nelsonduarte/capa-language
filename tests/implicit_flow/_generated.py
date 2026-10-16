@@ -326,6 +326,10 @@ CONDITION_POSITIONS = {
     # The iterable itself is chosen by the condition: the number of times the
     # body runs, and so the sink, depends on the secret.
     "for_iter": "    let xs = if {C} then [1] else [1, 2]\n    for x in xs\n        " + _COND_SINK + "\n",
+    # The if-EXPRESSION governs its branches like the statement form: a sink
+    # in either branch runs or not by the condition.
+    "ifexpr_then": "    let u = if {C} then " + _COND_SINK + " else ()\n",
+    "ifexpr_else": "    let u = if {C} then () else " + _COND_SINK + "\n",
 }
 
 
