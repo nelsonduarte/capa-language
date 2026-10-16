@@ -2,32 +2,30 @@
 register.
 
 The table lives in ``tests.implicit_flow._generated`` (the secret at the
-construct's own condition); a private extension may add positions. Every
-secret program must be REFUSED with an information-flow error and every
-public twin ACCEPTED; a position that does not hold is a registered entry.
+construct's own condition); a private extension may add positions, merged
+in ONE place (``_positions``). Every secret program must be REFUSED with an
+information-flow error and every public twin ACCEPTED; a position that does
+not hold is a registered entry.
 """
 
+import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from tests.implicit_flow._generated import CONDITION_POSITIONS, REFUSE, generate_conditions
+from tests.implicit_flow._generated import CONDITION_POSITIONS, REFUSE
+from tests.instruments import release_differential as D
 from tests.instruments._outcome import ACCEPT, REFUSE_IFC, check_outcome
-from tests.instruments._private import load_module
+from tests.instruments._positions import positions, write_programs
+from tests.instruments._private import ENV_VAR
 from tests.instruments._provenance import REPO_ROOT, provenance_ok
 from tests.instruments._register import diff, load_merged, member_id
-from tests.instruments._runner import Program, run_leg
+from tests.instruments._runner import run_leg
 
 INSTRUMENT = "strict_positions"
-
-
-def positions() -> dict:
-    table = dict(CONDITION_POSITIONS)
-    ext = load_module("strict_positions")
-    if ext is not None:
-        table.update(ext.CONDITION_POSITIONS)
-    return table
 
 
 class StrictConditionPositions(unittest.TestCase):
@@ -35,11 +33,9 @@ class StrictConditionPositions(unittest.TestCase):
     def setUpClass(cls):
         cls.work = Path(tempfile.mkdtemp(prefix="capa_pos_"))
         cls.programs, cls.expected = [], {}
-        for name, src, verdict in generate_conditions(positions()):
-            p = cls.work / (name + ".capa")
-            p.write_text(src, encoding="utf-8", newline="\n")
-            cls.programs.append(Program(p.name, p))
-            cls.expected[p.name] = (REFUSE_IFC if verdict == REFUSE else ACCEPT, src)
+        for program, src, verdict in write_programs(cls.work):
+            cls.programs.append(program)
+            cls.expected[program.name] = (REFUSE_IFC if verdict == REFUSE else ACCEPT, src)
         cls.rows = run_leg(REPO_ROOT, "check", cls.programs, workdir=cls.work)
         cls.outcomes = {(member_id(name, src), "check"): check_outcome(want, cls.rows[name])
                         for name, (want, src) in cls.expected.items()}
@@ -64,6 +60,33 @@ class StrictConditionPositions(unittest.TestCase):
             if want == ACCEPT:
                 with self.subTest(program=name):
                     self.assertEqual(self.rows[name]["outcome"], "OK", self.rows[name].get("errors"))
+
+
+class OnePositionsTable(unittest.TestCase):
+    """A position an extension adds reaches both readers of the family:
+    this gate and the release differential's seeded negative corpus."""
+
+    _EXT = "capa_instruments_private.strict_positions"
+
+    def test_an_extension_position_reaches_both_readers(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "strict_positions.py").write_text(
+                "CONDITION_POSITIONS = %r\n" % {"planted_pos": '    if {C}\n        stdio.println("x")\n'},
+                encoding="utf-8")
+            saved = sys.modules.pop(self._EXT, None)
+            try:
+                with mock.patch.dict(os.environ, {ENV_VAR: d}):
+                    names = set(positions())
+                    gate = {p.name for p, _src, _v in write_programs(Path(d) / "gate")}
+                    seeded = {p.name for p in D.seeded_negative_corpus(Path(d) / "seeded")}
+            finally:
+                sys.modules.pop(self._EXT, None)
+                if saved is not None:
+                    sys.modules[self._EXT] = saved
+        self.assertEqual(names, set(CONDITION_POSITIONS) | {"planted_pos"})
+        want = {n + twin + ".capa" for n in names for twin in ("_sec", "_pub")}
+        self.assertEqual(gate, want)
+        self.assertEqual(seeded, want)
 
 
 if __name__ == "__main__":

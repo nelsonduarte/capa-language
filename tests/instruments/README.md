@@ -19,7 +19,9 @@ under `python -m unittest discover tests` like every other test module.
 
 The strict condition-position family lives with the other implicit-flow
 enumerations in `tests/implicit_flow/_generated.py`; its gate is
-`test_strict_positions`.
+`test_strict_positions`. `_positions` is the one place that adds a
+private extension's positions and writes the programs, for that gate
+and for the seeded corpus of `release_differential`.
 
 ## The register
 

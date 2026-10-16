@@ -38,6 +38,7 @@ from pathlib import Path
 
 from tests.implicit_flow._harness import check_source
 from tests.instruments._outcome import NOT_RUN, OK, outcome_type
+from tests.instruments._positions import write_programs
 from tests.instruments._runner import PROGRAM_BOUND_S, Program, run_cli_leg, run_leg
 
 _PATH = re.compile(r"\S*?\.capa")
@@ -175,20 +176,7 @@ def diff_manifest(base: dict, cand: dict) -> dict:
 def seeded_negative_corpus(directory) -> list:
     """The strict condition-position family written as files: programs
     that PRODUCE a diagnostic on a correct base, so a deletion shows."""
-    from tests.implicit_flow._generated import CONDITION_POSITIONS, generate_conditions
-    from tests.instruments._private import load_module
-    positions = dict(CONDITION_POSITIONS)
-    ext = load_module("strict_positions")
-    if ext is not None:
-        positions.update(ext.CONDITION_POSITIONS)
-    d = Path(directory)
-    d.mkdir(parents=True, exist_ok=True)
-    out = []
-    for name, src, _verdict in generate_conditions(positions):
-        p = d / (name + ".capa")
-        p.write_text(src, encoding="utf-8", newline="\n")
-        out.append(Program(p.name, p))
-    return out
+    return [program for program, _src, _verdict in write_programs(directory)]
 
 
 def programs_in(directory) -> list:
