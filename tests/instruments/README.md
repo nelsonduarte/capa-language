@@ -48,6 +48,15 @@ the outcome it came from) or a `REGENERATED` member (same file, leg and
 outcome under a new hash, naming the entry it replaces). The first landing
 is a bootstrap and says so.
 
+The words of an instrument (a) entry are checked too. `absolute/_reasons`
+holds the one table of reasons: each row gives the exact text, its
+`closes_in`, the legs and outcome type it may describe, the program-body
+shapes it claims (read from the parsed body, the shared header stripped)
+and the observation it claims on the leg. `test_absolute` checks every
+public entry against its row on each run; `test_reasons` pins the walker
+on anchors whose shapes are known by hand and shows each clause of the
+check biting.
+
 A stdlib characterization entry pins the vector of EVERY leg (the
 `vectors` field; the outcome is their key, and the loader checks it) and
 points, through `pins`, at the hand-written structural assertions a key

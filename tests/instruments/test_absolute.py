@@ -18,9 +18,9 @@ from pathlib import Path
 
 from tests.instruments._outcome import CORRECT, outcome_type
 from tests.instruments._provenance import REPO_ROOT, provenance_ok
-from tests.instruments._register import diff, load_merged
+from tests.instruments._register import PUBLIC_REGISTER, diff, load, load_merged, member_id
 from tests.instruments._runner import route_divergences
-from tests.instruments.absolute import _run as A
+from tests.instruments.absolute import _reasons as R, _run as A
 from tests.instruments.absolute._corpus import source_text
 from tests.instruments.absolute._pin import pin
 
@@ -78,6 +78,15 @@ class AbsoluteOraclePythonLegs(_Oracle, unittest.TestCase):
     def test_grammar_completeness_pin(self):
         result = pin(source_text(p) for p in self.programs if not p.name.startswith("ctl_"))
         self.assertTrue(result.green, result.report())
+
+    def test_the_public_register_reasons_hold(self):
+        # The words of every public entry against the public rows, judged
+        # on this run: a public run sees a wrong public reason.
+        by_mid = {member_id(p.name, source_text(p)): p for p in self.programs}
+        res = R.PUBLIC.check(load(PUBLIC_REGISTER), by_mid, R.observed_rows(self.oracle.rows, self.programs))
+        self.assertGreater(res.checked, 0)
+        self.assertGreater(res.judged_observations, 0)
+        self.assertEqual(res.mismatches, [], res.report())
 
     def test_outcome_summary_is_the_registered_shape(self):
         # Every non-CORRECT outcome on the public legs is one of the
