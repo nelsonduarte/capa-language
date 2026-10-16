@@ -8,8 +8,11 @@ went blind fails one of these before any register is consulted.
 
 import gc
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 import warnings
 from pathlib import Path
@@ -145,6 +148,29 @@ class ChildrenAreReleased(unittest.TestCase):
 
     def test_a_kill_on_a_provenance_mismatch_leaves_nothing_open(self):
         self.assertEqual(self._resource_warnings(child=FIXTURES / "lying_child.py"), [])
+
+    def test_the_pipes_close_only_after_the_reader_has_drained_stdout(self):
+        # A reader still draining when the release begins must read the
+        # child's output to its end: the release waits for it before it
+        # closes stdout under it.
+        proc = subprocess.Popen([sys.executable, "-I", "-c", "print('line')"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True)
+        proc.wait(timeout=60)
+        got = []
+
+        def slow_reader():
+            time.sleep(0.5)
+            try:
+                got.append(proc.stdout.read())
+            except ValueError as e:
+                got.append("closed under the reader: %s" % e)
+
+        reader = threading.Thread(target=slow_reader, daemon=True)
+        reader.start()
+        RU._release(proc, reader)
+        reader.join(timeout=10)
+        self.assertEqual(got, ["line\n"])
 
 
 class RouteAgreementTests(unittest.TestCase):
