@@ -4,35 +4,77 @@ runner fails with "Permission denied".
 
 The guard fails closed: a command path it cannot resolve to a committed
 file is a failure, unless it is one of the known non-repository paths
-listed, each with its reason, in ``NOT_REPOSITORY_FILES``. "The index does
-not hold it" never means "not ours": a path the reader resolved wrongly
-looks exactly like a build product.
+listed, each with its reason, in ``NOT_REPOSITORY_FILES``; an entry that
+no workflow runs is a failure too (a stale entry). "The index does not
+hold it" never means "not ours": a path the reader resolved wrongly looks
+exactly like a build product.
 
-The paths are derived from the workflow files themselves: every ``run:``
-block of every job in ``.github/workflows`` is read as shell, and every
-word in COMMAND position that names a path (it holds a ``/``) is judged:
+The paths are derived from the workflow files themselves: the reader
+described below finds the words in COMMAND position of the ``run:``
+blocks, and every such word that names a path (it holds a ``/``) is
+judged:
 
 - a relative path is resolved against the step's ``working-directory``;
   the git index must hold it with mode ``100755``, or it must be listed;
-- after a directory change in the block (``cd``, ``pushd``, ``popd``,
-  wherever it stands, a subshell or a branch included) the reader does not
-  know the directory, so a relative command path from there on cannot be
+- after a directory change in the block (``cd``, ``pushd`` or ``popd`` in
+  command position, wherever it stands, a subshell or a branch included)
+  the reader does not know the directory to the end of the block (the end
+  of a subshell or a substitution, as in ``(true)`` or ``$(date)``, does
+  not restore it), so a relative command path from there on cannot be
   resolved and fails; the forms the reader resolves are the step's
   ``working-directory`` and a path from the repository root;
 - an absolute path, a home path (``~``), a path that leaves the checkout,
   and a path built from a variable, an expression, a substitution or a
   glob are not resolved to a committed file, so each fails unless listed.
 
-Command position, as read here: the first word of the block and the first
-word after a newline, ``;``, ``&``, ``&&``, ``|``, ``||``, ``(`` or ``$(``,
-skipping variable assignments, option words and the prefixes ``if``,
-``then``, ``else``, ``elif``, ``do``, ``while``, ``until``, ``!``, ``{``,
-``time``, ``exec``, ``env``, ``nohup``, ``sudo``, ``command`` and
-``builtin``. A backslash-newline continues the line, comments are dropped,
-the body of a here-document is not read and the target of a redirection
-is not a command.
+What the reader reads is the closed list below, and nothing else. A word
+it does not reach is not judged and passes silently, whatever it runs.
 
-Not followed, so a path there is not judged:
+- Blocks: every ``run:`` step of every job in ``.github/workflows`` whose
+  shell is the default (read as bash, whatever the runner), or whose
+  ``shell:`` (the step's, else the job's, else the workflow's
+  ``defaults.run``) starts with the bare word ``bash`` or ``sh``. A block
+  under any other ``shell:`` is not read at all, a path to bash included
+  (``shell: /bin/bash -e {0}``).
+- Text: quotes and backslashes keep what they cover inside one word, and
+  are then removed. So an opener inside a quoted word that holds anything
+  else opens nothing: a command substitution inside double quotes
+  (``"$(...)"``) is not read, while the same substitution unquoted is,
+  and so is a quoted command word (``"./x.sh"``). A word that is only
+  operator characters once its quotes and backslashes are removed acts as
+  that operator (``"&&"``, ``\\;``, ``">"``).
+- Command position: the first word of the block and of each line, and the
+  first word after an opener, skipping variable assignments, words that
+  start with ``-`` and the prefixes.
+- Openers: ``;``, ``&``, ``|``, ``(``, ``)``, ``&&``, ``||``, ``|&``,
+  ``;;``, ``$(``, ``<(`` and ``>(``, and any other run of ``;``, ``&``,
+  ``|``, ``(`` and ``)``.
+- Prefixes: ``if``, ``then``, ``else``, ``elif``, ``do``, ``while``,
+  ``until``, ``!``, ``{``, ``time``, ``exec``, ``env``, ``nohup``,
+  ``sudo``, ``command`` and ``builtin``.
+- A ``{`` is skipped only in command position: the body of ``{ ...; }``
+  and of ``f() { ...; }`` is read, but the first command of a one-line
+  ``function NAME { ...; }`` is not (``function`` is the command word
+  there); the lines after the ``{`` are read.
+- Not commands: a comment (from a ``#`` that starts an unquoted word to
+  the end of the line), and the target of a redirection: the next word
+  after a redirection operator (``<``, ``>``, ``>>``, ``<<``, ``>&``,
+  ``&>`` and the like), taken even past an opener or a line end between
+  them. So the first word inside ``< <(...)`` or ``> >(...)`` is not read,
+  nor is the first command of the line after a word that is only a
+  redirection operator (``echo ">"``). A backslash-newline joins two
+  lines, and a GitHub expression (``${{ ... }}``) is one word.
+- Here-documents: the first ``<<WORD`` on a line starts a here-document
+  wherever it stands, even inside quotes (``echo "<<END"``). WORD is the
+  name (a letter or ``_``, then letters, digits and ``_``) after the
+  ``<<``, an optional ``-`` and blanks: bare, it ends at the first other
+  character (``<<END-X`` is read as ``<<END``); quoted, the quotes hold
+  the name alone (``<<'END'``, ``<<"END"``). ``<<<`` starts none. The
+  lines after it are skipped up to the first line that is WORD (spaces
+  and tabs around it ignored), and a WORD that never comes fails the
+  block.
+
+Outside that list, so not judged (examples, not a complete list):
 
 - a program that runs another program named among its arguments. Tried
   and not followed: ``timeout``, ``nice``, ``ionice``, ``stdbuf``,
@@ -46,31 +88,39 @@ Not followed, so a path there is not judged:
   named here is not followed either;
 - the argument of a prefix that takes one (``sudo -u <user>``,
   ``env -u <name>``, ``env -C <dir>``, ``exec -a <name>``);
-- a backquoted command, a command named entirely by a variable
-  (``$CMD``), a block under an explicit ``shell:`` other than bash or sh,
-  a command after a leading redirection that names a file descriptor
-  (``2> err.txt ./x.sh``), and a directory change made inside a sourced
-  file or an ``eval``.
+- a command inside backquotes (except where the backquote starts the
+  command word: that word is judged as an unresolved path and fails), a
+  command named entirely by a variable (``$CMD``), a command after a
+  leading redirection that names a file descriptor (``2> err.txt
+  ./x.sh``), and a directory change made inside a sourced file or an
+  ``eval``.
 
 Read as commands although they are not (a false failure, the safe
-direction): the elements of an array assignment (``A=( ./x.sh )``) and a
-``case`` pattern after ``;;``.
+direction): the elements of an array assignment (``A=( ./x.sh )``), a
+``case`` pattern after ``;;``, an argument after a ``)`` (``echo $(date)
+./x.sh``) or after a quoted or escaped opener (``echo "&&" ./x.sh``,
+``find . -exec rm {} \\; ./x.sh``), and the body of a here-document the
+rule above does not see (``<<$X``, ``<<'END X'``, the second one opened on
+a line).
 
 The mode is read from the git index (``git ls-files -s``), which is what a
 checkout on the runner reproduces; the working tree on Windows does not
 carry the bit, so a file-system check would pass here and fail there. A
 tree that is not a git checkout (an archive extraction) has no index to
 read, so the mode check skips there and says so; CI runs on a checkout.
-The judgement itself (``judge``) takes the index as a function, so it is
-tested below without a checkout.
+The judgement itself (``judge``, and ``judge_workflows`` with the stale
+check) takes the index as a function, so it is tested below without a
+checkout.
 """
 
 import posixpath
 import re
 import shlex
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -231,6 +281,16 @@ def judge(blocks, mode_of) -> tuple:
     return failures, checked, listed
 
 
+def judge_workflows(blocks, mode_of) -> tuple:
+    """``judge`` over every workflow at once, plus the list's own check: an
+    entry of ``NOT_REPOSITORY_FILES`` that no block runs is stale, and a
+    stale entry is a failure. Returns ``(failures, checked)``."""
+    failures, checked, listed = judge(blocks, mode_of)
+    failures += ["%s is listed in NOT_REPOSITORY_FILES but no workflow runs it: a stale entry" % path
+                 for path in sorted(set(NOT_REPOSITORY_FILES) - listed)]
+    return failures, checked
+
+
 def _run_setting(doc: dict, job: dict, step: dict, key: str):
     for scope in (step, (job.get("defaults") or {}).get("run") or {}, (doc.get("defaults") or {}).get("run") or {}):
         if scope.get(key):
@@ -238,10 +298,11 @@ def _run_setting(doc: dict, job: dict, step: dict, key: str):
     return ""
 
 
-def run_blocks():
+def run_blocks(workflows: Path = WORKFLOWS):
     """``(site, working directory, shell block)`` for every ``run:`` step
-    of every workflow whose shell is the default, bash or sh."""
-    for wf in sorted(list(WORKFLOWS.glob("*.yml")) + list(WORKFLOWS.glob("*.yaml"))):
+    of every workflow whose shell is the default, or whose ``shell:``
+    starts with the bare word bash or sh."""
+    for wf in sorted(list(workflows.glob("*.yml")) + list(workflows.glob("*.yaml"))):
         doc = yaml.safe_load(wf.read_text(encoding="utf-8")) or {}
         for job_name, job in (doc.get("jobs") or {}).items():
             for step in job.get("steps") or []:
@@ -307,7 +368,8 @@ class CommandPositionReader(unittest.TestCase):
     def test_a_directory_change_leaves_the_directory_unknown(self):
         for script in ("cd scripts && ./relock.sh", "cd scripts\n./relock.sh\n", "pushd scripts\n./relock.sh\n",
                        "popd\n./relock.sh", "(cd scripts && ./relock.sh)", "builtin cd scripts; ./relock.sh",
-                       "if true; then cd scripts; fi; ./relock.sh"):
+                       "if true; then cd scripts; fi; ./relock.sh", "cd scripts; (true); ./relock.sh",
+                       "cd scripts; echo $(date); ./relock.sh"):
             with self.subTest(script=script):
                 self.assertEqual(command_paths(script, "proofs"), [("./relock.sh", None)])
         self.assertEqual(command_paths("./a.sh; cd x; ./b.sh"), [("./a.sh", "a.sh"), ("./b.sh", None)],
@@ -336,6 +398,80 @@ class CommandPositionReader(unittest.TestCase):
                 self.assertNotIn("./a/x.sh", command_words(shape.format("./a/x.sh")),
                                  "the reader follows %s now" % name)
                 self.assertIn("``%s``" % name, __doc__, "%s is not followed but the docstring does not say so" % name)
+
+    # The docstring's closed list of what the reader reads is read back from
+    # the docstring itself and checked against the code both ways, so the
+    # two cannot drift apart.
+    @staticmethod
+    def _listed(label: str) -> list:
+        """The double-backquoted items of the docstring bullet that starts
+        ``- <label>:``."""
+        m = re.search(r"^- %s:(.*?)(?=^- |^\s*$)" % re.escape(label), __doc__, re.M | re.S)
+        return re.findall(r"``(.+?)``", m.group(1)) if m else []
+
+    def test_every_opener_the_docstring_lists_is_read_and_no_other(self):
+        openers = self._listed("Openers")
+        self.assertTrue(openers, "the docstring lists no opener")
+        for opener in openers + ["\n"]:
+            with self.subTest(opener=opener):
+                self.assertIn("./a/x.sh", command_words("true %s ./a/x.sh" % opener),
+                              "the docstring lists %r as an opener but the reader does not open on it" % opener)
+        self.assertEqual(set(_OPERATOR_CHARS) - {"\n"}, set("".join(openers)) - {"$"},
+                         "the reader opens a command on a character the docstring does not list, or the reverse")
+
+    def test_every_prefix_the_docstring_lists_is_skipped_and_no_other(self):
+        prefixes = self._listed("Prefixes")
+        self.assertEqual(set(prefixes), _PREFIX_WORDS, "the docstring's prefixes are not the reader's")
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                self.assertEqual(command_words("%s ./a/x.sh" % prefix), ["./a/x.sh"])
+
+    def test_the_shapes_the_docstring_says_are_not_read_are_not_read(self):
+        # The docstring states that each of these is not read. If the reader
+        # learns one, the docstring must change in the same commit.
+        for named, script in (('``"$(...)"``', 'V="$(./a/x.sh)"'),
+                              ('``"$(...)"``', 'if [ -n "$(./a/x.sh)" ]; then true; fi'),
+                              ('``"$(...)"``', 'echo "v=$(./a/x.sh)" >> "$GITHUB_OUTPUT"'),
+                              ("``function NAME { ...; }``", "function f { ./a/x.sh; }"),
+                              ('``echo "<<END"``', 'echo "<<END"\n./a/x.sh\nEND\n'),
+                              ("``<<END-X``", "cat <<END-X\nEND-X\n./a/x.sh\nEND\n"),
+                              ("``< <(...)``", "while read -r l; do true; done < <(./a/x.sh)"),
+                              ("``> >(...)``", "make > >(./a/x.sh)"),
+                              ('``echo ">"``', 'echo ">"\n./a/x.sh'),
+                              ('``echo ">"``', "echo \\>\n./a/x.sh")):
+            with self.subTest(script=script):
+                self.assertNotIn("./a/x.sh", command_words(script), "the reader reads this shape now")
+                self.assertIn(named, __doc__, "not read, but the docstring does not say so")
+
+    def test_the_forms_the_docstring_says_are_read_are_read(self):
+        # Beside each unread shape, the form the docstring says is read; then
+        # the false failures it declares (read although not a command).
+        for script in ("V=$(./a/x.sh)", "function f {\n./a/x.sh\n}", "f() { ./a/x.sh; }", "{ ./a/x.sh; }",
+                       'echo "<<END"\nEND\n./a/x.sh', "cat <<END\n./a/y.sh\n \tEND \n./a/x.sh",
+                       "A=( ./a/x.sh )", 'case "$X" in a) true;; ./a/x.sh) true;; esac',
+                       '"./a/x.sh"', "diff <(./a/x.sh) f",
+                       "echo $(date) ./a/x.sh", 'echo "&&" ./a/x.sh', "find . -exec rm {} \\; ./a/x.sh",
+                       "cat <<$X\n./a/x.sh\n$X", "cat <<'END X'\n./a/x.sh\nEND X", "cat <<A <<B\nA\n./a/x.sh\nB"):
+            with self.subTest(script=script):
+                self.assertEqual([w for w in command_words(script) if "/" in w], ["./a/x.sh"])
+
+    def test_only_a_default_bash_or_sh_shell_is_read(self):
+        workflow = ("jobs:\n"
+                    "  steps_shell:\n    runs-on: x\n    steps:\n"
+                    "      - run: ./a/default.sh\n"
+                    "      - shell: bash -e {0}\n        run: ./a/bash.sh\n"
+                    "      - shell: sh\n        run: ./a/sh.sh\n"
+                    "      - shell: /bin/bash -e {0}\n        run: ./a/bin_bash.sh\n"
+                    "      - shell: pwsh\n        run: ./a/pwsh.sh\n"
+                    "  job_default_bash:\n    runs-on: x\n    defaults:\n      run:\n        shell: bash\n"
+                    "    steps:\n      - run: ./a/job_bash.sh\n"
+                    "  job_default_bin_bash:\n    runs-on: x\n    defaults:\n      run:\n"
+                    "        shell: /bin/bash -e {0}\n    steps:\n      - run: ./a/job_bin_bash.sh\n")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "wf.yml").write_text(workflow, encoding="utf-8")
+            read = [run for _site, _wd, run in run_blocks(Path(d))]
+        self.assertEqual(read, ["./a/default.sh", "./a/bash.sh", "./a/sh.sh", "./a/job_bash.sh"])
+        self.assertIn("``shell: /bin/bash -e {0}``", __doc__, "not read, but the docstring does not say so")
 
 
 class TheJudgement(unittest.TestCase):
@@ -367,6 +503,7 @@ class TheJudgement(unittest.TestCase):
                                ("$GITHUB_WORKSPACE/scripts/ok.sh", ""), ("${{ github.workspace }}/scripts/ok.sh", ""),
                                ("/usr/local/bin/tool", ""), ("~/bin/tool", ""), ("./scripts/*.sh", ""),
                                ("tools/missing.sh", ""), ("../outside.sh", ""), (".other-venv/bin/python", ""),
+                               ("`./scripts/ok.sh`", ""),
                                ("cat <<EOF\nnever closed\n", "")):
             for name, index in (("decoy", None), ("no decoy", no_decoy)):
                 with self.subTest(block=block, workdir=workdir, index=name):
@@ -391,6 +528,19 @@ class TheJudgement(unittest.TestCase):
                                     lambda p: self.INDEX.get(p, ""))
         self.assertEqual((checked, listed), ({"scripts/ok.sh"}, {".audit-venv/bin/python"}))
 
+    def test_an_entry_no_block_runs_is_a_stale_failure(self):
+        def mode_of(path):
+            return self.INDEX.get(path, "")
+        runs_the_entry = ("s", "", ".audit-venv/bin/python -V")
+        self.assertEqual(judge_workflows([runs_the_entry], mode_of)[0], [])
+        for blocks, planted, stale in (([("s", "", "./scripts/ok.sh")], {}, ".audit-venv/bin/python"),
+                                       ([runs_the_entry], {"extra/tool": "planted"}, "extra/tool")):
+            with self.subTest(stale=stale), mock.patch.dict(NOT_REPOSITORY_FILES, planted):
+                failures = judge_workflows(blocks, mode_of)[0]
+                self.assertEqual(len(failures), 1, failures)
+                self.assertIn(stale, failures[0])
+                self.assertIn("stale", failures[0])
+
 
 class DirectlyInvokedScriptsAreExecutable(unittest.TestCase):
     def test_the_workflows_run_some_path_as_a_command(self):
@@ -400,11 +550,9 @@ class DirectlyInvokedScriptsAreExecutable(unittest.TestCase):
     def test_every_command_path_is_an_executable_committed_file_or_listed(self):
         if not (REPO_ROOT / ".git").exists():
             self.skipTest("not a git checkout: the executable bit lives in the git index")
-        failures, checked, listed = judge(run_blocks(), index_mode)
+        failures, checked = judge_workflows(run_blocks(), index_mode)
         self.assertEqual(failures, [])
         self.assertTrue(checked, "no command path is a committed file; the guard is vacuous")
-        self.assertEqual(sorted(set(NOT_REPOSITORY_FILES) - listed), [],
-                         "listed as a non-repository path but no workflow runs it: a stale entry")
 
 
 if __name__ == "__main__":
