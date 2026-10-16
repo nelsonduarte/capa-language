@@ -22,6 +22,13 @@ class EvaluatorSelfTest(unittest.TestCase):
     def generator(self) -> Gen:
         return Gen(random.Random(0), self.cfg.kinds)
 
+    def test_the_generator_names_its_kinds(self):
+        # No default registry: a caller that forgot the configuration's kinds
+        # would draw over the public kinds alone, silently, in the private
+        # configuration too.
+        with self.assertRaises(TypeError):
+            Gen(random.Random(0))
+
     def test_true_evaluator_reproduces_every_anchor(self):
         fails = AN.check_anchors(self.generator(), self.cfg.anchors)
         self.assertEqual(fails, [], [(a.title, want, got) for a, want, got in fails])

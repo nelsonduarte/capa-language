@@ -124,6 +124,17 @@ def run_leg(tree, leg: str, programs: list, bound: float = PROGRAM_BOUND_S,
     return rows
 
 
+def _release(proc, reader) -> None:
+    """Reap a child however it ended and close both of its pipes, once the
+    reader has drained stdout to its end."""
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+    reader.join(timeout=10)
+    proc.stdout.close()
+    proc.stderr.close()
+
+
 def _drive(tree, leg, programs, bound, listfile, child, parent_hash, rows) -> None:
     i = 0
     while i < len(programs):
@@ -136,62 +147,66 @@ def _drive(tree, leg, programs, bound, listfile, child, parent_hash, rows) -> No
             env=_child_env(), text=True, encoding="utf-8", errors="replace",
         )
         q: queue.Queue = queue.Queue()
-        threading.Thread(target=_reader, args=(proc, q), daemon=True).start()
-        prov_ok = None
-        current = None
-        t_start = time.perf_counter()
-        while True:
-            try:
-                line = q.get(timeout=bound)
-            except queue.Empty:
-                proc.kill()
-                proc.wait()
-                rows[programs[i].name] = _row(programs[i], leg, TIMEOUT,
-                                              wall=time.perf_counter() - t_start)
+        reader = threading.Thread(target=_reader, args=(proc, q), daemon=True)
+        reader.start()
+        try:
+            i = _consume(proc, q, leg, programs, i, bound, parent_hash, tree, rows)
+        finally:
+            _release(proc, reader)
+
+
+def _consume(proc, q, leg, programs, i, bound, parent_hash, tree, rows) -> int:
+    """Read one child's lines into ``rows`` from program ``i`` on; returns
+    the index of the first program the next child must start from."""
+    prov_ok = None
+    current = None
+    t_start = time.perf_counter()
+    while True:
+        try:
+            line = q.get(timeout=bound)
+        except queue.Empty:
+            rows[programs[i].name] = _row(programs[i], leg, TIMEOUT,
+                                          wall=time.perf_counter() - t_start)
+            return i + 1
+        if line is None:
+            err = proc.stderr.read()
+            if current is not None:
+                rows[programs[i].name] = _row(
+                    programs[i], leg, BROKEN,
+                    exc="child exited rc=%s during the program: %s" % (proc.returncode, err[-400:]))
                 i += 1
-                break
-            if line is None:
-                err = proc.stderr.read()
-                if current is not None:
-                    rows[programs[i].name] = _row(
-                        programs[i], leg, BROKEN,
-                        exc="child exited rc=%s during the program: %s" % (proc.returncode, err[-400:]))
-                    i += 1
-                else:
-                    for p in programs[i:]:
-                        rows[p.name] = _row(p, leg, VOID,
-                                            exc="child exited rc=%s before any program: %s" % (proc.returncode, err[-400:]))
-                    i = len(programs)
-                break
-            if not line.startswith("{"):
-                continue
-            rec = json.loads(line)
-            if "prov" in rec:
-                prov_ok = file_under(rec["prov"], tree) and rec["hash"] == parent_hash
-                if not prov_ok:
-                    proc.kill()
-                    proc.wait()
-                    for p in programs[i:]:
-                        rows[p.name] = _row(p, leg, VOID, exc="provenance %s" % json.dumps(rec))
-                    i = len(programs)
-                    break
-                continue
-            if "start" in rec:
-                current = rec["start"]
-                t_start = time.perf_counter()
-                continue
-            if prov_ok is not True or rec.get("file") != programs[i].name:
-                rows[programs[i].name] = _row(programs[i], leg, VOID,
-                                              exc="order/provenance %s" % json.dumps(rec)[:200])
-                i += 1
-                current = None
-                continue
-            rows[programs[i].name] = _record_row(programs[i], leg, rec)
+            else:
+                for p in programs[i:]:
+                    rows[p.name] = _row(p, leg, VOID,
+                                        exc="child exited rc=%s before any program: %s" % (proc.returncode, err[-400:]))
+                i = len(programs)
+            return i
+        if not line.startswith("{"):
+            continue
+        rec = json.loads(line)
+        if "prov" in rec:
+            prov_ok = file_under(rec["prov"], tree) and rec["hash"] == parent_hash
+            if not prov_ok:
+                for p in programs[i:]:
+                    rows[p.name] = _row(p, leg, VOID, exc="provenance %s" % json.dumps(rec))
+                return len(programs)
+            continue
+        if "start" in rec:
+            current = rec["start"]
+            t_start = time.perf_counter()
+            continue
+        if prov_ok is not True or rec.get("file") != programs[i].name:
+            rows[programs[i].name] = _row(programs[i], leg, VOID,
+                                          exc="order/provenance %s" % json.dumps(rec)[:200])
             i += 1
             current = None
-            if i >= len(programs):
-                proc.wait(timeout=60)
-                break
+            continue
+        rows[programs[i].name] = _record_row(programs[i], leg, rec)
+        i += 1
+        current = None
+        if i >= len(programs):
+            proc.wait(timeout=60)
+            return i
 
 
 def run_cli_leg(tree, leg: str, programs: list, bound: float = PROGRAM_BOUND_S,

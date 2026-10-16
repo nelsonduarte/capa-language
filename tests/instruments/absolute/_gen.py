@@ -9,7 +9,6 @@ replaces one at a time on a generator and rebuilds the anchors from it.
 from __future__ import annotations
 
 import random
-from typing import Optional
 
 from tests.instruments._outcome import ABORT, OK
 from tests.instruments.absolute._rule import BOOL, INT, STMT, Abort, Return, chk, fmt, idiv, imod
@@ -20,11 +19,8 @@ class Gen:
     primitive builders (the clauses as code). Builders are instance
     attributes on purpose: the evaluator self-test replaces one at a time."""
 
-    def __init__(self, rnd: random.Random, kinds: Optional[dict] = None):
+    def __init__(self, rnd: random.Random, kinds: dict):
         self.r = rnd
-        if kinds is None:
-            from tests.instruments.absolute._kinds import PUBLIC_KINDS
-            kinds = PUBLIC_KINDS
         self.kinds = dict(kinds)
         self.k = 0
 

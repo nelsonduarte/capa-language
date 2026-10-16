@@ -7,7 +7,6 @@ registry; the public corpora are generated over this one alone.
 from __future__ import annotations
 
 import random
-from typing import Optional
 
 from tests.instruments.absolute._gen import Gen
 from tests.instruments.absolute._rule import BOOL, HEADER, INT, MAIN, STMT, Kind
@@ -245,7 +244,7 @@ def k_ovf(g):
 FAMILIES = ("expr", "sc", "stmt", "mix")
 
 
-def program(rnd: random.Random, family: str, kinds: Optional[dict] = None) -> tuple:
+def program(rnd: random.Random, family: str, kinds: dict) -> tuple:
     """One generated program and its expectation ``(exit, stdout)``, the
     expectation computed by the evaluators of the constructs drawn."""
     g = Gen(rnd, kinds)

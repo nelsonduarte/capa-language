@@ -59,6 +59,16 @@ class ManifestLayersTests(unittest.TestCase):
         same = D.diff_manifest(base, {"p.capa": _manifest(with_fs, "p.capa")})
         self.assertEqual(same, {"layer1": [], "layer2": []})
 
+    def test_a_refused_program_is_a_status_the_differ_reports_and_never_reads(self):
+        # The checker refuses an unused capability parameter: no manifest is
+        # built from a refused program, and a side that moved between
+        # accepted and refused is a layer-1 status move, never a layer-2 read.
+        refused = "pub fun go(fs: Fs, stdio: Stdio)\n    stdio.println(\"x\")\nfun main(stdio: Stdio)\n    stdio.println(\"y\")\n"
+        self.assertEqual(_manifest(refused, "p.capa"), {"_status": "REFUSED"})
+        accepted = "pub fun go(stdio: Stdio)\n    stdio.println(\"x\")\nfun main(stdio: Stdio)\n    stdio.println(\"y\")\n"
+        d = D.diff_manifest({"p.capa": _manifest(accepted, "p.capa")}, {"p.capa": _manifest(refused, "p.capa")})
+        self.assertEqual(d, {"layer1": [("p.capa", "status")], "layer2": []})
+
 
 class SameTreeRunTests(unittest.TestCase):
     def test_a_tree_against_itself_is_green(self):

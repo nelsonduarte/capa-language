@@ -6,9 +6,12 @@ register: a harness whose bound, comparison, refusal or provenance path
 went blind fails one of these before any register is consulted.
 """
 
+import gc
 import shutil
 import tempfile
+import threading
 import unittest
+import warnings
 from pathlib import Path
 
 from tests.instruments import _runner as RU
@@ -108,6 +111,40 @@ class ProvenanceControls(unittest.TestCase):
         rows = RU.run_cli_leg(REPO_ROOT, "cli_check", self.programs, child=FIXTURES / "lying_cli_child.py")
         self.assertEqual({r["outcome"] for r in rows.values()}, {"VOID"})
         self.assertEqual(len(rows), len(self.programs))
+
+
+class ChildrenAreReleased(unittest.TestCase):
+    """Every child the runner starts is reaped and both of its pipes are
+    closed, on each way a child ends: a normal finish, a kill on a hang, a
+    kill on a provenance mismatch."""
+
+    def setUp(self):
+        self.work = Path(tempfile.mkdtemp(prefix="capa_release_"))
+        self.programs = write_controls(self.work)
+
+    def tearDown(self):
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    def _resource_warnings(self, **kwargs) -> list:
+        before = set(threading.enumerate())
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            rows = RU.run_leg(REPO_ROOT, "ir", self.programs, workdir=self.work, **kwargs)
+            # A pipe left open is released when the last reference to it
+            # goes, which may be a reader thread still draining it: wait for
+            # the threads the run started, so the warning lands in here.
+            for t in set(threading.enumerate()) - before:
+                t.join(timeout=10)
+            gc.collect()
+        self.assertEqual(len(rows), len(self.programs))
+        return [str(w.message) for w in caught if issubclass(w.category, ResourceWarning)]
+
+    def test_a_finish_and_a_kill_on_a_hang_leave_nothing_open(self):
+        self.assertIn("ctl_timeout.capa", [p.name for p in self.programs])
+        self.assertEqual(self._resource_warnings(), [])
+
+    def test_a_kill_on_a_provenance_mismatch_leaves_nothing_open(self):
+        self.assertEqual(self._resource_warnings(child=FIXTURES / "lying_child.py"), [])
 
 
 class RouteAgreementTests(unittest.TestCase):
