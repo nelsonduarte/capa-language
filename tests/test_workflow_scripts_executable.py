@@ -1,107 +1,39 @@
 """Every path a workflow step runs as a COMMAND (no interpreter in front)
 must be a repository file committed with the executable bit, or the Linux
-runner fails with "Permission denied".
+runner fails with "Permission denied". This module guards that.
 
-The guard fails closed: a command path it cannot resolve to a committed
-file is a failure, unless it is one of the known non-repository paths
-listed, each with its reason, in ``NOT_REPOSITORY_FILES``; an entry that
-no workflow runs is a failure too (a stale entry). "The index does not
-hold it" never means "not ours": a path the reader resolved wrongly looks
-exactly like a build product.
+The guard is a heuristic. It finds the command paths of a step with a
+small reader of its own, which is not a shell. What the guard reads is
+stated in one place, the probe table ``READER_PROBES`` in this file, and
+that table is the complete statement. Each row is a step that plants the
+script ``a/x.sh``, and what the guard does with that script: reads it
+(it is judged as below), does not read it (it is not judged), or refuses
+the whole step (a failure). A test checks every row. A step that no row
+states is unspecified: the guard may read the script in it or not, and
+nothing in this file says which.
 
-The paths are derived from the workflow files themselves: the reader
-described below finds the words in COMMAND position of the ``run:``
-blocks, and every such word that names a path (it holds a ``/``) is
-judged:
+To cover a new shape, add a row with the outcome the guard gives today.
+If the guard should read a shape it does not, harden the reader and
+change the rows that move with it in the same commit.
+
+What the guard does with a command path it reads (tested apart from the
+table, in ``TheJudgement`` and the directory test):
 
 - a relative path is resolved against the step's ``working-directory``;
-  the git index must hold it with mode ``100755``, or it must be listed;
-- after a directory change in the block (``cd``, ``pushd`` or ``popd`` in
-  command position, wherever it stands, a subshell or a branch included)
-  the reader does not know the directory to the end of the block (the end
-  of a subshell or a substitution, as in ``(true)`` or ``$(date)``, does
-  not restore it), so a relative command path from there on cannot be
-  resolved and fails; the forms the reader resolves are the step's
-  ``working-directory`` and a path from the repository root;
+  the git index must hold it with mode ``100755``, or it must be listed,
+  with its reason, in ``NOT_REPOSITORY_FILES``;
+- once the guard has read a ``cd``, ``pushd`` or ``popd`` command in a
+  step, it does not know the directory to the end of that step, so a
+  relative command path from there on fails; the forms it resolves are
+  the step's ``working-directory`` and a path from the repository root;
 - an absolute path, a home path (``~``), a path that leaves the checkout,
   and a path built from a variable, an expression, a substitution or a
-  glob are not resolved to a committed file, so each fails unless listed.
+  glob are not resolved to a committed file, so each fails unless listed;
+- an entry of ``NOT_REPOSITORY_FILES`` that no step runs is a failure (a
+  stale entry).
 
-What the reader reads is the closed list below, and nothing else. A word
-it does not reach is not judged and passes silently, whatever it runs.
-
-- Blocks: every ``run:`` step of every job in ``.github/workflows`` whose
-  shell is the default (read as bash, whatever the runner), or whose
-  ``shell:`` (the step's, else the job's, else the workflow's
-  ``defaults.run``) starts with the bare word ``bash`` or ``sh``. A block
-  under any other ``shell:`` is not read at all, a path to bash included
-  (``shell: /bin/bash -e {0}``).
-- Text: quotes and backslashes keep what they cover inside one word, and
-  are then removed. So an opener inside a quoted word that holds anything
-  else opens nothing: a command substitution inside double quotes
-  (``"$(...)"``) is not read, while the same substitution unquoted is,
-  and so is a quoted command word (``"./x.sh"``). A word that is only
-  operator characters once its quotes and backslashes are removed acts as
-  that operator (``"&&"``, ``\\;``, ``">"``).
-- Command position: the first word of the block and of each line, and the
-  first word after an opener, skipping variable assignments, words that
-  start with ``-`` and the prefixes.
-- Openers: ``;``, ``&``, ``|``, ``(``, ``)``, ``&&``, ``||``, ``|&``,
-  ``;;``, ``$(``, ``<(`` and ``>(``, and any other run of ``;``, ``&``,
-  ``|``, ``(`` and ``)``.
-- Prefixes: ``if``, ``then``, ``else``, ``elif``, ``do``, ``while``,
-  ``until``, ``!``, ``{``, ``time``, ``exec``, ``env``, ``nohup``,
-  ``sudo``, ``command`` and ``builtin``.
-- A ``{`` is skipped only in command position: the body of ``{ ...; }``
-  and of ``f() { ...; }`` is read, but the first command of a one-line
-  ``function NAME { ...; }`` is not (``function`` is the command word
-  there); the lines after the ``{`` are read.
-- Not commands: a comment (from a ``#`` that starts an unquoted word to
-  the end of the line), and the target of a redirection: the next word
-  after a redirection operator (``<``, ``>``, ``>>``, ``<<``, ``>&``,
-  ``&>`` and the like), taken even past an opener or a line end between
-  them. So the first word inside ``< <(...)`` or ``> >(...)`` is not read,
-  nor is the first command of the line after a word that is only a
-  redirection operator (``echo ">"``). A backslash-newline joins two
-  lines, and a GitHub expression (``${{ ... }}``) is one word.
-- Here-documents: the first ``<<WORD`` on a line starts a here-document
-  wherever it stands, even inside quotes (``echo "<<END"``). WORD is the
-  name (a letter or ``_``, then letters, digits and ``_``) after the
-  ``<<``, an optional ``-`` and blanks: bare, it ends at the first other
-  character (``<<END-X`` is read as ``<<END``); quoted, the quotes hold
-  the name alone (``<<'END'``, ``<<"END"``). ``<<<`` starts none. The
-  lines after it are skipped up to the first line that is WORD (spaces
-  and tabs around it ignored), and a WORD that never comes fails the
-  block.
-
-Outside that list, so not judged (examples, not a complete list):
-
-- a program that runs another program named among its arguments. Tried
-  and not followed: ``timeout``, ``nice``, ``ionice``, ``stdbuf``,
-  ``taskset``, ``setsid``, ``chrt``, ``xargs``, ``find -exec``,
-  ``parallel``, ``watch``, ``flock``, ``chroot``, ``xvfb-run``,
-  ``script -c``, ``su -c``, ``runuser``, ``doas``, ``pkexec``,
-  ``fakeroot``, ``firejail``, ``unbuffer``, ``faketime``, ``strace``,
-  ``valgrind``, ``gdb``, ``catchsegv``, ``unshare``, ``nsenter``,
-  ``systemd-run``, ``caffeinate``, ``busybox``, ``docker run``, ``ssh``,
-  ``coproc``, ``trap``, ``eval``, ``bash -c`` and ``sh -c``. A program not
-  named here is not followed either;
-- the argument of a prefix that takes one (``sudo -u <user>``,
-  ``env -u <name>``, ``env -C <dir>``, ``exec -a <name>``);
-- a command inside backquotes (except where the backquote starts the
-  command word: that word is judged as an unresolved path and fails), a
-  command named entirely by a variable (``$CMD``), a command after a
-  leading redirection that names a file descriptor (``2> err.txt
-  ./x.sh``), and a directory change made inside a sourced file or an
-  ``eval``.
-
-Read as commands although they are not (a false failure, the safe
-direction): the elements of an array assignment (``A=( ./x.sh )``), a
-``case`` pattern after ``;;``, an argument after a ``)`` (``echo $(date)
-./x.sh``) or after a quoted or escaped opener (``echo "&&" ./x.sh``,
-``find . -exec rm {} \\; ./x.sh``), and the body of a here-document the
-rule above does not see (``<<$X``, ``<<'END X'``, the second one opened on
-a line).
+The guard fails closed because "the index does not hold it" never means
+"not ours": a path resolved wrongly looks exactly like a build product.
 
 The mode is read from the git index (``git ls-files -s``), which is what a
 checkout on the runner reproduces; the working tree on Windows does not
@@ -149,7 +81,8 @@ _SHELLS = ("bash", "sh")
 
 
 def _strip_comments(text: str) -> str:
-    """Drop every ``#`` comment: a ``#`` outside quotes at the start of a word."""
+    """The text with the reader's comments cut; what that cuts is stated
+    only by ``READER_PROBES``."""
     out = []
     for line in text.split("\n"):
         quote, prev, cut = None, " ", len(line)
@@ -168,8 +101,8 @@ def _strip_comments(text: str) -> str:
 
 
 def _strip_heredoc_bodies(text: str) -> str:
-    """Keep each here-document's opening line, drop its body and delimiter.
-    A here-document whose delimiter never comes is refused."""
+    """The text with the reader's here-document cut; what that cuts, and
+    when it refuses the step, is stated only by ``READER_PROBES``."""
     lines, out, i = text.split("\n"), [], 0
     while i < len(lines):
         out.append(lines[i])
@@ -184,9 +117,8 @@ def _strip_heredoc_bodies(text: str) -> str:
 
 
 def command_words(script: str) -> list:
-    """The words in command position of a shell block, in order. A GitHub
-    expression (``${{ ... }}``) is substituted before the shell runs, so it
-    is read as one word, its spaces dropped."""
+    """The words the reader takes as commands in a shell block, in order;
+    which words those are is stated only by ``READER_PROBES``."""
     text = re.sub(r"\$\{\{(.*?)\}\}", lambda m: "${{" + re.sub(r"\s+", "", m.group(1)) + "}}", script)
     text = _strip_heredoc_bodies(_strip_comments(re.sub(r"\\\r?\n", " ", text)))
     lex = shlex.shlex(text, posix=True, punctuation_chars=_OPERATOR_CHARS)
@@ -328,31 +260,251 @@ def index_mode(path: str) -> str:
     return ""
 
 
+READ, NOT_READ, REFUSED = "read", "not read", "refused"
+_PLANTED = "a/x.sh"
+
+#: THE probe table: the one statement of what the guard reads (see the
+#: module docstring). A row is ``(step, outcome)``: the step is its ``run:``
+#: text under the default shell, or a mapping of the step's keys, where a
+#: ``defaults`` key is its job's; the outcome is what the guard does with
+#: the planted script ``a/x.sh``. The comments only group the rows.
+READER_PROBES = (
+    # The script alone, or on a later line.
+    ("./a/x.sh", READ), ("a/x.sh --flag", READ), ('true\na/x.sh "$B"', READ), ("true\n./a/x.sh", READ),
+    ("true\r\n./a/x.sh", READ), ("\t./a/x.sh", READ), ("true;\t./a/x.sh", READ), ("./a/../a/x.sh", READ),
+    (".//a//x.sh", READ), ('"./a/x.sh"', READ), ("'./a/x.sh'", READ), ("./a/x.sh &", READ),
+    ("./a/x.sh <<< x", READ), ("# x\n./a/x.sh", READ),
+    ("'./a/x.sh' arg", READ),
+    # After another command and an operator.
+    ("true ; ./a/x.sh", READ), ("true & ./a/x.sh", READ), ("true | ./a/x.sh", READ),
+    ("true ( ./a/x.sh", READ), ("true ) ./a/x.sh", READ), ("true && ./a/x.sh", READ),
+    ("true || ./a/x.sh", READ), ("true |& ./a/x.sh", READ), ("true ;; ./a/x.sh", READ),
+    ("true $( ./a/x.sh", READ), ("true <( ./a/x.sh", READ), ("true >( ./a/x.sh", READ),
+    ("true;./a/x.sh", READ), ("true&&./a/x.sh", READ), ("echo|./a/x.sh", READ), ("true&./a/x.sh", READ),
+    ("false||./a/x.sh", READ), ("true;(./a/x.sh)", READ), ("echo a |& ./a/x.sh", READ),
+    ("true &&\n./a/x.sh", READ), ("echo a |\n  ./a/x.sh", READ), ("true &&\\\n./a/x.sh", READ),
+    ("true && \\\n  ./a/x.sh", READ), ("set -e && ./a/x.sh", READ), ("set -euo pipefail; ./a/x.sh", READ),
+    ("set -e || ./a/x.sh", READ), ("sleep 1 & ./a/x.sh", READ), ("true &\n./a/x.sh", READ),
+    ("true;)\n./a/x.sh", READ),
+    ("true; ./a/x.sh", READ), ("echo a |\n./a/x.sh", READ), ("true &&\n  ./a/x.sh", READ),
+    ("false || ./a/x.sh", READ),
+    # After a word in front of the command.
+    ("if ./a/x.sh", READ), ("then ./a/x.sh", READ), ("else ./a/x.sh", READ), ("elif ./a/x.sh", READ),
+    ("do ./a/x.sh", READ), ("while ./a/x.sh", READ), ("until ./a/x.sh", READ), ("! ./a/x.sh", READ),
+    ("{ ./a/x.sh", READ), ("time ./a/x.sh", READ), ("exec ./a/x.sh", READ), ("env ./a/x.sh", READ),
+    ("nohup ./a/x.sh", READ), ("sudo ./a/x.sh", READ), ("command ./a/x.sh", READ), ("builtin ./a/x.sh", READ),
+    ("time -p ./a/x.sh", READ), ("sudo -E ./a/x.sh", READ), ("env -i ./a/x.sh", READ),
+    ("env A=1 ./a/x.sh", READ), ("env A=1 B=2 ./a/x.sh", READ), ("nohup ./a/x.sh > /dev/null", READ),
+    ("nohup ./a/x.sh &", READ), ("exec ./a/x.sh 2>&1", READ), ("if true; then\n  exec ./a/x.sh\nfi", READ),
+    ("FOO=1 ./a/x.sh", READ), ("FOO_BAR=1 ./a/x.sh", READ), ("_X=1 ./a/x.sh", READ), ("A1=1 ./a/x.sh", READ),
+    ("a= ./a/x.sh", READ), ('X="a b" ./a/x.sh', READ), ("X=$(true) ./a/x.sh", READ),
+    ('X="$(true)" ./a/x.sh', READ), ("x=1 y=2 ./a/x.sh", READ), (">/dev/null V=1 ./a/x.sh", READ),
+    ('x="a b" ./a/x.sh', READ), ("x=$(true) ./a/x.sh", READ), ('x="$(true)" ./a/x.sh', READ),
+    # Inside a substitution or a process substitution.
+    ("V=$(./a/x.sh)", READ), ("x=$( ./a/x.sh )", READ), ("A=x$(./a/x.sh)", READ), ("echo $(./a/x.sh)", READ),
+    ("echo $(echo $(./a/x.sh))", READ), ("export V=$(./a/x.sh)", READ), ("readonly v=$(./a/x.sh)", READ),
+    ("f() { local v=$(./a/x.sh); }; f", READ), ("cat <<< $(./a/x.sh)", READ), ("diff <(./a/x.sh) f", READ),
+    ("cat <(./a/x.sh)", READ), ("exec > >(tee log)\n./a/x.sh", READ),
+    ("f() { local V=$(./a/x.sh); }", READ), ("diff <(./a/x.sh) a", READ),
+    # In a compound command.
+    ("if ./a/x.sh; then true; fi", READ), ("if ! ./a/x.sh; then exit 1; fi", READ),
+    ("while ./a/x.sh && false; do true; done", READ), ("until ./a/x.sh || true; do true; done", READ),
+    ("until ./a/x.sh; do sleep 1; done", READ), ("if true\nthen\n./a/x.sh\nfi", READ),
+    ("if false; then true; else ./a/x.sh; fi", READ), ("if false; then true; elif ./a/x.sh; then true; fi", READ),
+    ("for i in 1; do ./a/x.sh; done", READ), ("for i in 1\ndo\n./a/x.sh\ndone", READ),
+    ("select x in a; do ./a/x.sh; done", READ), ('while read -r l; do ./a/x.sh "$l"; done < f', READ),
+    ("case x in x) ./a/x.sh;; esac", READ), ("case x in (x) ./a/x.sh;; esac", READ),
+    ("case x in\n  x)\n    ./a/x.sh\n    ;;\nesac", READ), ("(( 1 )) && ./a/x.sh", READ),
+    ("(( x = 1 )) && ./a/x.sh", READ), ("(( 1 )); ./a/x.sh", READ), ("[[ -n x ]] && ./a/x.sh", READ),
+    ("[[ -z a ]] || ./a/x.sh", READ), ("[ -d a ] && ./a/x.sh", READ), ("declare -x A=1; ./a/x.sh", READ),
+    ("case a in (a) ./a/x.sh;; esac", READ), ("case $x in (a) ./a/x.sh;; esac", READ),
+    ("[[ -f x ]] && ./a/x.sh", READ), ("if true\nthen\n  ./a/x.sh\nfi", READ),
+    ("[ -x ./a/x.sh ] && ./a/x.sh", READ),
+    # In a group or a function body.
+    ("{ ./a/x.sh; }", READ), ("{ ./a/x.sh;}", READ), ("{ true;./a/x.sh;}", READ), ("{\n./a/x.sh\n}", READ),
+    ("( ./a/x.sh )", READ), ("(\n./a/x.sh\n)", READ), ("{ ./a/x.sh; } 2>/dev/null", READ),
+    ("{ ./a/x.sh; } 2>&1", READ), ("f() { ./a/x.sh; }", READ), ("f(){ ./a/x.sh; }; f", READ),
+    ("f() ( ./a/x.sh ); f", READ), ("f()\n{\n./a/x.sh\n}\nf", READ), ("function f() { ./a/x.sh; }; f", READ),
+    ("function f {\n./a/x.sh\n}", READ), ("function f\n{\n./a/x.sh\n}\nf", READ),
+    ("function f {\n  ./a/x.sh\n}\nf", READ), ("function f {\n  ./a/x.sh\n}", READ),
+    ("f() { ./a/x.sh; }\nf", READ), ("function f() { ./a/x.sh; }", READ),
+    # Beside a redirection.
+    ("> out/log.txt ./a/x.sh", READ), (">/dev/null ./a/x.sh", READ), ("</dev/null ./a/x.sh", READ),
+    ("&>/dev/null ./a/x.sh", READ), (">&2 ./a/x.sh", READ), ("true 2>&1 | ./a/x.sh", READ),
+    ("true >/dev/null & ./a/x.sh", READ), ("true >| /dev/null; ./a/x.sh", READ),
+    ("true;>/dev/null ./a/x.sh", READ),
+    ("true ;> f ./a/x.sh", READ), ("cmd 2>&1; ./a/x.sh", READ), ("cmd >&2\n./a/x.sh", READ),
+    ("cmd &>/dev/null; ./a/x.sh", READ), ("cmd > out.txt; ./a/x.sh", READ), ("cmd <<< hi; ./a/x.sh", READ),
+    # After a here-document.
+    ("cat <<EOF\nx\nEOF\n./a/x.sh", READ), ("cat <<EOF && ./a/x.sh\nx\nEOF", READ),
+    ("cat <<EOF | ./a/x.sh\nhi\nEOF", READ), (": <<'EOF'\nbody\nEOF\n./a/x.sh", READ),
+    ("cat <<EOF | cat\nbody\nEOF\n./a/x.sh", READ), ("cat <<-EOF\n\tbody\n\tEOF\n./a/x.sh", READ),
+    ("cat <<END\nbody\n \tEND \n./a/x.sh", READ), ('echo "<<END"\nEND\n./a/x.sh', READ),
+    ('cat <<< "x"\n./a/x.sh', READ),
+    ("cat <<\tEND\n./a/y.sh\nEND\n./a/x.sh", READ), ("cat <<EOF\r\nx\r\nEOF\r\n./a/x.sh", READ),
+    # On the line after a line holding quotes, a hash or a backslash.
+    ("echo 'a b'\n./a/x.sh", READ), ('echo "a # b"\n./a/x.sh', READ), ("echo a#b\n./a/x.sh", READ),
+    ("echo $#\n./a/x.sh", READ), ("x=ab; echo ${#x}\n./a/x.sh", READ), ('echo "$(date)"\n./a/x.sh', READ),
+    ("x=( a b )\n./a/x.sh", READ), ('echo "a\\\\"\n./a/x.sh', READ), ('echo "foo\\\\"\n./a/x.sh', READ),
+    ("echo it\\'s\n./a/x.sh", READ), ('echo "it\'s"\n./a/x.sh', READ), ("echo '\"'\n./a/x.sh", READ),
+    ('echo \\"\n./a/x.sh', READ), ('echo "|"\n./a/x.sh', READ), ('echo ";"\n./a/x.sh', READ),
+    ("echo '('\n./a/x.sh", READ), ('echo ")"\n./a/x.sh', READ), ('echo "2>"\n./a/x.sh', READ),
+    ('echo "\n"\n./a/x.sh', READ), ("echo 'a \\\nb'\n./a/x.sh", READ), ("case x in x) true;; esac\n./a/x.sh", READ),
+    ("f() { true; }\n./a/x.sh", READ), ("if true; then true; fi\n./a/x.sh", READ),
+    ("# ./old.sh --flag \\\n#   --more\n./a/x.sh", READ), ("echo ${{ a || 'b' }}\n./a/x.sh", READ),
+    ('echo "=>"\n./a/x.sh', READ),
+    # After a change of directory.
+    ("cd scripts && ./a/x.sh", READ), ("f() { cd scripts; }\nf\n./a/x.sh", READ),
+    ("function f { cd scripts; }\nf\n./a/x.sh", READ), ("cd scripts\ncd -\n./a/x.sh", READ),
+    ("timeout 5 true && cd scripts && ./a/x.sh", READ), ("sudo true && cd scripts && ./a/x.sh", READ),
+    ('"cd" scripts && ./a/x.sh', READ), ("\\cd scripts && ./a/x.sh", READ),
+    ("command cd scripts && ./a/x.sh", READ), ("case x in x) cd scripts;; esac\n./a/x.sh", READ),
+    ("for d in scripts; do cd $d; done\n./a/x.sh", READ), ("{ cd scripts; }\n./a/x.sh", READ),
+    ("cd scripts || exit 1\n./a/x.sh", READ), ("cd \\\n scripts && ./a/x.sh", READ),
+    ("cd scripts\r\n./a/x.sh\r\n", READ), ("\tcd scripts\n\t./a/x.sh", READ),
+    ("# x\ncd scripts # y\n./a/x.sh", READ),
+    ('"cd" a; ./a/x.sh', READ),
+    # An array, a case pattern, an argument after a substitution or a quoted
+    # operator, unusual here-documents, GitHub expressions.
+    ("A=( ./a/x.sh )", READ), ('case "$X" in a) true;; ./a/x.sh) true;; esac', READ),
+    ("echo $(date) ./a/x.sh", READ), ('echo "&&" ./a/x.sh', READ), ("find . -exec rm {} \\; ./a/x.sh", READ),
+    ("cat <<$X\n./a/x.sh\n$X", READ), ("cat <<'END X'\n./a/x.sh\nEND X", READ),
+    ("cat <<A <<B\nA\n./a/x.sh\nB", READ), ("echo ${{ fromJSON('1') }}; ./a/x.sh", READ),
+    ("echo ${{ 2 > 1 }}; ./a/x.sh", READ), ('echo "${{ x }}"; ./a/x.sh', READ),
+    ("cat <<'EOF'\nEOF # x\n./a/x.sh\nEOF", READ), ("true # cat <<EOF\n./a/x.sh\nEOF", READ),
+    ("echo \\; ./a/x.sh", READ), ("echo '(' ./a/x.sh", READ), ("cat <<1E\n./a/x.sh\n1E", READ),
+    # An argument, quoted text, or after a hash.
+    ("bash ./a/x.sh", NOT_READ), ("python ./a/x.sh", NOT_READ), ("python tools/b.py \\\n  ./a/x.sh", NOT_READ),
+    (". ./a/x.sh", NOT_READ), ("echo 'a; ./a/x.sh'", NOT_READ), ("true ! ./a/x.sh", NOT_READ),
+    ("true { ./a/x.sh", NOT_READ), ("true } ./a/x.sh", NOT_READ), ("CMD=./a/x.sh\n$CMD", NOT_READ),
+    ("echo hi # done; ./a/x.sh", NOT_READ), ("# note && ./a/x.sh", NOT_READ), ("true;# x; ./a/x.sh", NOT_READ),
+    ("case ./a/x.sh in *) true;; esac", NOT_READ),
+    ('echo a"b; ./a/x.sh"', NOT_READ), ('echo "a\n./a/x.sh"', NOT_READ),
+    # Written into a longer word.
+    ("./a/x.sh#x", NOT_READ), ("./a/x.sh\\ arg", NOT_READ), ("`./a/x.sh`", NOT_READ),
+    # On the line after a line that ends with a backslash.
+    ("# old \\\n./a/x.sh", NOT_READ), ("# old-tool --flag \\\n./a/x.sh", NOT_READ),
+    ("# ./scripts/old.sh --flag \\\n./a/x.sh", NOT_READ), ("true # note \\\n./a/x.sh", NOT_READ),
+    ("echo hi # note \\\n./a/x.sh", NOT_READ), ('echo "a" # x \\\n./a/x.sh', NOT_READ),
+    ("# note \\\\\n./a/x.sh", NOT_READ), ("echo a \\\\\n./a/x.sh", NOT_READ), ("echo foo\\\\\n./a/x.sh", NOT_READ),
+    ("# note \\\n./a/x.sh", NOT_READ),
+    # Between two lines whose quotes pair up.
+    ("echo \\\"x\\\" # it's\n./a/x.sh\necho it\\'s", NOT_READ),
+    ("echo \"a\\\\\" # don't\n./a/x.sh\necho it\\'s", NOT_READ),
+    ("echo $'it\\'s'\n./a/x.sh\necho it\\'s", NOT_READ),
+    # Inside or after a here-document, or a word holding <<.
+    ("cat <<'EOF'\n./a/x.sh\nEOF", NOT_READ), ("cat <<END\n./a/x.sh\n \tEND \n", NOT_READ),
+    ("cat <<'EOF' > /dev/null\nline \\\nEOF\n./a/x.sh\ncat <<'EOF' > /dev/null\nz\nEOF", NOT_READ),
+    ('echo "<<END"\n./a/x.sh\nEND\n', NOT_READ), ('echo "see <<END"\n./a/x.sh\nEND', NOT_READ),
+    ("echo '<<EOF'\n./a/x.sh\nEOF", NOT_READ), ("a=1; b=1; echo $((a<<b))\n./a/x.sh\nb", NOT_READ),
+    ("cat <<END-X\nEND-X\n./a/x.sh\nEND\n", NOT_READ),
+    ('echo "<<END"\n./a/x.sh\nEND\ntrue', NOT_READ),
+    # After a redirection, or a word that is one.
+    ("sort < ./a/x.sh > out/h.txt", NOT_READ), ("sort < data/g.txt > ./a/x.sh", NOT_READ),
+    ("while read -r l; do true; done < <(./a/x.sh)", NOT_READ), ("make > >(./a/x.sh)", NOT_READ),
+    ("echo hi > >(./a/x.sh)", NOT_READ), ("true 2> >(./a/x.sh)", NOT_READ), ('echo ">"\n./a/x.sh', NOT_READ),
+    ("echo \\>\n./a/x.sh", NOT_READ), ('echo ">"; ./a/x.sh', NOT_READ), ('echo "<"\n./a/x.sh', NOT_READ),
+    ('echo "&>"\n./a/x.sh', NOT_READ), ("2> err.txt ./a/x.sh", NOT_READ), ("2>/dev/null ./a/x.sh", NOT_READ),
+    (">/dev/null 2>&1 ./a/x.sh", NOT_READ),
+    ("while read l; do echo $l; done < <(./a/x.sh)", NOT_READ), ("cmd > >(./a/x.sh arg)", NOT_READ),
+    ("echo '<' && ./a/x.sh", NOT_READ), ('echo "<<"\n./a/x.sh', NOT_READ), ("true &> f ./a/x.sh", NOT_READ),
+    # A substitution inside double quotes, or in backquotes.
+    ('V="$(./a/x.sh)"', NOT_READ), ('echo "$(./a/x.sh)"', NOT_READ),
+    ('if [ -n "$(./a/x.sh)" ]; then true; fi', NOT_READ), ('[[ "$(./a/x.sh)" == ok ]]', NOT_READ),
+    ('echo "v=$(./a/x.sh)" >> "$GITHUB_OUTPUT"', NOT_READ), ('VERSION="$(./a/x.sh --version)"', NOT_READ),
+    ('echo $(echo "$(./a/x.sh)")', NOT_READ), ('f() { local v="$(./a/x.sh)"; }; f', NOT_READ),
+    ("echo `./a/x.sh`", NOT_READ),
+    ("x=`./a/x.sh`", NOT_READ), ('if [ -n "$(./a/x.sh)" ]; then echo y; fi', NOT_READ),
+    # A one-line body of the function keyword.
+    ("function f { ./a/x.sh; }", NOT_READ), ("function f { ./a/x.sh; }; f", NOT_READ),
+    ("function f { ./a/x.sh; }\nf", NOT_READ),
+    # After a word of these forms in front of it.
+    ("A+=1 ./a/x.sh", NOT_READ), ("A[0]=1 ./a/x.sh", NOT_READ), ("FLAGS+=-v ./a/x.sh", NOT_READ),
+    ("PATH+=:/opt/x ./a/x.sh", NOT_READ), ("sudo -u bob ./a/x.sh", NOT_READ), ("env -u NAME ./a/x.sh", NOT_READ),
+    ("env -C dir ./a/x.sh", NOT_READ), ("exec -a name ./a/x.sh", NOT_READ),
+    ("PATH+=:/x ./a/x.sh", NOT_READ),
+    # Run by another program.
+    ("timeout 600 ./a/x.sh", NOT_READ), ("nice -n 5 ./a/x.sh", NOT_READ), ("ionice -c 3 ./a/x.sh", NOT_READ),
+    ("stdbuf -oL ./a/x.sh", NOT_READ), ("taskset -c 0 ./a/x.sh", NOT_READ), ("setsid ./a/x.sh", NOT_READ),
+    ("chrt -f 1 ./a/x.sh", NOT_READ), ("echo a | xargs -n 1 ./a/x.sh", NOT_READ),
+    ("find . -exec ./a/x.sh ;", NOT_READ), ("parallel ./a/x.sh ::: 1", NOT_READ), ("watch ./a/x.sh", NOT_READ),
+    ("flock /tmp/l ./a/x.sh", NOT_READ), ("chroot / ./a/x.sh", NOT_READ), ("xvfb-run ./a/x.sh", NOT_READ),
+    ("script -c ./a/x.sh", NOT_READ), ("su -c ./a/x.sh", NOT_READ), ("runuser -u bob ./a/x.sh", NOT_READ),
+    ("doas ./a/x.sh", NOT_READ), ("pkexec ./a/x.sh", NOT_READ), ("fakeroot ./a/x.sh", NOT_READ),
+    ("firejail ./a/x.sh", NOT_READ), ("unbuffer ./a/x.sh", NOT_READ), ("faketime 2020 ./a/x.sh", NOT_READ),
+    ("strace ./a/x.sh", NOT_READ), ("valgrind ./a/x.sh", NOT_READ), ("gdb -batch ./a/x.sh", NOT_READ),
+    ("catchsegv ./a/x.sh", NOT_READ), ("unshare ./a/x.sh", NOT_READ), ("nsenter -t 1 ./a/x.sh", NOT_READ),
+    ("systemd-run ./a/x.sh", NOT_READ), ("caffeinate ./a/x.sh", NOT_READ), ("busybox ./a/x.sh", NOT_READ),
+    ("docker run img ./a/x.sh", NOT_READ), ("ssh host ./a/x.sh", NOT_READ), ("coproc ./a/x.sh", NOT_READ),
+    ("true; coproc ./a/x.sh; wait", NOT_READ), ("coproc X { ./a/x.sh; }", NOT_READ),
+    ("trap './a/x.sh' EXIT", NOT_READ), ("eval ./a/x.sh", NOT_READ), ("bash -c './a/x.sh'", NOT_READ),
+    ("sh -c './a/x.sh'", NOT_READ), ("bash -lc './a/x.sh'", NOT_READ),
+    # The step's shell, or its job's.
+    ({"run": "./a/x.sh", "shell": "bash"}, READ), ({"run": "./a/x.sh", "shell": "bash -e {0}"}, READ),
+    ({"run": "./a/x.sh", "shell": "sh"}, READ), ({"run": "./a/x.sh", "defaults": {"run": {"shell": "bash"}}}, READ),
+    ({"run": "./a/x.sh", "shell": "/bin/bash -e {0}"}, NOT_READ), ({"run": "./a/x.sh", "shell": "pwsh"}, NOT_READ),
+    ({"run": "./a/x.sh", "defaults": {"run": {"shell": "/bin/bash -e {0}"}}}, NOT_READ),
+    # Refused.
+    ("cat <<EOF\n./a/x.sh\n", REFUSED), ('echo "a\nb # c"\n./a/x.sh', REFUSED),
+    ('echo "a\\\\" "b # c" ; ./a/x.sh', REFUSED), ("echo $'a\\'b'; ./a/x.sh", REFUSED),
+    ("echo $'it\\'s' # c\n./a/x.sh", REFUSED), ("cat <<'EOF' > /dev/null\nfoo \\\nEOF\n./a/x.sh", REFUSED),
+)
+
+
+def probe_outcomes(rows) -> list:
+    """What the guard does with the planted script of each row: every row
+    becomes the one step of its own job in a planted workflow, read through
+    ``run_blocks`` and ``command_paths`` as the checkout test reads the
+    real ones."""
+    jobs = {}
+    for i, (step, _outcome) in enumerate(rows):
+        step = dict(step) if isinstance(step, dict) else {"run": step}
+        jobs["row%d" % i] = {"runs-on": "x", "defaults": step.pop("defaults", {}), "steps": [step]}
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "probes.yml").write_text(yaml.safe_dump({"jobs": jobs}), encoding="utf-8")
+        blocks = {site.split(":")[1]: run for site, _wd, run in run_blocks(Path(d))}
+    outcomes = []
+    for job_name, job in jobs.items():
+        run = blocks.get(job_name)
+        if run is None:
+            outcomes.append(NOT_READ)
+            continue
+        if run != job["steps"][0]["run"]:
+            raise ValueError("%s did not reach the reader unchanged" % job_name)
+        try:
+            words = [posixpath.normpath(word) for word, _path in command_paths(run)]
+        except ValueError:
+            outcomes.append(REFUSED)
+            continue
+        outcomes.append(READ if _PLANTED in words else NOT_READ)
+    return outcomes
+
+
+class TheProbeTable(unittest.TestCase):
+    """``READER_PROBES``, the specification of what the guard reads."""
+
+    def test_the_guard_does_what_every_row_says(self):
+        outcomes = probe_outcomes(READER_PROBES)
+        self.assertEqual(len(outcomes), len(READER_PROBES))
+        for (step, outcome), got in zip(READER_PROBES, outcomes):
+            with self.subTest(step=step):
+                self.assertEqual(got, outcome)
+
+    def test_every_row_plants_the_script_and_is_stated_once(self):
+        # A row with no planted script would hold "not read" vacuously, and
+        # a row stated twice could state two outcomes.
+        seen = set()
+        for step, outcome in READER_PROBES:
+            run = step["run"] if isinstance(step, dict) else step
+            with self.subTest(step=step):
+                self.assertIn(outcome, (READ, NOT_READ, REFUSED))
+                self.assertIn("x.sh", run)
+                self.assertNotIn(repr(step), seen, "a row stated twice")
+            seen.add(repr(step))
+
+
 class CommandPositionReader(unittest.TestCase):
-    """The reader on its own, no checkout needed."""
-
-    def test_paths_in_command_position_under_any_directory(self):
-        self.assertEqual(command_words("./scripts/relock.sh\ntools/x.sh --flag\nscripts/a.sh \"$B\""),
-                         ["./scripts/relock.sh", "tools/x.sh", "scripts/a.sh"])
-
-    def test_after_operators_assignments_and_prefixes(self):
-        script = ("set -e && ./a/one.sh; FOO=1 ./a/two.sh | ./a/three.sh\n"
-                  "if ./a/four.sh; then\n  exec ./a/five.sh\nfi\nx=$(./a/six.sh)\nenv -i ./a/seven.sh\n"
-                  "> out/log.txt ./a/eight.sh\n")
-        self.assertEqual([w for w in command_words(script) if "/" in w],
-                         ["./a/one.sh", "./a/two.sh", "./a/three.sh", "./a/four.sh", "./a/five.sh",
-                          "./a/six.sh", "./a/seven.sh", "./a/eight.sh"])
-
-    def test_arguments_continuations_comments_heredocs_and_redirections_are_not_commands(self):
-        script = ("bash scripts/a.sh\npython tools/b.py \\\n  deploy/c.spec\n"
-                  "echo hi # done; ./scripts/d.sh\n# note && ./scripts/e.sh\n"
-                  "cat <<'EOF'\n./scripts/f.sh\nEOF\nsort < data/g.txt > out/h.txt\n"
-                  "echo 'a; ./scripts/i.sh'\n")
-        self.assertEqual([w for w in command_words(script) if "/" in w], [])
-
-    def test_an_unclosed_heredoc_is_refused(self):
-        with self.assertRaises(ValueError):
-            command_words("cat <<EOF\nnever closed\n")
+    """Where a command path resolves, no checkout needed."""
 
     def test_resolution(self):
         self.assertEqual(command_paths("./scripts/relock.sh"), [("./scripts/relock.sh", "scripts/relock.sh")])
@@ -374,104 +526,6 @@ class CommandPositionReader(unittest.TestCase):
                 self.assertEqual(command_paths(script, "proofs"), [("./relock.sh", None)])
         self.assertEqual(command_paths("./a.sh; cd x; ./b.sh"), [("./a.sh", "a.sh"), ("./b.sh", None)],
                          "a path before the change is still resolved")
-
-    def test_every_wrapper_the_docstring_names_is_not_followed(self):
-        # The docstring's list must stay true: if the reader learns one of
-        # these, the list must lose it in the same change.
-        for name, shape in (
-                ("timeout", "timeout 600 {}"), ("nice", "nice -n 5 {}"), ("ionice", "ionice -c 3 {}"),
-                ("stdbuf", "stdbuf -oL {}"), ("taskset", "taskset -c 0 {}"), ("setsid", "setsid {}"),
-                ("chrt", "chrt -f 1 {}"), ("xargs", "echo a | xargs -n 1 {}"), ("find -exec", "find . -exec {} ;"),
-                ("parallel", "parallel {} ::: 1"), ("watch", "watch {}"), ("flock", "flock /tmp/l {}"),
-                ("chroot", "chroot / {}"), ("xvfb-run", "xvfb-run {}"), ("script -c", "script -c {}"),
-                ("su -c", "su -c {}"), ("runuser", "runuser -u bob {}"), ("doas", "doas {}"),
-                ("pkexec", "pkexec {}"), ("fakeroot", "fakeroot {}"), ("firejail", "firejail {}"),
-                ("unbuffer", "unbuffer {}"), ("faketime", "faketime 2020 {}"), ("strace", "strace {}"),
-                ("valgrind", "valgrind {}"), ("gdb", "gdb -batch {}"), ("catchsegv", "catchsegv {}"),
-                ("unshare", "unshare {}"), ("nsenter", "nsenter -t 1 {}"), ("systemd-run", "systemd-run {}"),
-                ("caffeinate", "caffeinate {}"), ("busybox", "busybox {}"), ("docker run", "docker run img {}"),
-                ("ssh", "ssh host {}"), ("coproc", "coproc {}"), ("trap", "trap '{}' EXIT"), ("eval", "eval {}"),
-                ("bash -c", "bash -c '{}'"), ("sh -c", "sh -c '{}'"), ("sudo -u <user>", "sudo -u bob {}"),
-                ("env -u <name>", "env -u NAME {}"), ("env -C <dir>", "env -C dir {}"),
-                ("exec -a <name>", "exec -a name {}")):
-            with self.subTest(wrapper=name):
-                self.assertNotIn("./a/x.sh", command_words(shape.format("./a/x.sh")),
-                                 "the reader follows %s now" % name)
-                self.assertIn("``%s``" % name, __doc__, "%s is not followed but the docstring does not say so" % name)
-
-    # The docstring's closed list of what the reader reads is read back from
-    # the docstring itself and checked against the code both ways, so the
-    # two cannot drift apart.
-    @staticmethod
-    def _listed(label: str) -> list:
-        """The double-backquoted items of the docstring bullet that starts
-        ``- <label>:``."""
-        m = re.search(r"^- %s:(.*?)(?=^- |^\s*$)" % re.escape(label), __doc__, re.M | re.S)
-        return re.findall(r"``(.+?)``", m.group(1)) if m else []
-
-    def test_every_opener_the_docstring_lists_is_read_and_no_other(self):
-        openers = self._listed("Openers")
-        self.assertTrue(openers, "the docstring lists no opener")
-        for opener in openers + ["\n"]:
-            with self.subTest(opener=opener):
-                self.assertIn("./a/x.sh", command_words("true %s ./a/x.sh" % opener),
-                              "the docstring lists %r as an opener but the reader does not open on it" % opener)
-        self.assertEqual(set(_OPERATOR_CHARS) - {"\n"}, set("".join(openers)) - {"$"},
-                         "the reader opens a command on a character the docstring does not list, or the reverse")
-
-    def test_every_prefix_the_docstring_lists_is_skipped_and_no_other(self):
-        prefixes = self._listed("Prefixes")
-        self.assertEqual(set(prefixes), _PREFIX_WORDS, "the docstring's prefixes are not the reader's")
-        for prefix in prefixes:
-            with self.subTest(prefix=prefix):
-                self.assertEqual(command_words("%s ./a/x.sh" % prefix), ["./a/x.sh"])
-
-    def test_the_shapes_the_docstring_says_are_not_read_are_not_read(self):
-        # The docstring states that each of these is not read. If the reader
-        # learns one, the docstring must change in the same commit.
-        for named, script in (('``"$(...)"``', 'V="$(./a/x.sh)"'),
-                              ('``"$(...)"``', 'if [ -n "$(./a/x.sh)" ]; then true; fi'),
-                              ('``"$(...)"``', 'echo "v=$(./a/x.sh)" >> "$GITHUB_OUTPUT"'),
-                              ("``function NAME { ...; }``", "function f { ./a/x.sh; }"),
-                              ('``echo "<<END"``', 'echo "<<END"\n./a/x.sh\nEND\n'),
-                              ("``<<END-X``", "cat <<END-X\nEND-X\n./a/x.sh\nEND\n"),
-                              ("``< <(...)``", "while read -r l; do true; done < <(./a/x.sh)"),
-                              ("``> >(...)``", "make > >(./a/x.sh)"),
-                              ('``echo ">"``', 'echo ">"\n./a/x.sh'),
-                              ('``echo ">"``', "echo \\>\n./a/x.sh")):
-            with self.subTest(script=script):
-                self.assertNotIn("./a/x.sh", command_words(script), "the reader reads this shape now")
-                self.assertIn(named, __doc__, "not read, but the docstring does not say so")
-
-    def test_the_forms_the_docstring_says_are_read_are_read(self):
-        # Beside each unread shape, the form the docstring says is read; then
-        # the false failures it declares (read although not a command).
-        for script in ("V=$(./a/x.sh)", "function f {\n./a/x.sh\n}", "f() { ./a/x.sh; }", "{ ./a/x.sh; }",
-                       'echo "<<END"\nEND\n./a/x.sh', "cat <<END\n./a/y.sh\n \tEND \n./a/x.sh",
-                       "A=( ./a/x.sh )", 'case "$X" in a) true;; ./a/x.sh) true;; esac',
-                       '"./a/x.sh"', "diff <(./a/x.sh) f",
-                       "echo $(date) ./a/x.sh", 'echo "&&" ./a/x.sh', "find . -exec rm {} \\; ./a/x.sh",
-                       "cat <<$X\n./a/x.sh\n$X", "cat <<'END X'\n./a/x.sh\nEND X", "cat <<A <<B\nA\n./a/x.sh\nB"):
-            with self.subTest(script=script):
-                self.assertEqual([w for w in command_words(script) if "/" in w], ["./a/x.sh"])
-
-    def test_only_a_default_bash_or_sh_shell_is_read(self):
-        workflow = ("jobs:\n"
-                    "  steps_shell:\n    runs-on: x\n    steps:\n"
-                    "      - run: ./a/default.sh\n"
-                    "      - shell: bash -e {0}\n        run: ./a/bash.sh\n"
-                    "      - shell: sh\n        run: ./a/sh.sh\n"
-                    "      - shell: /bin/bash -e {0}\n        run: ./a/bin_bash.sh\n"
-                    "      - shell: pwsh\n        run: ./a/pwsh.sh\n"
-                    "  job_default_bash:\n    runs-on: x\n    defaults:\n      run:\n        shell: bash\n"
-                    "    steps:\n      - run: ./a/job_bash.sh\n"
-                    "  job_default_bin_bash:\n    runs-on: x\n    defaults:\n      run:\n"
-                    "        shell: /bin/bash -e {0}\n    steps:\n      - run: ./a/job_bin_bash.sh\n")
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "wf.yml").write_text(workflow, encoding="utf-8")
-            read = [run for _site, _wd, run in run_blocks(Path(d))]
-        self.assertEqual(read, ["./a/default.sh", "./a/bash.sh", "./a/sh.sh", "./a/job_bash.sh"])
-        self.assertIn("``shell: /bin/bash -e {0}``", __doc__, "not read, but the docstring does not say so")
 
 
 class TheJudgement(unittest.TestCase):
