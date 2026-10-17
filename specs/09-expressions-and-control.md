@@ -4,13 +4,17 @@
 > parser's recursive-descent chain); `if-then-else` (ternary) and
 > `match` as expressions; blocks and the absence of implicit return;
 > `let`/`var`; the `for` and `while` loops; `?` propagation; string
-> interpolation; and the exact operator semantics (signed
+> interpolation; the exact operator semantics (signed
 > division/modulo, bitwise, shifts, short-circuit), verified on both
-> backends.
+> backends; and the evaluation-order rule (operands and arguments in
+> written order, exactly once).
 
 **Version documented.** `main` at commit `8e2c609` (`capa 1.32.0` plus
 unreleased commits). Every transcript re-run at that commit on
 2026-09-10, `python -m capa` importing the checkout under specification.
+Section 9 (evaluation order) was added at `main` commit `d6307fd` on
+2026-10-17; its transcript was run at that commit with
+`wasm-tools 1.249.0` and wasmtime-py 46.0.1.
 Primary sources:
 [`capa/parser/_expressions.py`](../capa/parser/_expressions.py) (the
 precedence chain and the ternary),
@@ -458,6 +462,158 @@ a=false b=true
 The two backends produce identical output, including the order and the
 absence of the `eval B`/`eval D` lines.
 
+## 9. Evaluation order
+
+**The rule (normative).** Operands and arguments are evaluated in
+written order, exactly once. Construct by construct, the rule means:
+
+1. **Operands, arguments and literal parts.** The operands of a binary
+   operator, the arguments of a call, the fields of a struct literal,
+   the elements of a tuple or list literal, and the segments of an
+   interpolated string are each evaluated exactly once, left to right
+   in the order written. A struct literal follows the order written in
+   the literal, not the order of the type's declaration: with
+   `type P { x: Int, y: Int }`, the literal `P { y: a, x: b }`
+   evaluates `a` before `b`. Every field of a struct literal is
+   evaluated before a field of it is read.
+2. **Named arguments.** Named arguments (allowed after the positional
+   ones, [04-grammar.md](04-grammar.md) section 9) are evaluated in the
+   order written, and each binds to the parameter of its name whatever
+   its position in the call.
+3. **Short-circuit.** `and` and `or` evaluate their right operand only
+   when the left operand does not decide the result (section 8.2).
+4. **Conditionals.** An `if`, as an expression or as a statement,
+   evaluates its condition, then only the chosen branch. `elif`
+   conditions are evaluated in order until one holds; none after it is
+   evaluated. A `return` ends the function at once.
+5. **`match`.** The scrutinee is evaluated once. Arms are tried in
+   order; an arm's guard is evaluated only after the arm's pattern
+   matched; the first arm whose pattern matches and whose guard holds
+   runs, and only that arm (see
+   [07-pattern-matching.md](07-pattern-matching.md) sections 1 and 3).
+6. **Lambdas.** Creating a lambda evaluates nothing of its body. The
+   body runs when the lambda is called, once per call, after the
+   arguments of that call have been evaluated.
+7. **`while`.** The condition is evaluated before every iteration, so
+   a loop that ends because its condition is false has evaluated the
+   condition once more than it iterated. `break` leaves the innermost
+   loop; `continue` goes to the next evaluation of the condition.
+8. **`for`.** The iterable (a list or a range) is evaluated once,
+   before the first iteration; `a..b` runs from `a` to `b - 1`.
+
+The order becomes visible when an operand has an effect. In the
+program below, `t` prints its argument in brackets and returns it, so
+each line of output shows which operands ran and in which order:
+
+```capa
+// order.capa
+type P { x: Int, y: Int }
+
+fun t(stdio: Stdio, n: Int) -> Int
+    stdio.print("[${n}]")
+    return n
+
+fun h(a: Int, b: Int) -> Int
+    return a * 10 + b
+
+fun main(stdio: Stdio)
+    let s = t(stdio, 1) + t(stdio, 2) * t(stdio, 3)
+    stdio.println(" operands=${s}")
+    let c = h(t(stdio, 4), t(stdio, 5))
+    stdio.println(" call=${c}")
+    let p = P { y: t(stdio, 6), x: t(stdio, 7) }
+    stdio.println(" struct=${p.x}")
+    let e = if t(stdio, 8) > 0 then t(stdio, 9) else t(stdio, 10)
+    stdio.println(" if=${e}")
+    let m = match t(stdio, 2)
+        1 -> t(stdio, 11)
+        2 -> t(stdio, 12)
+        _ -> t(stdio, 13)
+    stdio.println(" match=${m}")
+    let g = fun (q: Int) -> Int => q + t(stdio, 14)
+    stdio.println(" lambda=${g(1) + g(2)}")
+    var i = 0
+    while t(stdio, i) < 2
+        i = i + 1
+    stdio.println(" while=${i}")
+    for x in [t(stdio, 15), t(stdio, 16)]
+        stdio.print("<${x}>")
+    stdio.println(" for")
+```
+
+```
+$ python -m capa --run order.capa
+[1][2][3] operands=7
+[4][5] call=45
+[6][7] struct=7
+[8][9] if=9
+[2][12] match=12
+[14][14] lambda=31
+[0][1][2] while=2
+[15][16]<15><16> for
+$ python -m capa --run --wasm order.capa
+[1][2][3] operands=7
+[4][5] call=45
+[6][7] struct=7
+[8][9] if=9
+[2][12] match=12
+[14][14] lambda=31
+[0][1][2] while=2
+[15][16]<15><16> for
+$ python -m capa --run --ir order.capa
+[1][2][3] operands=7
+[4][5] call=45
+[6][7] struct=7
+[8][9] if=9
+[2][12] match=12
+[14][14] lambda=31
+[0][1][2] while=2
+[15][16]<15><16> for
+```
+
+The three outputs are byte-identical (compared with `cmp`). Reading
+them against the rule: `*` binds tighter than `+`, yet `t(stdio, 1)`
+runs first, because precedence decides how operands group, not when
+they run (part 1); the struct literal written `y` first evaluates `6`
+before `7` (part 1); the `if` runs its condition and only the `then`
+branch, so `10` never prints (part 4); the `match` evaluates its
+scrutinee once and runs only the `2` arm (part 5); the lambda's body
+runs once for each of the two calls and not when `g` is bound (part
+6); the `while` condition runs three times for two iterations (part
+7); the list iterable is evaluated once, before the loop body prints
+(part 8).
+
+**How the rule is checked.** The rule is written a second time, as
+code, in the clause table of the absolute rule oracle,
+[`tests/instruments/absolute/_rule.py`](../tests/instruments/absolute/_rule.py):
+part 1 and the evaluation half of part 2 are clause `R1`, the binding
+half of part 2 is `R5`, and parts 3 to 8 are `R2`, `R3`, `R4`, `R6`,
+`R7` and `R8`. The oracle generates programs, computes each program's
+expected output from the clauses with an evaluator of its own (which
+must first reproduce a set of hand-written anchors), and compares each
+execution path with that expectation, not with another backend: two
+backends that agree with each other while both depart from the rule
+are both reported.
+[`tests/instruments/README.md`](../tests/instruments/README.md) states
+which execution paths and which constructs the oracle covers, and what
+it does not see. The oracle's other clauses, `R9` to `R14`, restate
+rules this chapter (sections 5 and 8.1) and
+[05-base-and-composite-types.md](05-base-and-composite-types.md)
+already define: checked `Int` arithmetic, the abort on an
+out-of-bounds index, `?`, the stdout an abort keeps, the comparisons,
+`List.get` and `String.length`.
+
+**Conformance today.** Not every execution path conforms to every
+part of this rule today. The departures that are public are entries
+of the known-outcome register,
+[`tests/instrument_register.json`](../tests/instrument_register.json):
+each entry names the program, the execution path, the outcome observed
+there (for example `BROKEN`: the compiler or the harness raised before
+the program ran) and the reason. The test suite checks each entry in
+the CI job that runs its execution path, so an entry that stops
+holding fails a test. The register is not a claim that no other
+departure exists.
+
 ---
 
 ## Links
@@ -472,3 +628,7 @@ absence of the `eval B`/`eval D` lines.
   the return-on-every-path rule and lambdas.
 - [05-base-and-composite-types.md](05-base-and-composite-types.md):
   `Result`, `Option`, and the equality the comparisons use.
+- [24-backend-parity.md](24-backend-parity.md): how backend parity
+  relates to the evaluation-order rule of section 9.
+- [`tests/instruments/README.md`](../tests/instruments/README.md): the
+  instruments that check the rule, and the known-outcome register.

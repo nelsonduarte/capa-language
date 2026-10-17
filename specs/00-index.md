@@ -17,7 +17,9 @@ translation; where the two differ, this set governs.
   under [`docs/advisories/`](../docs/advisories/).
 - **Version.** The whole set is measured at `main` commit `8e2c609`
   (`capa 1.32.0` plus unreleased commits), on 2026-09-10/11. Each
-  chapter's header repeats the pin.
+  chapter's header repeats the pin, and names any later commit at
+  which a section was added (chapter 09's section 9 and the passages
+  of chapter 24 that cite it, at `d6307fd`).
 - **Verification.** Every behavioural claim is traceable to something
   READ (`file:line`, test name, advisory) or EXECUTED (command plus
   pasted output). Transcripts are real runs at the pinned commit;
@@ -55,7 +57,7 @@ translation; where the two differ, this set governs.
 | 06 | [06-generics-and-traits.md](06-generics-and-traits.md) | Type parameters, traits, impl, monomorphisation |
 | 07 | [07-pattern-matching.md](07-pattern-matching.md) | `match`, patterns, exhaustiveness, destructuring and its type check |
 | 08 | [08-functions-closures-modules.md](08-functions-closures-modules.md) | Functions, the seven attributes, `consume`/`borrow`, closures, modules, reserved built-in names |
-| 09 | [09-expressions-and-control.md](09-expressions-and-control.md) | Precedence, control flow, `?`, operator semantics |
+| 09 | [09-expressions-and-control.md](09-expressions-and-control.md) | Precedence, control flow, `?`, operator semantics, evaluation order |
 
 ### C. Capabilities
 

@@ -14,8 +14,29 @@ under `python -m unittest discover tests` like every other test module.
 | `_register` | the known-outcome register: the member identity (file name plus program hash), the diff classes, the shrink-only ratchet |
 | `absolute/` | instrument (a): the clause table `R1`..`R14`, the generator whose builders are the clauses, the hand-written anchors, the corpora and the controls, the grammar completeness pin, the evaluator self-test |
 | `analysis_execution/` | instrument (b): the twin builder, its guards, the verdict, the public cases |
-| `release_differential` | instrument (d): the check half and the two-layer manifest half, run by the release procedure |
-| `ratchet` | the command the CI step runs |
+| `release_differential` | instrument (d): the check half and the two-layer manifest half, run by hand between two builds, never by test discovery or CI |
+| `ratchet` | the shrink-only check of the register, as a command; the CI step runs it through `scripts/instrument_ratchet.sh` |
+
+The clause table of `absolute/_rule.py` is the code form of the
+language's evaluation-order rule,
+[`specs/09-expressions-and-control.md`](../../specs/09-expressions-and-control.md)
+section 9: operands and arguments are evaluated in written order,
+exactly once, with short-circuit, only the chosen branch or arm, a
+lambda body per call, a `while` condition per iteration and a `for`
+iterable once. The oracle compares every execution path it runs with
+that rule, not with another backend.
+
+## Running them
+
+```bash
+python -m unittest discover tests                      # the whole suite, instruments included
+python -m unittest discover -s tests/instruments -t .  # the instruments alone
+python -m unittest tests.instruments.test_selfcheck -v # one module
+```
+
+The instruments alone are 116 tests; on the development machine
+(win32, with the Wasm toolchain installed, so no leg skipped) they took
+108 s.
 
 The strict condition-position family lives with the other implicit-flow
 enumerations in `tests/implicit_flow/_generated.py`; its gate is
@@ -33,20 +54,63 @@ gate diffs each run against it:
 - `FIXED`: a registered member now reads `CORRECT`. Delete the entry (and,
   for a stdlib program, promote it to `_AGREEING`).
 - `CHANGED`: a different wrong answer. Re-measure; never re-pin silently.
-- `NEW`: an unregistered wrong answer. A new defect: fix it, or register it
-  with its reason in the same change.
+- `NEW`: an unregistered wrong answer: a defect the register does not
+  know. An entry added for it turns this test green but fails the
+  ratchet below; the register has no declared way to take in a new
+  defect.
 - `REGRESSION`: a member stopped running (`REFUSED` / `TIMEOUT` / `BROKEN`
   / `VOID`) without being registered as exactly that. Never a fix.
 - `STALE` / `REGENERATED`: the registered program is gone, or its text
   changed. A regenerated program cannot inherit an entry.
 
+An entry's fields are `outcome`, `reason` and `closes_in`; a stdlib
+entry adds `vectors` (the observation of every leg) and `pins`. Loading
+the file refuses an entry whose outcome is not one of the outcome
+types, an entry that registers `CORRECT`, and a stdlib entry whose
+outcome is not the key of its vectors.
+
 The register may only shrink. `scripts/instrument_ratchet.sh` compares it,
-entry by entry, with the register of the base of the pushed range; an
-added or re-described entry fails unless the entry declares itself a
-`REVEAL` (a `BROKEN` member that became `WRONG` once its gap closed, naming
-the outcome it came from) or a `REGENERATED` member (same file, leg and
-outcome under a new hash, naming the entry it replaces). The first landing
-is a bootstrap and says so.
+entry by entry, with the register of the base of the pushed range (the
+`before` sha of a push, the base sha of a pull request); an added or
+re-described entry fails unless the entry declares itself a `REVEAL` or
+a `REGENERATED` member. The first landing is a bootstrap and says so.
+So the ways an entry changes are:
+
+- **Remove** it when the gate reports `FIXED`, or when its program is
+  gone (`STALE`). The ratchet always accepts a removal; if the member is
+  still wrong, the next run reports it `NEW`.
+- **Reveal**: a `BROKEN` member whose gap closed and that now reads
+  `WRONG`. Keep the key, set the new outcome, and add
+  `"accepted_as": "REVEAL"` with `"from_outcome"` equal to the base
+  outcome.
+- **Regenerate**: the same file, leg and outcome under a new program
+  hash. Replace the entry by one under the new key with
+  `"accepted_as": "REGENERATED"` and `"from_member"` naming the base key.
+- Any other added entry, and any other change of outcome, fails the
+  ratchet.
+
+Run it by hand against a base register file, or against a commit the
+way CI does:
+
+```bash
+python -m tests.instruments.ratchet --base <base register file, or NONE> --candidate tests/instrument_register.json
+scripts/instrument_ratchet.sh <base commit sha>
+```
+
+Measured on this register (19 entries): against itself, `GREEN
+added=0 re-described=0 removed=0 accepted=0`, exit 0; against `NONE`,
+`BOOTSTRAP: no base register; the candidate (19 entries) is the first`,
+exit 0; with one entry removed, `GREEN ... removed=1`, exit 0; with a
+planted added entry, `RED added=1`, exit 1; with one outcome changed
+and no declaration, `RED ... re-described=1`, exit 1; with the same
+change declared as a `REVEAL` of a `BROKEN` entry, `GREEN ...
+accepted=1`, exit 0.
+
+The CI step runs `scripts/instrument_ratchet.sh` as a command, so the
+script must be committed with the executable bit.
+`tests/test_workflow_scripts_executable.py` guards that for every path
+a workflow step runs as a command; what it reads in a step is specified
+only by its probe table, `READER_PROBES`.
 
 The words of an instrument (a) entry are checked too. `absolute/_reasons`
 holds the one table of reasons: each row gives the exact text, its
@@ -126,11 +190,41 @@ that are not public yet, and keeps a list of the audit rows none of the
 instruments see, placed against the programme steps whose regressions
 would land there. The public tree is complete and green without it.
 
+## Running the release differential
+
+Instrument (d) is a command, not a test module. It takes two trees (the
+previous build and the candidate, each a repository checkout or
+archive) and the corpus directories whose `*.capa` files it runs; it
+adds the strict condition-position family as its seeded negative
+corpus unless `--no-seeded` is given:
+
+```bash
+python -m tests.instruments.release_differential <base tree> <candidate tree> <corpus dir>... [--work <dir>] [--no-seeded]
+```
+
+It prints one summary line and up to 40 moved items, and exits 1 when
+anything moved. Its output names files and diagnostics. No CI job and
+no script in this repository runs it today; running it between the
+last release and a candidate is a manual step.
+
+The child process that measures a tree imports `tests/instruments` and
+`tests/implicit_flow` from that tree, so both trees must contain them.
+A tree without them reads `VOID` on every row and the verdict is `RED`
+for that reason alone. Measured on the development machine, with five
+`examples/` programs as the corpus plus the seeded family (26
+programs):
+
+| base tree | result |
+|---|---|
+| the candidate itself | `files=31 rc_moves=0 lost_diagnostics=0 gained_diagnostics=0 manifest_facts=0 authority_changes=0 verdict=GREEN`, exit 0, 17 s |
+| an archive of `v1.32.0` as released | `rc_moves=31`, every base row `VOID`, exit 1 |
+| the same archive with the candidate's `tests/instruments` and `tests/implicit_flow` copied in | `rc_moves=0 lost_diagnostics=0 gained_diagnostics=0`, `manifest_facts=18` (one manifest field that 1.32.0 does not write), exit 1 |
+
 ## Adding a member
 
 Add the construct to the grammar (a kind with the clauses it exercises),
 an anchor whose expectation is written by hand from the clause, and an
 evaluator mutant the anchor catches; or a case file whose first line
 declares the verdict it expects; or a position in the condition table.
-Run the gate: a `NEW` row is either a defect to fix or an entry to add
-with its reason, in the same change.
+Run the gate. A `NEW` row is a defect the register does not know: an
+entry added for it fails the ratchet (see "The register").
