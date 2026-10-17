@@ -12,13 +12,18 @@
 > diagnostics). The verification method is running the SAME program on
 > both backends and comparing the result byte for byte. The promise is
 > about the two PRODUCTION backends; the `--ir` path (CIR -> Python)
-> is EXPERIMENTAL and outside it (section 7).
+> is EXPERIMENTAL and outside it (section 7). Agreement between the
+> backends is not, by itself, conformance to the language's
+> evaluation-order rule (section 1).
 
 **Version documented.** `main` at commit `8e2c609` (`capa 1.32.0` plus
 unreleased commits). Every measurement in this chapter was re-run at
 that commit on 2026-09-11, `python -m capa` importing the checkout
 under specification, with `wasm-tools 1.249.0` (on `PATH`) and
-wasmtime-py 46.0.1 (importable), on one Windows machine.
+wasmtime-py 46.0.1 (importable), on one Windows machine. The passages
+that relate parity to the evaluation-order rule (sections 1, 7 and 8)
+were added at `main` commit `d6307fd` on 2026-10-17; they cite that
+rule and the register and re-run none of this chapter's measurements.
 
 Depends on: [21-python-backend.md](21-python-backend.md),
 [22-wasm-component-model-backend.md](22-wasm-component-model-backend.md).
@@ -63,6 +68,20 @@ a total order, and [`docs/stdlib.md`](../docs/stdlib.md) states that a
 comparator that is not a total order has undefined results (the same
 reasoning as C's `qsort`); `sorted()`/`min()`/`max()` exist precisely
 so the compiler supplies a total order (section 8).
+
+Parity is agreement between the backends; it is not, by itself,
+correctness. Where a program's output depends on the order in which
+its operands, arguments, branches and loop conditions are evaluated,
+every execution path must also follow the evaluation-order rule of
+[09-expressions-and-control.md](09-expressions-and-control.md) section
+9 (operands and arguments in written order, exactly once), and two
+backends that agree with each other while both depart from that rule
+are both wrong. Not every execution path conforms to that rule today:
+the departures that are public are entries of the known-outcome
+register [`tests/instrument_register.json`](../tests/instrument_register.json),
+and the instruments of
+[`tests/instruments/`](../tests/instruments/README.md) compare each
+execution path with the rule rather than with another backend.
 
 ## 2. What "identical" means and how it is verified
 
@@ -332,7 +351,12 @@ path, not a production parity failure. The distinction is crisp:
 `--run` (legacy) and `--run --wasm` are the promise's two backends;
 `--ir` is an experimental path of the Python backend, outside it.
 (The stdlib characterization corpus nonetheless exercises all THREE
-paths; section 8.)
+paths; section 8.) Being outside the parity promise does not put
+`--ir` outside the language: the evaluation-order rule of
+[09-expressions-and-control.md](09-expressions-and-control.md) section
+9 binds it like any other execution path, and the instruments check
+it there ([`tests/instruments/README.md`](../tests/instruments/README.md)
+names the paths each instrument runs).
 
 ## 8. The ordering surface and the nets that hold parity
 
@@ -346,7 +370,13 @@ chapter 05); the repository's own characterization corpus
 ([`tests/stdlib_characterization/`](../tests/stdlib_characterization/)
 with `TestThreeBackendAgreement` over its `_AGREEING` set in
 [`tests/test_stdlib_characterization.py`](../tests/test_stdlib_characterization.py))
-enforces the same equality in CI. The compiler-supplied `Float` order
+enforces the same equality in CI. A program of that corpus that is
+known to diverge is not in `_AGREEING`: it is an entry of the
+known-outcome register
+[`tests/instrument_register.json`](../tests/instrument_register.json)
+(instrument `stdlib_characterization`) that pins the output of every
+path, and the test module derives its known-divergent list from those
+entries. The compiler-supplied `Float` order
 (`sorted`/`min`/`max`) is TOTAL, `NaN` last, measured identical on the
 three paths:
 
@@ -421,3 +451,6 @@ in CI at this commit):
 - [05-base-and-composite-types.md](05-base-and-composite-types.md):
   the nine-method transcript and the checked-arithmetic parity this
   chapter's section 6 leans on.
+- [09-expressions-and-control.md](09-expressions-and-control.md)
+  section 9: the evaluation-order rule every execution path must
+  follow, and how it is checked.
