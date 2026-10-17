@@ -16,7 +16,7 @@ _manifest = D.manifest_of_source
 class ScrubTests(unittest.TestCase):
     def test_paths_positions_and_versions_are_scrubbed(self):
         a = D.scrub_line(r"C:\work\x\prog.capa:12:5: error: bad thing (capa 1.32.0)")
-        b = D.scrub_line("/home/ci/prog.capa:3:9: error: bad thing (capa 1.33.0)")
+        b = D.scrub_line("/work/ci/prog.capa:3:9: error: bad thing (capa 1.33.0)")
         self.assertEqual(a, b)
         self.assertIn("PATH:L:C: error: bad thing (capa V)", a)
 
