@@ -80,10 +80,13 @@ Out of scope:
   audit *what holders of authority choose to do*.
 - Attacks that require uses of the `Unsafe` capability or `py_import`.
   The Python interop boundary deliberately exits the discipline.
-- Issues with third-party Python packages used at build time. CI does
-  gate on known advisories in the packaged dependency set: a `pip-audit`
-  job runs on every pull request over the package plus its `[lsp,wasm,test]`
-  extras and fails the build on any known vulnerability.
+- Issues with third-party Python packages used at build time. CI runs
+  `pip-audit` on every pull request over the package and its
+  `[lsp,wasm,test]` extras and fails the build on any advisory recorded
+  against those Python packages. It does not see advisories against
+  native code a package bundles: the `wasmtime` wheel embeds a prebuilt
+  Wasmtime library whose advisories are recorded against the Rust
+  crates, not the Python package.
 - Theoretical issues in the type system that have no concrete attack.
 
 ## Supported versions
