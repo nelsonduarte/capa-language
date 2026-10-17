@@ -138,9 +138,10 @@ jobs:
         # The pinned lockfile is the [lsp,wasm,test] union, so it
         # already carries the wasmtime Python binding this job needs.
         # The experimental --wasi mode reaches wasi:http through
-        # wasmtime's C-ABI (validated on wasmtime 44 and 45); the lock
-        # pins the exact hashed wheels. Install under --require-hashes,
-        # then add the compiler editable with --no-deps.
+        # wasmtime's C-ABI; the supported binding range is the [wasm]
+        # floor in pyproject.toml and the lock pins the exact hashed
+        # wheels. Install under --require-hashes, then add the compiler
+        # editable with --no-deps.
         run: |
           pip install --require-hashes -r requirements-ci.lock
           pip install -e . --no-deps
