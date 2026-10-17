@@ -124,6 +124,13 @@ jobs:
       # `wasm-tools component embed`/`new`; the binding the http recipe
       # reaches is provided by the `wasm` extra (wasmtime).
       WASM_TOOLS_VERSION: "1.249.0"
+      # This job installs the Wasm toolchain, so it is the one
+      # environment that MUST run the Wasm capability-soundness
+      # harnesses. Setting this makes tests/test_wasm_harness_present.py
+      # fail LOUDLY if the toolchain install breaks, instead of letting
+      # TestWasmRuntimeSubsetOfManifest / TestWasmAttenuationHonoured
+      # skip silently and the job go green with no Wasm evidence.
+      CAPA_REQUIRE_WASM: "1"
 
     steps:
       - name: Check out the repository
