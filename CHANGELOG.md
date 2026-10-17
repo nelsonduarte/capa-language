@@ -23,33 +23,44 @@ unchanged.
   program with a filesystem preopen stopped with
   `AttributeError: module 'wasmtime' has no attribute 'DirPerms'`. The host
   now calls the new signature through one helper that states read-only or
-  read-write explicitly for every preopen it registers, and the extra's floor
-  is raised to `wasmtime>=48`. There is no upper bound.
-- *A binding older than the floor is reported, not a traceback.* When the
-  installed `wasmtime` is older than the floor (for example after upgrading
-  `capa-language` without the extra), every command that builds a Wasm engine
-  (`--wasm --run`, `--component`, `--wasi`, `--prefer-wasm`,
-  `build --release`, `run-aot`) exits 2 with the `pip install` command that
+  read-write explicitly for every preopen it registers, and the extra now
+  declares `wasmtime>=48,!=49.0.0`: the floor is 48, and 49.0.0 is excluded
+  because its bundled Wasmtime carries a security advisory that 48.0.0 does
+  not. There is no upper bound. `pip install --upgrade "capa-language[wasm]"`
+  replaces an installed 49.0.0 with 48.0.0.
+- *A binding outside the supported range is reported, not a traceback.* When
+  the installed `wasmtime` is older than the floor (for example after
+  upgrading `capa-language` without the extra) or is the excluded release,
+  every command that builds a Wasm engine (`--wasm --run`, `--component`,
+  `--wasi`, `--prefer-wasm`, `build --release`, `run-aot`) exits 2 with a
+  message naming the supported range and the `pip install` command that
   fixes it.
 
 **Changed: one engine configuration, and a stricter policy for foreign
 components.**
 
 - Every wasmtime engine Capa builds is now configured in one place
-  (`capa/runtime/_engine.py`) with an allow-list of Wasm features: bulk
-  memory, multi-value, reference types, tail calls and the component model.
-  Every other feature is off, including any feature a future binding turns on
-  by default. Before, each engine took the binding's defaults, which changed
-  between binding releases. Capa's own output needs nothing outside the list:
-  the examples and the test suite produce the same results as before.
+  (`capa/runtime/_engine.py`) with an allow-list over the Wasm features the
+  `wasmtime` binding can switch: bulk memory, multi-value, reference types,
+  tail calls, the component model and multiple memories are on. Every other
+  switchable feature is off, including one a future binding adds a switch
+  for. Features the binding has no switch for (today the extended constant
+  expressions and the Wasm 2.0 baseline, such as sign extension) stay as
+  wasmtime sets them. Before, each engine took the binding's defaults, which
+  changed between binding releases. Capa's own output needs nothing outside
+  the list: the examples and the test suite produce the same results as
+  before.
 - A foreign component (`extern component`) that uses a feature outside the
-  list, for example exceptions, GC, SIMD, memory64, multiple memories,
-  function references, wide arithmetic or any component-model async
-  construct, is now refused when it is loaded, with the existing
-  `could not load artifact` diagnostic. This narrows what loads: a
-  third-party component built with one of those features no longer runs
-  under Capa. The foreign components in this repository's tests and in the
-  project's example pipelines all still load.
+  list, for example exceptions, GC, SIMD, memory64, function references,
+  wide arithmetic or any component-model async construct, is now refused
+  when it is loaded, with the existing `could not load artifact` diagnostic.
+  This narrows what loads: a third-party component built with one of those
+  features no longer runs under Capa. The foreign components in this
+  repository's tests and in the project's example pipelines all still load.
+  Multiple memories are on because the component model needs them to pass
+  strings and lists between components that each own a memory. As before,
+  the default foreign limits allow a child one memory, so a child with more
+  is refused when it is instantiated, and runs with `--foreign-memory-cap 0`.
 - AOT artifacts (`.cwasm`) now record the engine configuration they were
   compiled under. One built by an earlier Capa is refused with
   "Rebuild with `capa build --release`", and a body the engine cannot load
@@ -64,7 +75,8 @@ components.**
   embeds a prebuilt Wasmtime library whose advisories are recorded against the
   Rust crates).
 - `docs/design/typed-ffi-abi.md` states the foreign-component feature
-  allow-list as part of the ABI contract, no longer claims the store limits
+  allow-list as part of the ABI contract (and which features it does not
+  cover), no longer claims the store limits
   bound every growable resource (component-model resource handle tables are
   charged to no store limit), and says which features the fuel bound relies
   on staying off.

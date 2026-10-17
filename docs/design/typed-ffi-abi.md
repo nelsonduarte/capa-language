@@ -193,15 +193,25 @@ timeouts, a finite file), not a sandbox gap.
 
 **Wasm features (allow-list).** Every wasmtime engine Capa builds,
 the child's included, is configured in one place
-(`capa.runtime._engine`): only bulk memory, multi-value, reference
-types, tail calls and the component model are on; every other Wasm
-feature is off, including one a future binding turns on by default. A
-child that uses a feature outside the list (exceptions, GC, SIMD,
-memory64, multiple memories, function references, wide arithmetic, any
-component-model async construct, ...) is refused when it is loaded, as
+(`capa.runtime._engine`). The list covers every Wasm feature the
+`wasmtime` binding lets Capa switch: only bulk memory, multi-value,
+reference types, tail calls, the component model and multiple memories
+are on, and every other switchable feature is off, including one a
+future binding adds a switch for. Features the binding exposes no
+switch for are not on the list and stay as wasmtime sets them (today
+the extended constant expressions and the Wasm 2.0 baseline, such as
+sign extension and saturating conversions). A child that uses a
+feature outside the list (exceptions, GC, SIMD, memory64, function
+references, wide arithmetic, any component-model async construct, ...)
+is refused when it is loaded, as
 `foreign component <label>: could not load artifact ...` (exit 1). This
 is part of the ABI contract: a component must be built without those
-features to be callable from Capa.
+features to be callable from Capa. Multiple memories are on because the
+component model needs them to pass strings and lists between
+components that each own a memory; the store limits above still allow
+a child one memory, so a child with more is refused at instantiation
+(`exceeded its memory / resource limit`) unless `--foreign-memory-cap 0`
+opts out of the ceiling.
 
 **Defaults and flags.**
 
