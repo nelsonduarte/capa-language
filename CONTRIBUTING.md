@@ -57,6 +57,38 @@ python -m unittest discover tests
 The suite is expected to pass on Ubuntu, macOS, and Windows, on
 Python 3.10, 3.12, and 3.14. CI confirms this for every pull request.
 
+### The measuring instruments and the register
+
+Part of the suite, under [`tests/instruments/`](tests/instruments/README.md),
+compares the compiler with a written rule rather than with another
+backend: the absolute rule oracle checks generated programs against the
+evaluation-order rule of
+[`specs/09-expressions-and-control.md`](specs/09-expressions-and-control.md)
+section 9, and the analysis-versus-execution oracle checks the
+information-flow analysis's verdict on a program against what a twin of
+it, carrying a marker in place of the secret, does when it runs: a
+flagged flow must deliver the marker to its sink, and a program the
+analysis leaves silent must not. Every outcome they know is not correct
+today is an entry of
+[`tests/instrument_register.json`](tests/instrument_register.json), with
+its reason; a run that differs from the register fails a test.
+
+The register may only shrink. A CI step compares it, entry by entry,
+with the register of the base of the push or pull request, and fails on
+any added entry or changed outcome that the entry does not declare as
+one of the two exceptions the
+[instruments README](tests/instruments/README.md) describes. Run the
+same check locally with:
+
+```bash
+python -m tests.instruments.ratchet --base <base register file> --candidate tests/instrument_register.json
+```
+
+A script that a workflow step runs as a command must be committed with
+the executable bit; `tests/test_workflow_scripts_executable.py` guards
+that, and its probe table `READER_PROBES` is the only specification of
+what it reads.
+
 ## How the compiler is structured
 
 ```
