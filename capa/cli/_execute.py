@@ -30,6 +30,7 @@ from capa.cli._grants import (
 )
 from capa.cli._parser import _WASM32_MAX_PAGES
 from capa.cli.subcommands import _wasm_tooling_available
+from capa.runtime._engine import WasmBindingError
 
 
 def run_execute(ctx: ExecCtx) -> int | None:
@@ -573,6 +574,8 @@ def run_execute(ctx: ExecCtx) -> int | None:
                     host.register_foreign_methods(_foreign_methods)
                 host.run_main(blob)
             return 0
+        except WasmBindingError:
+            raise
         except Exception as e:
             # A deliberate ``panic`` aborts via the guest's
             # ``unreachable``, which surfaces here as a wasmtime

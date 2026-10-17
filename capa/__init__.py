@@ -44,19 +44,26 @@ Example usage:
 # not to silently re-introduce the stale-literal bug this replaces.
 
 
-def _resolve_version() -> str:
+def _adjacent_pyproject_bytes() -> "bytes | None":
+    """The ``pyproject.toml`` beside this package (a source checkout or an
+    editable install), or None. Also read by ``capa.runtime._engine`` for
+    the declared wasmtime floor, so both facts come from the same file."""
     import os
 
-    # 1. Adjacent pyproject.toml (source checkout / editable install).
     pyproject = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "pyproject.toml",
     )
     try:
         with open(pyproject, "rb") as fh:
-            raw = fh.read()
+            return fh.read()
     except OSError:
-        raw = None
+        return None
+
+
+def _resolve_version() -> str:
+    # 1. Adjacent pyproject.toml (source checkout / editable install).
+    raw = _adjacent_pyproject_bytes()
     if raw is not None:
         version = _version_from_pyproject(raw)
         if version is not None:

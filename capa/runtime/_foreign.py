@@ -55,6 +55,7 @@ from ._capabilities import (
     Stdio,
     _write_safe,
 )
+from ._engine import new_engine
 from ._fs_guard import PostOpenDenied
 from ._result import Ok
 from ._wasm_component_host import IoErrorRecord
@@ -249,10 +250,11 @@ def new_foreign_engine() -> wasmtime.Engine:
     """Build a wasmtime engine for untrusted foreign-component children
     with fuel consumption ENABLED, so a per-store fuel budget can bound
     the child's CPU. Kept separate from the parent module's engine: the
-    parent runs unmetered, only the untrusted child is fuel-metered."""
-    config = wasmtime.Config()
-    config.consume_fuel = True
-    return wasmtime.Engine(config)
+    parent runs unmetered, only the untrusted child is fuel-metered. The
+    Wasm feature allow-list is the same as every other engine's
+    (:mod:`capa.runtime._engine`), so a child using a feature outside it
+    is refused when it is loaded."""
+    return new_engine(fuel=True)
 
 
 def _is_store_limit_error(exc: Exception) -> bool:
@@ -390,12 +392,16 @@ def dispatch_foreign_call(
         )
     store = wasmtime.Store(engine)
     # Resource ceiling on the untrusted child store (feature #4
-    # hardening): fuel bounds CPU; the store limits bound EVERY growable
-    # resource -- linear memory, funcref table growth, and the memory /
-    # table / instance object counts -- so neither a runaway
-    # ``memory.grow`` nor a runaway ``table.grow`` (review C2) can escape
-    # the ceiling. Applied BEFORE instantiation so a child declaring an
-    # over-cap minimum is refused up front, not after an OOM.
+    # hardening): fuel bounds CPU; the store limits bound linear memory,
+    # funcref table growth, and the memory / table / instance object
+    # counts, so neither a runaway ``memory.grow`` nor a runaway
+    # ``table.grow`` (review C2) can escape the ceiling. They are not a
+    # bound on everything a child can allocate: wasmtime charges the
+    # component-model resource handle tables (``resource.new``) to no
+    # store limit, and the binding exposes no setter for a handle cap,
+    # so the handle count is not bounded here. Applied BEFORE
+    # instantiation so a child declaring an over-cap minimum is refused
+    # up front, not after an OOM.
     fuel_enabled = fuel is not None and fuel > 0
     if fuel_enabled:
         store.set_fuel(fuel)

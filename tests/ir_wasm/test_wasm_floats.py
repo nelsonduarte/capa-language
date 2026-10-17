@@ -23,6 +23,7 @@ import unittest
 
 from tests.ir_wasm._helpers import _parse_lower, _has_wasm_tools, _has_wasmtime_py
 from capa.ir import compile_wasm
+from capa.runtime._engine import new_engine
 
 
 @unittest.skipUnless(
@@ -40,7 +41,7 @@ class TestWasmFloatAndClock(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)

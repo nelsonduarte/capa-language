@@ -55,6 +55,7 @@ from ..ir._cap_binding import (
     parse_wit_cap_slot_name,
 )
 from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Stdio, _write_safe
+from ._engine import new_engine
 from ._fs_guard import PostOpenDenied
 from ._cap_handles import (
     CapHandleError,
@@ -125,6 +126,18 @@ def _deny_record(err) -> "IoErrorRecord":
     cause match the Python backend byte for byte."""
     io = err.error
     return IoErrorRecord(message=io.message, cause=io.cause)
+
+
+def _preopen(wasi_cfg, host_path: str, guest_path: str, *, read_write: bool) -> None:
+    """Register one WASI filesystem preopen: the only call to the
+    binding's ``preopen_dir``. ``read_write`` is required and must be a
+    real ``bool``: the binding's own parameter defaults to read-write, so
+    a forgotten or truthy-by-accident flag would grant write access."""
+    if type(read_write) is not bool:
+        raise TypeError(
+            f"read_write must be a bool, got {type(read_write).__name__}"
+        )
+    wasi_cfg.preopen_dir(host_path, guest_path, fs_mutable=read_write)
 
 
 class WasmComponentHost:
@@ -226,7 +239,7 @@ class WasmComponentHost:
         # WASI mode when the program uses Net.get). Exposed for tests so
         # the "only link wasi:http when Net is used" rule is inspectable.
         self._wasi_http_linked: bool = False
-        self._engine = wasmtime.Engine()
+        self._engine = new_engine(fuel=False)
         self._store = wasmtime.Store(self._engine)
         self._linker = wc.Linker(self._engine)
         # Experimental WASI mode (2026-06-27): when True, the migrated
@@ -528,24 +541,12 @@ class WasmComponentHost:
                 if placeholder is None:
                     import tempfile
                     placeholder = tempfile.mkdtemp(prefix="capa-wasi-fs-")
-                wasi_cfg.preopen_dir(
-                    placeholder, guest_path,
-                    wasmtime.DirPerms.READ_ONLY,
-                    wasmtime.FilePerms.READ_ONLY,
-                )
+                _preopen(wasi_cfg, placeholder, guest_path, read_write=False)
                 applied.append((host_path, "absent"))
                 continue
-            if pre.read_write:
-                dir_perms = wasmtime.DirPerms.READ_WRITE
-                file_perms = wasmtime.FilePerms.READ_WRITE
-                applied.append((host_path, "rw"))
-            else:
-                dir_perms = wasmtime.DirPerms.READ_ONLY
-                file_perms = wasmtime.FilePerms.READ_ONLY
-                applied.append((host_path, "ro"))
-            wasi_cfg.preopen_dir(
-                host_path, guest_path, dir_perms, file_perms,
-            )
+            read_write = bool(pre.read_write)
+            applied.append((host_path, "rw" if read_write else "ro"))
+            _preopen(wasi_cfg, host_path, guest_path, read_write=read_write)
         # Layer b1: append the operator ``--preopen`` AFTER the derived
         # preopens so it never shifts a derived index (index ==
         # len(ceiling.preopens)). For an all-literal program this preopen
@@ -574,19 +575,8 @@ class WasmComponentHost:
         if not os.path.isdir(host_dir):
             return []
         guest_path = f"/capa-preopen-{index}"
-        if read_write:
-            wasi_cfg.preopen_dir(
-                host_dir, guest_path,
-                wasmtime.DirPerms.READ_WRITE,
-                wasmtime.FilePerms.READ_WRITE,
-            )
-            return [(host_dir, "operator-rw")]
-        wasi_cfg.preopen_dir(
-            host_dir, guest_path,
-            wasmtime.DirPerms.READ_ONLY,
-            wasmtime.FilePerms.READ_ONLY,
-        )
-        return [(host_dir, "operator-ro")]
+        _preopen(wasi_cfg, host_dir, guest_path, read_write=read_write)
+        return [(host_dir, "operator-rw" if read_write else "operator-ro")]
 
     def _register_all(self) -> None:
         root = self._linker.root()
