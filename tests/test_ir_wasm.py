@@ -47,6 +47,7 @@ from capa.ir import (
     collect_used_capabilities, WasmEmissionError,
     UnsupportedCapabilityMethod, MainReturnTypeUnsupported,
 )
+from capa.runtime._engine import new_engine
 
 
 def _parse_lower(src: str):
@@ -413,7 +414,7 @@ class TestWasmExecutes(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         store = wasmtime.Store(engine)
         mod = wasmtime.Module(engine, blob)
         instance = wasmtime.Instance(store, mod, [])
@@ -1746,7 +1747,7 @@ class TestWasmSumAndStruct(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -1762,7 +1763,7 @@ class TestWasmSumAndStruct(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -1859,7 +1860,7 @@ class TestWasmSumAndStruct(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -2007,7 +2008,7 @@ class TestWasmListInt(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -2115,7 +2116,7 @@ class TestWasmMapStringInt(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -2230,7 +2231,7 @@ class TestWasmSetInt(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -2463,7 +2464,7 @@ class TestWasmStringMethods(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -2647,7 +2648,7 @@ class TestWasmFloatAndClock(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -3787,7 +3788,7 @@ class TestWasmClosures(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -3973,7 +3974,7 @@ class TestWasmMapFunValue(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -4117,7 +4118,7 @@ class TestWasmNestedClosures(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -5222,7 +5223,7 @@ class TestWasmTupleParamTypes(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -6163,7 +6164,7 @@ class TestWasmMatchEmission(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         store = wasmtime.Store(engine)
         mod = wasmtime.Module(engine, blob)
         instance = wasmtime.Instance(store, mod, [])
@@ -6473,7 +6474,7 @@ class TestWasmMatchArmGuards(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         store = wasmtime.Store(engine)
         mod = wasmtime.Module(engine, blob)
         instance = wasmtime.Instance(store, mod, [])
@@ -6689,7 +6690,7 @@ class TestWasmStructuralEquality(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         mod = wasmtime.Module(engine, blob)
         store = wasmtime.Store(engine)
         linker = wasmtime.Linker(engine)
@@ -6961,7 +6962,7 @@ class TestWasmSafetyTraps(unittest.TestCase):
         import wasmtime
         _, types, ast_mod = _parse_lower(src)
         blob = compile_wasm(ast_mod, types=types)
-        engine = wasmtime.Engine()
+        engine = new_engine(fuel=False)
         store = wasmtime.Store(engine)
         module = wasmtime.Module(engine, blob)
         linker = wasmtime.Linker(engine)
@@ -9602,7 +9603,7 @@ class TestDiscardedCallSweepValidates(unittest.TestCase):
         module, result = _parse_and_analyze_ok(src)
         blob = compile_wasm(module, types=result.types, **compile_kw)
         try:
-            wasmtime.Module(wasmtime.Engine(), blob)
+            wasmtime.Module(new_engine(fuel=False), blob)
         except Exception as exc:  # noqa: BLE001 - want the raw reason
             self.fail(
                 f"discarded {label} produced an INVALID module: {exc}\n"

@@ -25,7 +25,11 @@ container format below:
    version (and target) that produced it; ``Module.deserialize`` of a
    mismatched blob is undefined/erroring. We stamp the wasmtime version
    into the header and refuse a mismatch with a clean error rather than
-   a crash.
+   a crash. The same holds for the engine CONFIGURATION (which Wasm
+   features are on, fuel metering): the header carries
+   :func:`capa.runtime._engine.engine_identity` and a different one is
+   refused the same way, and a body the engine still cannot load is an
+   ``AotError`` too, never a raw wasmtime error.
 
 Container layout (all integers little-endian)::
 
@@ -35,6 +39,7 @@ Container layout (all integers little-endian)::
     header       header_len bytes, UTF-8 JSON:
                    {"capa_version": str,
                     "wasmtime_version": str,
+                    "engine": str,
                     "main_cap_types": [str, ...]}
     cwasm        the rest of the file: Module.serialize() bytes
 """
@@ -46,6 +51,7 @@ import struct
 from typing import Optional
 
 from ..ir._cap_binding import CARRIER_WASM_EXPORT, resolve_cap_types
+from ._engine import _installed_binding_version, engine_identity, new_engine
 
 _MAGIC = b"CPAO"
 # Bumped to 2 on 2026-07-23: the header carries ``main_cap_types``
@@ -58,11 +64,9 @@ _FORMAT_VERSION = 2
 
 
 def _wasmtime_version() -> str:
-    import importlib.metadata as md
-    try:
-        return md.version("wasmtime")
-    except Exception:  # pragma: no cover - metadata always present in practice
-        return "unknown"
+    # One lookup of the installed binding's version, shared with the
+    # engine module's floor check.
+    return _installed_binding_version() or "unknown"
 
 
 def build_aot(wasm_blob: bytes, *, capa_version: str) -> bytes:
@@ -91,7 +95,7 @@ def build_aot(wasm_blob: bytes, *, capa_version: str) -> bytes:
     )
 
     # n_params: ask the module's main export how many params it takes.
-    engine = wasmtime.Engine()
+    engine = new_engine(fuel=False)
     module = wasmtime.Module(engine, wasm_blob)
     n_params = _module_main_param_count(module)
     cap_types = resolve_cap_types(
@@ -104,6 +108,7 @@ def build_aot(wasm_blob: bytes, *, capa_version: str) -> bytes:
     header = {
         "capa_version": capa_version,
         "wasmtime_version": _wasmtime_version(),
+        "engine": engine_identity(fuel=False),
         "main_cap_types": list(cap_types),
     }
     header_bytes = json.dumps(header).encode("utf-8")
@@ -119,8 +124,9 @@ def build_aot(wasm_blob: bytes, *, capa_version: str) -> bytes:
 
 class AotError(RuntimeError):
     """Raised when an AOT container cannot be loaded: bad magic,
-    unknown format version, or a wasmtime-version mismatch that makes
-    the embedded ``.cwasm`` unsafe to deserialize."""
+    unknown format version, a wasmtime-version or engine-configuration
+    mismatch that makes the embedded ``.cwasm`` unsafe to deserialize,
+    or a body the engine refuses to deserialize."""
 
 
 def parse_aot(blob: bytes) -> tuple[dict, bytes]:
@@ -162,8 +168,9 @@ def load_aot(blob: bytes, engine=None):
     tests that don't instantiate).
 
     Raises ``AotError`` if the embedded ``.cwasm`` was produced by a
-    different wasmtime version than the one running now (deserializing a
-    mismatched blob is unsafe), or on any container-format problem."""
+    different wasmtime version or engine configuration than the one
+    running now (deserializing a mismatched blob is unsafe), if the
+    engine refuses the body, or on any container-format problem."""
     try:
         import wasmtime
     except ImportError as e:  # pragma: no cover
@@ -182,9 +189,26 @@ def load_aot(blob: bytes, engine=None):
             f"it. Rebuild with `capa build --release`."
         )
 
+    built_under = header.get("engine")
+    expected = engine_identity(fuel=False)
+    if built_under != expected:
+        raise AotError(
+            "this AOT artifact was built under a different wasmtime "
+            "engine configuration than this toolchain uses (for example "
+            "by an older Capa); a serialized module is only valid for the "
+            "configuration that produced it. Rebuild with "
+            "`capa build --release`."
+        )
+
     if engine is None:
-        engine = wasmtime.Engine()
-    module = wasmtime.Module.deserialize(engine, cwasm)
+        engine = new_engine(fuel=False)
+    try:
+        module = wasmtime.Module.deserialize(engine, cwasm)
+    except wasmtime.WasmtimeError as e:
+        raise AotError(
+            f"this AOT artifact cannot be loaded by this toolchain's "
+            f"wasmtime engine ({e}). Rebuild with `capa build --release`."
+        ) from e
     return module, header
 
 

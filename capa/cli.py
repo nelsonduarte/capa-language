@@ -37,6 +37,7 @@ from capa.docgen import build_html as build_doc_html
 from capa.formatter import format_source, is_formatted
 from capa.init_project import init_project
 from capa.loader_paths import resolve_loader_paths
+from capa.runtime._engine import WasmBindingError
 from capa._debug import _rewrite_traceback
 
 
@@ -573,6 +574,8 @@ def _dispatch_build(argv: list[str]) -> int:
             filename=filename,
         )
         artifact = build_aot(blob, capa_version=_CAPA_VERSION)
+    except WasmBindingError:
+        raise
     except Exception as e:
         print(f"capa build: {e}", file=sys.stderr)
         return 1
@@ -791,13 +794,18 @@ def main() -> int:
         parsed. The wording and the exit code match what ``capa test``
         and ``capa install`` already used, because those two already had
         the right behaviour and this brings the rest of the CLI into
-        line with them rather than the other way round.
+        line with them rather than the other way round;
+      * ``WasmBindingError``, an installed ``wasmtime`` binding that
+        cannot build the engine Capa requires (older than the declared
+        floor, or missing a feature setter), raised by every path that
+        builds a Wasm engine.
 
-    ``BrokenRootManifestError`` exits 2 and not 1: 2 is this CLI's code
-    for a CONFIGURATION problem (``capa test`` already returns it for
-    exactly this input), while 1 is the code for a policy refusal about
-    a program that was otherwise fine to build. A broken manifest is the
-    former; a violated floor is the latter.
+    ``BrokenRootManifestError`` and ``WasmBindingError`` exit 2 and not
+    1: 2 is this CLI's code for a CONFIGURATION problem (``capa test``
+    already returns it for a broken manifest), while 1 is the code for a
+    policy refusal about a program that was otherwise fine to build. A
+    broken manifest and an unusable wasmtime binding are the former; a
+    violated ``[package].capa`` floor is the latter.
     """
     try:
         return _main_dispatch()
@@ -813,6 +821,9 @@ def main() -> int:
         # the full remediation menu; print it verbatim.
         print(str(e), file=sys.stderr)
         return 1
+    except WasmBindingError as e:
+        print(f"capa: {e}", file=sys.stderr)
+        return 2
 
 
 # Subcommands that must run even when the root manifest's declared
@@ -2649,6 +2660,8 @@ def _main_dispatch() -> int:
                     host.register_foreign_methods(_foreign_methods)
                 host.run_main(blob)
             return 0
+        except WasmBindingError:
+            raise
         except Exception as e:
             # A deliberate ``panic`` aborts via the guest's
             # ``unreachable``, which surfaces here as a wasmtime

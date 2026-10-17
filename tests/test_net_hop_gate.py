@@ -49,6 +49,7 @@ from unittest import mock
 from capa import Lexer, Parser, analyze, transpile
 from capa.runtime import _capabilities
 from capa.runtime._capabilities import IoError, Net, ResultCapExceeded
+from capa.runtime._engine import new_engine
 
 
 def _has_component_tooling() -> bool:
@@ -59,7 +60,7 @@ def _has_component_tooling() -> bool:
         import wasmtime.component as wc  # noqa: F401
     except ImportError:
         return False
-    return hasattr(wc.Linker(wasmtime.Engine()), "add_wasip2")
+    return hasattr(wc.Linker(new_engine(fuel=False)), "add_wasip2")
 
 
 class _Server:
