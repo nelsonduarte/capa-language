@@ -1,0 +1,6 @@
+// expect: FLAGGED-CONFIRMED
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("K").unwrap_or("")
+    let m: Map<String, String> = new_map()
+    m.set("x", k)
+    stdio.println(m.get("x").unwrap_or(""))

@@ -1,0 +1,7 @@
+// expect: FLAGGED-CONFIRMED
+@strict_ifc()
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("K").unwrap_or("")
+    let xs = ["a", k]
+    for x in xs
+        stdio.println(x)

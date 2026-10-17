@@ -1,0 +1,7 @@
+// expect: FLAGGED-CONFIRMED
+type B { s: String }
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("K").unwrap_or("")
+    var b = B { s: "" }
+    b.s = k
+    stdio.println(b.s)

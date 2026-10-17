@@ -1,0 +1,12 @@
+// expect: FLAGGED-CONFIRMED
+fun get(env: Env) -> Result<String, String>
+    match env.get("K")
+        Some(v) -> return Ok(v)
+        None -> return Err("none")
+fun use_it(env: Env) -> Result<String, String>
+    let v = get(env)?
+    return Ok(v)
+fun main(env: Env, stdio: Stdio)
+    match use_it(env)
+        Ok(v) -> stdio.println(v)
+        Err(e) -> stdio.println("e")

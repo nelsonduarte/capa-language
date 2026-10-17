@@ -1,0 +1,6 @@
+// expect: FLAGGED-CONFIRMED
+fun main(env: Env, stdio: Stdio)
+    let k = env.get("K").unwrap_or("")
+    let t = (1, k)
+    let (a, b) = t
+    stdio.println(b)

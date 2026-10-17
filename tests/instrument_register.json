@@ -1,0 +1,149 @@
+{
+ "entries": {
+  "absolute|anchor_r4_guard_runs_only_after_its_pattern_matched.capa#c577de2c4460e290|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|anchor_r4_guard_that_fails_falls_to_the_next_arm.capa#0d212c84942653b2|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0011.capa#1b98a1e67c96c164|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0016.capa#7068e05d8d27b553|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0026.capa#c13f12961022a19e|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0033.capa#8912590cb066f086|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0044.capa#6bed55ff307ff59c|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0060.capa#c4564a1c790a0c4a|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0114.capa#949f15812a7bc952|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0119.capa#196ba4fe05c4b7b1|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0120.capa#be55e94608043f49|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0141.capa#d77ca378c7bbf6b5|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0147.capa#5c4213dad06c64ce|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0174.capa#bf093ab73c7a972c|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0186.capa#64c8bd5f644e646d|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "absolute|mix_0188.capa#1389610e2a0ed7a1|ir": {
+   "closes_in": "step 2 (emitter gaps)",
+   "outcome": "BROKEN",
+   "reason": "the CIR Python emitter refuses a guard that carries a call (UnsupportedInIR); the command line falls back to the legacy transpiler"
+  },
+  "stdlib_characterization|known_divergent_generic_closure_param.capa#a96cd7966ebb1eb8|three_backends": {
+   "closes_in": "the stdlib increments",
+   "outcome": "WRONG:fc7fa56348dfd162",
+   "pins": [
+    "test_generic_closure_param_failure_names_the_callee"
+   ],
+   "reason": "a generic function with a closure-typed parameter: the Wasm module references a never-emitted specialisation",
+   "vectors": {
+    "ir": [
+     "OK",
+     "1 a\n"
+    ],
+    "run": [
+     "OK",
+     "1 a\n"
+    ],
+    "wasm": [
+     "BROKEN",
+     ""
+    ]
+   }
+  },
+  "stdlib_characterization|known_divergent_sorted_by_inconsistent.capa#58b502384acda12b|three_backends": {
+   "closes_in": "the stdlib increments",
+   "outcome": "WRONG:4f23266fabf8eb72",
+   "pins": [],
+   "reason": "sorted_by with an inconsistent comparator: Timsort and the Wasm merge sort settle on different permutations",
+   "vectors": {
+    "ir": [
+     "OK",
+     "1|2|3|4|5|6|\n"
+    ],
+    "run": [
+     "OK",
+     "1|2|3|4|5|6|\n"
+    ],
+    "wasm": [
+     "OK",
+     "6|5|4|3|2|1|\n"
+    ]
+   }
+  },
+  "stdlib_characterization|known_divergent_sorted_by_nan.capa#e9193cc58a98d8af|three_backends": {
+   "closes_in": "the stdlib increments",
+   "outcome": "WRONG:4ee116ae5d6481f8",
+   "pins": [
+    "test_sorted_by_nan_non_nan_subsequence_lost_its_order"
+   ],
+   "reason": "sorted_by with a NaN element: the Python paths corrupt the order of the non-NaN elements; Wasm places NaN differently",
+   "vectors": {
+    "ir": [
+     "OK",
+     "2.0|nan|1.0|3.0|4.0|\n"
+    ],
+    "run": [
+     "OK",
+     "2.0|nan|1.0|3.0|4.0|\n"
+    ],
+    "wasm": [
+     "OK",
+     "1.0|2.0|nan|3.0|4.0|\n"
+    ]
+   }
+  }
+ },
+ "format": 1
+}

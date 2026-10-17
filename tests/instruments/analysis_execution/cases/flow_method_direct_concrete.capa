@@ -1,0 +1,15 @@
+// expect: FLAGGED-CONFIRMED
+type Bag { items: List<String> }
+impl Bag
+    fun push(self, v: String) -> Int
+        self.items.push(v)
+        return 1
+    fun label(self) -> String
+        return self.items.get(0).unwrap_or("")
+fun store(b: Bag, v: String) -> Int
+    return b.push(v)
+fun main(env: Env, stdio: Stdio)
+    let b = Bag { items: [] }
+    let k = env.get("K").unwrap_or("")
+    let n = store(b, k)
+    stdio.println(b.label())

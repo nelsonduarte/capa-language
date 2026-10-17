@@ -1,0 +1,6 @@
+// expect: FLAGGED-CONFIRMED
+@strict_ifc()
+fun main(stdio: Stdio, fs: Fs, env: Env)
+    let k = env.get("K").unwrap_or("none")
+    let r = fs.write("sink.txt", k)
+    stdio.println("written")
