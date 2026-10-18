@@ -796,8 +796,8 @@ def main() -> int:
         the right behaviour and this brings the rest of the CLI into
         line with them rather than the other way round;
       * ``WasmBindingError``, an installed ``wasmtime`` binding that
-        cannot build the engine Capa requires (older than the declared
-        floor, or missing a feature setter), raised by every path that
+        cannot build the engine Capa requires (outside the declared
+        range, or missing a feature setter), raised by every path that
         builds a Wasm engine.
 
     ``BrokenRootManifestError`` and ``WasmBindingError`` exit 2 and not
