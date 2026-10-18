@@ -9,7 +9,7 @@ breaking changes and the discipline is still being shaped.
 
 ## [Unreleased]
 
-## [1.32.1], 2026-10-17
+## [1.32.1], 2026-10-18
 
 A patch release for the Wasm runtime's use of the `wasmtime` Python binding
 (the `[wasm]` extra). The compiler, the analyzer and the Python backend are
