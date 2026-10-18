@@ -69,8 +69,8 @@ eval = ["matplotlib>=3.8"]
 # The floor is the oldest binding the code is written against: the
 # ``WasiConfig.preopen_dir`` signature the ``--wasi`` host calls, and
 # the engine feature setters ``capa/runtime/_engine.py`` applies. An
-# exact ``!=`` excludes a release whose bundled Wasmtime carries an
-# advisory the floor's does not. The runtime reads this line back
+# exact ``!=`` excludes a release whose bundled Wasmtime carries one
+# more security advisory than the floor's. The runtime reads this line back
 # (from this file in a source checkout, from the installed
 # distribution's metadata otherwise) and refuses an installed binding
 # outside it with a message naming the range, so do not restate the

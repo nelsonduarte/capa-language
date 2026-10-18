@@ -25,16 +25,19 @@ unchanged.
   now calls the new signature through one helper that states read-only or
   read-write explicitly for every preopen it registers, and the extra now
   declares `wasmtime>=48,!=49.0.0`: the floor is 48, and 49.0.0 is excluded
-  because its bundled Wasmtime carries a security advisory that 48.0.0 does
-  not. There is no upper bound. `pip install --upgrade "capa-language[wasm]"`
-  replaces an installed 49.0.0 with 48.0.0.
+  because its bundled Wasmtime carries one more security advisory than
+  48.0.0's. There is no upper bound.
+  `pip install --upgrade "capa-language[wasm]"` replaces an installed 49.0.0
+  with 48.0.0.
 - *A binding outside the supported range is reported, not a traceback.* When
   the installed `wasmtime` is older than the floor (for example after
   upgrading `capa-language` without the extra) or is the excluded release,
   every command that builds a Wasm engine (`--wasm --run`, `--component`,
   `--wasi`, `--prefer-wasm`, `build --release`, `run-aot`) exits 2 with a
   message naming the supported range and the `pip install` command that
-  fixes it.
+  fixes it. So does `--run` when the environment asks to prefer Wasm
+  (`CAPA_PREFER_WASM=1`); a plain `--run` on the Python backend is not
+  affected.
 
 **Changed: one engine configuration, and a stricter policy for foreign
 components.**
