@@ -26,18 +26,24 @@ unchanged.
   read-write explicitly for every preopen it registers, and the extra now
   declares `wasmtime>=48,!=49.0.0`: the floor is 48, and 49.0.0 is excluded
   because its bundled Wasmtime carries one more security advisory than
-  48.0.0's. There is no upper bound.
-  `pip install --upgrade "capa-language[wasm]"` replaces an installed 49.0.0
-  with 48.0.0.
-- *A binding outside the supported range is reported, not a traceback.* When
-  the installed `wasmtime` is older than the floor (for example after
-  upgrading `capa-language` without the extra) or is the excluded release,
+  48.0.0's. There is no upper bound. 48.0.0 is not advisory-free: its
+  bundled Wasmtime has advisories recorded upstream that no `wasmtime`
+  wheel on PyPI fixes yet, and the feature allow-list below makes some of
+  them unreachable from foreign components, not all.
+  `pip install --upgrade "capa-language[wasm]"` asks pip for a binding
+  inside this range.
+- *A binding outside the supported range is reported, not a traceback.* In a
+  normal `pip install` of the package and in a source checkout of the
+  repository, when the installed `wasmtime` is older than the floor (for
+  example after upgrading `capa-language` without the extra) or is the
+  excluded release,
   every command that builds a Wasm engine (`--wasm --run`, `--component`,
   `--wasi`, `--prefer-wasm`, `build --release`, `run-aot`) exits 2 with a
   message naming the supported range and the `pip install` command that
   fixes it. So does `--run` when the environment asks to prefer Wasm
   (`CAPA_PREFER_WASM=1`); a plain `--run` on the Python backend is not
-  affected.
+  affected. The check reads the range from the package's own declaration
+  and is specified for those two layouts only.
 
 **Changed: one engine configuration, and a stricter policy for foreign
 components.**
@@ -51,15 +57,16 @@ components.**
   expressions and the Wasm 2.0 baseline, such as sign extension) stay as
   wasmtime sets them. Before, each engine took the binding's defaults, which
   changed between binding releases. Capa's own output needs nothing outside
-  the list: the examples and the test suite produce the same results as
-  before.
+  the list: this was checked on the example programs and the test suite
+  during development.
 - A foreign component (`extern component`) that uses a feature outside the
   list, for example exceptions, GC, SIMD, memory64, function references,
   wide arithmetic or any component-model async construct, is now refused
   when it is loaded, with the existing `could not load artifact` diagnostic.
   This narrows what loads: a third-party component built with one of those
   features no longer runs under Capa. The foreign components in this
-  repository's tests and in the project's example pipelines all still load.
+  repository's tests and in the project's example pipelines all loaded when
+  this was checked during development.
   Multiple memories are on because the component model needs them to pass
   strings and lists between components that each own a memory. As before,
   the default foreign limits allow a child one memory, so a child with more
