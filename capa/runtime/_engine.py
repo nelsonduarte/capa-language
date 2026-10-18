@@ -138,7 +138,12 @@ def engine_identity(*, fuel: bool) -> str:
 
 _REQUIREMENT = re.compile(r"wasmtime\s*\(?\s*([^;\"')\]]*)")
 _CLAUSE = re.compile(r"^(>=|!=)\s*([0-9]+(?:\.[0-9]+)*)$")
+_EXTRAS_TABLE = re.compile(
+    r"(?ms)^\[project\.optional-dependencies\][ \t\r]*$(.*?)(?=^\[|\Z)"
+)
 _WASM_EXTRA_LINE = re.compile(r"(?m)^\s*wasm\s*=\s*\[([^\]]*)\]")
+_WASMTIME_NAME = re.compile(r"\s*wasmtime(?![A-Za-z0-9._-])")
+_WASM_MARKER = re.compile(r"""extra\s*==\s*["']wasm["']""")
 
 
 def requirement_from_declaration(text: str) -> Optional[str]:
@@ -191,12 +196,14 @@ def binding_requirement() -> Optional[str]:
     installed metadata."""
     raw = _adjacent_pyproject()
     if raw is not None:
-        m = _WASM_EXTRA_LINE.search(raw.decode("utf-8", errors="replace"))
+        table = _EXTRAS_TABLE.search(raw.decode("utf-8", errors="replace"))
+        m = _WASM_EXTRA_LINE.search(table.group(1)) if table else None
         if m is not None:
             return requirement_from_declaration(m.group(1))
     for req in _distribution_requires() or []:
-        if req.split(";")[0].strip().startswith("wasmtime"):
-            return requirement_from_declaration(req)
+        name, _, marker = req.partition(";")
+        if _WASMTIME_NAME.match(name) and _WASM_MARKER.search(marker):
+            return requirement_from_declaration(name)
     return None
 
 
@@ -209,11 +216,22 @@ def _installed_binding_version() -> Optional[str]:
         return None
 
 
+_PRE_RELEASE = re.compile(
+    r"^[0-9]+(?:\.[0-9]+)*[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview|dev)"
+)
+
+
 def _release(text: str) -> Optional[tuple[int, ...]]:
     m = re.match(r"^([0-9]+(?:\.[0-9]+)*)", text or "")
     if m is None:
         return None
     return tuple(int(p) for p in m.group(1).split("."))
+
+
+def _is_pre_release(text: str) -> bool:
+    """A pre-release or dev release sorts below its own release number,
+    as pip orders it, so it does not meet a floor set at that number."""
+    return _PRE_RELEASE.match(text or "") is not None
 
 
 def _padded(a: tuple[int, ...], b: tuple[int, ...]):
@@ -247,7 +265,8 @@ def check_binding_version(
         )
     for op, version in clauses:
         mine, bound = _padded(have, _release(version))
-        if op == ">=" and mine < bound:
+        if op == ">=" and (mine < bound or (
+                mine == bound and _is_pre_release(installed))):
             why = "older than the floor of"
         elif op == "!=" and mine == bound:
             why = "a release excluded by"
