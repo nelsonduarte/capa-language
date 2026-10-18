@@ -53,6 +53,7 @@ from capa.cli.subcommands import (
 )
 from capa.formatter import format_source, is_formatted
 from capa.loader_paths import resolve_loader_paths
+from capa.runtime._engine import WasmBindingError
 
 
 def main() -> int:
@@ -66,13 +67,18 @@ def main() -> int:
         parsed. The wording and the exit code match what ``capa test``
         and ``capa install`` already used, because those two already had
         the right behaviour and this brings the rest of the CLI into
-        line with them rather than the other way round.
+        line with them rather than the other way round;
+      * ``WasmBindingError``, an installed ``wasmtime`` binding that
+        cannot build the engine Capa requires (outside the declared
+        range, or missing a feature setter), raised by every path that
+        builds a Wasm engine.
 
-    ``BrokenRootManifestError`` exits 2 and not 1: 2 is this CLI's code
-    for a CONFIGURATION problem (``capa test`` already returns it for
-    exactly this input), while 1 is the code for a policy refusal about
-    a program that was otherwise fine to build. A broken manifest is the
-    former; a violated floor is the latter.
+    ``BrokenRootManifestError`` and ``WasmBindingError`` exit 2 and not
+    1: 2 is this CLI's code for a CONFIGURATION problem (``capa test``
+    already returns it for a broken manifest), while 1 is the code for a
+    policy refusal about a program that was otherwise fine to build. A
+    broken manifest and an unusable wasmtime binding are the former; a
+    violated ``[package].capa`` floor is the latter.
     """
     try:
         return _main_dispatch()
@@ -88,6 +94,9 @@ def main() -> int:
         # the full remediation menu; print it verbatim.
         print(str(e), file=sys.stderr)
         return 1
+    except WasmBindingError as e:
+        print(f"capa: {e}", file=sys.stderr)
+        return 2
 
 
 def _main_dispatch() -> int:

@@ -20,6 +20,7 @@ from capa import __version__ as _CAPA_VERSION
 from capa._artifact_io import emit_artifact
 from capa.init_project import init_project
 from capa.loader_paths import resolve_loader_paths
+from capa.runtime._engine import WasmBindingError
 from capa.cli._parser import _WASM32_MAX_PAGES
 
 
@@ -498,6 +499,8 @@ def _dispatch_build(argv: list[str]) -> int:
             filename=filename,
         )
         artifact = build_aot(blob, capa_version=_CAPA_VERSION)
+    except WasmBindingError:
+        raise
     except Exception as e:
         print(f"capa build: {e}", file=sys.stderr)
         return 1

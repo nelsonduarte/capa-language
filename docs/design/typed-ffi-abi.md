@@ -143,18 +143,26 @@ therefore metered on THREE axes IN ADDITION to the restricted linker
 (`capa.runtime._foreign.dispatch_foreign_call`):
 
 - **CPU (fuel).** The child runs on a `consume_fuel` engine with a
-  bounded per-call fuel budget (`Store.set_fuel`). wasmtime charges ~1
-  fuel per executed wasm instruction, so an infinite loop / CPU spin
-  drains the budget and TRAPS ("all fuel consumed") instead of hanging
-  the host forever. The host reports it as a clean
+  bounded per-call fuel budget (`Store.set_fuel`). wasmtime charges fuel
+  as the child executes wasm instructions (about one per instruction), so
+  an infinite loop / CPU spin drains the budget and TRAPS ("all fuel
+  consumed") instead of hanging the host forever. The bound is only as
+  complete as wasmtime's metering: some wasmtime releases drop the fuel a
+  callee used when it is reached through `call_ref` or left through an
+  exception catch, and the engine allow-list below keeps both of those
+  features (function references, exceptions) off. The host reports it as a clean
   `foreign component <label>: exceeded its CPU/fuel budget` diagnostic
   (exit 1), detected robustly by `Store.get_fuel() == 0` after the trap.
-- **Store growth.** `Store.set_limits` bounds EVERY growable store
-  resource, not just linear memory: `memory_size` (the linear-memory
-  ceiling), `table_elements` (funcref/table growth -- fuel does NOT
-  bound `table.grow`, so an ~8-byte-per-element table could otherwise
-  allocate ~1 GB under the memory cap), and the `memories` / `tables` /
-  `instances` object counts. A child whose declared minimum exceeds a
+- **Store growth.** `Store.set_limits` bounds more than linear memory:
+  `memory_size` (the linear-memory ceiling), `table_elements`
+  (funcref/table growth -- fuel does NOT bound `table.grow`, so an
+  ~8-byte-per-element table could otherwise allocate ~1 GB under the
+  memory cap), and the `memories` / `tables` / `instances` object
+  counts. It is not a bound on every allocation a child can cause:
+  wasmtime charges the component-model resource handle tables
+  (`resource.new`) to no store limit, and the binding exposes no setter
+  for a handle cap, so the number of handles a child creates is not
+  bounded by this ceiling. A child whose declared minimum exceeds a
   limit is refused at instantiation; a runaway `memory.grow` /
   `table.grow` returns `-1` so the host never OOMs. Over-limit
   instantiation surfaces as
@@ -182,6 +190,28 @@ still do work PROPORTIONAL to a granted capability (read a granted file,
 fetch an allowlisted URL) exactly as the direct caller could -- that is
 the capability model, bounded by each cap's own semantics (net/proc
 timeouts, a finite file), not a sandbox gap.
+
+**Wasm features (allow-list).** Every wasmtime engine Capa builds,
+the child's included, is configured in one place
+(`capa.runtime._engine`). The list covers every Wasm feature the
+`wasmtime` binding lets Capa switch: only bulk memory, multi-value,
+reference types, tail calls, the component model and multiple memories
+are on, and every other switchable feature is off, including one a
+future binding adds a switch for. Features the binding exposes no
+switch for are not on the list and stay as wasmtime sets them (today
+the extended constant expressions and the Wasm 2.0 baseline, such as
+sign extension and saturating conversions). A child that uses a
+feature outside the list (exceptions, GC, SIMD, memory64, function
+references, wide arithmetic, any component-model async construct, ...)
+is refused when it is loaded, as
+`foreign component <label>: could not load artifact ...` (exit 1). This
+is part of the ABI contract: a component must be built without those
+features to be callable from Capa. Multiple memories are on because the
+component model needs them to pass strings and lists between
+components that each own a memory; the store limits above still allow
+a child one memory, so a child with more is refused at instantiation
+(`exceeded its memory / resource limit`) unless `--foreign-memory-cap 0`
+opts out of the ceiling.
 
 **Defaults and flags.**
 

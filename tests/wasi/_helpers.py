@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from capa import Lexer, Parser, analyze
+from capa.runtime._engine import new_engine
 
 
 # Repo root, derived ONCE from this file's location (tests/wasi/_helpers.py) so
@@ -41,7 +42,7 @@ def _has_wasmtime_wasip2() -> bool:
         return False
     # add_wasip2 + WasiConfig are the host surface the WASI mode needs.
     return hasattr(wasmtime, "WasiConfig") and hasattr(
-        wc.Linker(wasmtime.Engine()), "add_wasip2",
+        wc.Linker(new_engine(fuel=False)), "add_wasip2",
     )
 
 

@@ -17,6 +17,7 @@ import subprocess
 import unittest
 
 from capa.ir._net_host import extract_url_parts
+from capa.runtime._engine import new_engine
 from tests.test_allow_host_oracle import ADVERSARIAL_URL_CORPUS
 
 
@@ -83,7 +84,7 @@ class DifferentialUrlExtractor(unittest.TestCase):
         import wasmtime
         cls.wasmtime = wasmtime
         blob = _assemble(_module_wat())
-        cls.engine = wasmtime.Engine()
+        cls.engine = new_engine(fuel=False)
         cls.module = wasmtime.Module(cls.engine, blob)
 
     def _run(self, url: str):

@@ -32,6 +32,7 @@ import unittest.mock as mock
 from pathlib import Path
 
 from capa.cli import _wasm_tooling_available, main
+from capa.runtime._engine import new_engine
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "foreign"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -575,7 +576,7 @@ class TestForeignCeilingUnit(unittest.TestCase):
         # a real over-limit store and captures the actual message.
         import wasmtime
         from capa.runtime._foreign import _is_store_limit_error
-        eng = wasmtime.Engine()
+        eng = new_engine(fuel=False)
         mod = wasmtime.Module(
             eng,
             '(module (memory (export "m") 5000) '

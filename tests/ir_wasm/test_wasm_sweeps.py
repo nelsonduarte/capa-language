@@ -17,6 +17,7 @@ import unittest
 from tests.ir_wasm._helpers import _parse_lower, _has_wasm_tools, _has_wasmtime_py
 from capa import Lexer, Parser, analyze
 from capa.ir import emit_wat, compile_wat, compile_wasm
+from capa.runtime._engine import new_engine
 
 
 # ----------------------------------------------------------------------
@@ -562,7 +563,7 @@ class TestDiscardedCallSweepValidates(unittest.TestCase):
         module, result = _parse_and_analyze_ok(src)
         blob = compile_wasm(module, types=result.types, **compile_kw)
         try:
-            wasmtime.Module(wasmtime.Engine(), blob)
+            wasmtime.Module(new_engine(fuel=False), blob)
         except Exception as exc:  # noqa: BLE001 - want the raw reason
             self.fail(
                 f"discarded {label} produced an INVALID module: {exc}\n"
@@ -675,7 +676,7 @@ class TestScratchLocalIsolationSweep(unittest.TestCase):
                         f"--- program ---\n{src}"
                     )
                 try:
-                    wasmtime.Module(wasmtime.Engine(), blob)
+                    wasmtime.Module(new_engine(fuel=False), blob)
                 except Exception as exc:  # noqa: BLE001
                     self.fail(
                         f"{ty}.{method} alone in its function produced an "

@@ -53,6 +53,7 @@ from ..ir._cap_binding import (
     resolve_cap_types,
 )
 from ._capabilities import Clock, Db, Env, Fs, Net, Proc, Stdio, _write_safe
+from ._engine import new_engine
 from ._fs_guard import PostOpenDenied
 from ._cap_handles import (
     CapHandleError,
@@ -132,7 +133,7 @@ class WasmHost:
     into a compiled Wasm module."""
 
     def __init__(self, args: Optional[list[str]] = None) -> None:
-        self.engine = wasmtime.Engine()
+        self.engine = new_engine(fuel=False)
         self.store = wasmtime.Store(self.engine)
         self.linker = wasmtime.Linker(self.engine)
         # Feature #4 hardening: untrusted foreign-component children run
