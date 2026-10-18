@@ -70,11 +70,13 @@ eval = ["matplotlib>=3.8"]
 # ``WasiConfig.preopen_dir`` signature the ``--wasi`` host calls, and
 # the engine feature setters ``capa/runtime/_engine.py`` applies. An
 # exact ``!=`` excludes a release whose bundled Wasmtime carries one
-# more security advisory than the floor's. The runtime reads this line back
-# (from this file in a source checkout, from the installed
-# distribution's metadata otherwise) and refuses an installed binding
-# outside it with a message naming the range, so do not restate the
-# numbers anywhere else. It understands only ``>=`` and exact ``!=``:
+# more security advisory than the floor's. For a normal ``pip install`` of
+# the package and for a source checkout of the repository, the runtime
+# reads this line back (from this file in a source checkout, from the
+# installed distribution's metadata otherwise) and refuses an installed
+# binding outside it with a message naming the range, so do not restate
+# the numbers anywhere else. The check is specified for those two layouts
+# only. It understands only ``>=`` and exact ``!=``:
 # any other operator here makes it refuse every binding. There is
 # deliberately no upper bound: upstream ships fixes as new majors. On a
 # newer binding the engine module switches off every feature setter it

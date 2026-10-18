@@ -20,9 +20,12 @@ Two decisions live here, each in one place:
   2.0 baseline, such as sign extension and saturating conversions).
 * The binding range, read back from the ``[wasm]`` extra declared in
   ``pyproject.toml`` (or from the installed distribution's metadata): a
-  ``>=`` floor and exact ``!=`` exclusions. A binding outside it is refused
-  with a message naming the declared range instead of failing later inside
-  a binding call, and so is a declaration that uses any other operator.
+  ``>=`` floor and exact ``!=`` exclusions. In a normal ``pip install`` of
+  the package and in a source checkout of the repository, a binding
+  outside it is refused with a message naming the declared range instead
+  of failing later inside a binding call, and so is a declaration that
+  uses any other operator. The check is specified for those two layouts
+  only.
 
 Both refusals raise :class:`WasmBindingError`, which the CLI prints as a
 one-line diagnostic. ``wasmtime`` is imported lazily so the error type can be
