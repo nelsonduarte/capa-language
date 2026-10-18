@@ -3,16 +3,19 @@ builds, from one decision table.
 
 Rule under test. ``capa.runtime._engine.ENGINE_FEATURES`` decides, for every
 Wasm feature setter the installed binding exposes, whether the feature is on.
-It is an allow-list: only what Capa needs is on, every other feature is off,
-including a setter the table does not know yet. A setter the table names but
-the binding lacks refuses to build the engine (fail closed), and so does a
-binding older than the floor declared for the ``[wasm]`` extra.
+It is an allow-list over those setters: only what Capa needs is on, every
+other setter is switched off, including one the table does not know yet.
+Features the binding gives no setter for stay as wasmtime sets them. A setter
+the table names but the binding lacks refuses to build the engine (fail
+closed), and so does a binding outside the range declared for the ``[wasm]``
+extra (older than its floor, or a release it excludes).
 
-The classes below cover, in order: the table against the installed binding,
-the per-feature decisions, the fail-closed rules, the binding floor (and its
-clean refusal on every CLI entry point that builds an engine), every engine
-role Capa constructs, the AOT container's engine identity, and a static guard
-that no engine is built outside the seam.
+The classes below cover, in order: the decision values against the test-side
+allow-list, the table against the installed binding, the per-feature
+decisions, the fail-closed rules, the declared binding range (and its clean
+refusal on every CLI entry point that builds an engine), every engine role
+Capa constructs, the AOT container's engine identity, and a static guard that
+no engine is built outside the seam.
 """
 
 from __future__ import annotations
@@ -31,7 +34,9 @@ from unittest import mock
 
 from capa import Lexer, Parser, analyze
 
-from tests._wasm_feature_probes import CORE_PROBES, UNPROBED_FEATURES
+from tests._wasm_feature_probes import (
+    CORE_PROBES, EXPECTED_ON, UNPROBED_FEATURES,
+)
 
 try:
     import wasmtime
@@ -107,6 +112,26 @@ def _run_cli(argv, cwd):
     return rc, out.getvalue(), err.getvalue()
 
 
+class TestDecisionValues(unittest.TestCase):
+    """The table's values, checked without building an engine."""
+
+    def test_on_rows_are_the_stated_allow_list(self):
+        from capa.runtime._engine import ENGINE_FEATURES
+        on = {row for row, enabled in ENGINE_FEATURES.items() if enabled}
+        self.assertEqual(on, set(EXPECTED_ON))
+
+    def test_table_avoids_combinations_the_engine_constructor_rejects(self):
+        # wasmtime's engine constructor rejects these combinations instead
+        # of reporting them as a configuration error, so they are checked
+        # on the table alone.
+        from capa.runtime._engine import ENGINE_FEATURES as table
+        self.assertFalse(
+            table["relaxed_simd"] and not table["simd"],
+            "relaxed_simd on with simd off",
+        )
+        self.assertFalse(table["stack_switching"], "stack_switching on")
+
+
 @unittest.skipUnless(_HAVE_WASMTIME, "wasmtime not installed")
 class TestDecisionTable(unittest.TestCase):
     """The table against the installed binding."""
@@ -131,13 +156,13 @@ class TestDecisionTable(unittest.TestCase):
         )
 
     def test_enabled_rows_load_and_disabled_rows_are_refused(self):
-        from capa.runtime._engine import ENGINE_FEATURES, new_engine
+        from capa.runtime._engine import new_engine
         for fuel in (False, True):
             engine = new_engine(fuel=fuel)
             for row, text in CORE_PROBES.items():
                 with self.subTest(row=row, fuel=fuel):
                     wasmtime.wat2wasm(text)  # the probe itself is valid text
-                    if ENGINE_FEATURES[row]:
+                    if row in EXPECTED_ON:
                         _load(engine, text)
                     else:
                         with self.assertRaises(wasmtime.WasmtimeError):
@@ -180,73 +205,159 @@ class TestFailClosed(unittest.TestCase):
             self.assertNotEqual(base, _engine.engine_identity(fuel=False))
 
 
-class TestBindingFloor(unittest.TestCase):
-    """The floor is read back from the one place it is declared."""
+class TestBindingRange(unittest.TestCase):
+    """The binding range is read back from the one place it is declared.
+    Only ``>=`` floors and exact ``!=`` exclusions are understood; any other
+    operator refuses, like an unreadable version."""
 
     def test_below_floor_is_refused_with_an_upgrade_message(self):
         from capa.runtime._engine import WasmBindingError, check_binding_version
         with self.assertRaises(WasmBindingError) as ctx:
-            check_binding_version("47.0.1", "48")
+            check_binding_version("47.0.1", ">=48")
         msg = str(ctx.exception)
         self.assertIn("47.0.1", msg)
-        self.assertIn("48", msg)
         self.assertIn("pip install", msg)
+        self.assertIn("wasmtime>=48", msg[:msg.index("pip install")])
 
     def test_at_or_above_floor_is_accepted(self):
         from capa.runtime._engine import check_binding_version
         for installed in ("48", "48.0.0", "48.0.6", "49.0.0", "100.1.2"):
             with self.subTest(installed=installed):
-                check_binding_version(installed, "48")
+                check_binding_version(installed, ">=48")
+
+    def test_patch_level_floor(self):
+        from capa.runtime._engine import WasmBindingError, check_binding_version
+        with self.assertRaises(WasmBindingError):
+            check_binding_version("48.0.5", ">=48.0.6")
+        for installed in ("48.0.6", "48.1", "49"):
+            with self.subTest(installed=installed):
+                check_binding_version(installed, ">=48.0.6")
+
+    def test_excluded_release_is_refused_naming_the_declared_range(self):
+        from capa.runtime._engine import WasmBindingError, check_binding_version
+        for declared in (">=48,!=49.0.0", "!=49.0.0,>=48", ">= 48, != 49.0.0"):
+            for installed in ("49.0.0", "49", "49.0", "49.0.0.0"):
+                with self.subTest(declared=declared, installed=installed):
+                    with self.assertRaises(WasmBindingError) as ctx:
+                        check_binding_version(installed, declared)
+                    msg = str(ctx.exception)
+                    self.assertIn(installed, msg)
+                    self.assertIn("pip install", msg)
+                    # the range is named, not only carried by the command
+                    advice = msg.index("pip install")
+                    self.assertIn(f"wasmtime{declared}", msg[:advice])
+
+    def test_neighbours_of_an_excluded_release_are_accepted(self):
+        from capa.runtime._engine import check_binding_version
+        for installed in ("48.0.0", "48.0.5", "49.0.1", "49.1", "50.0.0"):
+            with self.subTest(installed=installed):
+                check_binding_version(installed, ">=48,!=49.0.0")
+
+    def test_any_other_operator_refuses(self):
+        from capa.runtime._engine import WasmBindingError, check_binding_version
+        for declared in (
+            "<50", ">48", "==48.0.0", "~=48.0", "===48.0.0", "!=49.*",
+            ">=48.*", ">=48,<50", ">=48,!=49.0.0,<=60", "!=49.0.0",
+            ">=48,", ">=",
+        ):
+            with self.subTest(declared=declared):
+                with self.assertRaises(WasmBindingError) as ctx:
+                    check_binding_version("48.0.0", declared)
+                self.assertIn(f"wasmtime{declared}", str(ctx.exception))
 
     def test_unreadable_versions_fail_closed(self):
         from capa.runtime._engine import WasmBindingError, check_binding_version
-        for installed, floor in ((None, "48"), ("48.0.0", None), ("x", "48")):
-            with self.subTest(installed=installed, floor=floor):
+        for installed, declared in (
+            (None, ">=48"), ("48.0.0", None), ("48.0.0", ""), ("x", ">=48"),
+        ):
+            with self.subTest(installed=installed, declared=declared):
                 with self.assertRaises(WasmBindingError):
-                    check_binding_version(installed, floor)
+                    check_binding_version(installed, declared)
 
-    def test_floor_parsed_from_both_declaration_forms(self):
-        from capa.runtime._engine import floor_from_declaration
-        self.assertEqual(
-            floor_from_declaration('wasm = ["wasmtime>=48"]\n'), "48",
-        )
-        self.assertEqual(
-            floor_from_declaration('wasmtime>=48.0.2; extra == "wasm"'),
-            "48.0.2",
-        )
-        self.assertIsNone(floor_from_declaration('wasm = ["wasmtime"]'))
+    def test_requirement_read_from_both_declaration_forms(self):
+        from capa.runtime._engine import requirement_from_declaration
+        cases = {
+            'wasm = ["wasmtime>=48,!=49.0.0"]\n': ">=48,!=49.0.0",
+            'wasmtime!=49.0.0,>=48; extra == "wasm"': "!=49.0.0,>=48",
+            'wasmtime (>=48.0.2); extra == "wasm"': ">=48.0.2",
+            'wasmtime>=48.0.2; extra == "wasm"': ">=48.0.2",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(requirement_from_declaration(text), expected)
+        self.assertIsNone(requirement_from_declaration('wasm = ["wasmtime"]'))
 
-    def test_floor_resolves_from_installed_metadata_without_a_checkout(self):
+    def test_requirement_resolves_from_installed_metadata_without_a_checkout(self):
         from capa.runtime import _engine
-        reqs = ['pygls>=2.0; extra == "lsp"', 'wasmtime>=48; extra == "wasm"']
+        reqs = [
+            'pygls>=2.0; extra == "lsp"',
+            'wasmtime!=49.0.0,>=48; extra == "wasm"',
+        ]
         with mock.patch.object(_engine, "_adjacent_pyproject", return_value=None), \
                 mock.patch.object(_engine, "_distribution_requires",
                                   return_value=reqs):
-            self.assertEqual(_engine.binding_floor(), "48")
+            self.assertEqual(_engine.binding_requirement(), "!=49.0.0,>=48")
+
+    def test_runtime_reads_the_whole_declared_requirement(self):
+        # Oracle: the ``[wasm]`` extra read independently of the runtime,
+        # as the TOML array of strings it is.
+        from capa.runtime import _engine
+        text = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        line = next(
+            ln for ln in text.splitlines() if ln.startswith("wasm = [")
+        )
+        (entry,) = ast.literal_eval(line.split("=", 1)[1].strip())
+        self.assertTrue(entry.startswith("wasmtime"), entry)
+        self.assertEqual(
+            _engine.binding_requirement(), entry[len("wasmtime"):],
+        )
+
+    def test_declared_requirement_is_one_the_runtime_understands(self):
+        from capa.runtime import _engine
+        declared = _engine.binding_requirement()
+        self.assertIsNotNone(declared)
+        clauses = _engine.requirement_clauses(declared)
+        self.assertIn(">=", [op for op, _version in clauses])
 
     @unittest.skipUnless(_HAVE_WASMTIME, "wasmtime not installed")
-    def test_installed_binding_meets_the_declared_floor(self):
+    def test_installed_binding_meets_the_declared_requirement(self):
         from capa.runtime import _engine
-        floor = _engine.binding_floor()
-        self.assertIsNotNone(floor)
+        declared = _engine.binding_requirement()
+        self.assertIsNotNone(declared)
         _engine.check_binding_version(
-            _engine._installed_binding_version(), floor,
+            _engine._installed_binding_version(), declared,
         )
 
 
 @unittest.skipUnless(
     _HAVE_WASMTIME and _HAVE_WASM_TOOLS, "wasm-tools / wasmtime missing",
 )
-class TestBelowFloorOnEveryCliEntry(unittest.TestCase):
-    """Every CLI path that builds an engine reports a too-old binding as a
-    one-line diagnostic, never a traceback."""
+class TestOutOfRangeBindingOnEveryCliEntry(unittest.TestCase):
+    """Every CLI path that builds an engine reports a binding outside the
+    declared range (older than the floor, or a release the declaration
+    excludes) as a one-line diagnostic naming that range, never a
+    traceback."""
 
     _OLD = "47.0.1"
 
-    def _assert_clean_refusal(self, rc, err):
+    def _out_of_range(self) -> list[str]:
+        from capa.runtime import _engine
+        declared = _engine.binding_requirement()
+        excluded = [
+            version for op, version in _engine.requirement_clauses(declared)
+            if op == "!="
+        ]
+        return [self._OLD] + excluded
+
+    def _assert_clean_refusal(self, rc, err, installed):
+        from capa.runtime import _engine
         self.assertEqual(rc, 2)  # a configuration problem, see capa.cli.main
-        self.assertIn(self._OLD, err)
+        self.assertIn(installed, err)
         self.assertIn("pip install", err)
+        self.assertIn(
+            f"wasmtime{_engine.binding_requirement()}",
+            err[:err.index("pip install")],
+        )
         self.assertNotIn("Traceback (most recent call last)", err)
 
     def test_each_entry(self):
@@ -268,13 +379,15 @@ class TestBelowFloorOnEveryCliEntry(unittest.TestCase):
                 "build-release": ["build", "--release", str(prog)],
                 "run-aot": ["run-aot", str(artifact)],
             }
-            for name, argv in entries.items():
-                with self.subTest(entry=name), mock.patch(
-                    "capa.runtime._engine._installed_binding_version",
-                    return_value=self._OLD,
-                ):
-                    rc, _out, err = _run_cli(argv, cwd=td)
-                    self._assert_clean_refusal(rc, err)
+            for installed in self._out_of_range():
+                for name, argv in entries.items():
+                    with self.subTest(installed=installed, entry=name), \
+                            mock.patch(
+                                "capa.runtime._engine._installed_binding_version",
+                                return_value=installed,
+                            ):
+                        rc, _out, err = _run_cli(argv, cwd=td)
+                        self._assert_clean_refusal(rc, err, installed)
 
 
 @unittest.skipUnless(_HAVE_WASMTIME, "wasmtime not installed")
@@ -415,19 +528,43 @@ _DIRECT_ENGINE_ALLOWED = {
 }
 
 
+_ENGINE_BUILDERS = ("Engine", "Config", "Store")
+
+
+def _is_wasmtime_module(module) -> bool:
+    return module == "wasmtime" or (module or "").startswith("wasmtime.")
+
+
+def _getattr_builder(node) -> "str | None":
+    """``getattr(<x>, "Engine" | "Config" | "Store")``: the builder named."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name) and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value in _ENGINE_BUILDERS
+    ):
+        return node.args[1].value
+    return None
+
+
 def _direct_engine_calls(path: Path) -> list[str]:
     """Calls in ``path`` that build a wasmtime Engine or Config, or a Store
     with no engine (which builds a default engine inside the binding).
 
-    Matches ``<anything>.Engine(...)`` / ``<anything>.Config(...)`` and any
-    bare name bound by ``from wasmtime import Engine / Config [as X]``, so
-    an aliased import is caught as well as the qualified form."""
+    Matches ``<anything>.Engine(...)`` / ``<anything>.Config(...)``, the
+    same through ``getattr(<anything>, "Engine")(...)``, and any bare name
+    bound by ``from wasmtime[.<submodule>] import Engine / Config [as X]``,
+    so an aliased import is caught as well as the qualified form. A builder
+    first assigned to another name (``E = wasmtime.Engine``) is not seen
+    here; the per-role tests in ``TestEveryEngineRole`` cover every engine
+    a reached code path builds, whatever the spelling."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     aliases: dict[str, str] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "wasmtime":
+        if isinstance(node, ast.ImportFrom) and _is_wasmtime_module(node.module):
             for a in node.names:
-                if a.name in ("Engine", "Config", "Store"):
+                if a.name in _ENGINE_BUILDERS:
                     aliases[a.asname or a.name] = a.name
     hits = []
     for node in ast.walk(tree):
@@ -435,10 +572,12 @@ def _direct_engine_calls(path: Path) -> list[str]:
             continue
         f = node.func
         name = None
-        if isinstance(f, ast.Attribute) and f.attr in ("Engine", "Config", "Store"):
+        if isinstance(f, ast.Attribute) and f.attr in _ENGINE_BUILDERS:
             name = f.attr
         elif isinstance(f, ast.Name) and f.id in aliases:
             name = aliases[f.id]
+        else:
+            name = _getattr_builder(f)
         if name is None:
             continue
         if name == "Store" and (node.args or node.keywords):
@@ -471,14 +610,42 @@ class TestNoEngineOutsideTheSeam(unittest.TestCase):
             p.write_text(
                 "import wasmtime\n"
                 "from wasmtime import Engine as _E, Store\n"
+                "from wasmtime._engine import Engine as _E2\n"
+                "from wasmtime._config import Config\n"
                 "a = _E()\n"
                 "b = wasmtime.Config()\n"
                 "c = Store()\n"
-                "d = wasmtime.Store(a)\n",
+                "d = wasmtime.Store(a)\n"
+                "e = _E2()\n"
+                "f = Config()\n"
+                "g = getattr(wasmtime, 'Engine')()\n"
+                "h = getattr(wasmtime, 'Store')()\n"
+                "i = getattr(wasmtime, 'Store')(a)\n",
                 encoding="utf-8",
             )
             hits = _direct_engine_calls(p)
-        self.assertEqual(len(hits), 3, hits)
+        self.assertEqual(
+            [h.rsplit(":", 2)[1] for h in hits],
+            ["5", "6", "7", "9", "10", "11", "12"], hits,
+        )
+
+    def test_guard_leaves_unrelated_names_alone(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "m.py"
+            p.write_text(
+                "import wasmtime\n"
+                "from capa.runtime._engine import new_engine\n"
+                "from wasmtimex import Engine\n"
+                "from mylib import Config\n"
+                "a = new_engine(fuel=False)\n"
+                "b = Engine()\n"
+                "c = Config()\n"
+                "d = getattr(wasmtime, 'engine')()\n"
+                "e = getattr(wasmtime, 'Module')(a, b'')\n"
+                "f = wasmtime.Store(a)\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(_direct_engine_calls(p), [])
 
 
 if __name__ == "__main__":

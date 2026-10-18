@@ -5,10 +5,15 @@ both exercise the same shapes. Every probe is a well-formed module or
 component whose only purpose is to USE one Wasm feature; none of them does
 anything beyond returning a small integer.
 
+``EXPECTED_ON`` is the allow-list stated a second time, on the test side:
+the rows the engine table must turn on. The table is checked against it and
+every probe expectation reads it, so flipping a row in the table alone turns
+the tests red instead of moving the expectation with it.
+
 ``CORE_PROBES`` maps a row name of ``capa.runtime._engine.ENGINE_FEATURES``
 to a core module (text format) that needs exactly that feature. An engine
-built by Capa must compile the probe when the row is enabled and refuse it
-when the row is disabled. ``UNPROBED_FEATURES`` names the rows that have no
+built by Capa must compile the probe when the row is in ``EXPECTED_ON`` and
+refuse it otherwise. ``UNPROBED_FEATURES`` names the rows that have no
 refusable probe, each with the reason; the engine-policy tests fail when a
 row is in neither, so a new decision row cannot land without a probe or a
 stated reason.
@@ -17,9 +22,23 @@ stated reason.
 foreign component exporting ``submit(x: s64) -> s64`` (the ABI the policy
 tests call) whose core module uses ``feature``. The ``plain`` child uses no
 feature outside the allow-list and returns ``x + 1``.
+
+``COMPOSED_CHILDREN`` maps a short name to a foreign component with the same
+ABI, composed from two inner components that each own a linear memory: the
+second passes the five bytes ``hello`` to the first (as a string or a list)
+and returns ``x + `` the length the first one received.
 """
 
 from __future__ import annotations
+
+EXPECTED_ON: frozenset[str] = frozenset({
+    "bulk_memory",
+    "multi_value",
+    "reference_types",
+    "tail_call",
+    "component_model",
+    "multi_memory",
+})
 
 CORE_PROBES: dict[str, str] = {
     # Enabled rows: Capa's own output and the foreign corpus need these.
@@ -237,4 +256,55 @@ FOREIGN_CHILDREN: dict[str, tuple[str, str]] = {
         ' (func (export "submit") (param "x" s64) (result s64)'
         ' (canon lift (core func $i "submit"))))',
     ),
+}
+
+
+def _composed(value_type: str, lift_encoding: str, lower_encoding: str) -> str:
+    """Two inner components, each with its own memory. ``$A`` lifts
+    ``f(s: value_type) -> u32`` (it returns the length it received); ``$B``
+    lowers ``f`` over its own memory, calls it on ``hello`` and exports
+    ``submit``. The outer component wires ``$B``'s import to ``$A``."""
+    return (
+        "(component"
+        " (component $A"
+        ' (core module $am (memory (export "mem") 1)'
+        " (global $bump (mut i32) (i32.const 1024))"
+        ' (func (export "realloc") (param i32 i32 i32 i32) (result i32)'
+        " (local $r i32) (local.set $r (global.get $bump))"
+        " (global.set $bump (i32.add (global.get $bump) (local.get 3)))"
+        " (local.get $r))"
+        ' (func (export "f") (param i32 i32) (result i32) (local.get 1)))'
+        " (core instance $ai (instantiate $am))"
+        f' (func (export "f") (param "s" {value_type}) (result u32)'
+        ' (canon lift (core func $ai "f") (memory $ai "mem")'
+        f' (realloc (func $ai "realloc")){lift_encoding})))'
+        " (component $B"
+        f' (import "f" (func $f (param "s" {value_type}) (result u32)))'
+        ' (core module $bmem (memory (export "mem") 1)'
+        ' (data (i32.const 16) "hello"))'
+        " (core instance $bm (instantiate $bmem))"
+        " (core func $flow (canon lower (func $f) (memory $bm"
+        f' "mem"){lower_encoding}))'
+        ' (core module $bmain (import "h" "f" (func $f (param i32 i32)'
+        " (result i32)))"
+        f" {_SUBMIT} (i64.add (local.get 0) (i64.extend_i32_u"
+        " (call $f (i32.const 16) (i32.const 5))))))"
+        " (core instance $bi (instantiate $bmain"
+        ' (with "h" (instance (export "f" (func $flow))))))'
+        ' (func (export "submit") (param "x" s64) (result s64)'
+        ' (canon lift (core func $bi "submit"))))'
+        " (instance $a (instantiate $A))"
+        ' (instance $b (instantiate $B (with "f" (func $a "f"))))'
+        ' (export "submit" (func $b "submit")))'
+    )
+
+
+COMPOSED_CHILDREN: dict[str, str] = {
+    "string_utf8": _composed(
+        "string", " string-encoding=utf8", " string-encoding=utf8",
+    ),
+    "string_utf16": _composed(
+        "string", " string-encoding=utf16", " string-encoding=utf8",
+    ),
+    "list_u8": _composed("(list u8)", "", ""),
 }
