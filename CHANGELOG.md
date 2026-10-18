@@ -845,6 +845,92 @@ breaking changes and the discipline is still being shaped.
   in provenance; byte-identity across repeated runs). No compiler behaviour
   changes.
 
+## [1.32.1], 2026-10-18
+
+A patch release for the Wasm runtime's use of the `wasmtime` Python binding
+(the `[wasm]` extra). The compiler, the analyzer and the Python backend are
+unchanged.
+
+**Fixed.**
+
+- *`--wasi` programs that use the filesystem failed on a fresh install.* The
+  `[wasm]` extra admitted `wasmtime` 48 and later, whose
+  `WasiConfig.preopen_dir` takes a different signature, so every `--wasi`
+  program with a filesystem preopen stopped with
+  `AttributeError: module 'wasmtime' has no attribute 'DirPerms'`. The host
+  now calls the new signature through one helper that states read-only or
+  read-write explicitly for every preopen it registers, and the extra now
+  declares `wasmtime>=48,!=49.0.0`: the floor is 48, and 49.0.0 is excluded
+  because its bundled Wasmtime carries one more security advisory than
+  48.0.0's. There is no upper bound. 48.0.0 is not advisory-free: its
+  bundled Wasmtime has advisories recorded upstream that no `wasmtime`
+  wheel on PyPI fixes yet, and the feature allow-list below makes some of
+  them unreachable from foreign components, not all.
+  `pip install --upgrade "capa-language[wasm]"` asks pip for a binding
+  inside this range.
+- *A binding outside the supported range is reported, not a traceback.* In a
+  normal `pip install` of the package and in a source checkout of the
+  repository, when the installed `wasmtime` is older than the floor (for
+  example after upgrading `capa-language` without the extra) or is the
+  excluded release,
+  every command that builds a Wasm engine (`--wasm --run`, `--component`,
+  `--wasi`, `--prefer-wasm`, `build --release`, `run-aot`) exits 2 with a
+  message naming the supported range and the `pip install` command that
+  fixes it. So does `--run` when the environment asks to prefer Wasm
+  (`CAPA_PREFER_WASM=1`); a plain `--run` on the Python backend is not
+  affected. The check reads the range from the package's own declaration
+  and is specified for those two layouts only.
+
+**Changed: one engine configuration, and a stricter policy for foreign
+components.**
+
+- Every wasmtime engine Capa builds is now configured in one place
+  (`capa/runtime/_engine.py`) with an allow-list over the Wasm features the
+  `wasmtime` binding can switch: bulk memory, multi-value, reference types,
+  tail calls, the component model and multiple memories are on. Every other
+  switchable feature is off, including one a future binding adds a switch
+  for. Features the binding has no switch for (today the extended constant
+  expressions and the Wasm 2.0 baseline, such as sign extension) stay as
+  wasmtime sets them. Before, each engine took the binding's defaults, which
+  changed between binding releases. Capa's own output needs nothing outside
+  the list: this was checked on the example programs and the test suite
+  during development.
+- A foreign component (`extern component`) that uses a feature outside the
+  list, for example exceptions, GC, SIMD, memory64, function references,
+  wide arithmetic or any component-model async construct, is now refused
+  when it is loaded, with the existing `could not load artifact` diagnostic.
+  This narrows what loads: a third-party component built with one of those
+  features no longer runs under Capa. The foreign components in this
+  repository's tests and in the project's example pipelines all loaded when
+  this was checked during development.
+  Multiple memories are on because the component model needs them to pass
+  strings and lists between components that each own a memory. As before,
+  the default foreign limits allow a child one memory, so a child with more
+  is refused when it is instantiated, and runs with `--foreign-memory-cap 0`.
+- AOT artifacts (`.cwasm`) now record the engine configuration they were
+  compiled under. One built by an earlier Capa is refused with
+  "Rebuild with `capa build --release`", and a body the engine cannot load
+  is reported the same way instead of as a raw wasmtime error. Rebuild
+  existing `.cwasm` files after upgrading.
+
+**Documentation.**
+
+- `SECURITY.md` describes the CI dependency audit as what it is: it fails the
+  build on advisories recorded against the Python packages, and does not see
+  advisories against native code a package bundles (the `wasmtime` wheel
+  embeds a prebuilt Wasmtime library whose advisories are recorded against the
+  Rust crates).
+- `docs/design/typed-ffi-abi.md` states the foreign-component feature
+  allow-list as part of the ABI contract (and which features it does not
+  cover), no longer claims the store limits
+  bound every growable resource (component-model resource handle tables are
+  charged to no store limit), and says which features the fuel bound relies
+  on staying off.
+
+**CI.** The hashed lock moves to `wasmtime` 48.0.0. Its bundled native
+library is byte-identical to the Wasmtime v48.0.0 C-API release asset
+(checked for the Windows and Linux x86_64 wheels).
+
 ## [1.32.0], 2026-08-22
 
 A security-hardening release that closes a set of soundness gaps found in the
