@@ -233,6 +233,29 @@ class TestBindingRange(unittest.TestCase):
             with self.subTest(installed=installed):
                 check_binding_version(installed, ">=48.0.6")
 
+    def test_short_installed_version_below_a_longer_floor_is_refused(self):
+        from capa.runtime._engine import WasmBindingError, check_binding_version
+        with self.assertRaises(WasmBindingError):
+            check_binding_version("48", ">=48.0.6")
+
+    def test_short_exclusion_excludes_only_that_release(self):
+        from capa.runtime._engine import WasmBindingError, check_binding_version
+        for installed in ("49.0.1", "49.1", "49.0.0.1"):
+            with self.subTest(installed=installed):
+                check_binding_version(installed, ">=48,!=49")
+        with self.assertRaises(WasmBindingError):
+            check_binding_version("49.0.0", ">=48,!=49")
+
+    def test_pre_release_of_the_floor_is_refused_like_pip_does(self):
+        from capa.runtime._engine import WasmBindingError, check_binding_version
+        for installed in ("48.0.6rc1", "48.0.6a1", "48.0.6.dev0", "48.0.6b2"):
+            with self.subTest(installed=installed):
+                with self.assertRaises(WasmBindingError):
+                    check_binding_version(installed, ">=48.0.6")
+        for installed in ("48.0.6", "48.0.6.post1", "48.0.7rc1", "48.1.0"):
+            with self.subTest(installed=installed):
+                check_binding_version(installed, ">=48.0.6")
+
     def test_excluded_release_is_refused_naming_the_declared_range(self):
         from capa.runtime._engine import WasmBindingError, check_binding_version
         for declared in (">=48,!=49.0.0", "!=49.0.0,>=48", ">= 48, != 49.0.0"):
@@ -311,6 +334,57 @@ class TestBindingRange(unittest.TestCase):
         self.assertEqual(
             _engine.binding_requirement(), entry[len("wasmtime"):],
         )
+
+    def test_wasmtime_under_another_extra_is_not_the_wasm_declaration(self):
+        from capa.runtime import _engine
+        reqs = [
+            'wasmtime>=40; extra == "dev"',
+            'wasmtime!=49.0.0,>=48; extra == "wasm"',
+        ]
+        with mock.patch.object(_engine, "_adjacent_pyproject", return_value=None), \
+                mock.patch.object(_engine, "_distribution_requires",
+                                  return_value=reqs):
+            self.assertEqual(_engine.binding_requirement(), "!=49.0.0,>=48")
+
+    def test_lookalike_package_name_is_not_the_wasmtime_declaration(self):
+        from capa.runtime import _engine
+        reqs = [
+            'wasmtime-tools>=1; extra == "wasm"',
+            'wasmtime_extra>=1; extra == "wasm"',
+            'wasmtime>=48; extra == "wasm"',
+        ]
+        with mock.patch.object(_engine, "_adjacent_pyproject", return_value=None), \
+                mock.patch.object(_engine, "_distribution_requires",
+                                  return_value=reqs):
+            self.assertEqual(_engine.binding_requirement(), ">=48")
+
+    def test_wasm_line_of_another_pyproject_table_is_not_the_extra(self):
+        from capa.runtime import _engine
+        text = (
+            "[tool.other]\n"
+            'wasm = ["wasmtime>=1"]\n'
+            "[project.optional-dependencies]\n"
+            'lsp = ["pygls>=2.0"]\n'
+            'wasm = ["wasmtime>=48,!=49.0.0"]\n'
+        )
+        for eol in ("\n", "\r\n"):
+            with self.subTest(eol=repr(eol)):
+                raw = text.replace("\n", eol).encode("utf-8")
+                with mock.patch.object(_engine, "_adjacent_pyproject",
+                                       return_value=raw):
+                    self.assertEqual(
+                        _engine.binding_requirement(), ">=48,!=49.0.0",
+                    )
+
+    def test_declared_range_excludes_the_release_with_one_more_advisory(self):
+        # Deliberate second statement of the one exclusion (like
+        # EXPECTED_ON for the allow-list): wasmtime 49.0.0 carries one more
+        # security advisory than 48.0.0's. Dropping it from the declaration
+        # must fail here, not move the expectation along with it. Change
+        # this test on purpose when the policy changes.
+        from capa.runtime import _engine
+        clauses = _engine.requirement_clauses(_engine.binding_requirement())
+        self.assertIn(("!=", "49.0.0"), clauses)
 
     def test_declared_requirement_is_one_the_runtime_understands(self):
         from capa.runtime import _engine
